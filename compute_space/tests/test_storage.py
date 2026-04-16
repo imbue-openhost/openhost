@@ -39,6 +39,7 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
 
     assert config.data_root_dir in calls, "storage_status should query data_root_dir"
     assert status["disk"]["total_bytes"] == 10 * 1024**3
+    assert status["disk"]["used_bytes"] == 4 * 1024**3
     assert status["disk"]["free_bytes"] == 6 * 1024**3
     assert "persistent" not in status
     assert "temporary" not in status
