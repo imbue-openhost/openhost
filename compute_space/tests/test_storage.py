@@ -68,6 +68,24 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
     assert status["storage_low"] is False  # 6 GiB free > 1000 MiB required
 
 
+def test_disk_free_bytes_uses_data_root_dir(tmp_path, monkeypatch):
+    config = _make_test_config(tmp_path)
+    usage = namedtuple("usage", ["total", "used", "free"])
+
+    calls = []
+
+    def fake_disk_usage(path):
+        calls.append(path)
+        return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
+
+    monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
+
+    result = storage.disk_free_bytes(config)
+
+    assert result == 6 * 1024**3
+    assert config.data_root_dir in calls, "disk_free_bytes should query data_root_dir"
+
+
 def test_check_before_deploy_noop_without_min_free(tmp_path):
     config = _make_test_config(tmp_path)
     # Should not raise when no min-free is configured
