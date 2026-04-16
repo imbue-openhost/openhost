@@ -36,7 +36,7 @@ class Config:
     data_root_dir: str
     apps_dir_override: str | None
 
-    # Minimum free persistent storage in MB (0 = no enforcement)
+    # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int
 
     # Ports
@@ -153,7 +153,7 @@ class DefaultConfig(Config):
     data_root_dir: str = "/opt/openhost"
     apps_dir_override: str | None = None  # if None, defaults to data_root_dir/apps
 
-    # Minimum free persistent storage in MB (0 = no enforcement)
+    # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int = 0
 
     # Ports

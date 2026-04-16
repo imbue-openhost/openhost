@@ -179,7 +179,7 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
 
     stopped = []
     monkeypatch.setattr(storage, "storage_low", lambda _c: True)
-    monkeypatch.setattr(storage, "persistent_free_bytes", lambda _c: 50 * 1024 * 1024)
+    monkeypatch.setattr(storage, "disk_free_bytes", lambda _c: 50 * 1024 * 1024)
     monkeypatch.setattr(storage, "_stop_app_process_safe", lambda row: stopped.append(row["name"]))
 
     storage.enforce_storage_guard(config)
@@ -208,7 +208,7 @@ def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
     db.close()
 
     monkeypatch.setattr(storage, "storage_low", lambda _c: True)
-    monkeypatch.setattr(storage, "persistent_free_bytes", lambda _c: 50 * 1024 * 1024)
+    monkeypatch.setattr(storage, "disk_free_bytes", lambda _c: 50 * 1024 * 1024)
 
     storage.set_guard_paused(True)
     try:

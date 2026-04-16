@@ -67,7 +67,7 @@ Apps have two storage areas on separate disks. **By default, apps have no filesy
 - **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed up, recreatable. Enabled by `app_temp_data = true`.
 - **VM data** (`/data/vm_data/`) — router database and VM-level shared data. Only accessible if `access_vm_data = true`.
 
-The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, the storage guard stops running apps until space is freed.
+The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, the storage guard stops running apps until space is freed.
 
 All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_data`, the parent dirs are mounted instead (`/data/app_data/`, `/data/app_temp_data/`) so the app can see all apps' data.
 

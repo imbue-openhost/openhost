@@ -116,7 +116,7 @@ Apps have no filesystem access by default. Request what you need in the `[data]`
 - **`access_vm_data = true`** — read-only access to the VM's shared data at `/data/vm_data/`.
 - **`access_all_data = true`** — full access to all data directories (all apps' data + VM data).
 
-The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the dashboard to allow starting a file-browser app for cleanup.
+The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the dashboard to allow starting a file-browser app for cleanup.
 
 See the [manifest spec](manifest_spec.md) for the full reference.
 

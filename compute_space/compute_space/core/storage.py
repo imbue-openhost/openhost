@@ -104,10 +104,10 @@ def storage_min_free_bytes(config: Config) -> int | None:
     return limit * _MIB
 
 
-def persistent_free_bytes(config: Config) -> int:
-    """Return free bytes on the persistent disk."""
+def disk_free_bytes(config: Config) -> int:
+    """Return free bytes on the data disk."""
     _ensure_storage_roots(config)
-    return shutil.disk_usage(config.persistent_data_dir).free
+    return shutil.disk_usage(config.data_root_dir).free
 
 
 def openhost_data_usage_bytes(config: Config) -> int:
@@ -139,7 +139,7 @@ def _check_min_free(config: Config) -> tuple[int, int] | None:
     min_free = storage_min_free_bytes(config)
     if min_free is None:
         return None
-    free = persistent_free_bytes(config)
+    free = disk_free_bytes(config)
     if free < min_free:
         return free, min_free
     return None
