@@ -2,10 +2,10 @@
 
 Reports disk usage totals and per-app breakdowns for the dashboard.
 When ``storage_min_free_mb`` is configured (> 0), the storage guard runs as a
-daemon thread that periodically checks persistent storage free space and stops
-apps when free space drops below the threshold.  It can be paused from the
-dashboard so a user can start one app (e.g. a file browser) to clean up data
-before re-enabling enforcement.
+daemon thread that periodically checks disk free space and stops apps when free
+space drops below the threshold.  It can be paused from the dashboard so a user
+can start one app (e.g. a file browser) to clean up data before re-enabling
+enforcement.
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ def _stop_app_process_safe(row: sqlite3.Row) -> None:
 
 
 def enforce_storage_guard(config: Config) -> None:
-    """Enforce minimum free space on persistent storage.
+    """Enforce minimum free disk space.
 
     If free space is below the threshold and the guard is not paused,
     stops all running apps.
