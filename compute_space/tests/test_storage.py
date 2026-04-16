@@ -28,16 +28,16 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
         f.write(b"x" * (512 * 1024))
 
     def fake_disk_usage(path):
-        if path == config.persistent_data_dir:
-            return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
-        return usage(total=5 * 1024**3, used=2 * 1024**3, free=3 * 1024**3)
+        return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
-    assert status["persistent"]["total_bytes"] == 10 * 1024**3
-    assert status["temporary"]["total_bytes"] == 5 * 1024**3
+    assert status["disk"]["total_bytes"] == 10 * 1024**3
+    assert status["disk"]["free_bytes"] == 6 * 1024**3
+    assert "persistent" not in status
+    assert "temporary" not in status
     assert status["openhost_data_used_bytes"] > 0
     assert status["app_data_used_bytes"] > 0
     assert status["storage_min_free_bytes"] is None
@@ -50,9 +50,7 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
     usage = namedtuple("usage", ["total", "used", "free"])
 
     def fake_disk_usage(path):
-        if path == config.persistent_data_dir:
-            return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
-        return usage(total=5 * 1024**3, used=2 * 1024**3, free=3 * 1024**3)
+        return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
 
@@ -77,7 +75,7 @@ def test_check_before_deploy_raises_when_low(tmp_path, monkeypatch):
         return usage(total=10 * 1024**3, used=10 * 1024**3 - 100 * 1024**2, free=100 * 1024**2)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
-    with pytest.raises(RuntimeError, match="too low"):
+    with pytest.raises(RuntimeError, match="Storage too low"):
         storage.check_before_deploy(config)
 
 

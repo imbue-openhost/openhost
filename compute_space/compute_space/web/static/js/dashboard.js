@@ -37,23 +37,20 @@ function updateStorageStatus() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var el = document.getElementById('storage-status');
-      var persist = data.persistent || {};
-      var temp = data.temporary || {};
+      var disk = data.disk || {};
       var hasMinFree = data.storage_min_free_bytes != null;
       var isLow = data.storage_low || false;
       var guardPaused = data.guard_paused || false;
 
-      var body = 'OpenHost data: ' + formatBytes(data.openhost_data_used_bytes || 0)
-        + ' &middot; App data: ' + formatBytes(data.app_data_used_bytes || 0)
-        + '<br>Persistent free: ' + formatBytes(persist.free_bytes || 0)
-        + ' / ' + formatBytes(persist.total_bytes || 0);
+      var body = 'Disk free: ' + formatBytes(disk.free_bytes || 0)
+        + ' / ' + formatBytes(disk.total_bytes || 0);
 
       if (hasMinFree) {
         body += ' (min ' + formatBytes(data.storage_min_free_bytes) + ' required)';
       }
 
-      body += '<br>Temporary free: ' + formatBytes(temp.free_bytes || 0)
-        + ' / ' + formatBytes(temp.total_bytes || 0);
+      body += '<br>OpenHost data: ' + formatBytes(data.openhost_data_used_bytes || 0)
+        + ' &middot; App data: ' + formatBytes(data.app_data_used_bytes || 0);
 
       // Per-app usage breakdown
       var perApp = data.per_app || {};
