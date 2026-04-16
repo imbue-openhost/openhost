@@ -61,7 +61,7 @@ Declares additional port mappings for the container. Each entry binds a containe
 
 ## Data Directory Structure
 
-Apps have two storage areas on separate disks. **By default, apps have no filesystem access.** Each must be explicitly requested:
+Apps have two storage areas on the same disk. **By default, apps have no filesystem access.** Each must be explicitly requested:
 
 - **Permanent data** (`/data/app_data/{app_name}/`) — backed up, user-visible. Enabled by `app_data = true` or by requesting `sqlite` entries.
 - **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed up, recreatable. Enabled by `app_temp_data = true`.
