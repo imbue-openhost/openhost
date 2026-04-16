@@ -27,13 +27,17 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
     with open(os.path.join(app_data, "blob.bin"), "wb") as f:
         f.write(b"x" * (512 * 1024))
 
+    calls = []
+
     def fake_disk_usage(path):
+        calls.append(path)
         return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
+    assert config.data_root_dir in calls, "storage_status should query data_root_dir"
     assert status["disk"]["total_bytes"] == 10 * 1024**3
     assert status["disk"]["free_bytes"] == 6 * 1024**3
     assert "persistent" not in status
@@ -49,13 +53,17 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
     config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     usage = namedtuple("usage", ["total", "used", "free"])
 
+    calls = []
+
     def fake_disk_usage(path):
+        calls.append(path)
         return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
+    assert config.data_root_dir in calls, "storage_status should query data_root_dir"
     assert status["storage_min_free_bytes"] == 1000 * 1024 * 1024
     assert status["storage_low"] is False  # 6 GiB free > 1000 MiB required
 
