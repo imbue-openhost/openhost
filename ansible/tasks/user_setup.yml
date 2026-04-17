@@ -1,0 +1,63 @@
+---
+# Create host user, copy SSH keys, harden sshd.
+# Runs as root (or initial_user).
+
+- name: Create host user
+  user:
+    name: host
+    shell: /bin/bash
+    groups: sudo
+    append: yes
+
+- name: Allow passwordless sudo
+  copy:
+    content: "host ALL=(ALL) NOPASSWD:ALL\n"
+    dest: /etc/sudoers.d/host
+    mode: "0440"
+
+- name: Ensure host .ssh directory
+  file:
+    path: /home/host/.ssh
+    state: directory
+    owner: host
+    group: host
+    mode: "0700"
+
+- name: Determine source authorized_keys path
+  set_fact:
+    _auth_keys_src: >-
+      {{ '/home/' ~ initial_user ~ '/.ssh/authorized_keys'
+         if (initial_user | default('root')) != 'root'
+         else '/root/.ssh/authorized_keys' }}
+
+- name: Copy authorized keys to host user
+  copy:
+    src: "{{ _auth_keys_src | trim }}"
+    dest: /home/host/.ssh/authorized_keys
+    remote_src: yes
+    owner: host
+    group: host
+    mode: "0600"
+
+- name: Harden SSH - disable password auth
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PasswordAuthentication"
+    line: "PasswordAuthentication no"
+
+- name: Harden SSH - disable keyboard interactive
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?KbdInteractiveAuthentication"
+    line: "KbdInteractiveAuthentication no"
+
+- name: Harden SSH - restrict root login
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PermitRootLogin"
+    line: "PermitRootLogin prohibit-password"
+
+- name: Restart SSH
+  service:
+    name: ssh
+    state: restarted

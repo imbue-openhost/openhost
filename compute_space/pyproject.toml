@@ -1,0 +1,41 @@
+# we need a pyproject.toml here because we want to be able to install this in the VM without the rest of the dependencies of the main openhost package
+[project]
+name = "openhost-router"
+version = "0.1.0"
+description = "OpenHost non-redundant router"
+requires-python = ">=3.12"
+dependencies = [
+    "PyJWT[crypto]",
+    "acme",
+    "argon2-cffi",
+    "attrs",
+    "bcrypt",
+    "cattrs",
+    "cryptography",
+    "GitPython",
+    "httpx",
+    "hypercorn",
+    "josepy",
+    "loguru",
+    "quart",
+    "tomli-w",
+    "websockets",
+    "typed-settings",
+    "jinja2",
+]
+
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.dependencies]
+python = "3.12.*"
+caddy = "*"
+# this doesn't work on arm mac :(
+coredns = "*"
+
+# these are minimum system requirements, not something that pixi manages.
+[tool.pixi.system-requirements]
+linux = "6.8"
+libc = "2.39"

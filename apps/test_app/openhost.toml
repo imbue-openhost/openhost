@@ -1,0 +1,16 @@
+[app]
+name = "test-app"
+version = "0.1.0"
+description = "Minimal app for testing"
+hidden = true
+
+[runtime.container]
+image = "Dockerfile"
+port = 5000
+
+[routing]
+health_check = "/health"
+
+[resources]
+memory_mb = 64
+cpu_millicores = 100

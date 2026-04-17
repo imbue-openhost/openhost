@@ -1,0 +1,10 @@
+---
+# Fast re-deploy: sync code and restart the service.
+# Usage: ansible-playbook ansible/deploy.yml -i <IP>, -e domain=<domain>
+
+- name: Deploy OpenHost
+  hosts: all
+  user: host
+  tasks:
+    - import_tasks: tasks/sync_code.yml
+    - import_tasks: tasks/restart_openhost_service.yml

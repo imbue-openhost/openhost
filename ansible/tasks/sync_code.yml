@@ -1,0 +1,21 @@
+---
+# Rsync repo code and ACME key to server.
+
+# TODO: maybe change this to a git clone, so the updater will work out of the box.
+# could also sync the .git dir, but i'd worry about leaking something by accident.
+- name: Sync repo code
+  synchronize:
+    src: "{{ playbook_dir }}/../"
+    dest: /home/host/openhost/
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.pixi"
+      - "--filter=':- .gitignore'"
+
+- name: Copy ACME account key
+  copy:
+    src: "{{ playbook_dir }}/secrets/certbot_private_key.json"
+    dest: /home/host/openhost/ansible/secrets/certbot_private_key.json
+    owner: host
+    group: host
+    mode: "0600"

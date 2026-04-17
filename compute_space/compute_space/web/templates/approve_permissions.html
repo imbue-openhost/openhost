@@ -1,0 +1,43 @@
+{% extends "layout.html" %}
+{% block title_suffix %} — Approve Permissions{% endblock %}
+{% block content %}
+<h2>{{ app_name }} is requesting permissions</h2>
+
+{% if not permissions %}
+<p>All requested permissions are already granted.</p>
+{% else %}
+<ul>
+  {% for key in permissions %}
+  <li><code>{{ key }}</code></li>
+  {% endfor %}
+</ul>
+
+<button class="btn btn-primary" onclick="grantAll(this)">Grant All</button>
+<script>
+var appName = {{ app_name | tojson }};
+var keys = {{ permissions | tojson }};
+var redirectUrl = {{ redirect_url | tojson }};
+function grantAll(btn) {
+  btn.disabled = true;
+  fetch('/api/permissions/grant', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({app: appName, permissions: keys})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function() {
+      if (window.opener) {
+        window.opener.postMessage({type: 'auth_complete'}, '*');
+        window.close();
+      } else if (redirectUrl) {
+        window.location.href = redirectUrl;
+      } else {
+        location.reload();
+      }
+    })
+    .catch(function() { alert('Request failed'); btn.disabled = false; });
+}
+</script>
+{% endif %}
+{% endblock %}

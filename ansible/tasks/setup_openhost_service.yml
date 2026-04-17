@@ -1,0 +1,44 @@
+---
+# Write config, install and start the openhost systemd service.
+
+- name: Create config directory
+  file:
+    path: /home/host/.openhost/local_compute_space
+    state: directory
+    owner: host
+    group: host
+
+- name: Write compute_space config
+  template:
+    src: templates/config.toml.j2
+    dest: /home/host/.openhost/local_compute_space/config.toml
+    owner: host
+    group: host
+  register: config_file
+
+- name: Install openhost systemd service
+  become: yes
+  template:
+    src: templates/openhost.service.j2
+    dest: /etc/systemd/system/openhost.service
+  register: service_file
+
+- name: Reload systemd
+  become: yes
+  systemd:
+    daemon_reload: yes
+  when: service_file.changed
+
+- name: Enable and start openhost service
+  become: yes
+  systemd:
+    name: openhost
+    enabled: yes
+    state: started
+
+- name: Restart openhost service if config changed
+  become: yes
+  systemd:
+    name: openhost
+    state: restarted
+  when: config_file.changed or service_file.changed

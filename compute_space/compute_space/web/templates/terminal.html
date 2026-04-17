@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - Terminal{% endblock %}
+{% block content %}
+<style>
+  body { max-width: none; }
+</style>
+<div id="terminal" style="width:100%; height:calc(100vh - 200px); background:#1e1e1e; border-radius:4px;"></div>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script id="page-config" type="application/json">
+{
+  "terminalWsUrl": "{{ 'wss' if request.headers.get('X-Forwarded-Proto', request.scheme) == 'https' else 'ws' }}://{{ request.headers.get('X-Forwarded-Host', request.host) }}/terminal/ws"
+}
+</script>
+<script src="{{ url_for('static', filename='js/terminal.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - Logs{% endblock %}
+{% block content %}
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body { max-width: none; padding: 1em; display: flex; flex-direction: column; box-sizing: border-box; }
+  body > * { flex-shrink: 0; }
+  #cs-logs { flex: 1; min-height: 0; max-height: none; white-space: pre-wrap; word-break: break-all; }
+</style>
+<h2>Compute Space Logs</h2>
+<pre class="log-output" id="cs-logs">Loading...</pre>
+
+<script>
+(function() {
+  var logEl = document.getElementById('cs-logs');
+
+  function isNearBottom(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  }
+
+  function fetchLogs() {
+    fetch('{{ url_for("api_system.compute_space_logs") }}', {credentials: 'same-origin'})
+      .then(function(r) { return r.text(); })
+      .then(function(text) {
+        var sel = window.getSelection();
+        if (sel && !sel.isCollapsed && logEl.contains(sel.anchorNode)) return;
+        var wasAtBottom = isNearBottom(logEl);
+        logEl.textContent = text || 'No log output available.';
+        if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
+      });
+  }
+
+  fetchLogs();
+  setInterval(fetchLogs, 3000);
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Demo</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        a.btn { display: inline-block; padding: 0.8rem 1.5rem; background: #2563eb; color: white;
+                text-decoration: none; border-radius: 6px; font-size: 1.1rem; margin: 0.5rem 0; }
+        a.btn:hover { background: #1d4ed8; }
+        .demos { margin: 2rem 0; }
+        .demo { margin: 1rem 0; }
+        .demo p { color: #666; margin: 0.25rem 0 0; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <h1>OAuth Demo</h1>
+    <p>Two approaches to OAuth in an OpenHost app.</p>
+
+    <div class="demos">
+        <div class="demo">
+            <a class="btn" href="/client/">Client-Side Demo (Popups)</a>
+            <p>Auth happens in a popup window. The main page stays open and reacts via postMessage.</p>
+        </div>
+        <div class="demo">
+            <a class="btn" href="/server/">Server-Side Demo (Redirects)</a>
+            <p>Auth uses full-page redirects. The server handles the entire flow, then sends you back.</p>
+        </div>
+    </div>
+</body>
+</html>

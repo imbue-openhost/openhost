@@ -1,0 +1,87 @@
+name: cd
+
+# Deploy to production when a version tag is pushed.
+# Tags should follow semver: v1.0.0, v1.2.3, etc.
+#
+# Required GitHub repository secrets:
+#   SSH_PRIVATE_KEY          - contents of ~/.ssh/science.ed25519 (SSH key for all hosts)
+#
+# Optional GitHub repository variables (Settings > Variables):
+#   DEPLOY_HOSTS             - comma-separated ansible host names to deploy to
+#                              (e.g. "openhost-prod1" or "openhost-prod1,openhost-dev2")
+#                              defaults to "openhost-prod1" if not set
+#
+# Note: This workflow runs deploy.yml with build_vm=true so tagged releases also
+# rebuild the VM image used for user VMs. If S3 cache vars/secrets are not set,
+# the image still builds locally on each target host.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Only one deploy at a time; cancel any in-progress deploy if a newer tag is pushed.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: true
+
+jobs:
+  # Run the same CI checks before deploying
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ansible
+        run: |
+          pipx install ansible-core
+          ansible-galaxy collection install ansible.posix
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/science.ed25519
+          chmod 600 ~/.ssh/science.ed25519
+          # Disable strict host key checking for deploy targets
+          printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Write ACME account key
+        env:
+          ACME_KEY: ${{ secrets.ACME_ACCOUNT_KEY }}
+        run: |
+          mkdir -p ansible/secrets
+          printf '%s\n' "$ACME_KEY" > ansible/secrets/certbot_private_key.json
+
+      - name: Deploy to hosts
+        working-directory: ansible
+        env:
+          DEPLOY_HOSTS: ${{ vars.DEPLOY_HOSTS }}
+          S3_CACHE_BUCKET: ${{ vars.S3_CACHE_BUCKET }}
+          S3_CACHE_PREFIX: ${{ vars.S3_CACHE_PREFIX }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          HOSTS="${DEPLOY_HOSTS:-openhost-prod1}"
+          ansible-playbook deploy.yml -l "$HOSTS" -e "build_vm=true" -e "seed_admin=false"
+
+      - name: Post deploy status
+        if: always()
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "::notice::Successfully deployed $TAG to production"
+          else
+            echo "::error::Failed to deploy $TAG to production"
+          fi

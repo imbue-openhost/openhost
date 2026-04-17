@@ -1,0 +1,1 @@
+FROM sigoden/dufs:latest

@@ -1,0 +1,97 @@
+name: vm-build-x86_64
+
+# Build an x86_64 VM image and upload to Cloudflare R2 for self-hosters.
+#
+# Forces a full rebuild (--rebuild-from base) so the published image always
+# has the latest OS packages and security patches. Intermediate layers are
+# uploaded to the S3 cache (if configured) to keep it fresh for Ansible deploys.
+#
+# Required secrets:
+#   R2_ACCESS_KEY_ID      - Cloudflare R2 API token key ID
+#   R2_SECRET_ACCESS_KEY  - Cloudflare R2 API token secret
+#
+# Required variables:
+#   R2_ENDPOINT_URL       - R2 S3-compatible endpoint (https://<acct>.r2.cloudflarestorage.com)
+#   R2_BUCKET             - R2 bucket name
+#
+# Optional secrets (for S3 layer cache — writes fresh layers back for Ansible deploys):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#
+# Optional variables:
+#   S3_CACHE_BUCKET, S3_CACHE_PREFIX, AWS_DEFAULT_REGION
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    # Ubuntu 22.04 for libguestfs compat (24.04 requires passt which
+    # doesn't work on GH Actions — see vm-tests.yml).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils cloud-image-utils \
+            debootstrap ovmf libguestfs-tools
+          sudo chmod 0644 /boot/vmlinuz-*
+          sudo chmod 666 /dev/kvm
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Make uv available to sudo
+        run: sudo ln -sf "$(which uv)" /usr/local/bin/uv
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Build x86_64 VM image
+        env:
+          S3_CACHE_BUCKET: ${{ vars.S3_CACHE_BUCKET }}
+          S3_CACHE_PREFIX: ${{ vars.S3_CACHE_PREFIX }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        working-directory: multiuser_provider/vm
+        run: |
+          mkdir -p images
+          sudo -E env "PATH=$PATH" \
+            uv run python build.py --rebuild-from base -O images/outer_vm.qcow2
+
+      - name: Verify image
+        run: |
+          ls -lh multiuser_provider/vm/images/outer_vm.qcow2
+          qemu-img info multiuser_provider/vm/images/outer_vm.qcow2
+
+      - name: Upload image to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          if [ -z "${R2_ENDPOINT_URL:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
+            echo "::error::R2_ENDPOINT_URL and R2_BUCKET variables must be set"
+            exit 1
+          fi
+          pip install -q awscli
+          IMAGE=multiuser_provider/vm/images/outer_vm.qcow2
+          DATE=$(date +%Y_%m_%d)
+          # Dated snapshot for history
+          aws s3 cp "$IMAGE" \
+            "s3://${R2_BUCKET}/images/outer_vm_${DATE}.qcow2" \
+            --endpoint-url "${R2_ENDPOINT_URL}"
+          echo "Uploaded snapshot: images/outer_vm_${DATE}.qcow2"
+          # Stable latest URL
+          aws s3 cp "$IMAGE" \
+            "s3://${R2_BUCKET}/outer_vm.qcow2" \
+            --endpoint-url "${R2_ENDPOINT_URL}"
+          echo "Updated latest: outer_vm.qcow2"

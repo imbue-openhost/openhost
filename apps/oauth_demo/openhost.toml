@@ -1,0 +1,12 @@
+[app]
+name = "oauth-demo"
+version = "0.1.0"
+description = "Demo app exercising the secrets app OAuth flow"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[resources]
+memory_mb = 256
+cpu_millicores = 500

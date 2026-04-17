@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Demo - Client-Side</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        .error { color: #dc2626; }
+        a { color: #2563eb; }
+        button { padding: 0.6rem 1.2rem; background: #2563eb; color: white;
+                 border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; margin: 0.25rem 0; }
+        button.connect { background: #16a34a; }
+        button.permission { background: #d97706; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .provider { margin-top: 1.5rem; }
+        .account-item { padding: 0.3rem 0; }
+        .email { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+        .repo { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+        .repo .desc { color: #666; font-size: 0.85rem; }
+        .info { color: #16a34a; font-size: 0.9rem; margin: 0.5rem 0; }
+        #results { margin-top: 1.5rem; }
+        .loading { color: #999; }
+    </style>
+</head>
+<body>
+    <h1>Client-Side OAuth Demo</h1>
+    <p>Everything happens in the browser. Auth opens a popup, API calls go direct.</p>
+
+    <div id="error"></div>
+    <div id="providers"></div>
+    <div id="results"></div>
+
+    <p style="margin-top:2rem"><a href="/">&larr; Back to demos</a></p>
+
+    <script src="/static/oauth.js"></script>
+    <script>
+    var GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+    var GITHUB_SCOPE = "repo";
+
+    var hostParts = window.location.hostname.split(".");
+    var oauth = new OAuthClient({
+        scopes: { google: [GMAIL_SCOPE], github: [GITHUB_SCOPE] },
+        appName: hostParts[0],
+        zoneDomain: hostParts.slice(1).join("."),
+    });
+
+    var PROVIDERS = [
+        { name: "google", label: "Google", actionLabel: "Emails" },
+        { name: "github", label: "GitHub", actionLabel: "Repos" },
+    ];
+
+    // Per-provider state: "needs_permission" (with approve_url), "ready", or "connected"
+    var providerState = {};
+
+    async function init() {
+        await refreshProviders();
+    }
+
+    async function refreshProviders() {
+        var container = document.getElementById("providers");
+        container.innerHTML = '<p class="loading">Loading accounts...</p>';
+        clearResults();
+        clearError();
+
+        var html = "";
+        for (var i = 0; i < PROVIDERS.length; i++) {
+            var p = PROVIDERS[i];
+            var accounts = [];
+            var needsPermission = false;
+            var approveUrl = null;
+
+            try {
+                accounts = await oauth.getAccounts(p.name);
+            } catch (e) {
+                if (e instanceof OAuthPermissionError) {
+                    needsPermission = true;
+                    approveUrl = e.approve_url;
+                }
+            }
+
+            html += '<div class="provider"><h2>' + esc(p.label) + '</h2>';
+
+            if (needsPermission) {
+                providerState[p.name] = { state: "needs_permission", approve_url: approveUrl };
+                html += '<p style="color:#888">This app needs permission to access ' + esc(p.label) + ' OAuth.</p>';
+                html += '<button class="permission" onclick="grantPermission(\'' + esc(p.name) + '\')">Allow ' + esc(p.label) + ' access</button>';
+            } else {
+                var justGranted = providerState[p.name] && providerState[p.name].state === "just_granted";
+                providerState[p.name] = { state: accounts.length > 0 ? "connected" : "ready" };
+
+                if (accounts.length > 0) {
+                    for (var j = 0; j < accounts.length; j++) {
+                        var acct = accounts[j];
+                        html += '<div class="account-item">' +
+                            '<button onclick="loadAction(\'' + esc(p.name) + '\', \'' + esc(acct) + '\')">' +
+                            esc(p.actionLabel) + ' (' + esc(acct) + ')</button></div>';
+                    }
+                } else {
+                    if (justGranted) {
+                        html += '<p class="info">Permission granted! Ready to connect.</p>';
+                    } else {
+                        html += '<p style="color:#999">No ' + esc(p.label) + ' accounts connected.</p>';
+                    }
+                }
+                html += '<button class="connect" onclick="connectAccount(\'' + esc(p.name) + '\')">+ Connect ' + esc(p.label) + ' Account</button>';
+            }
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    }
+
+    async function grantPermission(provider) {
+        var state = providerState[provider];
+        if (!state || !state.approve_url) return;
+        try {
+            await oauth.openPopup(state.approve_url);
+            providerState[provider] = { state: "just_granted" };
+            await refreshProviders();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    async function connectAccount(provider) {
+        try {
+            await oauth.connect(provider);
+            await refreshProviders();
+        } catch (e) {
+            if (e instanceof OAuthPermissionError) {
+                // Permissions were revoked — refresh to show the grant button
+                providerState[provider] = { state: "needs_permission", approve_url: e.approve_url };
+                await refreshProviders();
+            } else {
+                showError(e.message);
+            }
+        }
+    }
+
+    // --- Actions ---
+
+    async function loadAction(provider, account) {
+        if (provider === "google") {
+            await loadUnread(account);
+        } else if (provider === "github") {
+            await loadRepos(account);
+        }
+    }
+
+    async function loadUnread(account) {
+        var results = document.getElementById("results");
+        results.innerHTML = '<p class="loading">Loading emails...</p>';
+        clearError();
+
+        try {
+            var token = await oauth.getToken("google", account);
+
+            var resp = await fetch(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=20",
+                { headers: { Authorization: "Bearer " + token } }
+            );
+            if (!resp.ok) throw new Error("Gmail API error: " + resp.status);
+            var data = await resp.json();
+            var messages = data.messages || [];
+
+            if (messages.length === 0) {
+                results.innerHTML = '<h2>Unread Emails (' + esc(account) + ')</h2>' +
+                    '<p style="color:#999">No unread emails!</p>' +
+                    '<p><button onclick="clearResults()">Back</button></p>';
+                return;
+            }
+
+            var subjects = [];
+            for (var i = 0; i < messages.length; i++) {
+                var detail = await fetch(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages/" + messages[i].id +
+                    "?format=metadata&metadataHeaders=Subject",
+                    { headers: { Authorization: "Bearer " + token } }
+                );
+                if (detail.ok) {
+                    var d = await detail.json();
+                    var hdrs = (d.payload && d.payload.headers) || [];
+                    var subj = "(no subject)";
+                    for (var h = 0; h < hdrs.length; h++) {
+                        if (hdrs[h].name === "Subject") { subj = hdrs[h].value; break; }
+                    }
+                    subjects.push(subj);
+                }
+            }
+
+            var html = '<h2>Unread Emails (' + esc(account) + ')</h2>' +
+                '<p>' + subjects.length + ' unread email(s)</p>';
+            for (var i = 0; i < subjects.length; i++) {
+                html += '<div class="email">' + esc(subjects[i]) + '</div>';
+            }
+            html += '<p><button onclick="clearResults()">Back</button></p>';
+            results.innerHTML = html;
+        } catch (e) {
+            results.innerHTML = '<h2>Unread Emails (' + esc(account) + ')</h2>' +
+                '<p class="error">' + esc(e.message) + '</p>' +
+                '<p><button onclick="clearResults()">Back</button></p>';
+        }
+    }
+
+    async function loadRepos(account) {
+        var results = document.getElementById("results");
+        results.innerHTML = '<p class="loading">Loading repos...</p>';
+        clearError();
+
+        try {
+            var token = await oauth.getToken("github", account);
+
+            var resp = await fetch(
+                "https://api.github.com/user/repos?sort=updated&per_page=30",
+                { headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" } }
+            );
+            if (!resp.ok) throw new Error("GitHub API error: " + resp.status);
+            var repos = await resp.json();
+
+            var html = '<h2>GitHub Repos</h2>';
+            if (repos.length === 0) {
+                html += '<p style="color:#999">No repos found.</p>';
+            } else {
+                html += '<p>' + repos.length + ' repo(s)</p>';
+                for (var i = 0; i < repos.length; i++) {
+                    var r = repos[i];
+                    html += '<div class="repo"><a href="' + esc(r.html_url) + '" target="_blank">' +
+                        esc(r.full_name) + '</a>';
+                    if (r.description) {
+                        html += '<div class="desc">' + esc(r.description) + '</div>';
+                    }
+                    html += '</div>';
+                }
+            }
+            html += '<p><button onclick="clearResults()">Back</button></p>';
+            results.innerHTML = html;
+        } catch (e) {
+            results.innerHTML = '<h2>GitHub Repos</h2>' +
+                '<p class="error">' + esc(e.message) + '</p>' +
+                '<p><button onclick="clearResults()">Back</button></p>';
+        }
+    }
+
+    // --- Helpers ---
+
+    function clearResults() {
+        document.getElementById("results").innerHTML = "";
+    }
+
+    function showError(msg) {
+        document.getElementById("error").innerHTML = '<p class="error">' + esc(msg) + '</p>';
+    }
+
+    function clearError() {
+        document.getElementById("error").innerHTML = "";
+    }
+
+    function esc(s) {
+        var d = document.createElement("div");
+        d.appendChild(document.createTextNode(s));
+        return d.innerHTML;
+    }
+
+    init();
+    </script>
+</body>
+</html>

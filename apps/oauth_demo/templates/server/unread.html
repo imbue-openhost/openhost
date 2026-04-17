@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Demo - Unread</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        .email { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+        .error { color: #dc2626; }
+        a { color: #2563eb; }
+    </style>
+</head>
+<body>
+    <h1>Unread Emails{% if account %} ({{ account }}){% endif %}</h1>
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% elif subjects %}
+        <p>{{ subjects | length }} unread email(s)</p>
+        {% for s in subjects %}
+            <div class="email">{{ s }}</div>
+        {% endfor %}
+    {% else %}
+        <p style="color:#999">No unread emails!</p>
+    {% endif %}
+    <p><a href="./">&larr; Back</a></p>
+</body>
+</html>

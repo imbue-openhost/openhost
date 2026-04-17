@@ -1,0 +1,11 @@
+[openhost]
+zone_domain = "{{ domain }}"
+host = "0.0.0.0"
+tls_enabled = true
+acquire_tls_cert_if_missing = true
+acme_account_key_path = "/home/host/openhost/ansible/secrets/certbot_private_key.json"
+coredns_enabled = true
+public_ip = "{{ public_ip | default(inventory_hostname) }}"
+start_caddy = true
+data_root_dir = "/home/host/.openhost/local_compute_space"
+apps_dir_override = "/home/host/openhost/apps"

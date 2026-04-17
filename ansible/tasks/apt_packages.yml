@@ -1,0 +1,26 @@
+---
+# Install base apt packages. Runs with become: yes.
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+# dist-upgrade takes 7-10 min on a fresh Ubuntu image and is the slowest
+# step by far.  For ephemeral CI instances that are torn down after a single
+# test run, it's unnecessary.  Pass -e skip_apt_upgrade=true to skip it.
+- name: Upgrade all packages
+  apt:
+    upgrade: dist
+  when: not (skip_apt_upgrade | default(false) | bool)
+
+- name: Install base packages
+  apt:
+    name:
+      - git
+      - curl
+      - wget
+      - openssh-server
+      - ca-certificates
+      - gnupg
+    state: present

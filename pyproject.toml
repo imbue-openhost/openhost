@@ -1,0 +1,121 @@
+[project]
+name = "openhost"
+version = "0.1.0"
+description = "OpenHost – run open-source apps on your own compute"
+requires-python = "==3.12.*"
+dependencies = [
+    "PyJWT[crypto]",
+    "acme>=5.4.0",
+    "argon2-cffi",
+    "attrs",
+    "bcrypt>=4.1",
+    "boto3",
+    "cattrs",
+    "cryptography",
+    "cappa",
+    "diskimage-builder",
+    "GitPython",
+    "httpx",
+    "hypercorn",
+    "josepy",
+    "loguru",
+    "quart",
+    "tomli-w",
+    "typed-settings>=25.3.0",
+    "websockets",
+]
+
+[project.scripts]
+openhost = "self_host_cli.main:main"
+oh = "compute_space_cli.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "requests>=2.31",
+    "pytest-timeout>=2.2",
+    "playwright",
+    "pytest-asyncio",
+    "ruff==0.15.5",
+    "mypy",
+    "types-requests",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["self_host_cli", "compute_space/compute_space", "compute_space_cli/compute_space_cli"]
+
+[tool.uv]
+# dependency cooldown, to help avoid pulling uber fresh packages that may have issues/exploits/etc.
+exclude-newer = "1 week"
+
+[tool.pytest.ini_options]
+testpaths = [
+    "compute_space/tests",
+    "compute_space_cli/tests",
+    "self_host_cli/tests",
+]
+addopts = "-p no:randomly -v --import-mode=importlib"
+markers = [
+    "requires_docker: needs --run-docker flag and Docker daemon running",
+    "requires_tls: needs --run-tls flag, pebble, and coredns",
+]
+
+[tool.ruff]
+line-length = 119
+exclude = [
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade (modern Python syntax)
+    "I",      # isort
+    "PLC0415", # import-outside-top-level
+    # "PTH",  # use pathlib instead of os.path — enable after migrating codebase (~405 violations)
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint.isort]
+force-single-line = true
+case-sensitive = true
+known-first-party = [
+    "compute_space",
+    "compute_space_cli",
+    "self_host_cli",
+    "testing_helpers",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["compute_space/compute_space", "compute_space_cli"]
+strict = true
+ignore_missing_imports = true
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.dependencies]
+python = "3.12.*"
+caddy = "*"
+# this doesn't work on arm mac :(
+coredns = "*"
+
+# these are minimum system requirements, not something that pixi manages.
+[tool.pixi.system-requirements]
+linux = "6.8"
+libc = "2.39"
+
+[tool.pixi.pypi-dependencies]
+openhost = { path = ".", editable = true }
+

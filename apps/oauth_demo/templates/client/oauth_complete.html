@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><title>Authorization Complete</title></head>
+<body>
+<p>Authorization complete. This window will close automatically.</p>
+<script>
+if (window.opener) {
+    window.opener.postMessage({ type: 'auth_complete' }, '*');
+    window.close();
+} else {
+    window.location.href = '/client/';
+}
+</script>
+</body>
+</html>

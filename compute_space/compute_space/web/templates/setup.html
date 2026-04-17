@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OpenHost - Setup</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 400px; margin: 4em auto; padding: 0 1em; }
+    input { display: block; margin: 0.5em 0; padding: 0.4em; width: 100%; box-sizing: border-box; }
+    .error { color: #c00; }
+  </style>
+</head>
+<body>
+  <h2>OpenHost Setup</h2>
+  <p>Set a password for this OpenHost instance.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" id="setup-form">
+    {% if claim %}<input type="hidden" name="claim" value="{{ claim }}">{% endif %}
+    <label>Password</label>
+    <input type="password" name="password" required>
+    <label>Confirm Password</label>
+    <input type="password" name="confirm_password" required>
+    <input type="submit" id="submit-btn" value="Set Password">
+  </form>
+</body>
+</html>

@@ -1,0 +1,85 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - Dashboard{% endblock %}
+{% block content %}
+<h2>Deployed Apps</h2>
+
+<div id="security-status" style="margin-bottom: 1em;"></div>
+<div id="storage-status" style="margin-bottom: 1em;"></div>
+
+<div style="margin-bottom: 1em; display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
+  <button class="btn" onclick="restartRouter()">Restart Router</button>
+  <span id="restart-msg" style="color: #d97706;"></span>
+  <span style="color: #ccc;">|</span>
+  <button class="btn btn-danger" id="drop-docker-cache-btn" onclick="dropDockerCache()">Drop Docker Build Cache</button>
+  <span id="drop-docker-cache-msg" style="color: #d97706;"></span>
+  <span style="color: #ccc;">|</span>
+  <span id="ssh-toggle">
+    <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
+    <span id="ssh-status" style="font-size: 0.9em; color: #6b7280;"></span>
+  </span>
+</div>
+
+{% if apps %}
+<table>
+  <tr>
+    <th>Name</th>
+    <th>Version</th>
+    <th>Port</th>
+    <th>Status</th>
+    <th>Actions</th>
+  </tr>
+  {% for app in apps %}
+  <tr data-app="{{ app.name }}">
+    <td><a href="{{ app_url(app.name) }}">{{ app.name }}{% if app.manifest_name and app.manifest_name != app.name %} <span style="color:#666;font-size:0.85em;">({{ app.manifest_name }})</span>{% endif %}</a></td>
+    <td>{{ app.version }}</td>
+    <td>{{ app.local_port }}</td>
+    <td class="app-status status-{{ app.status }}">{{ app.status }}</td>
+    <td class="app-actions"></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No apps deployed yet. <a href="{{ url_for('apps.add_app') }}">Deploy one now.</a></p>
+{% endif %}
+
+<h2 style="margin-top: 2em;">API Tokens</h2>
+<p style="color: #666; font-size: 0.9em;">Bearer tokens for programmatic access (e.g. AI agents). Each token grants owner-level access until it expires.</p>
+
+<div style="margin-bottom: 1em; display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;">
+  <label>name: <input type="text" id="token-name" style="width: 200px;"></label>
+  <label>Expires in
+    <input type="number" id="token-expiry" value="8" min="0.1" step="any" style="width: 70px;" disabled> hours
+  </label>
+  <label><input type="checkbox" id="token-no-expiry" checked onchange="document.getElementById('token-expiry').disabled = this.checked;"> Never expires</label>
+  <button class="btn btn-primary" onclick="createToken()">Create Token</button>
+</div>
+
+<div id="token-created" style="display:none; background: #d4edda; border: 1px solid #28a745; padding: 0.8em 1em; border-radius: 4px; margin-bottom: 1em;">
+  <strong>Token created.</strong> Copy it now — it won't be shown again.<br>
+  <code id="token-value" style="display: inline-block; margin-top: 0.4em; padding: 0.3em 0.5em; background: #f5f5f5; border: 1px solid #ddd; user-select: all; word-break: break-all;"></code>
+  <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('token-value').textContent)" style="margin-left: 0.5em;">Copy</button>
+</div>
+
+<table id="tokens-table" style="display:none;">
+  <thead><tr><th>Name</th><th>Created</th><th>Expires</th><th>Actions</th></tr></thead>
+  <tbody id="tokens-body"></tbody>
+</table>
+<p id="no-tokens" style="color: #888;">No API tokens.</p>
+
+<script id="page-config" type="application/json">
+{
+  "securityAuditUrl": "{{ url_for('api_system.security_audit') }}",
+  "storageStatusUrl": "{{ url_for('api_system.api_storage_status') }}",
+  "restartRouterUrl": "{{ url_for('api_system.restart_router') }}",
+  "dropDockerCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
+  "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
+  "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
+"apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},
+  "tokensListUrl": "{{ url_for('api_system.api_tokens_list') }}",
+  "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}",
+  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}"
+}
+</script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script>document.getElementById('token-name').value = 'token-' + Math.random().toString(36).slice(2, 8);</script>
+{% endblock %}

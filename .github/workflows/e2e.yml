@@ -1,0 +1,136 @@
+name: e2e
+
+# End-to-end tests for all cloud providers.
+# Spins up an instance, deploys OpenHost via ansible, runs tests, tears down.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    concurrency:
+      group: e2e-${{ github.ref }}-${{ matrix.provider }}
+      cancel-in-progress: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [gcp, ec2]
+        # hetzner disabled — consistent failures on Hetzner's side (not our code)
+
+    env:
+      PROVIDER: ${{ matrix.provider }}
+      E2E_SSH_KEY: /tmp/e2e_key
+      E2E_ENV_FILE: /tmp/e2e_env.sh
+      E2E_HOSTED_ZONE_ID: ${{ secrets.EC2_HOSTED_ZONE_ID }}
+      E2E_BASE_DOMAIN: ${{ secrets.EC2_E2E_BASE_DOMAIN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      SKIP_APT_UPGRADE: "1"
+      # GCP-specific
+      GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
+      GCP_MACHINE_TYPE: ${{ vars.GCP_MACHINE_TYPE || 'e2-standard-4' }}
+      GCP_NETWORK_TAG: ${{ secrets.GCP_NETWORK_TAG }}
+      # EC2-specific
+      EC2_SECURITY_GROUP: ${{ secrets.EC2_SECURITY_GROUP }}
+      EC2_KEY_NAME: ${{ secrets.EC2_KEY_NAME }}
+      EC2_REGION: us-east-1
+      EC2_INSTANCE_TYPE: t3.large
+      # Hetzner-specific
+      HETZNER_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
+      HETZNER_LOCATION: ${{ vars.HETZNER_LOCATION || 'ash' }}
+      HETZNER_SERVER_TYPE: ${{ vars.HETZNER_SERVER_TYPE || 'cpx32' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        if: matrix.provider == 'gcp'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        if: matrix.provider == 'gcp'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install ansible
+        run: |
+          pipx install ansible-core
+          ansible-galaxy collection install ansible.posix
+
+      - name: Configure SSH key
+        run: |
+          if [ "$PROVIDER" = "gcp" ]; then
+            echo "${{ secrets.GCP_SSH_PRIVATE_KEY }}" > "$E2E_SSH_KEY"
+          elif [ "$PROVIDER" = "ec2" ]; then
+            echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > "$E2E_SSH_KEY"
+          elif [ "$PROVIDER" = "hetzner" ]; then
+            # Hetzner accepts any SSH key via API — generate an ephemeral keypair
+            ssh-keygen -t ed25519 -f "$E2E_SSH_KEY" -N "" -q
+          fi
+          chmod 600 "$E2E_SSH_KEY"
+          # Generate .pub from private key (no-op for hetzner since ssh-keygen already created it)
+          [ -f "${E2E_SSH_KEY}.pub" ] || ssh-keygen -y -f "$E2E_SSH_KEY" > "${E2E_SSH_KEY}.pub"
+          mkdir -p ~/.ssh
+          printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Write ACME account key
+        env:
+          ACME_KEY: ${{ secrets.ACME_ACCOUNT_KEY }}
+        run: |
+          mkdir -p ansible/secrets
+          printf '%s\n' "$ACME_KEY" > ansible/secrets/certbot_private_key.json
+
+      - name: Set provider-specific SSH user
+        run: |
+          if [ "$PROVIDER" = "hetzner" ]; then
+            echo "E2E_SSH_USER=root" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup instance + deploy OpenHost via ansible
+        run: |
+          chmod +x tests/e2e-setup.sh
+          tests/e2e-setup.sh
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install test dependencies
+        run: |
+          uv sync --group dev
+          uv run playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        run: |
+          source "$E2E_ENV_FILE"
+          uv run pytest tests/test_e2e.py -v -s --timeout=600
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          source "$E2E_ENV_FILE"
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i $OPENHOST_SSH_KEY"
+          echo "=== OpenHost service log ==="
+          ssh $SSH_OPTS "host@${OPENHOST_PUBLIC_IP}" \
+            "sudo journalctl -u openhost --no-pager -n 1000 2>/dev/null" || true
+          echo "=== OpenHost service status ==="
+          ssh $SSH_OPTS "host@${OPENHOST_PUBLIC_IP}" \
+            "sudo systemctl status openhost 2>/dev/null" || true
+
+      - name: Teardown instance + DNS
+        if: always()
+        run: |
+          chmod +x tests/e2e-teardown.sh
+          tests/e2e-teardown.sh

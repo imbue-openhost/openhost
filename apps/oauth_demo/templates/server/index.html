@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Demo - Server-Side</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        .error { color: #dc2626; }
+        a { color: #2563eb; }
+        a.btn { display: inline-block; padding: 0.6rem 1.2rem; background: #2563eb; color: white;
+                text-decoration: none; border-radius: 6px; font-size: 1rem; margin: 0.25rem 0; }
+        .accounts { margin: 1rem 0; }
+        .account-item { padding: 0.3rem 0; }
+        .provider { margin-top: 1.5rem; }
+        .provider:first-child { margin-top: 0; }
+    </style>
+</head>
+<body>
+    <h1>Server-Side OAuth Demo</h1>
+    <p>Auth uses full-page redirects. No JavaScript needed.</p>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    {% for p in providers %}
+    <div class="provider">
+        <h2>{{ p.label }}</h2>
+        {% if p.accounts %}
+            <div class="accounts">
+            {% for acct in p.accounts %}
+                <div class="account-item">
+                    <a class="btn" href="{{ p.action_path }}?account={{ acct }}">{{ p.action_label }} ({{ acct }})</a>
+                </div>
+            {% endfor %}
+            </div>
+        {% else %}
+            <p style="color:#999">No {{ p.label }} accounts connected.</p>
+        {% endif %}
+        <a class="btn" style="background:#16a34a" href="connect?provider={{ p.name }}">+ Connect {{ p.label }} Account</a>
+    </div>
+    {% endfor %}
+
+    <p style="margin-top:2rem"><a href="/">&larr; Back to demos</a></p>
+</body>
+</html>

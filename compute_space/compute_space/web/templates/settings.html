@@ -1,0 +1,202 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - Settings{% endblock %}
+{% block content %}
+<h2>Settings</h2>
+
+<p id="error" class="error" style="display:none;"></p>
+
+<h3>Git Remote</h3>
+<div id="remote-status">
+  <div style="display:flex; gap:0.5em; align-items:center;">
+    <input type="text" id="remote-url" placeholder="Loading…" disabled style="flex:1;">
+    <button onclick="setRemote()" class="btn btn-primary" id="set-remote-btn" disabled>Set &amp; restart</button>
+  </div>
+  <p id="remote-msg" style="margin-top:0.3em; display:none;"></p>
+</div>
+
+<h3>Updates</h3>
+<div id="update-status">
+  <p>Checking for updates&hellip;</p>
+</div>
+
+<h3>Restart</h3>
+<button onclick="restartComputeSpace()" class="btn btn-danger">Restart compute space</button>
+
+<div id="restart-overlay" style="display:none;">
+  <p id="restart-status"><strong>Waiting for shutdown&hellip;</strong></p>
+</div>
+
+<script>
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg;
+  el.style.display = '';
+}
+function clearError() { document.getElementById('error').style.display = 'none'; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+async function checkForUpdates() {
+  clearError();
+  const el = document.getElementById('update-status');
+  el.innerHTML = '<p>Checking for updates&hellip;</p>';
+
+  try {
+    const resp = await fetch('/api/settings/check_for_updates', {method: 'POST'});
+    const data = await resp.json();
+    if (!data.ok) {
+      el.innerHTML = '<p class="error">Repo is in an invalid state for updating (no .git perhaps?): ' + esc(data.error) + '</p>'
+        + '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Retry</button>';
+      return;
+    }
+
+    const checkAgainBtn = '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Check again</button>';
+
+    if (data.state === 'UP_TO_DATE') {
+      el.innerHTML = '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
+    } else if (data.state === 'NO_REMOTE') {
+      el.innerHTML = '<p>No git remote configured. Set a remote URL above to enable updates.</p>' + checkAgainBtn;
+    } else if (data.state === 'BEHIND_REMOTE') {
+      el.innerHTML = '<p>Updates available. Reset local repo to match remote?</p>'
+        + '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> '
+        + checkAgainBtn;
+    } else if (data.state === 'DIRTY') {
+      el.innerHTML = '<p>Local repo has uncommitted changes. Reset to remote head?</p>'
+        + '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> '
+        + checkAgainBtn;
+    } else if (data.state === 'AHEAD_OF_REMOTE') {
+      el.innerHTML = '<p>Local repo is ahead of remote (unpushed commits). Reset to remote head?</p>'
+        + '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> '
+        + checkAgainBtn;
+    }
+  } catch (e) {
+    showError('Failed to check for updates: ' + e.message);
+    el.innerHTML = '<button onclick="checkForUpdates()" class="btn">Retry</button>';
+  }
+}
+
+async function applyUpdate() {
+  clearError();
+  const el = document.getElementById('update-status');
+  el.innerHTML = '<p>Updating&hellip;</p>';
+
+  try {
+    const resp = await fetch('/api/settings/update_repo_state', {method: 'POST'});
+    const data = await resp.json();
+    if (!data.ok) {
+      el.innerHTML = '<p class="error">' + esc(data.error) + '</p>'
+        + '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Retry</button>';
+      return;
+    }
+  } catch (e) {
+    el.innerHTML = '<p class="error">Update failed: ' + esc(e.message) + '</p>'
+      + '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Retry</button>';
+    return;
+  }
+
+  el.innerHTML = '<p>Update applied. Restarting&hellip;</p>';
+  try {
+    await fetch('/api/settings/restart_compute_space', {method: 'POST'});
+  } catch (e) {
+    // Expected — server may die before responding
+  }
+  showRestartOverlay();
+}
+
+function showRestartOverlay() {
+  document.getElementById('restart-overlay').style.display = '';
+  document.getElementById('update-status').style.display = 'none';
+  document.getElementById('restart-status').innerHTML = '<strong>Waiting for shutdown&hellip;</strong>';
+  pollShutdown();
+}
+
+function pollShutdown() {
+  setTimeout(async () => {
+    try {
+      const resp = await fetch('/health', {signal: AbortSignal.timeout(3000)});
+      if (resp.ok) { pollShutdown(); return; }
+    } catch (e) { /* server is down — move to next phase */ }
+    document.getElementById('restart-status').innerHTML = '<strong>Service stopped, waiting for restart&hellip;</strong>';
+    pollRestart();
+  }, 1000);
+}
+
+function pollRestart() {
+  setTimeout(async () => {
+    try {
+      const resp = await fetch('/health', {signal: AbortSignal.timeout(3000)});
+      if (resp.ok) { window.location.reload(); return; }
+    } catch (e) { /* still down */ }
+    pollRestart();
+  }, 2500);
+}
+
+let savedRemote = '';
+
+async function loadRemote() {
+  const input = document.getElementById('remote-url');
+  const btn = document.getElementById('set-remote-btn');
+  try {
+    const resp = await fetch('/api/settings/get_remote');
+    const data = await resp.json();
+    savedRemote = data.url || '';
+    if (savedRemote && data.ref) {
+      savedRemote = savedRemote + '@' + data.ref;
+    }
+    input.value = savedRemote;
+    input.placeholder = 'https://github.com/user/repo@branch';
+    input.disabled = false;
+    btn.disabled = true;
+    input.addEventListener('input', () => {
+      btn.disabled = input.value.trim() === savedRemote;
+    });
+  } catch (e) {
+    input.placeholder = 'Failed to load remote';
+  }
+}
+
+async function setRemote() {
+  clearError();
+  const input = document.getElementById('remote-url');
+  const btn = document.getElementById('set-remote-btn');
+  const msg = document.getElementById('remote-msg');
+  const url = input.value.trim();
+  if (!url) return;
+
+  btn.disabled = true;
+  msg.style.display = 'none';
+
+  try {
+    const resp = await fetch('/api/settings/set_remote', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    try {
+      await fetch('/api/settings/restart_compute_space', {method: 'POST'});
+    } catch (e) {
+      // Expected — server may die before responding
+    }
+    showRestartOverlay();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = 'error';
+    msg.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+async function restartComputeSpace() {
+  try {
+    await fetch('/api/settings/restart_compute_space', {method: 'POST'});
+  } catch (e) {
+    // Expected — server may die before responding
+  }
+  showRestartOverlay();
+}
+
+loadRemote();
+checkForUpdates();
+</script>
+{% endblock %}

@@ -1,0 +1,54 @@
+---
+# Install pixi, caddy, and coredns. Set capabilities for privileged port binding.
+
+- name: Install pixi
+  shell: curl -fsSL https://pixi.sh/install.sh | bash
+  args:
+    creates: /home/host/.pixi/bin/pixi
+
+- name: Install pixi dependencies (caddy, coredns)
+  shell: /home/host/.pixi/bin/pixi install
+  args:
+    chdir: /home/host/openhost
+
+- name: Find caddy binary path
+  shell: /home/host/.pixi/bin/pixi run which caddy
+  args:
+    chdir: /home/host/openhost
+  register: caddy_path
+  changed_when: false
+
+- name: Find coredns binary path
+  shell: /home/host/.pixi/bin/pixi run which coredns
+  args:
+    chdir: /home/host/openhost
+  register: coredns_path
+  changed_when: false
+
+- name: Set cap_net_bind_service on caddy
+  become: yes
+  shell: setcap 'cap_net_bind_service=+ep' {{ caddy_path.stdout }}
+
+- name: Set cap_net_bind_service on coredns
+  become: yes
+  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_path.stdout }}
+
+- name: Create resolved.conf.d directory
+  become: yes
+  file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+
+- name: Disable systemd-resolved stub listener (frees port 53 for coredns)
+  become: yes
+  copy:
+    content: "[Resolve]\nDNSStubListener=no\n"
+    dest: /etc/systemd/resolved.conf.d/no-stub.conf
+  register: resolved_conf
+
+- name: Restart systemd-resolved
+  become: yes
+  systemd:
+    name: systemd-resolved
+    state: restarted
+  when: resolved_conf.changed

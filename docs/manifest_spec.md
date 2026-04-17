@@ -1,0 +1,166 @@
+# OpenHost Manifest Spec (v0.1)
+
+Apps declare how they should be deployed on OpenHost by placing an `openhost.toml` file at the root of their repository. For a walkthrough of building an app from scratch, see [Creating an App](creating_an_app.md).
+
+## Field Reference
+
+### `[app]` — required
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Unique app identifier (lowercase, hyphens ok) |
+| `version` | string | yes | Semver version string |
+| `description` | string | no | Short description |
+| `authors` | string[] | no | List of author names |
+
+### `[runtime.container]` — required
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `image` | string | yes | — | Path to Dockerfile relative to repo root |
+| `port` | integer | yes | — | Port the container listens on |
+| `command` | string | no | — | Override container CMD |
+| `extra_ports` | string[] | no | `[]` | **Deprecated.** Use `[[ports]]` instead. Raw Docker `-p` format strings. |
+| `capabilities` | string[] | no | `[]` | Linux capabilities to add (e.g., `"NET_ADMIN"`) |
+| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/tun"`) |
+
+### `[[ports]]` — optional, repeatable
+
+Declares additional port mappings for the container. Each entry binds a container port to a host port (TCP+UDP on 0.0.0.0). Set `host_port = 0` for auto-assignment from the 9000-9999 range.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `label` | string | yes | — | Unique label for this port mapping (e.g., `"metrics"`) |
+| `container_port` | integer | yes | — | Port inside the container |
+| `host_port` | integer | no | `0` | Port on the host (0 = auto-assign) |
+
+### `[routing]` — optional
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `health_check` | string | no | — | Health check path |
+| `public_paths` | string[] | no | `[]` | Route prefixes accessible without authentication |
+
+### `[resources]` — optional
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `memory_mb` | integer | no | 128 | Max memory in MB |
+| `cpu_millicores` | integer | no | 100 | CPU allocation (1000 = 1 core) |
+| `gpu` | boolean | no | false | Whether GPU access is needed |
+
+### `[data]` — optional
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `app_data` | boolean | no | false | Request access to permanent filesystem directory (backed up) |
+| `app_temp_data` | boolean | no | false | Request access to temporary filesystem directory (not backed up) |
+| `sqlite` | string[] | no | [] | SQLite database names to provision (implicitly enables `app_data`) |
+| `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory |
+| `access_all_data` | boolean | no | false | Full access to permanent data, temp data, and vm data |
+
+## Data Directory Structure
+
+Apps have two storage areas on separate disks. **By default, apps have no filesystem access.** Each must be explicitly requested:
+
+- **Permanent data** (`/data/app_data/{app_name}/`) — backed up, user-visible. Enabled by `app_data = true` or by requesting `sqlite` entries.
+- **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed up, recreatable. Enabled by `app_temp_data = true`.
+- **VM data** (`/data/vm_data/`) — router database and VM-level shared data. Only accessible if `access_vm_data = true`.
+
+The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, the storage guard stops running apps until space is freed.
+
+All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_data`, the parent dirs are mounted instead (`/data/app_data/`, `/data/app_temp_data/`) so the app can see all apps' data.
+
+## Environment Variable Injection
+
+The host provisions requested data services and injects connection info as environment variables:
+
+- `OPENHOST_SQLITE_<name>` — filesystem path to the named sqlite database (only if `sqlite` entries requested)
+- `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
+- `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
+- `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
+- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server (e.g., `http://host.docker.internal:<port>`)
+
+## Examples
+
+### Basic app
+
+```toml
+[app]
+name = "my-app"
+version = "0.1.0"
+description = "A simple web app"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[routing]
+health_check = "/health"
+
+[resources]
+memory_mb = 128
+cpu_millicores = 100
+
+[data]
+sqlite = ["main"]
+```
+
+### App with extra container permissions
+
+```toml
+[app]
+name = "ha-tunnel"
+version = "0.2.0"
+description = "WebSocket tunnel to Home Assistant"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[routing]
+public_paths = ["/tunnel"]
+
+[resources]
+memory_mb = 128
+cpu_millicores = 100
+```
+
+### App with extra port mappings
+
+```toml
+[app]
+name = "monitoring"
+version = "0.1.0"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[[ports]]
+label = "metrics"
+container_port = 9090
+host_port = 9090
+
+[[ports]]
+label = "debug"
+container_port = 5005
+host_port = 0  # auto-assigned
+```
+
+### Minimal app (wrapping existing software)
+
+```toml
+[app]
+name = "file-browser"
+version = "0.1.0"
+description = "Web-based file browser"
+
+[runtime.container]
+image = "Dockerfile"
+port = 5000
+command = "/data -A"
+
+[data]
+access_all_data = true
+```

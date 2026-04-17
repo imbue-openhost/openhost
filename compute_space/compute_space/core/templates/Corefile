@@ -1,0 +1,7 @@
+{{ zone_domain }}:53 {
+    file {{ zone_file_path }} {
+        reload 2s
+    }
+    log
+    errors
+}

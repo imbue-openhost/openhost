@@ -1,0 +1,6 @@
+---
+- name: Restart openhost service
+  become: yes
+  systemd:
+    name: openhost
+    state: restarted

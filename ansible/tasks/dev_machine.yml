@@ -1,0 +1,21 @@
+---
+# Dev tools and dotfiles for the host user. Runs as host with become for apt.
+
+- name: Install dev packages
+  become: yes
+  apt:
+    name:
+      - mosh
+      - git
+      - htop
+      - iftop
+      - vim
+      - tmux
+    state: present
+
+- name: Copy dotfiles
+  copy:
+    src: "{{ playbook_dir }}/dotfiles/"
+    dest: /home/host/
+    owner: host
+    group: host

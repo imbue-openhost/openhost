@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+.pixi/
+
+# uv
+.python-version
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+
+# Mac
+.DS_Store
+
+.swp
+
+
+# Test fixtures (pebble ACME server binary + certs)
+tests/pebble/
+
+# ACME account key (provided out-of-band; CI writes from secrets.ACME_ACCOUNT_KEY)
+ansible/secrets/certbot_private_key.json
+.claude/settings.json
+.claude/settings.local.json
+specs/
+
+# Beads (local only — not shared via git)
+.beads/
+

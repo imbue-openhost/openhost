@@ -1,0 +1,16 @@
+[app]
+name = "file-browser"
+version = "0.1.0"
+description = "Web-based file browser for managing all user data"
+
+[runtime.container]
+image = "Dockerfile"
+port = 5000
+command = "/data -A"
+
+[resources]
+memory_mb = 64
+cpu_millicores = 100
+
+[data]
+access_all_data = true

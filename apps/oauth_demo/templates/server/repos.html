@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Demo - Repos</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        .repo { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+        .repo a { color: #2563eb; text-decoration: none; font-weight: 500; }
+        .repo .desc { color: #666; font-size: 0.85rem; }
+        .error { color: #dc2626; }
+        a { color: #2563eb; }
+    </style>
+</head>
+<body>
+    <h1>GitHub Repos</h1>
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% elif repos %}
+        <p>{{ repos | length }} repo(s)</p>
+        {% for r in repos %}
+            <div class="repo">
+                <a href="{{ r.html_url }}" target="_blank">{{ r.full_name }}</a>
+                {% if r.description %}<div class="desc">{{ r.description }}</div>{% endif %}
+            </div>
+        {% endfor %}
+    {% else %}
+        <p style="color:#999">No repos found.</p>
+    {% endif %}
+    <p><a href="./">&larr; Back</a></p>
+</body>
+</html>

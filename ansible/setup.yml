@@ -1,0 +1,49 @@
+---
+# Usage: ansible-playbook ansible/setup.yml -i <IP>, -e domain=<domain>
+#
+# The trailing comma after the IP is required (tells ansible it's a host list, not a file).
+# Example: ansible-playbook ansible/setup.yml -i 65.21.1.2, -e domain=host.example.com
+#
+# Optional variables:
+#   -e public_ip=1.2.3.4   (defaults to target IP)
+#   -e initial_user=ubuntu  (defaults to root)
+
+- name: Bootstrap host user
+  hosts: all
+  user: "{{ initial_user | default('root') }}"
+  become: "{{ initial_user | default('root') != 'root' }}"
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/user_setup.yml
+
+- name: Install system dependencies
+  hosts: all
+  user: host
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/apt_packages.yml
+    - import_tasks: tasks/docker.yml
+
+- name: Dev environment
+  hosts: all
+  user: host
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/dev_machine.yml
+
+- name: Setup OpenHost
+  hosts: all
+  user: host
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/sync_code.yml
+    - import_tasks: tasks/pixi.yml
+    - import_tasks: tasks/setup_openhost_service.yml

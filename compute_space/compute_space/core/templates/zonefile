@@ -1,0 +1,14 @@
+$ORIGIN {{ zone_domain }}.
+$TTL 60
+@   IN SOA  ns.{{ zone_domain }}. admin.{{ zone_domain }}. (
+    {{ serial }}   ; serial
+    3600  ; refresh
+    600   ; retry
+    86400 ; expire
+    60    ; minimum
+)
+@   IN NS   ns.{{ zone_domain }}.
+ns  IN A    {{ public_ip }}
+@   IN A    {{ public_ip }}
+*   IN A    {{ public_ip }}
+
