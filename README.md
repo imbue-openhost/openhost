@@ -1,6 +1,6 @@
 **NOTE: this is an exploratory project, it is not yet ready for general use! it is being made public for narrow beta testing, you are welcome to try it, but please don't file issues or open PRs; they will not be responded to.**
 
-**This code is currently being provided under the AGPL-3.0 license (loosely, you can use it for any personal use, but if it's distributed commercially, the commercial use must also be made open-source). We may change to a different license in the future (eg [a fair source license](https://fair.io/licenses/), with the intent that personal usage will always be totally allowed, with no restrictions or exclusions, but commercial use may be restricted so that we can develop a sustainable business model to continue to build and maintain the project.**
+**This code is currently being provided under the AGPL-3.0 license (loosely, you can use it for any personal use, but if it's distributed commercially, the commercial use must also be made open-source). We may change to a different license in the future (eg [a fair source license](https://fair.io/licenses/)), with the intent that personal usage will always be totally allowed, with no restrictions or exclusions, but commercial use may be restricted so that we can develop a sustainable business model to continue to build and maintain the project.**
 
 **the "openhost" name is a placeholder and will be changed before this project is launched**.
 
