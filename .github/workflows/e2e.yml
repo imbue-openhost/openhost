@@ -31,8 +31,8 @@ jobs:
       PROVIDER: ${{ matrix.provider }}
       E2E_SSH_KEY: /tmp/e2e_key
       E2E_ENV_FILE: /tmp/e2e_env.sh
-      E2E_HOSTED_ZONE_ID: ${{ secrets.EC2_HOSTED_ZONE_ID }}
-      E2E_BASE_DOMAIN: ${{ secrets.EC2_E2E_BASE_DOMAIN }}
+      E2E_HOSTED_ZONE_ID: ${{ secrets.ROUTE53_HOSTED_ZONE_ID }}
+      E2E_BASE_DOMAIN: ${{ secrets.ROUTE53_BASE_DOMAIN }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-1
@@ -72,16 +72,16 @@ jobs:
 
       - name: Configure SSH key
         run: |
-          if [ "$PROVIDER" = "gcp" ]; then
-            echo "${{ secrets.GCP_SSH_PRIVATE_KEY }}" > "$E2E_SSH_KEY"
-          elif [ "$PROVIDER" = "ec2" ]; then
-            echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > "$E2E_SSH_KEY"
-          elif [ "$PROVIDER" = "hetzner" ]; then
-            # Hetzner accepts any SSH key via API — generate an ephemeral keypair
+          if [ "$PROVIDER" = "ec2" ]; then
+            # EC2 instance is launched with a pre-registered key (EC2_KEY_NAME),
+            # so we must use the matching private key to SSH in.
+            echo "${{ secrets.EC2_E2E_SSH_PRIVATE_KEY }}" > "$E2E_SSH_KEY"
+          else
+            # gcp/hetzner accept an ad-hoc key at instance-create time
             ssh-keygen -t ed25519 -f "$E2E_SSH_KEY" -N "" -q
           fi
           chmod 600 "$E2E_SSH_KEY"
-          # Generate .pub from private key (no-op for hetzner since ssh-keygen already created it)
+          # Generate .pub from private key (no-op when ssh-keygen already created it)
           [ -f "${E2E_SSH_KEY}.pub" ] || ssh-keygen -y -f "$E2E_SSH_KEY" > "${E2E_SSH_KEY}.pub"
           mkdir -p ~/.ssh
           printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > ~/.ssh/config
