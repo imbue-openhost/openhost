@@ -72,9 +72,17 @@ jobs:
 
       - name: Configure SSH key
         run: |
-          # EC2 uses a pre-created key specified by name, so this will be ignored in that case
-          ssh-keygen -t ed25519 -f "$E2E_SSH_KEY" -N "" -q
+          if [ "$PROVIDER" = "ec2" ]; then
+            # EC2 instance is launched with a pre-registered key (EC2_KEY_NAME),
+            # so we must use the matching private key to SSH in.
+            echo "${{ secrets.EC2_E2E_SSH_PRIVATE_KEY }}" > "$E2E_SSH_KEY"
+          else
+            # gcp/hetzner accept an ad-hoc key at instance-create time
+            ssh-keygen -t ed25519 -f "$E2E_SSH_KEY" -N "" -q
+          fi
           chmod 600 "$E2E_SSH_KEY"
+          # Generate .pub from private key (no-op when ssh-keygen already created it)
+          [ -f "${E2E_SSH_KEY}.pub" ] || ssh-keygen -y -f "$E2E_SSH_KEY" > "${E2E_SSH_KEY}.pub"
           mkdir -p ~/.ssh
           printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > ~/.ssh/config
           chmod 600 ~/.ssh/config
