@@ -25,9 +25,18 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
 
-  test-docker:
+  test-podman:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run pytest --run-docker -k requires_docker
+      # GitHub-hosted ubuntu-latest ships with podman pre-installed but not
+      # fully configured for rootless operation.  Allocate the host user's
+      # subuid/subgid range and lower the unprivileged-port floor to match
+      # what ansible/tasks/podman.yml does on production hosts.
+      - name: Configure rootless podman for runneruser
+        run: |
+          sudo usermod --add-subuids 10000000-19999999 runner
+          sudo usermod --add-subgids 10000000-19999999 runner
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+      - run: uv run pytest --run-podman -k requires_podman

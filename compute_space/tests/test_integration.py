@@ -555,7 +555,7 @@ class TestContainerGone:
             # Wait for running status in DB.
             # The first deploy builds a Docker image from scratch (no cache),
             # which can take well over 15 s in CI.  Use the same generous
-            # timeout that TestDockerE2E.test_app_detail uses (120 s).
+            # timeout that TestContainerE2E.test_app_detail uses (120 s).
             deadline = time.time() + 120
             db_status = None
             while time.time() < deadline:
@@ -699,10 +699,10 @@ class TestContainerGone:
 
 
 @requires_podman
-class TestDockerRestart:
-    """Test that apps recover after a Docker daemon restart.
+class TestContainerRestart:
+    """Test that apps recover after the container engine restarts.
 
-    Simulates a Docker daemon restart: stop the container, then restart the
+    Simulates the VM reboot path: stop the container, then restart the
     router.  check_app_status() detects the dead container and does a full
     rebuild (image + new container) via _start_app_process().
     """
@@ -752,7 +752,7 @@ class TestDockerRestart:
 
             # Wait for app status='running' in the DB (not just the HTML).
             # The initial image build can be slow in CI without cache, so
-            # use a generous timeout consistent with TestDockerE2E (120 s).
+            # use a generous timeout consistent with TestContainerE2E (120 s).
             deadline = time.time() + 120
             db_status = None
             while time.time() < deadline:
@@ -949,9 +949,9 @@ class TestDockerRestart:
 
 
 @requires_podman
-class TestDockerE2E:
+class TestContainerE2E:
     """
-    End-to-end test of the Docker deployment path using a minimal test app.
+    End-to-end test of the container deployment path using a minimal test app.
 
     Tests run in definition order within the class.  Each test builds on the
     state left by the previous one (deploy -> interact -> remove).

@@ -120,9 +120,14 @@
   changed_when: false
 
 - name: Verify data filesystem supports idmapped mounts
+  # Note: `stat -f -c '%T'` reports the kernel's type name for the
+  # filesystem.  Ext2, ext3 and ext4 all share the reported name
+  # 'ext2/ext3' (the kernel uses the same on-disk family name), so a
+  # distinct 'ext4' entry would never match on Linux — keep the shared
+  # name in the allowlist.
   assert:
     that:
-      - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs', 'ext4']
+      - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs']
     fail_msg: >-
       Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
       support idmapped bind mounts.  Rootless podman with per-app uidmaps

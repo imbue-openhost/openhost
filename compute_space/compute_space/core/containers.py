@@ -9,18 +9,18 @@ chmod 0o777 on the data directory.
 
 Security defaults applied to every container:
 
-- ``--cap-drop=ALL`` then ``--cap-add`` for caps listed in the manifest
-  (replaces the Docker behaviour of *adding* to the default set).  The
-  manifest validator rejects host-privileged caps (``SYS_ADMIN`` etc.) at
-  deploy time so this list is always safe to apply.
+- ``--cap-drop=ALL`` plus ``--cap-add`` for each capability listed in the
+  manifest.  The manifest validator restricts capabilities to a
+  rootless-safe allowlist, so anything reaching here is safe to grant
+  inside the user namespace.
 - ``--security-opt=no-new-privileges=true``.
-- ``--userns`` / ``--uidmap`` / ``--gidmap`` give every app its own
-  65536-UID window, disjoint from every other app's.
+- ``--uidmap`` / ``--gidmap`` give every app its own 65536-UID window,
+  disjoint from every other app's.
 
-App-facing contract unchanged: images are still built from ``Dockerfile``,
-bind mounts still appear at ``/data/app_data/<app>`` etc., and the
-``OPENHOST_ROUTER_URL`` env var still points at ``host.docker.internal``
-(Podman recognises this alias via ``--add-host``).
+App-facing contract: images are built from ``Dockerfile``, bind mounts
+appear at ``/data/app_data/<app>`` and the like, and the
+``OPENHOST_ROUTER_URL`` env var resolves via ``host.docker.internal``
+(Podman accepts this alias through ``--add-host``).
 """
 
 from __future__ import annotations
@@ -76,11 +76,11 @@ BUILD_CACHE_CORRUPT_MARKER = "[BUILD_CACHE_CORRUPT]"
 # is in a state that can be fixed by pruning and retrying.  Matching any of
 # these triggers the BUILD_CACHE_CORRUPT_MARKER path.
 _BUILD_CACHE_CORRUPT_FRAGMENTS = (
-    # Generic content-store corruption (inherited from Docker/BuildKit era
-    # and occasionally still surfaced by podman when layering over broken
-    # storage).
+    # Content-store corruption: a manifest references a layer digest that
+    # isn't present on disk.  Pruning the build cache almost always fixes it.
     "content digest sha256:",
-    # Podman/containers-storage specific recovery hints.
+    # Podman / containers-storage surfacing the same failure via different
+    # wording depending on the storage driver.
     "storage-driver errored",
     "layer not known",
 )
@@ -111,14 +111,18 @@ def compute_uid_map_base(app_id: int) -> int:
     return UID_MAP_BASE_START + app_id * UID_MAP_WIDTH
 
 
-def _log_path(app_name: str, temp_data_dir: str) -> str:
-    """Return the path to the build/deploy log file for an app."""
-    # Historical filename kept so existing deployments keep their log path.
+def build_log_path(app_name: str, temp_data_dir: str) -> str:
+    """Return the path to the build/deploy log file for an app.
+
+    The single source of truth for where build and runtime logs land for
+    a given app.  The dashboard and docs refer to ``docker.log`` as the
+    historical filename; changing it requires updating both.
+    """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 
 
 def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
-    log_file = _log_path(app_name, temp_data_dir)
+    log_file = build_log_path(app_name, temp_data_dir)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, "a") as f:
         f.write(text)
@@ -409,7 +413,7 @@ def get_docker_logs(
     parts = []
 
     # Build/deploy log (full, no truncation)
-    log_file = _log_path(app_name, temp_data_dir)
+    log_file = build_log_path(app_name, temp_data_dir)
     if os.path.exists(log_file):
         try:
             with open(log_file) as f:
