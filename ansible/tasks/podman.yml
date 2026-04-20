@@ -69,12 +69,18 @@
 # interactive session ends, which would kill any `podman run --restart=...`
 # containers.  Lingering starts the user manager at boot.
 
+- name: Check whether user lingering is already enabled for host
+  stat:
+    path: /var/lib/systemd/linger/host
+  register: _linger_sentinel
+
 - name: Enable user lingering for host
+  # loginctl enable-linger is idempotent so the unconditional invocation
+  # is safe on re-runs; the real "changed" signal comes from whether the
+  # sentinel file existed beforehand.
   command: loginctl enable-linger host
-  args:
-    creates: /var/lib/systemd/linger/host
-  register: _linger_result
-  changed_when: _linger_result.rc == 0
+  when: not _linger_sentinel.stat.exists
+  changed_when: true
 
 # ---------------------------------------------------------------------------
 # sysctl: allow rootless binding to common ports

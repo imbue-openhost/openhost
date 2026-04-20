@@ -140,7 +140,7 @@ def migrate(db: sqlite3.Connection) -> None:
 
     columns = _apps_columns(db)
 
-    # Rename docker_container_id -> container_id (Docker -> Podman migration).
+    # Bring the container-id column name in line with the current schema.
     # SQLite >= 3.25 supports ALTER TABLE ... RENAME COLUMN.  Python 3.12
     # ships with SQLite >= 3.37, so this is always available on supported
     # interpreters.
@@ -150,18 +150,26 @@ def migrate(db: sqlite3.Connection) -> None:
         columns = _apps_columns(db)
 
     # Add uid_map_base column (per-app subuid base for rootless podman).
-    # Backfilled below with the deterministic formula so existing apps keep
-    # stable on-disk ownership across the Docker -> Podman switch.
+    # Rows inserted before this column existed get a 0 sentinel; the
+    # migration below tries to compute a proper base for each, but rows
+    # whose id falls outside the allocated subuid pool are left at 0 so
+    # the server can still start — start_app_process raises a clear
+    # error the first time such an app is started.  That turns an
+    # otherwise fatal startup failure into a per-app problem.
     if "uid_map_base" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN uid_map_base INTEGER NOT NULL DEFAULT 0")
-        # Every row pre-dating podman has uid_map_base=0; backfill using
-        # the same formula we'd use at insert time.  This is idempotent —
-        # a re-run picks the same value because it's a pure function of id.
         rows = db.execute("SELECT id FROM apps WHERE uid_map_base = 0").fetchall()
         for row in rows:
+            try:
+                base = compute_uid_map_base(row[0])
+            except ValueError:
+                # Leave uid_map_base=0; the app will fail cleanly at start
+                # with the same error, which is the right place to surface
+                # it (the dashboard can show it against that app).
+                continue
             db.execute(
                 "UPDATE apps SET uid_map_base = ? WHERE id = ?",
-                (compute_uid_map_base(row[0]), row[0]),
+                (base, row[0]),
             )
         db.commit()
 

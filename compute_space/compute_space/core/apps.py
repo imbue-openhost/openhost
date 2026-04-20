@@ -552,8 +552,10 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         manifest.container_image,
         temp_data_dir=config.temporary_data_dir,
     )
-    # Migrated-in rows from a pre-podman schema may have uid_map_base=0;
-    # allocate on first start using the same deterministic formula as insert.
+    # A uid_map_base of 0 is the schema's "not yet assigned" sentinel
+    # (used by rows inserted before the column existed, or when the
+    # initial backfill couldn't compute a base for an id past the pool
+    # limit).  Compute and persist one now so subsequent starts reuse it.
     uid_map_base = app_row["uid_map_base"]
     if not uid_map_base:
         uid_map_base = compute_uid_map_base(app_row["id"])

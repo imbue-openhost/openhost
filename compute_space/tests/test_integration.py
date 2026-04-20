@@ -3,9 +3,9 @@ End-to-end integration tests for the OpenHost router.
 
 The full production flow is: build outer VM -> boot VM -> start router inside
 VM -> deploy apps.  The VM step requires Linux with KVM and diskimage-builder,
-so these tests run the router directly on the host and exercise the Docker
-runtime natively.  This covers all the same code paths the router would
-use inside the VM.
+so these tests run the router directly on the host and exercise the rootless
+podman runtime natively.  This covers all the same code paths the router
+would use inside the VM.
 """
 
 import os
@@ -147,7 +147,7 @@ def _deploy_app(session, base_url, app_path, app_name=None, timeout=120):
 
 
 # ---------------------------------------------------------------------------
-# Router-only tests (no Docker needed)
+# Router-only tests (no container runtime needed)
 # ---------------------------------------------------------------------------
 
 
@@ -432,7 +432,7 @@ class TestRouterCore:
 
 
 # ---------------------------------------------------------------------------
-# Claim token setup tests (isolated router, no Docker needed)
+# Claim token setup tests (isolated router, no container runtime needed)
 # ---------------------------------------------------------------------------
 
 
@@ -501,13 +501,12 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
 
 @requires_podman
 class TestContainerGone:
-    """Test that apps recover when their Docker container is completely gone.
+    """Test that apps recover when their container is completely gone.
 
-    Simulates the real VM-reboot scenario: Docker's data-root lives on a
-    disk that isn't mounted when Docker first starts, so old containers
-    don't exist at all.  check_app_status() should detect this and do a
-    full rebuild (image + container) instead of failing with
-    "No such container".
+    Simulates a real VM-reboot scenario where the container engine's local
+    storage has been wiped (e.g. the data-root disk didn't remount at boot).
+    check_app_status() should detect this and do a full rebuild
+    (image + container) instead of failing with "No such container".
     """
 
     APP_PATH = os.path.join(_FIXTURES_DIR, "test_app")
@@ -522,7 +521,7 @@ class TestContainerGone:
         Exercises the real VM-reboot scenario:
         1. Deploy a app — running and healthy.
         2. Stop the router process.
-        3. Remove the Docker container AND image (simulates Docker state
+        3. Remove the container AND image (simulates the engine's state
            being lost because data-root wasn't mounted at boot).
         4. Start the router — check_app_status() detects the dead container,
            does a full rebuild via _start_app_process().
@@ -553,7 +552,7 @@ class TestContainerGone:
             _deploy_app(session, self.BASE_URL, self.APP_PATH)
 
             # Wait for running status in DB.
-            # The first deploy builds a Docker image from scratch (no cache),
+            # The first deploy builds the image from scratch (no cache),
             # which can take well over 15 s in CI.  Use the same generous
             # timeout that TestContainerE2E.test_app_detail uses (120 s).
             deadline = time.time() + 120
@@ -597,7 +596,7 @@ class TestContainerGone:
             _stop_router_process(router)
             router = None
 
-            # Remove container AND image — simulates Docker state loss
+            # Remove container AND image — simulates engine state loss
             subprocess.run(
                 ["podman", "rm", "-f", self.CONTAINER_NAME],
                 capture_output=True,
@@ -618,7 +617,7 @@ class TestContainerGone:
             assert result.returncode != 0, "Container should not exist"
 
             # ---- Phase 3: Restart router (triggers check_app_status) ----
-            # check_app_status() does a synchronous Docker rebuild during
+            # check_app_status() does a synchronous image rebuild during
             # startup, so /health won't respond until the rebuild finishes.
             # Give it enough time for the full image build + container start.
             router = _start_router_process(self.BASE_URL, env, startup_timeout=180)
@@ -714,12 +713,12 @@ class TestContainerRestart:
     BASE_URL = "http://127.0.0.1:18081"
 
     def test_app_status_after_container_restart(self, tmp_path):
-        """After Docker daemon restart, router should rebuild and show app as 'running'.
+        """After the engine restarts, router should rebuild and show app as 'running'.
 
-        Exercises the Docker-restart scenario:
+        Exercises the engine-restart scenario:
         1. Deploy an app — running and healthy.
         2. Stop the router process.
-        3. Stop the Docker container (simulates daemon restart).
+        3. Stop the container (simulates engine shutdown).
         4. Start the router — check_app_status() detects the dead
            container and does a full rebuild via _start_app_process().
         5. Verify a container is running and serving traffic.
@@ -782,9 +781,9 @@ class TestContainerRestart:
                 timeout=30,
             )
 
-            # ---- Phase 2: Simulate Docker daemon restart ----
+            # ---- Phase 2: Simulate container engine restart ----
             #
-            # In a real VM reboot the Docker daemon stops (killing all
+            # In a real VM reboot the container engine stops (killing all
             # containers), then restarts.  We simulate this by stopping
             # the router and the container, then restarting the router
             # so that check_app_status() sees the exited container.
@@ -848,7 +847,7 @@ class TestContainerRestart:
                     container_running = True
                     break
                 time.sleep(1)
-            assert container_running, "check_app_status() should have restarted the Docker container"
+            assert container_running, "check_app_status() should have restarted the container"
 
             # Verify the container is actually serving traffic
             deadline = time.time() + 15
@@ -883,7 +882,7 @@ class TestContainerRestart:
 
             # ---- Phase 5: Assert router status matches reality ----
             #
-            # The Docker container IS running and healthy.  The router's
+            # The container IS running and healthy.  The router's
             # background thread (_restart_apps_sequential) may still be
             # finishing _wait_for_ready() before it commits
             # status='running' to the DB, so poll instead of reading once.
@@ -921,7 +920,7 @@ class TestContainerRestart:
                 time.sleep(2)
 
             assert db_status == "running", (
-                f"App status in DB is '{db_status}' but Docker container "
+                f"App status in DB is '{db_status}' but the container "
                 f"is running and healthy.  check_app_status() should have "
                 f"restarted the container and set status to 'running'."
             )
@@ -1089,7 +1088,7 @@ class TestContainerE2E:
         )
         assert r.status_code == 200
 
-        # Wait for it to come back (Docker rebuild may take a while under load)
+        # Wait for it to come back (the rebuild may take a while under load)
         # Also poll the API for status to detect errors early.
         url = f"{base_url}/test-app/health"
         status_url = f"{base_url}/api/app_status/test-app"
