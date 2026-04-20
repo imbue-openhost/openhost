@@ -5,7 +5,7 @@ from quart import websocket
 from compute_space.core import auth
 from compute_space.core.terminal import handle_terminal_ws
 from compute_space.web.middleware import login_required
-from compute_space.web.routes.proxy import _parse_app_from_host_ws
+from compute_space.web.routes.proxy import _parse_app_from_host
 from compute_space.web.routes.proxy import ws_catch_all
 
 pages_system_bp = Blueprint("pages_system", __name__)
@@ -33,7 +33,7 @@ async def terminal_ws() -> None:
     instead of opening a system terminal (otherwise this route captures all
     /terminal/ws traffic regardless of subdomain).
     """
-    if _parse_app_from_host_ws():
+    if _parse_app_from_host(websocket.host):
         await ws_catch_all("terminal/ws")
         return
 
