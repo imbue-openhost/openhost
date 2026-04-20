@@ -124,6 +124,80 @@ def test_uid_map_base_is_added_and_backfilled(tmp_path) -> None:
             assert hi_i <= lo_j or hi_j <= lo_i, f"Windows overlap: rows {i} [{lo_i},{hi_i}) and {j} [{lo_j},{hi_j})"
 
 
+def test_docker_container_id_rename_runs_before_table_recreation(tmp_path) -> None:
+    """Regression test: the column rename must run first.
+
+    Older schemas carry both ``docker_container_id`` AND columns that
+    trigger table recreation (``base_path``, ``subdomain``, ``spin_pid``).
+    _recreate_table rebuilds the table from schema.sql (which only
+    defines ``container_id``) and then copies common columns across.  If
+    the rename runs *after* table recreation, the old ``docker_container_id``
+    data is silently dropped by the common-column filter.  If it runs
+    before, the rename turns the old column into ``container_id``, the
+    table recreation's common-column filter picks it up, and the data
+    survives.
+    """
+    db_path = str(tmp_path / "legacy.db")
+    db = sqlite3.connect(db_path)
+    # A schema that has BOTH docker_container_id AND base_path (which
+    # forces _recreate_table to run).  This is the shape of the "oldest"
+    # known schema in test_migrations.py.
+    db.executescript("""
+        CREATE TABLE apps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            base_path TEXT NOT NULL UNIQUE,
+            subdomain TEXT NOT NULL UNIQUE,
+            version TEXT NOT NULL,
+            description TEXT,
+            runtime_type TEXT NOT NULL CHECK(runtime_type IN ('serverless', 'serverfull')),
+            repo_path TEXT NOT NULL,
+            health_check TEXT,
+            local_port INTEGER NOT NULL UNIQUE,
+            container_port INTEGER,
+            docker_container_id TEXT,
+            spin_pid INTEGER,
+            status TEXT NOT NULL DEFAULT 'stopped',
+            error_message TEXT,
+            memory_mb INTEGER NOT NULL DEFAULT 128,
+            cpu_millicores INTEGER NOT NULL DEFAULT 1000,
+            gpu INTEGER NOT NULL DEFAULT 0,
+            manifest_raw TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE owner (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    """)
+    db.execute(
+        "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, "
+        "repo_path, local_port, docker_container_id) "
+        "VALUES ('notes', '/notes', 'notes', '1.0', 'serverfull', '/repo', 9100, "
+        "'container-abc')"
+    )
+    db.commit()
+
+    migrate(db)
+
+    cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+    assert "container_id" in cols
+    assert "docker_container_id" not in cols
+    # The original container id must have survived the table recreation
+    # and the rename — this is the whole point of the ordering.
+    row = db.execute("SELECT container_id FROM apps WHERE name = 'notes'").fetchone()
+    db.close()
+    assert row is not None
+    assert row[0] == "container-abc", (
+        "docker_container_id data was lost during migration.  The rename "
+        "must run before _recreate_table or the old column's data is "
+        "dropped by _recreate_table's common-column filter."
+    )
+
+
 def test_migrate_is_idempotent_across_docker_to_podman_rename(tmp_path) -> None:
     """Running migrate twice must not re-rename or re-backfill incorrectly."""
     db_path = str(tmp_path / "idem.db")

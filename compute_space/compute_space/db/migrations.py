@@ -101,6 +101,17 @@ def migrate(db: sqlite3.Connection) -> None:
     columns = _apps_columns(db)
     if not columns:
         return  # Fresh DB — table doesn't exist yet, schema.sql will create it
+
+    # Bring the container-id column name in line with the current schema
+    # BEFORE any other migration step.  _recreate_table (used by later
+    # steps) rebuilds the table from schema.sql, which only knows about
+    # container_id; a lingering docker_container_id column would be
+    # silently dropped by the common-column filter and its data lost.
+    if "docker_container_id" in columns and "container_id" not in columns:
+        db.execute("ALTER TABLE apps RENAME COLUMN docker_container_id TO container_id")
+        db.commit()
+        columns = _apps_columns(db)
+
     if "public_paths" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN public_paths TEXT NOT NULL DEFAULT '[]'")
         db.commit()
@@ -146,15 +157,6 @@ def migrate(db: sqlite3.Connection) -> None:
             db.execute("PRAGMA foreign_keys=ON")
 
     columns = _apps_columns(db)
-
-    # Bring the container-id column name in line with the current schema.
-    # SQLite >= 3.25 supports ALTER TABLE ... RENAME COLUMN.  Python 3.12
-    # ships with SQLite >= 3.37, so this is always available on supported
-    # interpreters.
-    if "docker_container_id" in columns and "container_id" not in columns:
-        db.execute("ALTER TABLE apps RENAME COLUMN docker_container_id TO container_id")
-        db.commit()
-        columns = _apps_columns(db)
 
     # Add uid_map_base column (per-app subuid base for rootless podman).
     # Rows inserted before this column existed get a 0 sentinel; the
