@@ -5,6 +5,7 @@ import sqlite3
 # Imported lazily-ish at top-level for the subuid backfill.  Kept here
 # rather than inside migrate() to make the dependency obvious.
 from compute_space.core.containers import compute_uid_map_base
+from compute_space.core.logging import logger
 
 
 def _schema_path() -> str:
@@ -158,18 +159,26 @@ def migrate(db: sqlite3.Connection) -> None:
     # otherwise fatal startup failure into a per-app problem.
     if "uid_map_base" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN uid_map_base INTEGER NOT NULL DEFAULT 0")
-        rows = db.execute("SELECT id FROM apps WHERE uid_map_base = 0").fetchall()
-        for row in rows:
+        rows = db.execute("SELECT id, name FROM apps WHERE uid_map_base = 0").fetchall()
+        for row_id, row_name in rows:
             try:
-                base = compute_uid_map_base(row[0])
-            except ValueError:
-                # Leave uid_map_base=0; the app will fail cleanly at start
-                # with the same error, which is the right place to surface
-                # it (the dashboard can show it against that app).
+                base = compute_uid_map_base(row_id)
+            except ValueError as e:
+                # Leave uid_map_base=0.  The app will fail cleanly the
+                # first time start_app_process tries to run it, which is
+                # the right surface for the error (the dashboard shows it
+                # against that specific app).  Log here so the operator
+                # has a visible signal at server startup too.
+                logger.warning(
+                    "Could not allocate uid_map_base for app %r (id=%d) during migration: %s",
+                    row_name,
+                    row_id,
+                    e,
+                )
                 continue
             db.execute(
                 "UPDATE apps SET uid_map_base = ? WHERE id = ?",
-                (base, row[0]),
+                (base, row_id),
             )
         db.commit()
 

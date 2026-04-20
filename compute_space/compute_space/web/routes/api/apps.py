@@ -469,6 +469,17 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     db.execute("PRAGMA foreign_keys=ON")
 
     if was_running:
-        start_app_process(new_name, db, config)
+        # Persist failures instead of letting them 500 out: the rename
+        # has already succeeded, and the dashboard needs a visible error
+        # on the app rather than a generic server error.
+        try:
+            start_app_process(new_name, db, config)
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Failed to restart %s after rename: %s", new_name, e)
+            db.execute(
+                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
+                (str(e), new_name),
+            )
+            db.commit()
 
     return jsonify({"ok": True, "name": new_name})

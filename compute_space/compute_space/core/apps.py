@@ -334,6 +334,36 @@ def insert_and_deploy(
     return app_name
 
 
+def _resolve_uid_map_base(db: sqlite3.Connection, app_name: str) -> int:
+    """Return the per-app subuid base, allocating on first use if needed.
+
+    A stored value of 0 is the schema's "not yet assigned" sentinel (rows
+    inserted before the column existed, or rows whose id fell outside the
+    pool at migration time).  We compute the real base via the
+    deterministic formula and persist it so every subsequent start reuses
+    the same host UID window, keeping on-disk file ownership stable.
+
+    Raises ``RuntimeError`` if the app isn't in the database, and propagates
+    ``ValueError`` from ``compute_uid_map_base`` for ids past the pool.
+    """
+    row = db.execute(
+        "SELECT id, uid_map_base FROM apps WHERE name = ?",
+        (app_name,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"App {app_name!r} not found in database")
+    base = row["uid_map_base"]
+    if base:
+        return int(base)
+    base = compute_uid_map_base(row["id"])
+    db.execute(
+        "UPDATE apps SET uid_map_base = ? WHERE name = ?",
+        (base, app_name),
+    )
+    db.commit()
+    return base
+
+
 def deploy_app_background(
     manifest: AppManifest,
     repo_path: str,
@@ -382,12 +412,7 @@ def deploy_app_background(
             (app_name,),
         )
         db.commit()
-        uid_map_row = db.execute(
-            "SELECT uid_map_base FROM apps WHERE name = ?",
-            (app_name,),
-        ).fetchone()
-        if uid_map_row is None:
-            raise RuntimeError(f"App {app_name!r} not found in database")
+        uid_map_base = _resolve_uid_map_base(db, app_name)
         container_id = run_container(
             app_name,
             image_tag,
@@ -396,7 +421,7 @@ def deploy_app_background(
             env_vars,
             config.persistent_data_dir,
             config.temporary_data_dir,
-            uid_map_base=uid_map_row["uid_map_base"],
+            uid_map_base=uid_map_base,
             port_mappings=port_mappings,
         )
         db.execute(
@@ -552,18 +577,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         manifest.container_image,
         temp_data_dir=config.temporary_data_dir,
     )
-    # A uid_map_base of 0 is the schema's "not yet assigned" sentinel
-    # (used by rows inserted before the column existed, or when the
-    # initial backfill couldn't compute a base for an id past the pool
-    # limit).  Compute and persist one now so subsequent starts reuse it.
-    uid_map_base = app_row["uid_map_base"]
-    if not uid_map_base:
-        uid_map_base = compute_uid_map_base(app_row["id"])
-        db.execute(
-            "UPDATE apps SET uid_map_base = ? WHERE name = ?",
-            (uid_map_base, app_name),
-        )
-        db.commit()
+    uid_map_base = _resolve_uid_map_base(db, app_name)
     container_id = run_container(
         app_row["name"],
         image_tag,

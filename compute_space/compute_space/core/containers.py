@@ -20,7 +20,9 @@ Security defaults applied to every container:
 App-facing contract: images are built from ``Dockerfile``, bind mounts
 appear at ``/data/app_data/<app>`` and the like, and the
 ``OPENHOST_ROUTER_URL`` env var resolves via ``host.docker.internal``
-(Podman accepts this alias through ``--add-host``).
+(kept for compatibility) or its podman-native equivalent
+``host.containers.internal``.  Both are registered as ``--add-host``
+entries pointing at the host gateway so either works.
 """
 
 from __future__ import annotations
@@ -117,6 +119,12 @@ def build_log_path(app_name: str, temp_data_dir: str) -> str:
     The single source of truth for where build and runtime logs land.
     Every caller (router, dashboard log view, app_log_path helper) should
     funnel through this function rather than recomputing the path.
+
+    The on-disk filename is ``docker.log`` for compatibility with existing
+    deployments' log paths — renaming it would invalidate bookmarks,
+    shipped log-viewer URLs, and log-rotation configs without a real
+    benefit.  If you change it, update every migration runbook and
+    external doc that mentions the path.
     """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 
