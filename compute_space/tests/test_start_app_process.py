@@ -21,7 +21,9 @@ import pytest
 
 import compute_space.core.apps as apps_mod
 from compute_space.config import DefaultConfig
+from compute_space.core.apps import _resolve_uid_map_base
 from compute_space.core.containers import UID_MAP_BASE_START
+from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
 
 
@@ -134,6 +136,79 @@ def test_start_app_process_backfills_uid_map_base_when_zero(
         row = db.execute("SELECT uid_map_base, container_id FROM apps WHERE name = 'notes'").fetchone()
         assert row["uid_map_base"] == captured["uid_map_base"]
         assert row["container_id"] == "fake-container-id"
+    finally:
+        db.close()
+
+
+def test_resolve_uid_map_base_surfaces_pool_exhaustion(tmp_path: Path) -> None:
+    """Rows migrated from a pre-podman schema whose id falls past the
+    subuid pool get ``uid_map_base=0`` from migrate().  The first time
+    such an app is started, _resolve_uid_map_base re-attempts the
+    allocation and propagates the ValueError cleanly so the caller can
+    surface a precise error rather than a cryptic podman complaint."""
+    repo_path = _minimal_app_dir(tmp_path)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+
+    config = DefaultConfig(
+        zone_domain="test.local",
+        host="127.0.0.1",
+        port=18082,
+        data_root_dir=str(data_root),
+        apps_dir_override=str(tmp_path / "noapps"),
+        tls_enabled=False,
+        start_caddy=False,
+        port_range_start=19200,
+        port_range_end=19299,
+    )
+    config.make_all_dirs()
+
+    # Insert a row with a uid_map_base=0 sentinel and an id one past
+    # the last that fits in the allocated pool.
+    overflow_id = UID_MAP_RANGE_SIZE // UID_MAP_WIDTH
+    db = sqlite3.connect(config.db_path)
+    try:
+        schema_path = os.path.join(
+            os.path.dirname(os.path.dirname(apps_mod.__file__)),
+            "db",
+            "schema.sql",
+        )
+        with open(schema_path) as f:
+            db.executescript(f.read())
+        db.execute(
+            """INSERT INTO apps
+               (id, name, manifest_name, version, repo_path, local_port,
+                container_port, memory_mb, cpu_millicores, uid_map_base,
+                status, manifest_raw)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                overflow_id,
+                "too-many",
+                "too-many",
+                "0.1.0",
+                repo_path,
+                19200,
+                8080,
+                128,
+                100,
+                0,
+                "stopped",
+                "",
+            ),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    db = sqlite3.connect(config.db_path)
+    db.row_factory = sqlite3.Row
+    try:
+        with pytest.raises(ValueError, match="subuid pool"):
+            _resolve_uid_map_base(db, "too-many")
+        # Row should remain at 0 so the app can still be removed cleanly;
+        # we didn't partially-commit a nonsense value.
+        row = db.execute("SELECT uid_map_base FROM apps WHERE name = 'too-many'").fetchone()
+        assert row["uid_map_base"] == 0
     finally:
         db.close()
 

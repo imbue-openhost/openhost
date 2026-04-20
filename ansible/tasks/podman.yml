@@ -137,7 +137,10 @@
     fail_msg: >-
       Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
       support idmapped bind mounts.  Rootless podman with per-app uidmaps
-      will not work here.  Reprovision onto ext4/xfs/btrfs.
+      will not work here.  Reprovision onto ext4, xfs, btrfs, or tmpfs.
+      (Note: Linux reports every ext2/3/4 filesystem as 'ext2/ext3', so
+      ext4 IS supported — this failure means you're on something else
+      entirely, e.g. ZFS or a FUSE filesystem.)
     success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
 
 # ---------------------------------------------------------------------------
