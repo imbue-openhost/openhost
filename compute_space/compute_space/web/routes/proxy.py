@@ -225,9 +225,9 @@ async def _proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: str)
             proto = request.headers.get("X-Forwarded-Proto", request.scheme)
             return redirect(f"{proto}://{get_config().zone_domain}/login")  # type: ignore[return-value]
 
-    identity_headers = {
-        "X-OpenHost-Is-Owner": "true" if claims and claims.get("sub") == "owner" else "",
-    }
+    identity_headers = {}
+    if claims and claims.get("sub") == "owner":
+        identity_headers["X-OpenHost-Is-Owner"] = "true"
 
     # Use a longer timeout for large requests (e.g. migration data transfers)
     content_length = request.content_length or 0
@@ -295,7 +295,7 @@ async def _ws_proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: s
         if not is_public:
             return
 
-    identity_headers = {
-        "X-OpenHost-Is-Owner": "true" if claims and claims.get("sub") == "owner" else "",
-    }
+    identity_headers = {}
+    if claims and claims.get("sub") == "owner":
+        identity_headers["X-OpenHost-Is-Owner"] = "true"
     await ws_proxy(app_row["local_port"], base_path, websocket, identity_headers=identity_headers)
