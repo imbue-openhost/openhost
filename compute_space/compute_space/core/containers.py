@@ -211,6 +211,21 @@ def _bind_mount_arg(host_path: str, container_path: str, *, read_only: bool = Fa
     return f"{host_path}:{container_path}:{options}"
 
 
+def _container_paths(app_name: str) -> tuple[str, str, str]:
+    """Return the (app_data, app_temp_data, vm_data) paths inside a container.
+
+    Single source of truth for where an app's data directories appear
+    under ``CONTAINER_ROOT`` — consumed by both the env-var translator
+    and the bind-mount assembler so a path-format change can't leave
+    them desynchronised.
+    """
+    return (
+        f"{CONTAINER_ROOT}/app_data/{app_name}",
+        f"{CONTAINER_ROOT}/app_temp_data/{app_name}",
+        f"{CONTAINER_ROOT}/vm_data",
+    )
+
+
 def _translate_env_for_container(
     env_vars: dict[str, str],
     app_name: str,
@@ -222,8 +237,7 @@ def _translate_env_for_container(
     ``/opt/openhost/persistent_data/app_data/foo``); inside the container
     they must point to the idmapped mount target (``/data/app_data/foo``).
     """
-    c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
-    c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
+    c_app_data, c_app_temp, _ = _container_paths(app_name)
     translated: dict[str, str] = {}
     for key, value in env_vars.items():
         if key.startswith("OPENHOST_SQLITE_"):
@@ -292,9 +306,7 @@ def _volume_args(
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
     vm_data_dir = os.path.join(data_dir, "vm_data")
-    c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
-    c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
-    c_vm_data = f"{CONTAINER_ROOT}/vm_data"
+    c_app_data, c_app_temp, c_vm_data = _container_paths(app_name)
 
     args: list[str] = []
     if manifest.access_all_data:

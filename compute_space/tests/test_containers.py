@@ -364,8 +364,27 @@ def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch:
     targets = [v.rsplit(":", 2)[1] for v in volume_args]
     assert "/data/app_data" in targets
     assert "/data/app_temp_data" in targets
-    # vm_data is still mounted rw when access_all_data is on.
-    assert "/data/vm_data" in targets
+    # With access_all_data, vm_data is explicitly mounted rw.  Pin this —
+    # silently swapping it to ro would break every app that relies on
+    # /data/vm_data as shared scratch space.
+    vm_mount = next(v for v in volume_args if v.endswith(":/data/vm_data:idmap"))
+    assert "ro" not in vm_mount.rsplit(":", 1)[1], f"vm_data should be rw under access_all_data, got {vm_mount}"
+
+
+def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """access_vm_data (without access_all_data) grants only a read-only
+    view of /data/vm_data.  The distinction matters: this is what lets
+    apps read shared state without being able to corrupt it, and a
+    regression swapping in rw here would turn a security-critical mount
+    into a write-through channel.
+    """
+    manifest = _basic_manifest(access_vm_data=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    vm_mounts = [v for v in volume_args if "/data/vm_data" in v]
+    assert len(vm_mounts) == 1, vm_mounts
+    assert vm_mounts[0].endswith(":ro,idmap"), vm_mounts[0]
 
 
 def test_run_container_port_mappings_bind_tcp_and_udp_on_all_interfaces(

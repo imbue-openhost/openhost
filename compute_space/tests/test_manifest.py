@@ -338,6 +338,15 @@ class TestCapabilitiesValidation:
         with pytest.raises(ValueError, match="list of strings"):
             parse_manifest_from_string(toml)
 
+    def test_non_string_cap_entry_rejected(self):
+        """A list of caps that contains a non-string element must be
+        rejected at parse time — otherwise a type error would surface
+        from deep inside the runtime when ``.strip()`` is called on
+        the offending entry."""
+        toml = MINIMAL + "capabilities = [123]\n"
+        with pytest.raises(ValueError, match="must contain strings"):
+            parse_manifest_from_string(toml)
+
 
 class TestUnprivilegedPortFloor:
     """Rootless podman can't bind host_port < UNPRIVILEGED_PORT_FLOOR."""
