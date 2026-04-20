@@ -51,7 +51,8 @@ SAFE_CAPABILITIES: frozenset[str] = frozenset(
         # ipc_lock for processes that mlock memory (e.g. some DBs).
         "IPC_LOCK",
         "IPC_OWNER",
-        # Sync the container's filesystems before checkpoint / shutdown.
+        # Allow chroot(2) within the container's user namespace (needed by
+        # some init systems and container-in-container setups).
         "SYS_CHROOT",
     }
 )

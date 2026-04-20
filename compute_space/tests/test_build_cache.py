@@ -1,8 +1,7 @@
 """Tests for the ``/api/drop-docker-cache`` endpoint and its backing helper.
 
 The HTTP endpoint path is kept as ``drop-docker-cache`` for API stability,
-but internally it invokes
-``podman image prune --all --force --build-cache`` via
+but internally it invokes ``podman image prune --all --force`` via
 ``drop_docker_build_cache`` in compute_space.core.containers.
 """
 
@@ -37,7 +36,7 @@ def test_drop_build_cache_runs_podman_system_prune(
     output = drop_docker_build_cache()
 
     assert output == "Total reclaimed space: 12.3MB"
-    assert calls["cmd"] == ["podman", "image", "prune", "--all", "--force", "--build-cache"]
+    assert calls["cmd"] == ["podman", "image", "prune", "--all", "--force"]
     assert calls["capture_output"] is True
     assert calls["text"] is True
     assert calls["timeout"] == 120

@@ -383,13 +383,14 @@ def drop_docker_build_cache() -> str:
     it backs is ``/api/drop-docker-cache`` and we'd rather keep the JSON API
     stable than rename every caller.
 
-    Podman's closest analog to ``docker builder prune --all --force`` is
-    ``podman image prune --all --force --build-cache``: it removes every
-    dangling and unused image layer and the persistent
-    ``--mount=type=cache`` build cache, which together are what fill up
-    ``~/.local/share/containers`` on a build-heavy host.
+    Uses ``podman image prune --all --force``, which reclaims every
+    dangling and unused image layer.  That covers the large majority of
+    build-cache disk use on a rebuild-heavy host.  (Newer podman versions
+    expose a ``--build-cache`` flag specifically for the persistent
+    ``--mount=type=cache`` cache; we deliberately avoid it so the command
+    also works on the Podman 4.9 shipped with Ubuntu 24.04 LTS.)
     """
-    cmd = ["podman", "image", "prune", "--all", "--force", "--build-cache"]
+    cmd = ["podman", "image", "prune", "--all", "--force"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     output = (result.stdout + result.stderr).strip()

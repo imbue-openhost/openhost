@@ -23,8 +23,14 @@ def _recreate_table(db: sqlite3.Connection, table_name: str, keep_cols: list[str
     with open(_schema_path()) as f:
         schema_sql = f.read()
 
+    # Strip SQL ``-- ...`` line comments before searching so a comment that
+    # happens to contain a semicolon can't end the regex early.  This keeps
+    # schema.sql authors free to write semicolons in the prose explaining
+    # each column without having to think about the migration code.
+    uncommented = re.sub(r"--[^\n]*", "", schema_sql)
+
     pattern = rf"CREATE TABLE IF NOT EXISTS {re.escape(table_name)} \([^;]+\);"
-    m = re.search(pattern, schema_sql, re.DOTALL)
+    m = re.search(pattern, uncommented, re.DOTALL)
     if m is None:
         raise RuntimeError(f"Could not find CREATE TABLE {table_name} statement in schema.sql")
 
