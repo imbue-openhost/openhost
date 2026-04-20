@@ -24,6 +24,7 @@ from compute_space.core.containers import build_image
 from compute_space.core.containers import build_log_path
 from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.containers import run_container
+from compute_space.core.data import deprovision_data
 from compute_space.core.data import provision_data
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
@@ -271,12 +272,23 @@ def insert_and_deploy(
     )
     # Allocate this app's subuid/subgid window now that we have its id.
     # The mapping is sticky across rebuilds/restarts so on-disk file
-    # ownership stays consistent.
+    # ownership stays consistent.  If allocation fails (subuid pool
+    # exhausted), clean up the filesystem directories we already
+    # created in provision_data so a failed deploy doesn't orphan
+    # /data/app_data/<name> and /data/app_temp_data/<name>.
     app_id = cursor.lastrowid
     assert app_id is not None, "SQLite should always populate lastrowid on INSERT"
+    try:
+        uid_map_base = compute_uid_map_base(app_id)
+    except ValueError:
+        try:
+            deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
+        except Exception as cleanup_err:
+            logger.warning("Failed to clean up orphaned data dirs for %s: %s", app_name, cleanup_err)
+        raise
     db.execute(
         "UPDATE apps SET uid_map_base = ? WHERE id = ?",
-        (compute_uid_map_base(app_id), app_id),
+        (uid_map_base, app_id),
     )
 
     # Store resolved port mappings

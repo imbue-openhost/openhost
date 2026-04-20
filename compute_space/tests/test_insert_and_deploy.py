@@ -13,6 +13,7 @@ doesn't need podman or a Quart app context.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -98,10 +99,17 @@ def test_insert_and_deploy_sets_uid_map_base_from_formula(tmp_path: Path, monkey
 def test_insert_and_deploy_surfaces_pool_exhaustion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Forcing compute_uid_map_base to raise simulates an id past the
     subuid pool; insert_and_deploy should propagate the ValueError so the
-    /api/add_app route can translate it into a 400."""
+    /api/add_app route can translate it into a 400, and the filesystem
+    directories created by provision_data ahead of the allocation must
+    be cleaned up so a repeated failure doesn't leak one dir per retry.
+    """
     cfg = _make_test_config(tmp_path, port=18081)
     db = _open_db(cfg)
-    manifest: AppManifest = parse_manifest_from_string(_MANIFEST)
+    # Manifest with sqlite + app_temp_data so provision_data actually
+    # creates a non-trivial filesystem layout we can assert was cleaned up.
+    manifest: AppManifest = parse_manifest_from_string(
+        _MANIFEST + '\n[data]\nsqlite = ["main"]\napp_temp_data = true\n'
+    )
     _stub_deps(monkeypatch)
 
     def _boom(_app_id: int) -> int:
@@ -121,3 +129,8 @@ def test_insert_and_deploy_surfaces_pool_exhaustion(tmp_path: Path, monkeypatch:
             db,
             grant_permissions=set(),
         )
+
+    # provision_data eagerly created these; the failure path must
+    # remove them so a retry doesn't leak anything.
+    assert not os.path.exists(os.path.join(cfg.persistent_data_dir, "app_data", "notes"))
+    assert not os.path.exists(os.path.join(cfg.temporary_data_dir, "app_temp_data", "notes"))
