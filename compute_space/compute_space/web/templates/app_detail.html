@@ -118,7 +118,7 @@
   "appStatus": {{ app.status | tojson }},
   "nextUrl": {{ next_url | default("", true) | tojson }},
   "reloadAppUrl": "{{ url_for('api_apps.reload_app', app_name=app.name) }}",
-  "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}"
+  "dropBuildCacheUrl": "{{ url_for('api_system.drop_build_cache_endpoint') }}"
 }
 </script>
 <script src="{{ url_for('static', filename='js/app-detail.js') }}"></script>

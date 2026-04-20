@@ -228,7 +228,10 @@ def app_status(app_name: str) -> ResponseReturnValue:
         return jsonify({"error": "not found"}), 404
     error_msg = app_row["error_message"]
     error_kind = None
-    if error_msg and BUILD_CACHE_CORRUPT_MARKER in error_msg:
+    # Accept both the current marker and the legacy ``[CACHE_CORRUPT]``
+    # one so error_message rows written before the rename still surface
+    # the 'drop cache and rebuild' remediation in the UI.
+    if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or "[CACHE_CORRUPT]" in error_msg):
         error_kind = "build_cache_corrupt"
         error_msg = "Container build cache is corrupted."
     return jsonify({"status": app_row["status"], "error": error_msg, "error_kind": error_kind})

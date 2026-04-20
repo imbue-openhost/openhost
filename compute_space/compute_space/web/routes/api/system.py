@@ -12,7 +12,7 @@ from quart import request
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-from compute_space.core.containers import drop_docker_build_cache
+from compute_space.core.containers import drop_build_cache
 from compute_space.core.logging import get_log_path
 from compute_space.core.security import is_sshd_active
 from compute_space.core.security import run_audit
@@ -205,14 +205,16 @@ async def toggle_ssh() -> Response:
 
 @api_system_bp.route("/api/drop-docker-cache", methods=["POST"])
 @login_required
-def drop_docker_cache() -> Response | tuple[Response, int]:
+def drop_build_cache_endpoint() -> Response | tuple[Response, int]:
     """Drop the container build cache to free disk space.
 
-    URL path and function name are kept as ``drop-docker-cache`` /
-    ``drop_docker_cache`` for dashboard API stability.
+    The URL path (``/api/drop-docker-cache``) is kept stable for the
+    dashboard's existing JS, but the Python function name can change
+    freely — Quart binds the route by the string in the decorator, not
+    the function name.
     """
     try:
-        output = drop_docker_build_cache()
+        output = drop_build_cache()
     except RuntimeError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({"ok": True, "output": output})

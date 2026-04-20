@@ -436,12 +436,8 @@ def remove_image(app_name: str) -> None:
     subprocess.run(["podman", "rmi", image_tag], capture_output=True, timeout=30)
 
 
-def drop_docker_build_cache() -> str:
+def drop_build_cache() -> str:
     """Drop the container engine's build cache.  Returns human-readable output.
-
-    Named ``drop_docker_build_cache`` for HTTP API stability — the endpoint
-    it backs is ``/api/drop-docker-cache`` and we'd rather keep the JSON API
-    stable than rename every caller.
 
     Uses ``podman image prune --all --force``, which reclaims every
     dangling and unused image layer.  That covers the large majority of

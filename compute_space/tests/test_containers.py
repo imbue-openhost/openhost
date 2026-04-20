@@ -112,8 +112,9 @@ def test_build_image_detects_every_known_cache_corrupt_fragment(
     monkeypatch: pytest.MonkeyPatch, fragment: str
 ) -> None:
     """Every substring in _BUILD_CACHE_CORRUPT_FRAGMENTS must trigger the
-    BUILD_CACHE_CORRUPT marker so the dashboard's 'drop cache' toast
-    offers a remediation, not a blind retry."""
+    BUILD_CACHE_CORRUPT marker via the non-streaming build code path
+    (no temp_data_dir) so the dashboard's 'drop cache' toast offers a
+    remediation, not a blind retry."""
 
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         return _FakeCompleted(1, stderr=fragment)
@@ -122,6 +123,46 @@ def test_build_image_detects_every_known_cache_corrupt_fragment(
 
     with pytest.raises(RuntimeError) as exc_info:
         build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "error: content digest sha256:deadbeef: not found",
+        "Error: storage-driver errored: something happened",
+        "Error: layer not known: sha256:whatever",
+    ],
+)
+def test_build_image_streaming_path_detects_cache_corrupt(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fragment: str
+) -> None:
+    """The streaming build path (temp_data_dir set) assembles build_output
+    incrementally from Popen.stdout and then runs the same substring check.
+    It needs its own regression coverage because the non-streaming code
+    path uses a different subprocess API.
+    """
+
+    class _FakePopen:
+        def __init__(self, *a, **_kw):  # type: ignore[no-untyped-def]
+            # Every line of the "build" ends with a newline; the code under
+            # test iterates over proc.stdout and appends to build_output.
+            self.stdout = iter([fragment + "\n"])
+            self.returncode = 1
+
+        def wait(self, timeout: int | None = None) -> int:
+            return self.returncode
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr("compute_space.core.containers.subprocess.Popen", _FakePopen)
+
+    temp_data_dir = str(tmp_path / "temp")
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", "myapp"), exist_ok=True)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=temp_data_dir)
     assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
 
 
