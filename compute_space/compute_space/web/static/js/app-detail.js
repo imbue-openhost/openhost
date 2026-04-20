@@ -81,8 +81,14 @@ function showToast(message, actions) {
     return toast;
 }
 
+// Accept both the new and legacy error-kind strings so a browser that
+// picked up an older router's JSON response still shows the toast.
+function isCacheCorruptKind(kind) {
+    return kind === 'build_cache_corrupt' || kind === 'cache_corrupt';
+}
+
 function clearCacheAndReload() {
-    showToast('Clearing Docker build cache...', []);
+    showToast('Clearing build cache...', []);
     fetch(config.dropDockerCacheUrl, {method: 'POST', credentials: 'same-origin'})
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -123,7 +129,7 @@ function clearCacheAndReload() {
         if (sessionStorage.getItem(toastKey)) return;
         sessionStorage.setItem(toastKey, '1');
         showToast(
-            'Docker build cache is corrupted. Clear it and rebuild?',
+            'Container build cache is corrupted. Clear it and rebuild?',
             [
                 { label: 'Clear Cache & Rebuild', primary: true, onClick: clearCacheAndReload },
                 { label: 'Dismiss', primary: false, onClick: function() {} }
@@ -143,7 +149,7 @@ function clearCacheAndReload() {
                 if (appStatus === 'running' && nextUrl) {
                     window.location.href = nextUrl;
                 }
-                if (appStatus === 'error' && data.error_kind === 'cache_corrupt') {
+                if (appStatus === 'error' && isCacheCorruptKind(data.error_kind)) {
                     showCacheCorruptToast();
                 }
             });
@@ -154,7 +160,7 @@ function clearCacheAndReload() {
         fetch(config.appStatusUrl)
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                if (data.error_kind === 'cache_corrupt') showCacheCorruptToast();
+                if (isCacheCorruptKind(data.error_kind)) showCacheCorruptToast();
             });
     }
 

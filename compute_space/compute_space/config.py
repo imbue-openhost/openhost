@@ -43,6 +43,10 @@ class Config:
     port_range_start: int
     port_range_end: int
 
+    # Container runtime: which runtime manages app containers.
+    # Supported values are defined in compute_space.core.runtimes.factory.
+    container_runtime: str
+
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
 
@@ -159,6 +163,9 @@ class DefaultConfig(Config):
     # Ports
     port_range_start: int = 9000
     port_range_end: int = 9999
+
+    # Container runtime
+    container_runtime: str = "docker"
 
 
 def load_config() -> Config:
