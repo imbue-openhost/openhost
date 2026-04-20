@@ -6,6 +6,12 @@
   args:
     creates: /home/host/.pixi/bin/pixi
 
+- name: Add pixi to PATH in .bashrc
+  lineinfile:
+    path: /home/host/.bashrc
+    line: 'export PATH="$HOME/.pixi/bin:$PATH"'
+    create: yes
+
 - name: Install pixi dependencies (caddy, coredns)
   shell: /home/host/.pixi/bin/pixi install
   args:

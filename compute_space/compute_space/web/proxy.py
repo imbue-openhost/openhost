@@ -117,7 +117,9 @@ async def proxy_request(
     )
 
 
-async def ws_proxy(target_port: int, base_path: str, client_ws: Websocket) -> None:
+async def ws_proxy(
+    target_port: int, base_path: str, client_ws: Websocket, identity_headers: dict[str, str] | None = None
+) -> None:
     """Bidirectionally proxy a WebSocket connection to a backend app.
 
     Uses Quart's native websocket object and the async websockets library.
@@ -167,6 +169,8 @@ async def ws_proxy(target_port: int, base_path: str, client_ws: Websocket) -> No
     extra_headers["X-Forwarded-For"] = client_ws.remote_addr or ""
     extra_headers["X-Forwarded-Proto"] = client_ws.scheme
     extra_headers["X-Forwarded-Host"] = client_ws.host
+    if identity_headers:
+        extra_headers.update(identity_headers)
 
     # Accept the client WebSocket before connecting to the backend so
     # the handshake completes and both send/receive are immediately usable.

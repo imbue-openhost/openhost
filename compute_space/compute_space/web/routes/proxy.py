@@ -295,4 +295,7 @@ async def _ws_proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: s
         if not is_public:
             return
 
-    await ws_proxy(app_row["local_port"], base_path, websocket)
+    identity_headers = {
+        "X-OpenHost-Is-Owner": "true" if claims and claims.get("sub") == "owner" else "",
+    }
+    await ws_proxy(app_row["local_port"], base_path, websocket, identity_headers=identity_headers)
