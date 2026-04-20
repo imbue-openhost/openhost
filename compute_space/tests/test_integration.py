@@ -477,7 +477,7 @@ def test_claim_token_deleted_after_setup(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Full lifecycle: deploy app (Docker), proxy, interact, remove
+# Full lifecycle: deploy app (podman), proxy, interact, remove
 # ---------------------------------------------------------------------------
 
 _FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")

@@ -18,7 +18,6 @@ from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
 from compute_space.core.containers import build_image
 from compute_space.core.containers import compute_uid_map_base
-from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.containers import get_container_status
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
@@ -233,6 +232,55 @@ def test_run_container_adds_manifest_capabilities(tmp_path, monkeypatch: pytest.
         assert pair_idx > drop_idx, "cap-drop must come before cap-add"
 
 
+def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With access_all_data, the app sees /data/app_data/ and
+    /data/app_temp_data/ as whole-namespace parent mounts, not just its
+    own subdir.  This is security-sensitive because a typo here would
+    expose every app's data to every app; pin the exact mount layout."""
+    manifest = _basic_manifest(access_all_data=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    # Every mount must be idmap (rw or ro).
+    for v in volume_args:
+        assert v.endswith(":idmap") or v.endswith(":ro,idmap"), v
+
+    # Specifically, the app_data/app_temp_data parent mounts must be the
+    # *parent* directories, not the per-app subdirectories.
+    targets = [v.rsplit(":", 2)[1] for v in volume_args]
+    assert "/data/app_data" in targets
+    assert "/data/app_temp_data" in targets
+    # vm_data is still mounted rw when access_all_data is on.
+    assert "/data/vm_data" in targets
+
+
+def test_run_container_port_mappings_bind_tcp_and_udp_on_all_interfaces(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manifests with [[ports]] should publish TCP and UDP on 0.0.0.0 for
+    every entry.  Port mappings are user-visible and binding to the wrong
+    interface or protocol would silently break apps."""
+    manifest = _basic_manifest()
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        port_mappings=[
+            PortMapping(label="wg", container_port=51820, host_port=51820),
+            PortMapping(label="dns", container_port=5300, host_port=5300),
+        ],
+    )
+
+    # Collect every -p value.
+    p_values = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-p"]
+    # Two mappings -> 4 extra -p entries (tcp+udp each), plus the main HTTP
+    # port mapping that run_container always adds (127.0.0.1:local_port:ctnr).
+    assert "0.0.0.0:51820:51820/tcp" in p_values
+    assert "0.0.0.0:51820:51820/udp" in p_values
+    assert "0.0.0.0:5300:5300/tcp" in p_values
+    assert "0.0.0.0:5300:5300/udp" in p_values
+
+
 # ---------------------------------------------------------------------------
 # stop, remove, status, cache drop
 # ---------------------------------------------------------------------------
@@ -275,15 +323,5 @@ def test_get_container_status_returns_unknown_on_failure(monkeypatch: pytest.Mon
     assert get_container_status("bogus") == "unknown"
 
 
-def test_drop_docker_build_cache_runs_podman_system_prune(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, capture_output=False, text=False, timeout=120, **_):  # type: ignore[no-untyped-def]
-        calls.append(list(cmd))
-        return _FakeCompleted(0, stdout="Total reclaimed space: 12.3MB")
-
-    _patch_subprocess_run(monkeypatch, fake_run)
-
-    output = drop_docker_build_cache()
-    assert calls == [["podman", "system", "prune", "-f", "--build"]]
-    assert output == "Total reclaimed space: 12.3MB"
+# NOTE: build-cache drop is exercised in test_build_cache.py with the
+# same subprocess mock plus kwarg assertions.  Not duplicated here.

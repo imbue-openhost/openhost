@@ -114,9 +114,9 @@ def compute_uid_map_base(app_id: int) -> int:
 def build_log_path(app_name: str, temp_data_dir: str) -> str:
     """Return the path to the build/deploy log file for an app.
 
-    The single source of truth for where build and runtime logs land for
-    a given app.  The dashboard and docs refer to ``docker.log`` as the
-    historical filename; changing it requires updating both.
+    The single source of truth for where build and runtime logs land.
+    Every caller (router, dashboard log view, app_log_path helper) should
+    funnel through this function rather than recomputing the path.
     """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 
