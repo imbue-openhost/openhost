@@ -381,15 +381,20 @@ def drop_docker_build_cache() -> str:
 
     Named ``drop_docker_build_cache`` for HTTP API stability — the endpoint
     it backs is ``/api/drop-docker-cache`` and we'd rather keep the JSON API
-    stable than rename every caller.  The actual operation is
-    ``podman system prune --build``.
+    stable than rename every caller.
+
+    Podman's closest analog to ``docker builder prune --all --force`` is
+    ``podman image prune --all --force --build-cache``: it removes every
+    dangling and unused image layer and the persistent
+    ``--mount=type=cache`` build cache, which together are what fill up
+    ``~/.local/share/containers`` on a build-heavy host.
     """
-    cmd = ["podman", "system", "prune", "-f", "--build"]
+    cmd = ["podman", "image", "prune", "--all", "--force", "--build-cache"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
-        raise RuntimeError(output or "podman system prune failed")
+        raise RuntimeError(output or "podman image prune failed")
     return output
 
 
