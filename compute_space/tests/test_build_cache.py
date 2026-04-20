@@ -1,7 +1,8 @@
 """Tests for the ``/api/drop-docker-cache`` endpoint and its backing helper.
 
 The HTTP endpoint path is kept as ``drop-docker-cache`` for API stability,
-but internally it invokes ``podman system prune --build`` via
+but internally it invokes
+``podman image prune --all --force --build-cache`` via
 ``drop_docker_build_cache`` in compute_space.core.containers.
 """
 
