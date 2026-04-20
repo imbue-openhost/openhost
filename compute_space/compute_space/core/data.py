@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import secrets as secrets_mod
 import shutil
+import subprocess
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -82,22 +83,38 @@ def provision_data(
 def _remove_dir(dir_path: str) -> None:
     """Remove a directory tree.
 
-    With rootless podman + idmapped mounts, every file under an app's data
-    directory is owned by the ``host`` user on disk, so a plain
-    ``shutil.rmtree`` succeeds without sudo or a privileged-container
-    fallback.  Errors are logged and swallowed — a failed cleanup should
-    not block app removal from the database.
+    With rootless podman + idmapped mounts, every file the router-managed
+    container writes is owned by the ``host`` user on disk, so a plain
+    ``shutil.rmtree`` succeeds without sudo.  A ``sudo -n rm -rf`` fallback
+    covers the residual case where legacy Docker-era root-owned files
+    linger on a host that was code-upgraded without reprovisioning; on a
+    clean podman install it is never used.
+
+    Errors from the sudo fallback are still swallowed (with a warning) so
+    a cleanup failure can't block removal of the app row from the database
+    or leave the storage guard stuck.
     """
     if not os.path.exists(dir_path):
         return
     try:
         shutil.rmtree(dir_path)
-    except OSError as e:
-        # An unexpected permission error here means something other than
-        # the router created a file we can't remove (or the idmapped mount
-        # was misconfigured).  Surface it so the operator can investigate
-        # but don't crash the calling path.
-        logger.warning("Failed to remove data dir %s: %s", dir_path, e)
+        return
+    except OSError as rmtree_err:
+        logger.warning(
+            "rmtree failed on %s (%s); falling back to sudo rm -rf",
+            dir_path,
+            rmtree_err,
+        )
+
+    try:
+        subprocess.run(
+            ["sudo", "-n", "rm", "-rf", dir_path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as sudo_err:
+        logger.warning("Failed to clean data dir %s via sudo: %s", dir_path, sudo_err)
 
 
 def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:

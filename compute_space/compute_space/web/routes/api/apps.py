@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import threading
 
 from quart import Blueprint
@@ -42,18 +43,25 @@ from compute_space.web.middleware import login_required
 def _rmtree_force(path: str) -> None:
     """Remove a directory tree, making entries writable if needed.
 
-    Git clones may checkout read-only files which block ``shutil.rmtree``;
+    Git clones may check out read-only files which block ``shutil.rmtree``;
     the onexc hook makes them writable and retries.  Under rootless podman
-    with idmapped mounts, container-written files end up owned by the host
-    ``host`` user already, so no privileged fallback (sudo / throwaway
-    container) is necessary.
+    with idmapped mounts, container-written files end up owned by the
+    ``host`` user already, so no privileged fallback is needed in the
+    common case.  The ``sudo -n rm -rf`` fallback exists only to rescue
+    legacy root-owned files left by the previous Docker runtime on a host
+    that was code-upgraded instead of reprovisioned; on a clean podman
+    install it never fires.
     """
 
     def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
         os.chmod(err_path, stat.S_IRWXU)
         func(err_path)
 
-    shutil.rmtree(path, onexc=_make_writable_and_retry)
+    try:
+        shutil.rmtree(path, onexc=_make_writable_and_retry)
+    except PermissionError:
+        logger.warning("rmtree failed on %s, falling back to sudo rm -rf", path)
+        subprocess.run(["sudo", "-n", "rm", "-rf", path], check=True, timeout=30)
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
