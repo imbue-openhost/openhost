@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import secrets as secrets_mod
 import shutil
-import subprocess
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -24,6 +23,10 @@ def provision_data(
     Apps only get filesystem access to directories they explicitly request
     via app_data and app_temp_data flags in [data]. SQLite entries
     implicitly enable app_data.
+
+    Under rootless podman with idmapped bind mounts, directories don't need
+    world-writable (0o777) permissions: the kernel rewrites uid/gid on
+    access so container-root writes land on disk owned by the ``host`` user.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -35,7 +38,6 @@ def provision_data(
 
     if needs_app_data:
         os.makedirs(app_data_dir, exist_ok=True)
-        os.chmod(app_data_dir, 0o777)
         env_vars["OPENHOST_APP_DATA_DIR"] = app_data_dir
 
         sqlite_dir = os.path.join(app_data_dir, "sqlite")
@@ -61,8 +63,12 @@ def provision_data(
     # Generate app token for cross-app service calls
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)
 
-    # Apps run in Docker bridge-mode containers where 127.0.0.1 is the
-    # container itself, not the host. Use host.docker.internal instead.
+    # Apps run in bridge-mode containers where 127.0.0.1 is the container
+    # itself, not the host.  podman run is invoked with
+    # --add-host=host.docker.internal:host-gateway (alongside
+    # host.containers.internal) so this URL resolves to the host's
+    # interface regardless of the runtime.  The Docker-style alias is
+    # preserved so manifests written for the old runtime need no change.
     env_vars["OPENHOST_ROUTER_URL"] = f"http://host.docker.internal:{port}"
 
     # Zone identity info so apps can build federated auth flows
@@ -74,38 +80,24 @@ def provision_data(
 
 
 def _remove_dir(dir_path: str) -> None:
-    """Remove a directory, falling back to docker for root-owned files.
+    """Remove a directory tree.
 
-    Docker containers run as root and may create root-owned files in
-    the mounted data volume.  Try a normal rmtree first; if that fails
-    due to permissions, fall back to ``docker run --rm`` to delete as root.
+    With rootless podman + idmapped mounts, every file under an app's data
+    directory is owned by the ``host`` user on disk, so a plain
+    ``shutil.rmtree`` succeeds without sudo or a privileged-container
+    fallback.  Errors are logged and swallowed — a failed cleanup should
+    not block app removal from the database.
     """
     if not os.path.exists(dir_path):
         return
     try:
         shutil.rmtree(dir_path)
-    except PermissionError:
-        logger.info("Permission denied on rmtree, using docker to clean %s", dir_path)
-        try:
-            subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "-v",
-                    f"{dir_path}:/cleanup",
-                    "alpine",
-                    "rm",
-                    "-rf",
-                    "/cleanup",
-                ],
-                capture_output=True,
-                timeout=30,
-            )
-            if os.path.exists(dir_path):
-                shutil.rmtree(dir_path, ignore_errors=True)
-        except Exception as e:
-            logger.warning("Failed to clean data dir %s: %s", dir_path, e)
+    except OSError as e:
+        # An unexpected permission error here means something other than
+        # the router created a file we can't remove (or the idmapped mount
+        # was misconfigured).  Surface it so the operator can investigate
+        # but don't crash the calling path.
+        logger.warning("Failed to remove data dir %s: %s", dir_path, e)
 
 
 def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:

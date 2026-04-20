@@ -305,3 +305,62 @@ class TestValidation:
         toml = '[app]\nname = "x"\nversion = "1"\n[runtime.container]\nimage = "Dockerfile"\n'
         with pytest.raises(ValueError, match="port"):
             parse_manifest_from_string(toml)
+
+
+class TestCapabilitiesValidation:
+    """Rootless podman constraints on [runtime.container].capabilities."""
+
+    def test_safe_cap_accepted(self):
+        toml = MINIMAL + 'capabilities = ["NET_ADMIN"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.capabilities == ["NET_ADMIN"]
+
+    def test_cap_prefix_is_stripped(self):
+        """Manifests using the linux cap CAP_* prefix still parse."""
+        toml = MINIMAL + 'capabilities = ["CAP_NET_ADMIN"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.capabilities == ["NET_ADMIN"]
+
+    def test_unsafe_cap_rejected(self):
+        """SYS_ADMIN grants real host privilege; must be rejected at parse time."""
+        toml = MINIMAL + 'capabilities = ["SYS_ADMIN"]\n'
+        with pytest.raises(ValueError, match="not safe"):
+            parse_manifest_from_string(toml)
+
+    def test_unknown_cap_rejected(self):
+        """Unknown caps are denied by default (tight allowlist)."""
+        toml = MINIMAL + 'capabilities = ["MADE_UP"]\n'
+        with pytest.raises(ValueError, match="not safe"):
+            parse_manifest_from_string(toml)
+
+    def test_non_list_caps_rejected(self):
+        toml = MINIMAL + 'capabilities = "NET_ADMIN"\n'
+        with pytest.raises(ValueError, match="list of strings"):
+            parse_manifest_from_string(toml)
+
+
+class TestUnprivilegedPortFloor:
+    """Rootless podman can't bind host_port < UNPRIVILEGED_PORT_FLOOR."""
+
+    def test_port_80_accepted(self):
+        toml = MINIMAL + '\n[[ports]]\nlabel = "http"\ncontainer_port = 80\nhost_port = 80\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.port_mappings[0].host_port == 80
+
+    def test_port_443_accepted(self):
+        toml = MINIMAL + '\n[[ports]]\nlabel = "https"\ncontainer_port = 443\nhost_port = 443\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.port_mappings[0].host_port == 443
+
+    def test_port_below_floor_rejected(self):
+        toml = MINIMAL + '\n[[ports]]\nlabel = "smtp"\ncontainer_port = 25\nhost_port = 25\n'
+        with pytest.raises(ValueError, match="unprivileged port floor"):
+            parse_manifest_from_string(toml)
+
+    def test_port_zero_still_allowed_for_autoassign(self):
+        """host_port=0 means the router auto-assigns; the floor check must
+        not clobber that sentinel.
+        """
+        toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.port_mappings[0].host_port == 0

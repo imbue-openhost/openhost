@@ -1,3 +1,10 @@
+"""Tests for the ``/api/drop-docker-cache`` endpoint and its backing helper.
+
+The HTTP endpoint path is kept as ``drop-docker-cache`` for API stability,
+but internally it invokes ``podman system prune --build`` via
+``drop_docker_build_cache`` in compute_space.core.containers.
+"""
+
 import subprocess
 
 import pytest
@@ -7,7 +14,7 @@ from compute_space.core.containers import drop_docker_build_cache
 from compute_space.web.routes.api import system as system_routes
 
 
-def test_drop_docker_build_cache_runs_builder_prune(
+def test_drop_build_cache_runs_podman_system_prune(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
@@ -29,13 +36,13 @@ def test_drop_docker_build_cache_runs_builder_prune(
     output = drop_docker_build_cache()
 
     assert output == "Total reclaimed space: 12.3MB"
-    assert calls["cmd"] == ["docker", "builder", "prune", "--all", "--force"]
+    assert calls["cmd"] == ["podman", "system", "prune", "-f", "--build"]
     assert calls["capture_output"] is True
     assert calls["text"] is True
     assert calls["timeout"] == 120
 
 
-def test_drop_docker_build_cache_raises_on_error(
+def test_drop_build_cache_raises_on_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run(cmd: list[str], capture_output: bool, text: bool, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -43,12 +50,12 @@ def test_drop_docker_build_cache_raises_on_error(
             args=cmd,
             returncode=1,
             stdout="",
-            stderr="Docker daemon error",
+            stderr="podman system prune error",
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    with pytest.raises(RuntimeError, match="Docker daemon error"):
+    with pytest.raises(RuntimeError, match="podman system prune error"):
         drop_docker_build_cache()
 
 
@@ -78,7 +85,7 @@ async def test_drop_docker_cache_endpoint_failure(
     app = Quart(__name__)
 
     def _raise_error() -> str:
-        raise RuntimeError("Docker daemon error")
+        raise RuntimeError("podman engine error")
 
     monkeypatch.setattr(system_routes, "drop_docker_build_cache", _raise_error)
 
@@ -87,4 +94,4 @@ async def test_drop_docker_cache_endpoint_failure(
         assert status_code == 500
         payload = await response.get_json()
 
-    assert payload == {"ok": False, "error": "Docker daemon error"}
+    assert payload == {"ok": False, "error": "podman engine error"}

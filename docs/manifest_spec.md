@@ -20,13 +20,15 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 | `image` | string | yes | — | Path to Dockerfile relative to repo root |
 | `port` | integer | yes | — | Port the container listens on |
 | `command` | string | no | — | Override container CMD |
-| `extra_ports` | string[] | no | `[]` | **Deprecated.** Use `[[ports]]` instead. Raw Docker `-p` format strings. |
-| `capabilities` | string[] | no | `[]` | Linux capabilities to add (e.g., `"NET_ADMIN"`) |
-| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/tun"`) |
+| `extra_ports` | string[] | no | `[]` | **Deprecated and ignored.** Use `[[ports]]` instead. |
+| `capabilities` | string[] | no | `[]` | Linux capabilities to grant inside the container. Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_CAPABILITIES`); entries like `"SYS_ADMIN"` are rejected at parse time. Accepts names with or without the `CAP_` prefix. |
+| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/net/tun"`). The host's `host` user must have permission on the device. |
 
 ### `[[ports]]` — optional, repeatable
 
 Declares additional port mappings for the container. Each entry binds a container port to a host port (TCP+UDP on 0.0.0.0). Set `host_port = 0` for auto-assignment from the 9000-9999 range.
+
+Rootless podman can bind ports >= 80 only; `host_port` values below 80 are rejected at parse time. Use `host_port = 80` / `443` / any value from the auto-assign range, or route through the built-in router proxy.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|

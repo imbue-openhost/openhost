@@ -6,14 +6,22 @@ This guide walks through building an app that runs on OpenHost.
 
 From the dashboard, click "Deploy New App" and provide a git repo URL (public or private - private GitHub repos will prompt for auth).
 
-The router reads `openhost.toml`, builds the Docker image, and starts routing requests to it. Apps are accessible at `https://{app_name}.{zone_domain}/` (e.g., `https://my-app.user.host.imbue.com/`).
+The router reads `openhost.toml`, builds the container image from your `Dockerfile` using rootless podman, and starts routing requests to it. Apps are accessible at `https://{app_name}.{zone_domain}/` (e.g., `https://my-app.user.host.imbue.com/`).
 
 
 ## Writing an app to run on OpenHost
 
-Apps can be anything that can run in a docker container, and accessed via HTTP(s).
+Apps can be anything that can run in an OCI container, and accessed via HTTP(s). OpenHost runs every app in rootless mode with its own user namespace, so the app image's root is mapped to an unprivileged subuid on the host.
 
 An `openhost.toml` manifest must be placed at the root of your repo, to indicate to OpenHost how to run your app. See the [manifest spec](manifest_spec.md) for the full field reference.
+
+### Rootless constraints
+
+A few things that work under classical Docker don't work here:
+
+- `[[ports]].host_port` values below 80 are rejected at manifest parse time — rootless podman cannot bind to privileged ports under 80 (the router lowers the unprivileged-port floor from 1024 to 80 so HTTP/HTTPS still work).
+- `[runtime.container].capabilities` is a tight allowlist.  Safe caps for rootless user namespaces (`NET_ADMIN`, `NET_RAW`, `NET_BIND_SERVICE`, `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID`, `KILL`, `MKNOD`, `SYS_CHROOT`, `IPC_LOCK`, a few others) are accepted; capabilities that require real host privilege (`SYS_ADMIN`, `SYS_MODULE`, `SYS_PTRACE`, ...) are rejected.  The exact list lives in `compute_space.core.manifest.SAFE_CAPABILITIES`.
+- `[runtime.container].devices` still works but the device must be accessible to the unprivileged `host` user on the server.  Standard devices like `/dev/net/tun` are fine once the host is configured for them.
 
 Here's an example of a simple app:
 

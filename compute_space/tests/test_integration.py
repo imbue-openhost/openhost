@@ -30,14 +30,14 @@ from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
 from compute_space.testing import wait_app_running
 
-from .conftest import _docker_cleanup
 from .conftest import _make_config_and_env
+from .conftest import _podman_cleanup
 from .conftest import _start_router_process
 from .conftest import _stop_router_process
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 
-requires_docker = pytest.mark.requires_docker
+requires_podman = pytest.mark.requires_podman
 
 
 def test_sqlite_provisioning():
@@ -499,7 +499,7 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
 
 
-@requires_docker
+@requires_podman
 class TestContainerGone:
     """Test that apps recover when their Docker container is completely gone.
 
@@ -533,7 +533,7 @@ class TestContainerGone:
         db_path = config.db_path
         router = None
 
-        _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+        _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
         try:
             # ---- Phase 1: Deploy and verify the app is running ----
@@ -585,10 +585,10 @@ class TestContainerGone:
             try:
                 db.row_factory = sqlite3.Row
                 row = db.execute(
-                    "SELECT docker_container_id FROM apps WHERE name = ?",
+                    "SELECT container_id FROM apps WHERE name = ?",
                     (self.APP_NAME,),
                 ).fetchone()
-                old_container_id = row["docker_container_id"]
+                old_container_id = row["container_id"]
             finally:
                 db.close()
             assert old_container_id, "Should have a container ID after deploy"
@@ -599,19 +599,19 @@ class TestContainerGone:
 
             # Remove container AND image — simulates Docker state loss
             subprocess.run(
-                ["docker", "rm", "-f", self.CONTAINER_NAME],
+                ["podman", "rm", "-f", self.CONTAINER_NAME],
                 capture_output=True,
                 timeout=30,
             )
             subprocess.run(
-                ["docker", "rmi", "-f", f"openhost-{self.APP_NAME}:latest"],
+                ["podman", "rmi", "-f", f"openhost-{self.APP_NAME}:latest"],
                 capture_output=True,
                 timeout=30,
             )
 
             # Verify container is truly gone
             result = subprocess.run(
-                ["docker", "inspect", self.CONTAINER_NAME],
+                ["podman", "inspect", self.CONTAINER_NAME],
                 capture_output=True,
                 timeout=10,
             )
@@ -635,12 +635,12 @@ class TestContainerGone:
                     try:
                         poll_db.row_factory = sqlite3.Row
                         poll_row = poll_db.execute(
-                            "SELECT status, docker_container_id FROM apps WHERE name = ?",
+                            "SELECT status, container_id FROM apps WHERE name = ?",
                             (self.APP_NAME,),
                         ).fetchone()
                         if poll_row:
                             db_status = poll_row["status"]
-                            new_container_id = poll_row["docker_container_id"]
+                            new_container_id = poll_row["container_id"]
                     finally:
                         poll_db.close()
                 except Exception:
@@ -695,10 +695,10 @@ class TestContainerGone:
                 except Exception:
                     pass
                 _stop_router_process(router)
-            _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+            _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
 
-@requires_docker
+@requires_podman
 class TestDockerRestart:
     """Test that apps recover after a Docker daemon restart.
 
@@ -713,7 +713,7 @@ class TestDockerRestart:
     ROUTER_PORT = 18081
     BASE_URL = "http://127.0.0.1:18081"
 
-    def test_app_status_after_docker_restart(self, tmp_path):
+    def test_app_status_after_container_restart(self, tmp_path):
         """After Docker daemon restart, router should rebuild and show app as 'running'.
 
         Exercises the Docker-restart scenario:
@@ -730,7 +730,7 @@ class TestDockerRestart:
         router = None
 
         # Clean up any leftover containers from previous runs
-        _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+        _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
         try:
             # ---- Phase 1: Deploy and verify the app is running ----
@@ -792,19 +792,19 @@ class TestDockerRestart:
             _stop_router_process(router)
             router = None
 
-            # Stop the Docker container (simulates Docker daemon shutdown)
+            # Stop the container (simulates the container engine shutting it down)
             result = subprocess.run(
-                ["docker", "stop", self.CONTAINER_NAME],
+                ["podman", "stop", self.CONTAINER_NAME],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
-            assert result.returncode == 0, f"docker stop failed: {result.stderr}"
+            assert result.returncode == 0, f"podman stop failed: {result.stderr}"
 
             # Verify container is stopped
             result = subprocess.run(
                 [
-                    "docker",
+                    "podman",
                     "inspect",
                     "--format",
                     "{{.State.Status}}",
@@ -814,7 +814,7 @@ class TestDockerRestart:
                 text=True,
                 timeout=10,
             )
-            assert result.stdout.strip() == "exited", "Container should be exited after docker stop"
+            assert result.stdout.strip() == "exited", "Container should be exited after podman stop"
 
             # ---- Phase 3: Restart router (triggers check_app_status) ----
             #
@@ -827,14 +827,14 @@ class TestDockerRestart:
             #
             # check_app_status() should have already started the container
             # during Phase 3.  Verify it is running *before* any additional
-            # docker start call -- this ensures the router's init logic
+            # podman start call -- this ensures the router's init logic
             # (not a later manual start) is what brought the container back.
             deadline = time.time() + 15
             container_running = False
             while time.time() < deadline:
                 result = subprocess.run(
                     [
-                        "docker",
+                        "podman",
                         "inspect",
                         "--format",
                         "{{.State.Status}}",
@@ -945,10 +945,10 @@ class TestDockerRestart:
                 except Exception:
                     pass
                 _stop_router_process(router)
-            _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+            _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
 
-@requires_docker
+@requires_podman
 class TestDockerE2E:
     """
     End-to-end test of the Docker deployment path using a minimal test app.
@@ -1145,11 +1145,11 @@ class TestDockerE2E:
         assert not os.path.exists(app_data)
         assert not os.path.exists(app_temp)
 
-    def test_docker_cleaned_up(self):
-        """Docker container should be removed after app removal."""
+    def test_container_cleaned_up(self):
+        """Container should be removed after app removal."""
         r = subprocess.run(
             [
-                "docker",
+                "podman",
                 "ps",
                 "-a",
                 "--filter",
@@ -1170,7 +1170,7 @@ class TestDockerE2E:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_podman
 class TestRemoveKeepData:
     """
     Test that 'Remove App (Keep Data)' preserves persistent app data so the
@@ -1322,7 +1322,7 @@ def _create_bare_git_repo(source_dir, bare_repo_path):
     return bare_repo_path
 
 
-@requires_docker
+@requires_podman
 class TestGitUrlDeployE2E:
     """
     End-to-end test of deploying an app from a Git URL.
@@ -1485,11 +1485,11 @@ class TestGitUrlDeployE2E:
         assert not os.path.exists(app_data)
         assert not os.path.exists(app_temp)
 
-    def test_docker_cleaned_up(self):
-        """Docker container should be removed after app removal."""
+    def test_container_cleaned_up(self):
+        """Container should be removed after app removal."""
         r = subprocess.run(
             [
-                "docker",
+                "podman",
                 "ps",
                 "-a",
                 "--filter",

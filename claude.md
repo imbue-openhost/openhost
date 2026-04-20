@@ -21,15 +21,15 @@ openhost/
 
 ## how components connect
 
-1. **compute_space** is a quart app (port 8080). it reads `openhost.toml` manifests from app repos, builds Docker images, and runs containers.
+1. **compute_space** is a quart app (port 8080). it reads `openhost.toml` manifests from app repos, builds images from each app's `Dockerfile` using rootless podman, and runs each app in its own user namespace.
 2. it proxies incoming HTTP requests to the correct app by matching subdomain or URL path prefix (`/{app_name}`).
 3. **auth** uses JWT with RS256. apps verify with the public key passed as env var.
 
 ## running and testing
 
 - **all lightweight tests**: `uv run --group dev pytest` (from project root)
-- **+ Docker tests**: `uv run --group dev pytest --run-docker`
-- **everything**: `uv run --group dev pytest --run-docker`
+- **+ podman integration tests**: `uv run --group dev pytest --run-podman`
+- **everything**: `uv run --group dev pytest --run-podman`
 - **compute_space**: `cd compute_space && python -m compute_space`
 - **compute_space tests**: `uv run --group dev pytest compute_space/tests/ -v`
 

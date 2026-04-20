@@ -17,8 +17,8 @@ def _check_app_status(config: Config) -> None:
     """On startup, verify apps marked 'running' are still alive.
 
     Apps that need rebuilding are restarted sequentially in a single
-    background thread to avoid concurrent Docker builds that can corrupt
-    BuildKit's content store.
+    background thread to avoid concurrent image builds against the same
+    containers-storage instance.
     """
     db = sqlite3.connect(config.db_path)
     db.row_factory = sqlite3.Row
@@ -27,12 +27,12 @@ def _check_app_status(config: Config) -> None:
         rows = db.execute("SELECT * FROM apps WHERE status = 'running'").fetchall()
         for row in rows:
             alive = False
-            if row["docker_container_id"]:
-                status = get_container_status(row["docker_container_id"])
+            if row["container_id"]:
+                status = get_container_status(row["container_id"])
                 alive = status == "running"
 
             if not alive:
-                if row["docker_container_id"]:
+                if row["container_id"]:
                     repo_path = row["repo_path"]
                     if not repo_path or not os.path.isdir(repo_path):
                         db.execute(

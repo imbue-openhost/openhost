@@ -8,6 +8,54 @@ import attr
 
 from compute_space.core.logging import logger
 
+# Unprivileged port floor.  Must match net.ipv4.ip_unprivileged_port_start
+# set by ansible/tasks/podman.yml.  Rootless podman containers cannot bind
+# the host side of a -p mapping below this value, so we reject such
+# manifests at parse time with a clear error.
+UNPRIVILEGED_PORT_FLOOR = 80
+
+# Capabilities that are safe to grant inside a rootless podman user
+# namespace.  The kernel restricts these to the namespace; they do not
+# grant any host privilege.  Anything outside this set is rejected at
+# parse time — either because it requires real host privilege
+# (SYS_ADMIN, SYS_MODULE, SYS_PTRACE, SYS_RAWIO, SYS_TIME, SYS_BOOT,
+# MAC_ADMIN, MAC_OVERRIDE) or because it effectively requires
+# CAP_SYS_ADMIN to do anything useful.
+#
+# Kept as a tight allowlist rather than a denylist so future kernel
+# capabilities are denied by default until someone vets them.
+SAFE_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        # Networking: needed by VPN-style apps (tailscale, wireguard).
+        "NET_ADMIN",
+        "NET_RAW",
+        "NET_BIND_SERVICE",
+        "NET_BROADCAST",
+        # File ownership / permissions within the user ns.
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "DAC_READ_SEARCH",
+        "FOWNER",
+        "FSETID",
+        "SETFCAP",
+        # Process control within the user ns.
+        "KILL",
+        "SETUID",
+        "SETGID",
+        "SETPCAP",
+        # Device node creation (needed by a few init systems); harmless
+        # inside a rootless user namespace since mknod is restricted.
+        "MKNOD",
+        # Audit writes (rarely used but harmless).
+        "AUDIT_WRITE",
+        # ipc_lock for processes that mlock memory (e.g. some DBs).
+        "IPC_LOCK",
+        "IPC_OWNER",
+        # Sync the container's filesystems before checkpoint / shutdown.
+        "SYS_CHROOT",
+    }
+)
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class PortMapping:
@@ -64,6 +112,34 @@ class AppManifest:
     raw_toml: str = ""
 
 
+def _validate_capabilities(caps: list[Any]) -> list[str]:
+    """Normalise and validate [runtime.container].capabilities.
+
+    Accepts strings with or without the ``CAP_`` prefix (podman uses the
+    un-prefixed form).  Rejects any capability not in SAFE_CAPABILITIES —
+    those either require real host privilege or effectively require it to
+    do anything useful, and granting them inside a rootless user namespace
+    either silently no-ops (confusing) or grants more power than intended.
+    """
+    if not isinstance(caps, list):
+        raise ValueError("[runtime.container].capabilities must be a list of strings")
+    normalised: list[str] = []
+    for entry in caps:
+        if not isinstance(entry, str):
+            raise ValueError(f"[runtime.container].capabilities must contain strings, got {type(entry).__name__}")
+        name = entry.strip().upper()
+        if name.startswith("CAP_"):
+            name = name[len("CAP_") :]
+        if name not in SAFE_CAPABILITIES:
+            allowed = ", ".join(sorted(SAFE_CAPABILITIES))
+            raise ValueError(
+                f"[runtime.container].capabilities entry {entry!r} is not safe to grant under "
+                f"rootless podman.  Allowed: {allowed}."
+            )
+        normalised.append(name)
+    return normalised
+
+
 def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
     """Parse and validate [[ports]] entries from manifest data."""
     seen_labels: set[str] = set()
@@ -88,6 +164,12 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
         hport = entry.get("host_port", 0)
         if not isinstance(hport, int) or hport < 0:
             raise ValueError(f"[[ports]] '{label}' host_port must be a non-negative integer")
+        if hport != 0 and hport < UNPRIVILEGED_PORT_FLOOR:
+            raise ValueError(
+                f"[[ports]] '{label}' host_port {hport} is below the unprivileged port floor "
+                f"({UNPRIVILEGED_PORT_FLOOR}); rootless podman cannot bind to it. "
+                f"Use a port >= {UNPRIVILEGED_PORT_FLOOR} or route through the openhost proxy."
+            )
         if hport != 0 and hport in seen_host_ports:
             raise ValueError(f"Duplicate host_port {hport} in [[ports]]")
         if hport != 0:
@@ -155,7 +237,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     manifest.container_image = container["image"]
     manifest.container_port = container["port"]
     manifest.container_command = container.get("command")
-    manifest.capabilities = container.get("capabilities", [])
+    manifest.capabilities = _validate_capabilities(container.get("capabilities", []))
     manifest.devices = container.get("devices", [])
 
     manifest.port_mappings = _parse_ports(data.get("ports", []))

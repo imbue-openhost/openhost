@@ -2,6 +2,10 @@ import os
 import re
 import sqlite3
 
+# Imported lazily-ish at top-level for the subuid backfill.  Kept here
+# rather than inside migrate() to make the dependency obvious.
+from compute_space.core.containers import compute_uid_map_base
+
 
 def _schema_path() -> str:
     return os.path.join(os.path.dirname(__file__), "schema.sql")
@@ -80,11 +84,14 @@ def _recover_temp_tables(db: sqlite3.Connection) -> None:
                 db.commit()
 
 
+def _apps_columns(db: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+
+
 def migrate(db: sqlite3.Connection) -> None:
     """Migrate older databases: add missing columns, drop obsolete ones, and recreate tables when constraints change."""
     _recover_temp_tables(db)
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
     if not columns:
         return  # Fresh DB — table doesn't exist yet, schema.sql will create it
     if "public_paths" not in columns:
@@ -98,8 +105,7 @@ def migrate(db: sqlite3.Connection) -> None:
 
     # Re-read columns after potential ALTER TABLEs above so the drop-column
     # migration copies all current columns (including just-added ones).
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     # Drop base_path and subdomain columns (no longer used).
     # base_path has a UNIQUE constraint so ALTER TABLE DROP won't work;
@@ -113,17 +119,13 @@ def migrate(db: sqlite3.Connection) -> None:
         finally:
             db.execute("PRAGMA foreign_keys=ON")
 
-    # Re-read columns after potential table recreation
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     if "repo_url" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN repo_url TEXT")
         db.commit()
 
-    # Re-read columns after potential ALTER TABLE
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     # Drop spin_pid column (serverless runtime removed) and update
     # runtime_type CHECK constraint.  Requires table recreation since
@@ -135,6 +137,33 @@ def migrate(db: sqlite3.Connection) -> None:
             _recreate_table(db, "apps", keep_cols)
         finally:
             db.execute("PRAGMA foreign_keys=ON")
+
+    columns = _apps_columns(db)
+
+    # Rename docker_container_id -> container_id (Docker -> Podman migration).
+    # SQLite >= 3.25 supports ALTER TABLE ... RENAME COLUMN.  Python 3.12
+    # ships with SQLite >= 3.37, so this is always available on supported
+    # interpreters.
+    if "docker_container_id" in columns and "container_id" not in columns:
+        db.execute("ALTER TABLE apps RENAME COLUMN docker_container_id TO container_id")
+        db.commit()
+        columns = _apps_columns(db)
+
+    # Add uid_map_base column (per-app subuid base for rootless podman).
+    # Backfilled below with the deterministic formula so existing apps keep
+    # stable on-disk ownership across the Docker -> Podman switch.
+    if "uid_map_base" not in columns:
+        db.execute("ALTER TABLE apps ADD COLUMN uid_map_base INTEGER NOT NULL DEFAULT 0")
+        # Every row pre-dating podman has uid_map_base=0; backfill using
+        # the same formula we'd use at insert time.  This is idempotent —
+        # a re-run picks the same value because it's a pure function of id.
+        rows = db.execute("SELECT id FROM apps WHERE uid_map_base = 0").fetchall()
+        for row in rows:
+            db.execute(
+                "UPDATE apps SET uid_map_base = ? WHERE id = ?",
+                (compute_uid_map_base(row[0]), row[0]),
+            )
+        db.commit()
 
     # Migrate owner table: add password_needs_set, make password_hash nullable.
     # SQLite cannot ALTER a column's NOT NULL constraint, so we recreate the

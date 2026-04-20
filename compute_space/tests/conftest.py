@@ -88,15 +88,15 @@ def _stop_router_process(proc: subprocess.Popen[Any]) -> None:
         proc.wait()
 
 
-def _docker_cleanup(container_name: str, app_name: str) -> None:
-    """Force-remove a test Docker container and image."""
+def _podman_cleanup(container_name: str, app_name: str) -> None:
+    """Force-remove a test container and image."""
     subprocess.run(
-        ["docker", "rm", "-f", container_name],
+        ["podman", "rm", "-f", container_name],
         capture_output=True,
         timeout=10,
     )
     subprocess.run(
-        ["docker", "rmi", "-f", f"openhost-{app_name}:latest"],
+        ["podman", "rmi", "-f", f"openhost-{app_name}:latest"],
         capture_output=True,
         timeout=10,
     )

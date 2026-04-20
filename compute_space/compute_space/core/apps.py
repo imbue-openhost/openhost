@@ -21,6 +21,7 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.core.containers import build_image
+from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.containers import run_container
 from compute_space.core.data import provision_data
 from compute_space.core.git_ops import parse_repo_url
@@ -242,7 +243,7 @@ def insert_and_deploy(
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
     )
 
-    db.execute(
+    cursor = db.execute(
         """INSERT INTO apps
            (name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
@@ -266,6 +267,15 @@ def insert_and_deploy(
             manifest.raw_toml,
             "building",
         ),
+    )
+    # Allocate this app's subuid/subgid window now that we have its id.
+    # The mapping is sticky across rebuilds/restarts so on-disk file
+    # ownership stays consistent.
+    app_id = cursor.lastrowid
+    assert app_id is not None, "SQLite should always populate lastrowid on INSERT"
+    db.execute(
+        "UPDATE apps SET uid_map_base = ? WHERE id = ?",
+        (compute_uid_map_base(app_id), app_id),
     )
 
     # Store resolved port mappings
@@ -342,8 +352,8 @@ def deploy_app_background(
     try:
         storage.check_before_deploy(config)
 
-        # Retry Docker builds for transient failures (daemon not ready yet,
-        # network blip during image pull, etc.).
+        # Retry container builds for transient failures (network blip during
+        # base-image pull, temporary lock contention, etc.).
         max_build_attempts = 3
         image_tag = ""
         for attempt in range(1, max_build_attempts + 1):
@@ -359,7 +369,7 @@ def deploy_app_background(
                 if attempt == max_build_attempts:
                     raise
                 logger.warning(
-                    "Docker build attempt %d/%d for %s failed, retrying in %ds",
+                    "Container build attempt %d/%d for %s failed, retrying in %ds",
                     attempt,
                     max_build_attempts,
                     app_name,
@@ -371,6 +381,12 @@ def deploy_app_background(
             (app_name,),
         )
         db.commit()
+        uid_map_row = db.execute(
+            "SELECT uid_map_base FROM apps WHERE name = ?",
+            (app_name,),
+        ).fetchone()
+        if uid_map_row is None:
+            raise RuntimeError(f"App {app_name!r} not found in database")
         container_id = run_container(
             app_name,
             image_tag,
@@ -379,10 +395,11 @@ def deploy_app_background(
             env_vars,
             config.persistent_data_dir,
             config.temporary_data_dir,
+            uid_map_base=uid_map_row["uid_map_base"],
             port_mappings=port_mappings,
         )
         db.execute(
-            "UPDATE apps SET docker_container_id = ? WHERE name = ?",
+            "UPDATE apps SET container_id = ? WHERE name = ?",
             (container_id, app_name),
         )
         db.commit()
@@ -534,6 +551,16 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         manifest.container_image,
         temp_data_dir=config.temporary_data_dir,
     )
+    # Migrated-in rows from a pre-podman schema may have uid_map_base=0;
+    # allocate on first start using the same deterministic formula as insert.
+    uid_map_base = app_row["uid_map_base"]
+    if not uid_map_base:
+        uid_map_base = compute_uid_map_base(app_row["id"])
+        db.execute(
+            "UPDATE apps SET uid_map_base = ? WHERE name = ?",
+            (uid_map_base, app_name),
+        )
+        db.commit()
     container_id = run_container(
         app_row["name"],
         image_tag,
@@ -542,10 +569,11 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         env_vars,
         config.persistent_data_dir,
         config.temporary_data_dir,
+        uid_map_base=uid_map_base,
         port_mappings=port_mappings,
     )
     db.execute(
-        "UPDATE apps SET docker_container_id = ? WHERE name = ?",
+        "UPDATE apps SET container_id = ? WHERE name = ?",
         (container_id, app_name),
     )
     db.commit()

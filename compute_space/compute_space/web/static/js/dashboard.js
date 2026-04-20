@@ -103,11 +103,11 @@ function restartRouter() {
   }
 }
 
-function dropDockerCache() {
-  if (!confirm('Drop Docker build cache? Running containers will not be stopped.')) return;
+function dropBuildCache() {
+  if (!confirm('Drop container build cache? Running containers will not be stopped.')) return;
 
-  var btn = document.getElementById('drop-docker-cache-btn');
-  var msg = document.getElementById('drop-docker-cache-msg');
+  var btn = document.getElementById('drop-build-cache-btn');
+  var msg = document.getElementById('drop-build-cache-msg');
   btn.disabled = true;
   msg.style.color = '#d97706';
   msg.textContent = 'Dropping cache...';
@@ -128,7 +128,7 @@ function dropDockerCache() {
         }
       }
       msg.style.color = '#16a34a';
-      msg.textContent = 'Docker build cache dropped.' + reclaimed;
+      msg.textContent = 'Build cache dropped.' + reclaimed;
     })
     .catch(function() {
       msg.style.color = '#dc3545';

@@ -10,7 +10,13 @@ CREATE TABLE IF NOT EXISTS apps (
     health_check TEXT,
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
-    docker_container_id TEXT,
+    container_id TEXT,
+    -- Host subuid base for this app's rootless-podman user namespace.
+    -- Allocated at insert time (see compute_uid_map_base) and sticky across
+    -- rebuilds so on-disk file ownership stays consistent.  0 is used for
+    -- rows migrated from the pre-podman schema that have not yet been
+    -- redeployed -- the migration code below backfills those on upgrade.
+    uid_map_base INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,

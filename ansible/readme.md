@@ -8,6 +8,10 @@
     - A record ns1.host.example.com -> machine IP
 - ACME account key at `ansible/secrets/certbot_private_key.json` (not in git; CI pulls from `ACME_ACCOUNT_KEY` GitHub secret — for local deploys, retrieve from there or your secret store)
 
+## runtime
+
+app containers run under rootless podman as the `host` user, with per-app user-namespace mappings (uidmap) and idmapped bind mounts for file ownership.  the server must be running on a filesystem that supports idmapped mounts (ext4, xfs, btrfs, tmpfs).  the bootstrap fails early with a clear error if this is not the case.
+
 ## full setup (fresh server)
 
 ```bash

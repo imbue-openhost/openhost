@@ -4,7 +4,6 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import threading
 
 from quart import Blueprint
@@ -23,6 +22,7 @@ from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
+from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
@@ -40,22 +40,20 @@ from compute_space.web.middleware import login_required
 
 
 def _rmtree_force(path: str) -> None:
-    """Remove a directory tree, handling files not owned by the current user.
+    """Remove a directory tree, making entries writable if needed.
 
-    Git clones (or Docker) may leave files owned by a different uid.
-    We first try a normal rmtree with chmod retry; if that fails (EPERM
-    because we don't own the files) we fall back to sudo rm -rf.
+    Git clones may checkout read-only files which block ``shutil.rmtree``;
+    the onexc hook makes them writable and retries.  Under rootless podman
+    with idmapped mounts, container-written files end up owned by the host
+    ``host`` user already, so no privileged fallback (sudo / throwaway
+    container) is necessary.
     """
 
     def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
         os.chmod(err_path, stat.S_IRWXU)
         func(err_path)
 
-    try:
-        shutil.rmtree(path, onexc=_make_writable_and_retry)
-    except PermissionError:
-        logger.warning("rmtree failed on {}, falling back to sudo rm -rf", path)
-        subprocess.run(["sudo", "-n", "rm", "-rf", path], check=True, timeout=30)
+    shutil.rmtree(path, onexc=_make_writable_and_retry)
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -220,9 +218,9 @@ def app_status(app_name: str) -> ResponseReturnValue:
         return jsonify({"error": "not found"}), 404
     error_msg = app_row["error_message"]
     error_kind = None
-    if error_msg and "[CACHE_CORRUPT]" in error_msg:
-        error_kind = "cache_corrupt"
-        error_msg = "Docker build cache is corrupted."
+    if error_msg and BUILD_CACHE_CORRUPT_MARKER in error_msg:
+        error_kind = "build_cache_corrupt"
+        error_msg = "Container build cache is corrupted."
     return jsonify({"status": app_row["status"], "error": error_msg, "error_kind": error_kind})
 
 
@@ -234,7 +232,7 @@ def app_logs(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return "App not found", 404
-    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["docker_container_id"])
+    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
     return logs, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
@@ -249,7 +247,7 @@ def stop_app(app_name: str) -> ResponseReturnValue:
     stop_app_process(app_row)
     stop_container(f"openhost-{app_name}")
     db.execute(
-        "UPDATE apps SET status = 'stopped', docker_container_id = NULL WHERE name = ?",
+        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
         (app_name,),
     )
     db.commit()
@@ -348,7 +346,7 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
 
     await asyncio.to_thread(stop_app_process, app_row)
     db.execute(
-        "UPDATE apps SET status = 'building', docker_container_id = NULL, error_message = NULL WHERE name = ?",
+        "UPDATE apps SET status = 'building', container_id = NULL, error_message = NULL WHERE name = ?",
         (app_name,),
     )
     db.commit()
@@ -424,7 +422,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     was_running = app_row["status"] in ("running", "starting", "building")
     stop_app_process(app_row)
     db.execute(
-        "UPDATE apps SET status = 'stopped', docker_container_id = NULL WHERE name = ?",
+        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
         (app_name,),
     )
     db.commit()

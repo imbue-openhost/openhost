@@ -82,7 +82,7 @@ function showToast(message, actions) {
 }
 
 function clearCacheAndReload() {
-    showToast('Clearing Docker build cache...', []);
+    showToast('Clearing build cache...', []);
     fetch(config.dropDockerCacheUrl, {method: 'POST', credentials: 'same-origin'})
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -123,7 +123,7 @@ function clearCacheAndReload() {
         if (sessionStorage.getItem(toastKey)) return;
         sessionStorage.setItem(toastKey, '1');
         showToast(
-            'Docker build cache is corrupted. Clear it and rebuild?',
+            'Container build cache is corrupted. Clear it and rebuild?',
             [
                 { label: 'Clear Cache & Rebuild', primary: true, onClick: clearCacheAndReload },
                 { label: 'Dismiss', primary: false, onClick: function() {} }
@@ -143,7 +143,7 @@ function clearCacheAndReload() {
                 if (appStatus === 'running' && nextUrl) {
                     window.location.href = nextUrl;
                 }
-                if (appStatus === 'error' && data.error_kind === 'cache_corrupt') {
+                if (appStatus === 'error' && data.error_kind === 'build_cache_corrupt') {
                     showCacheCorruptToast();
                 }
             });
@@ -154,7 +154,7 @@ function clearCacheAndReload() {
         fetch(config.appStatusUrl)
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                if (data.error_kind === 'cache_corrupt') showCacheCorruptToast();
+                if (data.error_kind === 'build_cache_corrupt') showCacheCorruptToast();
             });
     }
 

@@ -3,7 +3,7 @@
 Checks:
   - Python >= 3.12
   - uv available
-  - Docker daemon accessible
+  - Rootless podman accessible
   - Required ports not in use
   - Router code present
 """
@@ -41,20 +41,20 @@ def _check_uv() -> _Check:
     return _Check("uv installed", False, "uv not found on PATH")
 
 
-def _check_docker() -> _Check:
+def _check_podman() -> _Check:
     try:
         r = subprocess.run(
-            ["docker", "info"],
+            ["podman", "info"],
             capture_output=True,
             timeout=10,
         )
         if r.returncode == 0:
-            return _Check("Docker daemon", True, "running")
-        return _Check("Docker daemon", False, "docker info failed")
+            return _Check("Podman available", True, "rootless mode")
+        return _Check("Podman available", False, "podman info failed")
     except FileNotFoundError:
-        return _Check("Docker daemon", False, "docker not found on PATH")
+        return _Check("Podman available", False, "podman not found on PATH")
     except subprocess.TimeoutExpired:
-        return _Check("Docker daemon", False, "docker info timed out")
+        return _Check("Podman available", False, "podman info timed out")
 
 
 def _check_port(port: int) -> _Check:
@@ -95,7 +95,7 @@ def run_doctor() -> bool:
     checks: list[_Check] = [
         _check_python(),
         _check_uv(),
-        _check_docker(),
+        _check_podman(),
         _check_port(8080),
         _check_router_code(),
     ]
