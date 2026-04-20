@@ -1,9 +1,7 @@
-"""Tests for the ``/api/drop-docker-cache`` endpoint and its backing helper.
+"""Tests for the ``/api/drop-build-cache`` endpoint and its backing helper.
 
-The HTTP endpoint path is kept as ``drop-docker-cache`` for JS API
-stability (the dashboard JavaScript hard-codes it), but internally it
-invokes ``podman image prune --all --force`` via ``drop_build_cache`` in
-compute_space.core.containers.
+The endpoint runs ``podman image prune --all --force`` via
+``drop_build_cache`` in compute_space.core.containers.
 """
 
 import subprocess

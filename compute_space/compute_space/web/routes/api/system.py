@@ -203,16 +203,10 @@ async def toggle_ssh() -> Response:
 # ─── Router restart ───
 
 
-@api_system_bp.route("/api/drop-docker-cache", methods=["POST"])
+@api_system_bp.route("/api/drop-build-cache", methods=["POST"])
 @login_required
 def drop_build_cache_endpoint() -> Response | tuple[Response, int]:
-    """Drop the container build cache to free disk space.
-
-    The URL path (``/api/drop-docker-cache``) is kept stable for the
-    dashboard's existing JS, but the Python function name can change
-    freely — Quart binds the route by the string in the decorator, not
-    the function name.
-    """
+    """Drop the container build cache to free disk space."""
     try:
         output = drop_build_cache()
     except RuntimeError as e:
