@@ -16,6 +16,7 @@ from compute_space.core import containers
 from compute_space.core.containers import UID_MAP_BASE_START
 from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
+from compute_space.core.containers import _translate_env_for_container
 from compute_space.core.containers import build_image
 from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.containers import get_container_status
@@ -202,6 +203,69 @@ def _run_and_capture(
     return run_cmds[0]
 
 
+# ---------------------------------------------------------------------------
+# _translate_env_for_container
+# ---------------------------------------------------------------------------
+
+
+def test_translate_env_rewrites_openhost_app_data_dir_to_container_path() -> None:
+    """The router hands the host path; inside the container the app needs
+    the mount-target path.  A subtle mistake here silently breaks every
+    app that reads OPENHOST_APP_DATA_DIR."""
+    translated = _translate_env_for_container(
+        {"OPENHOST_APP_DATA_DIR": "/host/persistent_data/app_data/notes"},
+        app_name="notes",
+        app_data_dir="/host/persistent_data/app_data/notes",
+    )
+    assert translated["OPENHOST_APP_DATA_DIR"] == "/data/app_data/notes"
+
+
+def test_translate_env_rewrites_openhost_app_temp_dir_to_container_path() -> None:
+    translated = _translate_env_for_container(
+        {"OPENHOST_APP_TEMP_DIR": "/host/temporary_data/app_temp_data/notes"},
+        app_name="notes",
+        app_data_dir="/host/persistent_data/app_data/notes",
+    )
+    assert translated["OPENHOST_APP_TEMP_DIR"] == "/data/app_temp_data/notes"
+
+
+def test_translate_env_rewrites_openhost_sqlite_paths_relative_to_app_data() -> None:
+    """SQLite db paths live under app_data_dir; the rewrite must preserve
+    the sub-path (e.g. sqlite/main.db) under the container-side mount."""
+    translated = _translate_env_for_container(
+        {
+            "OPENHOST_SQLITE_main": "/host/persistent_data/app_data/notes/sqlite/main.db",
+            "OPENHOST_SQLITE_cache": "/host/persistent_data/app_data/notes/sqlite/cache.db",
+        },
+        app_name="notes",
+        app_data_dir="/host/persistent_data/app_data/notes",
+    )
+    assert translated["OPENHOST_SQLITE_main"] == "/data/app_data/notes/sqlite/main.db"
+    assert translated["OPENHOST_SQLITE_cache"] == "/data/app_data/notes/sqlite/cache.db"
+
+
+def test_translate_env_passes_unrelated_keys_through_unchanged() -> None:
+    """Only OpenHost-controlled paths get rewritten; everything else must
+    reach the container untouched."""
+    translated = _translate_env_for_container(
+        {
+            "OPENHOST_APP_NAME": "notes",
+            "OPENHOST_ZONE_DOMAIN": "example.local",
+            "MY_APP_TOKEN": "secret-token",
+        },
+        app_name="notes",
+        app_data_dir="/host/app_data",
+    )
+    assert translated["OPENHOST_APP_NAME"] == "notes"
+    assert translated["OPENHOST_ZONE_DOMAIN"] == "example.local"
+    assert translated["MY_APP_TOKEN"] == "secret-token"
+
+
+# ---------------------------------------------------------------------------
+# run_container
+# ---------------------------------------------------------------------------
+
+
 def test_run_container_has_hardening_flags(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _basic_manifest()
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
@@ -282,8 +346,10 @@ def test_run_container_port_mappings_bind_tcp_and_udp_on_all_interfaces(
 
     # Collect every -p value.
     p_values = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-p"]
-    # Two mappings -> 4 extra -p entries (tcp+udp each), plus the main HTTP
-    # port mapping that run_container always adds (127.0.0.1:local_port:ctnr).
+    # The main loopback-only HTTP mapping must always be present, and the
+    # two [[ports]] entries must each expand to a tcp + udp publish on
+    # 0.0.0.0.
+    assert "127.0.0.1:9001:8080" in p_values
     assert "0.0.0.0:51820:51820/tcp" in p_values
     assert "0.0.0.0:51820:51820/udp" in p_values
     assert "0.0.0.0:5300:5300/tcp" in p_values

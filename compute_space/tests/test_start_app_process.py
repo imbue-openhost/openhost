@@ -50,17 +50,22 @@ port = 8080
     return str(repo)
 
 
+def _load_schema(db: sqlite3.Connection) -> None:
+    """Apply the current schema.sql to a blank sqlite connection."""
+    schema_path = os.path.join(
+        os.path.dirname(os.path.dirname(apps_mod.__file__)),
+        "db",
+        "schema.sql",
+    )
+    with open(schema_path) as f:
+        db.executescript(f.read())
+
+
 def _init_apps_db(db_path: str, *, repo_path: str, uid_map_base: int) -> int:
     """Create a fresh apps DB, insert one row, and return its app id."""
     db = sqlite3.connect(db_path)
     try:
-        schema_path = os.path.join(
-            os.path.dirname(os.path.dirname(apps_mod.__file__)),
-            "db",
-            "schema.sql",
-        )
-        with open(schema_path) as f:
-            db.executescript(f.read())
+        _load_schema(db)
         cur = db.execute(
             """INSERT INTO apps
                (name, manifest_name, version, repo_path, local_port,
@@ -136,13 +141,7 @@ def test_resolve_uid_map_base_raises_when_app_missing(tmp_path: Path) -> None:
 
     db = sqlite3.connect(config.db_path)
     try:
-        schema_path = os.path.join(
-            os.path.dirname(os.path.dirname(apps_mod.__file__)),
-            "db",
-            "schema.sql",
-        )
-        with open(schema_path) as f:
-            db.executescript(f.read())
+        _load_schema(db)
         db.commit()
     finally:
         db.close()
@@ -170,13 +169,7 @@ def test_resolve_uid_map_base_surfaces_pool_exhaustion(tmp_path: Path) -> None:
     overflow_id = UID_MAP_RANGE_SIZE // UID_MAP_WIDTH
     db = sqlite3.connect(config.db_path)
     try:
-        schema_path = os.path.join(
-            os.path.dirname(os.path.dirname(apps_mod.__file__)),
-            "db",
-            "schema.sql",
-        )
-        with open(schema_path) as f:
-            db.executescript(f.read())
+        _load_schema(db)
         db.execute(
             """INSERT INTO apps
                (id, name, manifest_name, version, repo_path, local_port,
