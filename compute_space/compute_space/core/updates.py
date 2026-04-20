@@ -76,7 +76,7 @@ def run_pixi_install(repo_path: Path) -> None:
     """Run pixi install to update dependencies."""
     try:
         result = subprocess.run(
-            ["pixi", "install"],
+            ["/home/host/.pixi/bin/pixi", "install"],
             cwd=repo_path,
             capture_output=True,
             text=True,
