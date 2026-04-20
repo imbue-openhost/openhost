@@ -14,7 +14,7 @@ from compute_space.core.containers import drop_docker_build_cache
 from compute_space.web.routes.api import system as system_routes
 
 
-def test_drop_build_cache_runs_podman_system_prune(
+def test_drop_build_cache_runs_podman_image_prune(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}

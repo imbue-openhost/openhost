@@ -353,7 +353,11 @@ def _resolve_uid_map_base(db: sqlite3.Connection, app_name: str) -> int:
     if row is None:
         raise RuntimeError(f"App {app_name!r} not found in database")
     base = row["uid_map_base"]
-    if base:
+    # Explicit sentinel check (rather than a truthiness test on `base`) so
+    # this stays correct even if future code ever makes 0 a legitimate
+    # allocated base.  The schema's NOT NULL + DEFAULT 0 invariant makes
+    # int(base) always safe here.
+    if int(base) != 0:
         return int(base)
     base = compute_uid_map_base(row["id"])
     db.execute(

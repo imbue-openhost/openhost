@@ -112,7 +112,7 @@ function dropBuildCache() {
   msg.style.color = '#d97706';
   msg.textContent = 'Dropping cache...';
 
-  fetch(config.dropDockerCacheUrl, {method: 'POST', credentials: 'same-origin'})
+  fetch(config.dropBuildCacheUrl, {method: 'POST', credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) {

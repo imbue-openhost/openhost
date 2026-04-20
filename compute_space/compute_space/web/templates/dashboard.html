@@ -71,7 +71,7 @@
   "securityAuditUrl": "{{ url_for('api_system.security_audit') }}",
   "storageStatusUrl": "{{ url_for('api_system.api_storage_status') }}",
   "restartRouterUrl": "{{ url_for('api_system.restart_router') }}",
-  "dropDockerCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
+  "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
   "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
   "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
 "apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},

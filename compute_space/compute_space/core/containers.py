@@ -420,9 +420,8 @@ def get_docker_logs(
 ) -> str:
     """Combined build log + recent container logs for an app.
 
-    Named ``get_docker_logs`` for callsite stability with the historical
-    function name.  The returned text still represents the app's build log
-    followed by live container runtime logs.
+    Returns the full build log file contents followed by the tail of the
+    runtime container's stdout/stderr, with ANSI escapes stripped.
     """
     parts = []
 
