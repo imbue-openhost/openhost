@@ -98,7 +98,7 @@ def create_app(config: Config | None = None) -> Quart:
             return None
         if request.headers.get("Upgrade", "").lower() == "websocket":
             return None
-        app_subdomain = _parse_app_from_host()
+        app_subdomain = _parse_app_from_host(request.host)
         if not app_subdomain:
             return None
         db = get_db()
