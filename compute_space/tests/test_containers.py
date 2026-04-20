@@ -14,6 +14,7 @@ import pytest
 
 from compute_space.core import containers
 from compute_space.core.containers import UID_MAP_BASE_START
+from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
 from compute_space.core.containers import build_image
 from compute_space.core.containers import compute_uid_map_base
@@ -60,6 +61,16 @@ def test_compute_uid_map_base_rejects_negative_ids() -> None:
 def test_compute_uid_map_base_starts_at_the_configured_base() -> None:
     """id=0 maps to the base of the subuid range (matches ansible allocation)."""
     assert compute_uid_map_base(0) == UID_MAP_BASE_START
+
+
+def test_compute_uid_map_base_rejects_ids_past_the_allocated_range() -> None:
+    """AUTOINCREMENT ids never reuse slots, so the formula eventually
+    exceeds the 10M subuid range allocated to host.  That must surface
+    as a clear error, not a malformed --uidmap argument to podman."""
+    # One past the last id that fits.
+    overflow_id = UID_MAP_RANGE_SIZE // UID_MAP_WIDTH  # same as _MAX_APP_ID_FOR_UID_MAP + 1
+    with pytest.raises(ValueError, match="subuid pool"):
+        compute_uid_map_base(overflow_id)
 
 
 # ---------------------------------------------------------------------------

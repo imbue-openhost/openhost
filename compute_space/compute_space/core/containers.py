@@ -48,6 +48,23 @@ UID_MAP_WIDTH = 65536
 # allocated to the ``host`` user by ansible (see ansible/tasks/podman.yml).
 UID_MAP_BASE_START = 10_000_000
 
+# Size of the subuid/subgid range allocated to the ``host`` user.  Must
+# match the ``host:10000000:10000000`` entry ansible writes to /etc/subuid
+# and /etc/subgid.  The router refuses to allocate a uid_map window that
+# would spill past this range — an exhausted pool is an operator problem
+# (too many apps, or many creates/deletes of apps with SQLite autoincrement
+# never reusing ids), and must surface as a clear error rather than a
+# malformed ``--uidmap`` that podman would reject later with a cryptic
+# message.
+UID_MAP_RANGE_SIZE = 10_000_000
+
+# Cap on app_id values that the deterministic formula can accept without
+# overflowing the allocated range.  app_id goes into uid_map_base as
+# UID_MAP_BASE_START + app_id * UID_MAP_WIDTH, and the window ends at
+# uid_map_base + UID_MAP_WIDTH.  Solving for that to stay within
+# (UID_MAP_BASE_START + UID_MAP_RANGE_SIZE) gives this bound.
+_MAX_APP_ID_FOR_UID_MAP = (UID_MAP_RANGE_SIZE // UID_MAP_WIDTH) - 1
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 
 # Marker we prefix RuntimeError messages with when a build failure is
@@ -75,9 +92,22 @@ def compute_uid_map_base(app_id: int) -> int:
     Each app gets its own disjoint 65536-UID window in the host's subuid
     range, so two apps never share container-root and can't read each
     other's files even if one escapes its mount namespace.
+
+    Raises ``ValueError`` if ``app_id`` is negative or if the resulting
+    window would fall outside the subuid range allocated to the host user.
+    Exhaustion is an operator-level problem (too many total apps created,
+    even counting deleted ones — SQLite's ``AUTOINCREMENT`` never reuses
+    ids) and surfaces here rather than being passed through to podman.
     """
     if app_id < 0:
         raise ValueError(f"app_id must be non-negative, got {app_id}")
+    if app_id > _MAX_APP_ID_FOR_UID_MAP:
+        raise ValueError(
+            f"app_id {app_id} exceeds the per-host subuid pool "
+            f"(supports up to {_MAX_APP_ID_FOR_UID_MAP + 1} total apps over "
+            f"the lifetime of this server).  Expand host's /etc/subuid + "
+            f"/etc/subgid allocation and adjust UID_MAP_RANGE_SIZE to match."
+        )
     return UID_MAP_BASE_START + app_id * UID_MAP_WIDTH
 
 
