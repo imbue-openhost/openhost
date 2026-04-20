@@ -16,6 +16,14 @@ ansible-playbook ansible/setup.yml -i <IP>, -e domain=<domain> -e initial_user=r
 
 the trailing comma after the IP is required (tells ansible it's a host list, not a file).
 
+### container runtime
+
+by default the bootstrap installs docker ce and adds the host user to the docker group. pass `-e openhost_container_runtime=podman` to install rootless podman instead. this is the recommended path for new servers going forward; docker remains the default for now until the migration is fully validated. the two are mutually exclusive per server.
+
+```bash
+ansible-playbook ansible/setup.yml -i <IP>, -e domain=<domain> -e openhost_container_runtime=podman --private-key=~/.ssh/YOUR_SSH_KEY
+```
+
 ## fast re-deploy
 
 syncs code, updates config, restarts the service:

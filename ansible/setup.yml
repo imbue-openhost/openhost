@@ -5,8 +5,11 @@
 # Example: ansible-playbook ansible/setup.yml -i 65.21.1.2, -e domain=host.example.com
 #
 # Optional variables:
-#   -e public_ip=1.2.3.4   (defaults to target IP)
-#   -e initial_user=ubuntu  (defaults to root)
+#   -e public_ip=1.2.3.4                      (defaults to target IP)
+#   -e initial_user=ubuntu                     (defaults to root)
+#   -e openhost_container_runtime=podman       (default: docker; selects
+#                                               rootless Podman instead of
+#                                               Docker CE for app containers)
 
 - name: Bootstrap host user
   hosts: all
@@ -27,7 +30,13 @@
     ansible_python_interpreter: /usr/bin/python3
   tasks:
     - import_tasks: tasks/apt_packages.yml
+    # Install the selected container runtime.  Defaulting to docker preserves
+    # the historical behavior; -e openhost_container_runtime=podman selects
+    # the rootless Podman stack instead.
     - import_tasks: tasks/docker.yml
+      when: (openhost_container_runtime | default('docker')) == 'docker'
+    - import_tasks: tasks/podman.yml
+      when: (openhost_container_runtime | default('docker')) == 'podman'
 
 - name: Dev environment
   hosts: all

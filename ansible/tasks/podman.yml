@@ -1,0 +1,170 @@
+---
+# Install rootless Podman for the `host` user. Runs with become: yes.
+#
+# This is the future default container runtime for OpenHost (Phase 1 of the
+# Docker -> rootless Podman migration).  It is NOT wired into setup.yml by
+# default yet — select it with `-e openhost_container_runtime=podman`.
+#
+# What this task does:
+# - Installs podman + its userspace networking helpers (pasta/slirp4netns)
+#   and the uidmap tools needed for unprivileged user namespaces.
+# - Allocates a generous subuid/subgid range to the host user so each app
+#   can get its own disjoint 65536-UID window under --uidmap.
+# - Enables systemd user lingering for host so restart=unless-stopped
+#   containers actually survive a host reboot.
+# - Lowers net.ipv4.ip_unprivileged_port_start so rootless app containers
+#   can publish common ports (80+) without extra per-binary capabilities.
+# - Verifies the chosen data filesystem supports idmapped mounts, which
+#   the Podman runtime relies on for clean per-app ownership without
+#   chmod 0o777 or recursive chowns.
+
+# ---------------------------------------------------------------------------
+# Packages
+# ---------------------------------------------------------------------------
+
+- name: Install podman and rootless networking tooling
+  apt:
+    name:
+      # podman + its default OCI runtime
+      - podman
+      - crun
+      # Rootless networking backends. passt provides the modern `pasta`
+      # networking mode (preferred); slirp4netns is the fallback used when
+      # pasta is unavailable.  Install both for resilience across Ubuntu
+      # minor versions.
+      - passt
+      - slirp4netns
+      # netavark + aardvark-dns are Podman's rootless-friendly CNI
+      # replacement.  Required for user-defined podman networks (Phase 3).
+      - netavark
+      - aardvark-dns
+      # uidmap ships newuidmap/newgidmap, which the kernel requires to set
+      # up unprivileged user namespaces with ranges larger than one UID.
+      - uidmap
+      # fuse-overlayfs is the rootless overlay backend.  On Ubuntu 24.04
+      # with a modern kernel, podman may prefer the native kernel rootless
+      # overlay, but installing this keeps older kernels working.
+      - fuse-overlayfs
+    state: present
+    update_cache: yes
+
+# ---------------------------------------------------------------------------
+# subuid / subgid allocation for the host user
+# ---------------------------------------------------------------------------
+#
+# Rootless Podman maps container UIDs into a range of subordinate UIDs owned
+# by the unprivileged host user.  Default allocations from the `adduser`
+# helper are ~65536 UIDs, enough for one container.  OpenHost gives each app
+# its own disjoint 65536-UID window, so we need a much larger pool.
+#
+# 10,000,000 – 20,000,000 gives room for ~150 apps without collision.  Same
+# range is used for subgid.  These values are safe because they don't
+# overlap with any UID/GID the host itself assigns.
+
+- name: Allocate subuid range to host user
+  lineinfile:
+    path: /etc/subuid
+    regexp: '^host:'
+    line: "host:10000000:10000000"
+    create: yes
+    mode: "0644"
+
+- name: Allocate subgid range to host user
+  lineinfile:
+    path: /etc/subgid
+    regexp: '^host:'
+    line: "host:10000000:10000000"
+    create: yes
+    mode: "0644"
+
+# ---------------------------------------------------------------------------
+# systemd user lingering
+# ---------------------------------------------------------------------------
+#
+# Without lingering, the user's systemd instance exits when the last
+# interactive session ends, which would kill any `podman run --restart=...`
+# containers.  Lingering starts the user manager at boot.
+
+- name: Enable user lingering for host
+  command: loginctl enable-linger host
+  args:
+    creates: /var/lib/systemd/linger/host
+  register: _linger_result
+  changed_when: _linger_result.rc == 0
+
+# ---------------------------------------------------------------------------
+# sysctl: allow rootless binding to common ports
+# ---------------------------------------------------------------------------
+#
+# By default the kernel reserves ports < 1024 for root.  Rootless podman
+# needs to publish app ports (the router's [[ports]] manifest field binds
+# on 0.0.0.0:<host_port>), so we lower the floor to 80.  This matches what
+# pixi.yml already does for caddy/coredns via setcap — same idea, different
+# mechanism.
+#
+# Ports 22, 53 stay reserved because only sshd and coredns should ever
+# claim them and they run under their own privileged paths.
+
+- name: Configure unprivileged port floor
+  copy:
+    content: |
+      # Allow unprivileged processes (rootless podman containers) to bind
+      # TCP/UDP ports >= 80.  Managed by OpenHost; do not edit by hand.
+      net.ipv4.ip_unprivileged_port_start = 80
+    dest: /etc/sysctl.d/90-openhost-podman.conf
+    mode: "0644"
+
+- name: Apply unprivileged port sysctl
+  command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# Idmapped mount sanity check
+# ---------------------------------------------------------------------------
+#
+# The Podman runtime relies on `--volume src:dst:idmap` so container-root
+# file writes land on the host owned by the host user rather than by the
+# mapped subuid.  idmapped mounts require:
+#   - Linux >= 5.12 (6.8 on Ubuntu 24.04 — fine)
+#   - filesystem that supports it (ext4, xfs, btrfs, tmpfs are all OK; some
+#     exotic setups like ZFS < 2.2 or certain fuse filesystems are not)
+#
+# We check the filesystem of the OpenHost data root and fail loudly here
+# rather than letting the router fail at runtime with a confusing error.
+
+- name: Find filesystem of data root
+  command: stat -f -c '%T' /home/host
+  register: _data_fs
+  changed_when: false
+
+- name: Verify data filesystem supports idmapped mounts
+  assert:
+    that:
+      - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs', 'ext4']
+    fail_msg: >-
+      Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
+      support idmapped bind mounts.  Rootless podman with per-app uidmaps
+      will not work here.  Either switch container_runtime back to docker
+      or reprovision onto ext4/xfs/btrfs.
+    success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
+
+# ---------------------------------------------------------------------------
+# Sanity probe
+# ---------------------------------------------------------------------------
+
+- name: Verify podman works for host user (JSON output avoids the go-template
+         vs jinja conflict in the --format string)
+  become: yes
+  become_user: host
+  command: podman info --format json
+  register: _podman_info
+  changed_when: false
+
+- name: Assert podman is running rootless
+  assert:
+    that:
+      - (_podman_info.stdout | from_json).host.security.rootless | bool
+    fail_msg: >-
+      podman is not configured for rootless operation as the host user.
+      subuid/subgid may not have been allocated correctly.
+    success_msg: "podman rootless for host user: OK"
