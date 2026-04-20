@@ -20,11 +20,12 @@ from typing import Any
 import pytest
 
 import compute_space.core.apps as apps_mod
-from compute_space.config import DefaultConfig
 from compute_space.core.apps import _resolve_uid_map_base
 from compute_space.core.containers import UID_MAP_BASE_START
 from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
+
+from .conftest import _make_test_config
 
 
 def _minimal_app_dir(tmp_path: Path) -> str:
@@ -93,21 +94,7 @@ def test_start_app_process_backfills_uid_map_base_when_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo_path = _minimal_app_dir(tmp_path)
-    data_root = tmp_path / "data"
-    data_root.mkdir()
-
-    config = DefaultConfig(
-        zone_domain="test.local",
-        host="127.0.0.1",
-        port=18080,
-        data_root_dir=str(data_root),
-        apps_dir_override=str(tmp_path / "noapps"),
-        tls_enabled=False,
-        start_caddy=False,
-        port_range_start=19000,
-        port_range_end=19099,
-    )
-    config.make_all_dirs()
+    config = _make_test_config(tmp_path, port=18080, port_range_start=19000, port_range_end=19099)
 
     app_id = _init_apps_db(config.db_path, repo_path=repo_path, uid_map_base=0)
 
@@ -140,6 +127,35 @@ def test_start_app_process_backfills_uid_map_base_when_zero(
         db.close()
 
 
+def test_resolve_uid_map_base_raises_when_app_missing(tmp_path: Path) -> None:
+    """_resolve_uid_map_base is also called with app names coming from
+    external state (e.g. the web handler looked up the row, then another
+    operation deleted it).  It must fail loud rather than confusing the
+    caller with a NoneType-is-not-subscriptable traceback."""
+    config = _make_test_config(tmp_path, port=18083, port_range_start=19300, port_range_end=19399)
+
+    db = sqlite3.connect(config.db_path)
+    try:
+        schema_path = os.path.join(
+            os.path.dirname(os.path.dirname(apps_mod.__file__)),
+            "db",
+            "schema.sql",
+        )
+        with open(schema_path) as f:
+            db.executescript(f.read())
+        db.commit()
+    finally:
+        db.close()
+
+    db = sqlite3.connect(config.db_path)
+    db.row_factory = sqlite3.Row
+    try:
+        with pytest.raises(RuntimeError, match="not found"):
+            _resolve_uid_map_base(db, "ghost")
+    finally:
+        db.close()
+
+
 def test_resolve_uid_map_base_surfaces_pool_exhaustion(tmp_path: Path) -> None:
     """Rows migrated from a pre-podman schema whose id falls past the
     subuid pool get ``uid_map_base=0`` from migrate().  The first time
@@ -147,21 +163,7 @@ def test_resolve_uid_map_base_surfaces_pool_exhaustion(tmp_path: Path) -> None:
     allocation and propagates the ValueError cleanly so the caller can
     surface a precise error rather than a cryptic podman complaint."""
     repo_path = _minimal_app_dir(tmp_path)
-    data_root = tmp_path / "data"
-    data_root.mkdir()
-
-    config = DefaultConfig(
-        zone_domain="test.local",
-        host="127.0.0.1",
-        port=18082,
-        data_root_dir=str(data_root),
-        apps_dir_override=str(tmp_path / "noapps"),
-        tls_enabled=False,
-        start_caddy=False,
-        port_range_start=19200,
-        port_range_end=19299,
-    )
-    config.make_all_dirs()
+    config = _make_test_config(tmp_path, port=18082, port_range_start=19200, port_range_end=19299)
 
     # Insert a row with a uid_map_base=0 sentinel and an id one past
     # the last that fits in the allocated pool.
@@ -221,21 +223,7 @@ def test_start_app_process_preserves_existing_uid_map_base(
     change it — any change would mean container-root's mapped host UID
     differs from run to run, which would orphan every file already on disk."""
     repo_path = _minimal_app_dir(tmp_path)
-    data_root = tmp_path / "data"
-    data_root.mkdir()
-
-    config = DefaultConfig(
-        zone_domain="test.local",
-        host="127.0.0.1",
-        port=18081,
-        data_root_dir=str(data_root),
-        apps_dir_override=str(tmp_path / "noapps"),
-        tls_enabled=False,
-        start_caddy=False,
-        port_range_start=19100,
-        port_range_end=19199,
-    )
-    config.make_all_dirs()
+    config = _make_test_config(tmp_path, port=18081, port_range_start=19100, port_range_end=19199)
 
     preset_base = UID_MAP_BASE_START + 42 * UID_MAP_WIDTH
     _init_apps_db(config.db_path, repo_path=repo_path, uid_map_base=preset_base)

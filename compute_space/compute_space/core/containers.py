@@ -211,52 +211,42 @@ def _bind_mount_arg(host_path: str, container_path: str, *, read_only: bool = Fa
     return f"{host_path}:{container_path}:{options}"
 
 
-def run_container(
-    app_name: str,
-    image_tag: str,
-    manifest: AppManifest,
-    local_port: int,
+def _translate_env_for_container(
     env_vars: dict[str, str],
-    data_dir: str,
-    temp_data_dir: str,
-    uid_map_base: int,
-    port_mappings: list[PortMapping] | None = None,
-) -> str:
-    """Start a detached container for an app.  Returns the container ID.
+    app_name: str,
+    app_data_dir: str,
+) -> dict[str, str]:
+    """Rewrite host paths in OpenHost env vars to their in-container equivalents.
 
-    ``uid_map_base`` is the starting host subuid for this app's 65536-UID
-    user-namespace mapping.  It must be allocated from the host's
-    ``/etc/subuid`` range (see ansible/tasks/podman.yml).
+    The router hands out paths as they are on the host (e.g.
+    ``/opt/openhost/persistent_data/app_data/foo``); inside the container
+    they must point to the idmapped mount target (``/data/app_data/foo``).
     """
-    app_data_dir = os.path.join(data_dir, "app_data", app_name)
-    app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
-    vm_data_dir = os.path.join(data_dir, "vm_data")
-    container_name = f"openhost-{app_name}"
-
-    # Check which data access the app has (sqlite implies app_data)
-    has_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
-    has_app_temp = manifest.app_temp_data or manifest.access_all_data
-    has_vm_data = manifest.access_vm_data or manifest.access_all_data
-
-    # Container paths follow the logical structure under CONTAINER_ROOT
     c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
     c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
-    c_vm_data = f"{CONTAINER_ROOT}/vm_data"
-
-    # Translate host paths to container paths in env vars
-    container_env = {}
+    translated: dict[str, str] = {}
     for key, value in env_vars.items():
         if key.startswith("OPENHOST_SQLITE_"):
             rel_path = os.path.relpath(value, app_data_dir)
-            container_env[key] = os.path.join(c_app_data, rel_path)
+            translated[key] = os.path.join(c_app_data, rel_path)
         elif key == "OPENHOST_APP_DATA_DIR":
-            container_env[key] = c_app_data
+            translated[key] = c_app_data
         elif key == "OPENHOST_APP_TEMP_DIR":
-            container_env[key] = c_app_temp
+            translated[key] = c_app_temp
         else:
-            container_env[key] = value
+            translated[key] = value
+    return translated
 
-    cmd = [
+
+def _base_run_args(
+    *,
+    container_name: str,
+    local_port: int,
+    manifest: AppManifest,
+    uid_map_base: int,
+) -> list[str]:
+    """The constant, security-shaped arguments every app container receives."""
+    return [
         "podman",
         "run",
         "-d",
@@ -286,53 +276,123 @@ def run_container(
         "--security-opt=no-new-privileges=true",
     ]
 
-    # Mount data volumes following the logical structure from docs/data.md.
-    # Every bind mount uses :idmap so host-side ownership stays sane.
+
+def _volume_args(
+    manifest: AppManifest,
+    app_name: str,
+    data_dir: str,
+    temp_data_dir: str,
+) -> list[str]:
+    """Build the ``-v`` arguments for an app's idmapped bind mounts.
+
+    Returns them in pairs (``-v``, ``src:dst:opts``) so the caller can
+    ``cmd.extend`` the result directly.  Mutates ``vm_data_dir`` on disk
+    (via ``makedirs``) only for manifests that actually mount it.
+    """
+    app_data_dir = os.path.join(data_dir, "app_data", app_name)
+    app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
+    vm_data_dir = os.path.join(data_dir, "vm_data")
+    c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
+    c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
+    c_vm_data = f"{CONTAINER_ROOT}/vm_data"
+
+    args: list[str] = []
     if manifest.access_all_data:
         # Full access: mount parent dirs so the app sees all apps' data.
-        cmd.extend(["-v", _bind_mount_arg(os.path.join(data_dir, "app_data"), f"{CONTAINER_ROOT}/app_data")])
-        cmd.extend(
-            [
-                "-v",
-                _bind_mount_arg(
-                    os.path.join(temp_data_dir, "app_temp_data"),
-                    f"{CONTAINER_ROOT}/app_temp_data",
-                ),
-            ]
-        )
+        args += ["-v", _bind_mount_arg(os.path.join(data_dir, "app_data"), f"{CONTAINER_ROOT}/app_data")]
+        args += [
+            "-v",
+            _bind_mount_arg(
+                os.path.join(temp_data_dir, "app_temp_data"),
+                f"{CONTAINER_ROOT}/app_temp_data",
+            ),
+        ]
         os.makedirs(vm_data_dir, exist_ok=True)
-        cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data)])
-    else:
-        if has_app_data:
-            cmd.extend(["-v", _bind_mount_arg(app_data_dir, c_app_data)])
-        if has_app_temp:
-            cmd.extend(["-v", _bind_mount_arg(app_temp_dir, c_app_temp)])
-        if has_vm_data:
-            os.makedirs(vm_data_dir, exist_ok=True)
-            cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)])
+        args += ["-v", _bind_mount_arg(vm_data_dir, c_vm_data)]
+        return args
 
-    # Structured port mappings: bind TCP+UDP on 0.0.0.0.  The manifest
-    # validator rejects host_port values below the unprivileged port floor
-    # (see ansible/tasks/podman.yml) so these binds always succeed.
-    if port_mappings:
-        for pm in port_mappings:
-            cmd.extend(["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/tcp"])
-            cmd.extend(["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/udp"])
+    # Per-app subdirs, mounted only when the manifest requests them.
+    has_app_data = manifest.app_data or manifest.sqlite_dbs
+    if has_app_data:
+        args += ["-v", _bind_mount_arg(app_data_dir, c_app_data)]
+    if manifest.app_temp_data:
+        args += ["-v", _bind_mount_arg(app_temp_dir, c_app_temp)]
+    if manifest.access_vm_data:
+        os.makedirs(vm_data_dir, exist_ok=True)
+        args += ["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)]
+    return args
 
+
+def _port_mapping_args(port_mappings: list[PortMapping] | None) -> list[str]:
+    """Render TCP+UDP publish flags for every entry in ``port_mappings``.
+
+    The manifest validator rejects ``host_port`` values below the
+    unprivileged port floor, so every resulting bind is guaranteed to
+    succeed against the kernel's ``net.ipv4.ip_unprivileged_port_start``.
+    """
+    if not port_mappings:
+        return []
+    args: list[str] = []
+    for pm in port_mappings:
+        args += ["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/tcp"]
+        args += ["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/udp"]
+    return args
+
+
+def _container_spec_args(
+    manifest: AppManifest,
+    container_env: dict[str, str],
+    image_tag: str,
+) -> list[str]:
+    """Final per-app flags (caps, devices, env, image + optional command)."""
+    args: list[str] = []
     for cap in manifest.capabilities:
-        cmd.extend(["--cap-add", cap])
-
+        args += ["--cap-add", cap]
     for device in manifest.devices:
-        cmd.extend(["--device", device])
-
+        args += ["--device", device]
     for key, value in container_env.items():
-        cmd.extend(["-e", f"{key}={value}"])
-
+        args += ["-e", f"{key}={value}"]
+    args.append(image_tag)
     if manifest.container_command:
-        cmd.append(image_tag)
-        cmd.extend(manifest.container_command.split())
-    else:
-        cmd.append(image_tag)
+        args.extend(manifest.container_command.split())
+    return args
+
+
+def run_container(
+    app_name: str,
+    image_tag: str,
+    manifest: AppManifest,
+    local_port: int,
+    env_vars: dict[str, str],
+    data_dir: str,
+    temp_data_dir: str,
+    uid_map_base: int,
+    port_mappings: list[PortMapping] | None = None,
+) -> str:
+    """Start a detached container for an app.  Returns the container ID.
+
+    ``uid_map_base`` is the starting host subuid for this app's 65536-UID
+    user-namespace mapping.  It must be allocated from the host's
+    ``/etc/subuid`` range (see ansible/tasks/podman.yml).
+
+    Argv assembly is split into small helpers (_base_run_args,
+    _volume_args, _port_mapping_args, _container_spec_args) so each slice
+    of concern — security flags, bind mounts, port publishes, and
+    per-app spec — can be reasoned about and tested independently.
+    """
+    app_data_dir = os.path.join(data_dir, "app_data", app_name)
+    container_name = f"openhost-{app_name}"
+    container_env = _translate_env_for_container(env_vars, app_name, app_data_dir)
+
+    cmd = _base_run_args(
+        container_name=container_name,
+        local_port=local_port,
+        manifest=manifest,
+        uid_map_base=uid_map_base,
+    )
+    cmd += _volume_args(manifest, app_name, data_dir, temp_data_dir)
+    cmd += _port_mapping_args(port_mappings)
+    cmd += _container_spec_args(manifest, container_env, image_tag)
 
     logger.info("Running container: %s", " ".join(cmd))
     _append_log(app_name, temp_data_dir, f"=== Starting container: {container_name} ===\n")
@@ -412,7 +472,7 @@ def get_container_status(container_id: str) -> str:
     return result.stdout.strip()
 
 
-def get_docker_logs(
+def get_app_logs(
     app_name: str,
     temp_data_dir: str,
     container_id: str | None = None,

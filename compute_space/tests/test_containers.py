@@ -99,14 +99,23 @@ def test_build_image_uses_podman_build(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
-def test_build_image_surfaces_cache_corrupt_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Any output containing a known cache-corrupt fragment raises with the marker."""
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "error: content digest sha256:deadbeef: not found",
+        "Error: storage-driver errored: something happened",
+        "Error: layer not known: sha256:whatever",
+    ],
+)
+def test_build_image_detects_every_known_cache_corrupt_fragment(
+    monkeypatch: pytest.MonkeyPatch, fragment: str
+) -> None:
+    """Every substring in _BUILD_CACHE_CORRUPT_FRAGMENTS must trigger the
+    BUILD_CACHE_CORRUPT marker so the dashboard's 'drop cache' toast
+    offers a remediation, not a blind retry."""
 
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
-        return _FakeCompleted(
-            1,
-            stderr="error: content digest sha256:deadbeef: not found",
-        )
+        return _FakeCompleted(1, stderr=fragment)
 
     _patch_subprocess_run(monkeypatch, fake_run)
 

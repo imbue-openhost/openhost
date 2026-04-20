@@ -24,7 +24,7 @@ from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
-from compute_space.core.containers import get_docker_logs
+from compute_space.core.containers import get_app_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
@@ -43,14 +43,13 @@ from compute_space.web.middleware import login_required
 def _rmtree_force(path: str) -> None:
     """Remove a directory tree, making entries writable if needed.
 
-    Git clones may check out read-only files which block ``shutil.rmtree``;
-    the onexc hook makes them writable and retries.  Under rootless podman
-    with idmapped mounts, container-written files end up owned by the
-    ``host`` user already, so no privileged fallback is needed in the
-    common case.  The ``sudo -n rm -rf`` fallback exists only to rescue
-    legacy root-owned files left by the previous Docker runtime on a host
-    that was code-upgraded instead of reprovisioned; on a clean podman
-    install it never fires.
+    Tries a normal ``shutil.rmtree`` first, chmodding and retrying on any
+    permission error (this is enough for both the router's own files and
+    for container-written files on a rootless-podman setup, where
+    idmapped bind mounts make container-root writes land under the host
+    user).  Falls back to ``sudo -n rm -rf`` only for the rare case where
+    a file is owned by an UID the router cannot chmod — that path is
+    guarded by the NOPASSWD sudoers entry installed by ansible.
     """
 
     def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
@@ -243,7 +242,7 @@ def app_logs(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return "App not found", 404
-    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
+    logs = get_app_logs(app_name, config.temporary_data_dir, app_row["container_id"])
     return logs, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 

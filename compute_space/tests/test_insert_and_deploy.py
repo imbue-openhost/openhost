@@ -20,12 +20,14 @@ from pathlib import Path
 import pytest
 
 import compute_space.core.apps as apps_mod
-from compute_space.config import DefaultConfig
+from compute_space.config import Config
 from compute_space.core.apps import insert_and_deploy
 from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.db.connection import init_db
+
+from .conftest import _make_test_config
 
 _MANIFEST = """
 [app]
@@ -48,25 +50,7 @@ class _NoopThread:
         pass
 
 
-def _make_config(tmp_path: Path) -> DefaultConfig:
-    data_root = tmp_path / "data"
-    data_root.mkdir()
-    cfg = DefaultConfig(
-        zone_domain="test.local",
-        host="127.0.0.1",
-        port=18080,
-        data_root_dir=str(data_root),
-        apps_dir_override=str(tmp_path / "noapps"),
-        tls_enabled=False,
-        start_caddy=False,
-        port_range_start=19000,
-        port_range_end=19099,
-    )
-    cfg.make_all_dirs()
-    return cfg
-
-
-def _open_db(cfg: DefaultConfig) -> sqlite3.Connection:
+def _open_db(cfg: Config) -> sqlite3.Connection:
     init_db(_FakeApp(cfg.db_path))
     db = sqlite3.connect(cfg.db_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
@@ -87,7 +71,7 @@ def _stub_deps(monkeypatch: pytest.MonkeyPatch, local_port: int = 19005) -> None
 
 
 def test_insert_and_deploy_sets_uid_map_base_from_formula(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = _make_config(tmp_path)
+    cfg = _make_test_config(tmp_path, port=18080)
     db = _open_db(cfg)
     manifest: AppManifest = parse_manifest_from_string(_MANIFEST)
     _stub_deps(monkeypatch)
@@ -115,7 +99,7 @@ def test_insert_and_deploy_surfaces_pool_exhaustion(tmp_path: Path, monkeypatch:
     """Forcing compute_uid_map_base to raise simulates an id past the
     subuid pool; insert_and_deploy should propagate the ValueError so the
     /api/add_app route can translate it into a 400."""
-    cfg = _make_config(tmp_path)
+    cfg = _make_test_config(tmp_path, port=18081)
     db = _open_db(cfg)
     manifest: AppManifest = parse_manifest_from_string(_MANIFEST)
     _stub_deps(monkeypatch)
