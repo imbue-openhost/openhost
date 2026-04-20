@@ -81,7 +81,7 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
 - `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
-- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server (e.g., `http://host.docker.internal:<port>`)
+- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server. Points at `host.docker.internal` (kept for compatibility) or equivalently `host.containers.internal`; both resolve to the host gateway from inside the container.
 
 ## Examples
 
