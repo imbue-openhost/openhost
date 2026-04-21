@@ -34,9 +34,31 @@ jobs:
       # fully configured for rootless operation.  Allocate the host user's
       # subuid/subgid range and lower the unprivileged-port floor to match
       # what ansible/tasks/podman.yml does on production hosts.
-      - name: Configure rootless podman for runneruser
+      - name: Configure rootless podman for the runner user
         run: |
+          # Allocate the same per-app subuid/subgid range ansible
+          # installs on production (see ansible/tasks/podman.yml).
           sudo usermod --add-subuids 10000000-19999999 runner
           sudo usermod --add-subgids 10000000-19999999 runner
+          # Force fuse-overlayfs as the rootless storage driver.  The
+          # default native overlay on GitHub-hosted runners hits
+          # 'lchown etc/shadow: invalid argument' during the id-mapped
+          # layer copy podman does for per-app --uidmap; fuse-overlayfs
+          # handles the chown by emulation and works across the same
+          # image layers.
+          sudo apt-get update -qq && sudo apt-get install -y -qq fuse-overlayfs
+          mkdir -p "$HOME/.config/containers"
+          cat > "$HOME/.config/containers/storage.conf" <<'EOF'
+          [storage]
+          driver = "overlay"
+          [storage.options]
+          mount_program = "/usr/bin/fuse-overlayfs"
+          EOF
+          # podman caches the effective subuid range on first use; tell
+          # it to re-read /etc/subuid and /etc/subgid now that we've
+          # widened them, otherwise app_id values past ~2 exhaust the
+          # runner-user default allocation.
+          podman system migrate
+          # Let rootless containers publish ports >= 80.
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
       - run: uv run pytest --run-podman -k requires_podman
