@@ -84,14 +84,22 @@ def get_public_key_pem() -> str:
     return _public_key
 
 
+def _zone_audience() -> str:
+    """Return the audience/issuer identifier for this zone."""
+    return get_config().zone_domain or "localhost"
+
+
 def create_access_token(username: str) -> str:
     """Create a signed RS256 JWT."""
     if _private_key is None:
         raise RuntimeError("Keys not loaded. Call load_keys() first.")
     now = datetime.now(UTC)
+    zone = _zone_audience()
     payload = {
         "sub": username,
         "username": username,
+        "iss": zone,
+        "aud": zone,
         "iat": now,
         "exp": now + timedelta(seconds=ACCESS_TOKEN_EXPIRY),
     }
@@ -108,7 +116,10 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
     try:
         if _public_key is None:
             raise RuntimeError("public key not loaded")
-        return jwt.decode(token, _public_key, algorithms=["RS256"])
+        zone = _zone_audience()
+        return jwt.decode(
+            token, _public_key, algorithms=["RS256"], audience=zone, issuer=zone
+        )
     except jwt.InvalidTokenError:
         return None
 
@@ -121,10 +132,13 @@ def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
     try:
         if _public_key is None:
             raise RuntimeError("public key not loaded")
+        zone = _zone_audience()
         return jwt.decode(
             token,
             _public_key,
             algorithms=["RS256"],
+            audience=zone,
+            issuer=zone,
             leeway=REFRESH_GRACE_PERIOD,
         )
     except jwt.InvalidTokenError:
