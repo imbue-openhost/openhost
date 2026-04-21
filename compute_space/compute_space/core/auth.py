@@ -117,9 +117,7 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         if _public_key is None:
             raise RuntimeError("public key not loaded")
         zone = _zone_audience()
-        return jwt.decode(
-            token, _public_key, algorithms=["RS256"], audience=zone, issuer=zone
-        )
+        return jwt.decode(token, _public_key, algorithms=["RS256"], audience=zone, issuer=zone)
     except jwt.InvalidTokenError:
         return None
 
