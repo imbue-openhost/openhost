@@ -1,7 +1,8 @@
-"""Tests for the ``/api/drop-build-cache`` endpoint and its backing helper.
+"""Tests for the ``/api/drop-docker-cache`` endpoint and its backing helper.
 
 The endpoint runs ``podman image prune --all --force`` via
-``drop_build_cache`` in compute_space.core.containers.
+``drop_docker_build_cache`` in compute_space.core.containers.  The URL
+path and Python function names retain ``docker`` for API stability.
 """
 
 import subprocess
@@ -9,11 +10,11 @@ import subprocess
 import pytest
 from quart import Quart
 
-from compute_space.core.containers import drop_build_cache
+from compute_space.core.containers import drop_docker_build_cache
 from compute_space.web.routes.api import system as system_routes
 
 
-def test_drop_build_cache_runs_podman_image_prune(
+def test_drop_docker_build_cache_runs_podman_image_prune(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
@@ -32,7 +33,7 @@ def test_drop_build_cache_runs_podman_image_prune(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    output = drop_build_cache()
+    output = drop_docker_build_cache()
 
     assert output == "Total reclaimed space: 12.3MB"
     assert calls["cmd"] == ["podman", "image", "prune", "--all", "--force"]
@@ -41,7 +42,7 @@ def test_drop_build_cache_runs_podman_image_prune(
     assert calls["timeout"] == 120
 
 
-def test_drop_build_cache_raises_on_error(
+def test_drop_docker_build_cache_raises_on_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run(cmd: list[str], capture_output: bool, text: bool, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -55,22 +56,22 @@ def test_drop_build_cache_raises_on_error(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="podman image prune error"):
-        drop_build_cache()
+        drop_docker_build_cache()
 
 
 @pytest.mark.asyncio
-async def test_drop_build_cache_endpoint_success(
+async def test_drop_docker_cache_endpoint_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = Quart(__name__)
     monkeypatch.setattr(
         system_routes,
-        "drop_build_cache",
+        "drop_docker_build_cache",
         lambda: "Total reclaimed space: 12.3MB",
     )
 
     async with app.app_context():
-        response = system_routes.drop_build_cache_endpoint.__wrapped__()  # type: ignore[attr-defined]
+        response = system_routes.drop_docker_cache.__wrapped__()  # type: ignore[attr-defined]
         assert response.status_code == 200
         payload = await response.get_json()
 
@@ -78,7 +79,7 @@ async def test_drop_build_cache_endpoint_success(
 
 
 @pytest.mark.asyncio
-async def test_drop_build_cache_endpoint_failure(
+async def test_drop_docker_cache_endpoint_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = Quart(__name__)
@@ -86,10 +87,10 @@ async def test_drop_build_cache_endpoint_failure(
     def _raise_error() -> str:
         raise RuntimeError("podman engine error")
 
-    monkeypatch.setattr(system_routes, "drop_build_cache", _raise_error)
+    monkeypatch.setattr(system_routes, "drop_docker_build_cache", _raise_error)
 
     async with app.app_context():
-        response, status_code = system_routes.drop_build_cache_endpoint.__wrapped__()  # type: ignore[attr-defined]
+        response, status_code = system_routes.drop_docker_cache.__wrapped__()  # type: ignore[attr-defined]
         assert status_code == 500
         payload = await response.get_json()
 

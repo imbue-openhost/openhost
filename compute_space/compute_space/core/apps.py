@@ -21,7 +21,6 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.core.containers import build_image
-from compute_space.core.containers import build_log_path
 from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.containers import run_container
 from compute_space.core.data import deprovision_data
@@ -637,14 +636,8 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
 
 
 def app_log_path(app_name: str, config: Config) -> str:
-    """Return the build/deploy log file path for an app.
-
-    Thin adapter over ``build_log_path`` in ``containers.py`` so callers
-    that have a Config can avoid plumbing temporary_data_dir through by
-    hand.  The single source of truth for the path format lives in
-    ``containers.build_log_path``.
-    """
-    return build_log_path(app_name, config.temporary_data_dir)
+    """Return the log file path for an app."""
+    return os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "docker.log")
 
 
 def git_pull(

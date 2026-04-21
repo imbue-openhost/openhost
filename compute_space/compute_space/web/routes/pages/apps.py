@@ -9,7 +9,7 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core.apps import list_builtin_apps
-from compute_space.core.containers import get_app_logs
+from compute_space.core.containers import get_docker_logs
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
@@ -46,7 +46,7 @@ async def app_detail(app_name: str) -> str | tuple[str, int]:
         "SELECT consumer_app, permission_key FROM permissions WHERE consumer_app = ? ORDER BY permission_key",
         (app_name,),
     ).fetchall()
-    logs = get_app_logs(app_name, config.temporary_data_dir, app_row["container_id"])
+    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
     next_url = request.args.get("next", "")
 
     # Compute permissions the manifest declares but that haven't been granted yet,

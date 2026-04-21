@@ -22,7 +22,7 @@ from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
-from compute_space.core.containers import get_app_logs
+from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
@@ -231,7 +231,7 @@ def app_logs(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return "App not found", 404
-    logs = get_app_logs(app_name, config.temporary_data_dir, app_row["container_id"])
+    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
     return logs, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 

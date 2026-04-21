@@ -16,12 +16,10 @@ from compute_space.core import containers
 from compute_space.core.containers import UID_MAP_BASE_START
 from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
-from compute_space.core.containers import _translate_env_for_container
 from compute_space.core.containers import build_image
-from compute_space.core.containers import build_log_path
 from compute_space.core.containers import compute_uid_map_base
-from compute_space.core.containers import get_app_logs
 from compute_space.core.containers import get_container_status
+from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
 from compute_space.core.containers import stop_container
@@ -247,64 +245,6 @@ def _run_and_capture(
 
 
 # ---------------------------------------------------------------------------
-# _translate_env_for_container
-# ---------------------------------------------------------------------------
-
-
-def test_translate_env_rewrites_openhost_app_data_dir_to_container_path() -> None:
-    """The router hands the host path; inside the container the app needs
-    the mount-target path.  A subtle mistake here silently breaks every
-    app that reads OPENHOST_APP_DATA_DIR."""
-    translated = _translate_env_for_container(
-        {"OPENHOST_APP_DATA_DIR": "/host/persistent_data/app_data/notes"},
-        app_name="notes",
-        app_data_dir="/host/persistent_data/app_data/notes",
-    )
-    assert translated["OPENHOST_APP_DATA_DIR"] == "/data/app_data/notes"
-
-
-def test_translate_env_rewrites_openhost_app_temp_dir_to_container_path() -> None:
-    translated = _translate_env_for_container(
-        {"OPENHOST_APP_TEMP_DIR": "/host/temporary_data/app_temp_data/notes"},
-        app_name="notes",
-        app_data_dir="/host/persistent_data/app_data/notes",
-    )
-    assert translated["OPENHOST_APP_TEMP_DIR"] == "/data/app_temp_data/notes"
-
-
-def test_translate_env_rewrites_openhost_sqlite_paths_relative_to_app_data() -> None:
-    """SQLite db paths live under app_data_dir; the rewrite must preserve
-    the sub-path (e.g. sqlite/main.db) under the container-side mount."""
-    translated = _translate_env_for_container(
-        {
-            "OPENHOST_SQLITE_main": "/host/persistent_data/app_data/notes/sqlite/main.db",
-            "OPENHOST_SQLITE_cache": "/host/persistent_data/app_data/notes/sqlite/cache.db",
-        },
-        app_name="notes",
-        app_data_dir="/host/persistent_data/app_data/notes",
-    )
-    assert translated["OPENHOST_SQLITE_main"] == "/data/app_data/notes/sqlite/main.db"
-    assert translated["OPENHOST_SQLITE_cache"] == "/data/app_data/notes/sqlite/cache.db"
-
-
-def test_translate_env_passes_unrelated_keys_through_unchanged() -> None:
-    """Only OpenHost-controlled paths get rewritten; everything else must
-    reach the container untouched."""
-    translated = _translate_env_for_container(
-        {
-            "OPENHOST_APP_NAME": "notes",
-            "OPENHOST_ZONE_DOMAIN": "example.local",
-            "MY_APP_TOKEN": "secret-token",
-        },
-        app_name="notes",
-        app_data_dir="/host/app_data",
-    )
-    assert translated["OPENHOST_APP_NAME"] == "notes"
-    assert translated["OPENHOST_ZONE_DOMAIN"] == "example.local"
-    assert translated["MY_APP_TOKEN"] == "secret-token"
-
-
-# ---------------------------------------------------------------------------
 # run_container
 # ---------------------------------------------------------------------------
 
@@ -465,32 +405,36 @@ def test_get_container_status_returns_unknown_on_failure(monkeypatch: pytest.Mon
 
 
 # ---------------------------------------------------------------------------
-# get_app_logs
+# get_docker_logs
 # ---------------------------------------------------------------------------
 
 
-def test_get_app_logs_returns_build_log_when_no_container(tmp_path) -> None:
-    """When the app has no running container, get_app_logs should still
-    return the build log contents (and skip the podman logs call)."""
-    log_file = build_log_path("notes", str(tmp_path))
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+def _make_build_log(tmp_path, app_name: str, contents: str) -> str:
+    """Write a build log file at the canonical path for an app and return it."""
+    log_dir = os.path.join(str(tmp_path), "app_temp_data", app_name)
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "docker.log")
     with open(log_file, "w") as f:
-        f.write("build-line-1\nbuild-line-2\n")
+        f.write(contents)
+    return log_file
 
-    output = get_app_logs("notes", str(tmp_path), container_id=None)
+
+def test_get_docker_logs_returns_build_log_when_no_container(tmp_path) -> None:
+    """When the app has no running container, get_docker_logs should still
+    return the build log contents (and skip the podman logs call)."""
+    _make_build_log(tmp_path, "notes", "build-line-1\nbuild-line-2\n")
+
+    output = get_docker_logs("notes", str(tmp_path), container_id=None)
     assert "build-line-1" in output
     assert "build-line-2" in output
     # No "Container logs" header should appear since no container id.
     assert "=== Container logs ===" not in output
 
 
-def test_get_app_logs_appends_podman_logs_when_container_id_set(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With a container id, get_app_logs should also run ``podman logs
+def test_get_docker_logs_appends_podman_logs_when_container_id_set(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a container id, get_docker_logs should also run ``podman logs
     --tail <N>`` and concatenate the output under a 'Container logs' header."""
-    log_file = build_log_path("notes", str(tmp_path))
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    with open(log_file, "w") as f:
-        f.write("=== Build complete ===\n")
+    _make_build_log(tmp_path, "notes", "=== Build complete ===\n")
 
     captured: list[list[str]] = []
 
@@ -500,7 +444,7 @@ def test_get_app_logs_appends_podman_logs_when_container_id_set(tmp_path, monkey
 
     _patch_subprocess_run(monkeypatch, fake_run)
 
-    output = get_app_logs("notes", str(tmp_path), container_id="abc123", tail=500)
+    output = get_docker_logs("notes", str(tmp_path), container_id="abc123", tail=500)
 
     assert captured == [["podman", "logs", "--tail", "500", "abc123"]]
     assert "=== Build complete ===" in output
@@ -508,43 +452,11 @@ def test_get_app_logs_appends_podman_logs_when_container_id_set(tmp_path, monkey
     assert "app stdout line" in output
 
 
-def test_get_app_logs_falls_back_to_legacy_docker_log_filename(tmp_path) -> None:
-    """Deployments whose build log was written under the pre-rename
-    filename (``docker.log``) must still show up in the dashboard until
-    the next rebuild switches them to ``build.log``.  Exercise that
-    backward-compat read path."""
-    app_temp = os.path.join(str(tmp_path), "app_temp_data", "notes")
-    os.makedirs(app_temp, exist_ok=True)
-    with open(os.path.join(app_temp, "docker.log"), "w") as f:
-        f.write("legacy build output\n")
-
-    output = get_app_logs("notes", str(tmp_path), container_id=None)
-    assert "legacy build output" in output
-
-
-def test_get_app_logs_prefers_build_log_over_legacy_name(tmp_path) -> None:
-    """When both filenames exist (we shouldn't normally see this, but a
-    half-migrated deployment can), the current filename wins."""
-    app_temp = os.path.join(str(tmp_path), "app_temp_data", "notes")
-    os.makedirs(app_temp, exist_ok=True)
-    with open(os.path.join(app_temp, "docker.log"), "w") as f:
-        f.write("stale legacy content\n")
-    with open(os.path.join(app_temp, "build.log"), "w") as f:
-        f.write("fresh build content\n")
-
-    output = get_app_logs("notes", str(tmp_path), container_id=None)
-    assert "fresh build content" in output
-    assert "stale legacy content" not in output
-
-
-def test_get_app_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_docker_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Color codes and carriage returns from podman logs should be
     stripped before we hand the text back to the dashboard (which
     otherwise renders them as garbage text)."""
-    log_file = build_log_path("notes", str(tmp_path))
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    with open(log_file, "w") as f:
-        f.write("")
+    _make_build_log(tmp_path, "notes", "")
 
     def fake_run(cmd, capture_output=False, text=False, timeout=10, **_):  # type: ignore[no-untyped-def]
         return _FakeCompleted(
@@ -554,7 +466,7 @@ def test_get_app_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest
 
     _patch_subprocess_run(monkeypatch, fake_run)
 
-    output = get_app_logs("notes", str(tmp_path), container_id="abc123")
+    output = get_docker_logs("notes", str(tmp_path), container_id="abc123")
     assert "\x1b[" not in output
     assert "\r" not in output
     assert "red text plain" in output
