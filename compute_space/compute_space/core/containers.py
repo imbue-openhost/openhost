@@ -11,8 +11,11 @@ Security defaults applied to every container:
 
 - ``--cap-drop=ALL`` plus ``--cap-add`` for each capability listed in the
   manifest.  The manifest validator restricts capabilities to a
-  rootless-safe allowlist, so anything reaching here is safe to grant
-  inside the user namespace.
+  rootless-safe allowlist (``SAFE_CAPABILITIES``), so anything reaching
+  here is safe to grant inside the user namespace.
+- ``--device`` is only added for entries in ``SAFE_DEVICE_PATHS``; the
+  manifest parser rejects everything else (``/dev/mem``, ``/dev/kmem``,
+  raw block devices, etc.) before deploy.
 - ``--security-opt=no-new-privileges=true``.
 - ``--uidmap`` / ``--gidmap`` give every app its own 65536-UID window,
   disjoint from every other app's.
@@ -116,10 +119,11 @@ def compute_uid_map_base(app_id: int) -> int:
 def build_log_path(app_name: str, temp_data_dir: str) -> str:
     """Return the path to the build/deploy log file for an app.
 
-    Single source of truth for where build and runtime logs land — every
-    caller (router, dashboard log view, app_log_path helper) funnels
-    through this function rather than recomputing the path, so the
-    filename and layout can only change in one place.
+    Single source of truth for where *build* logs land — every caller
+    (router build streaming, dashboard log view, app_log_path helper)
+    funnels through this function rather than recomputing the path.
+    Runtime container logs are not written to this file; they're fetched
+    live via ``podman logs`` from ``get_app_logs``.
     """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 

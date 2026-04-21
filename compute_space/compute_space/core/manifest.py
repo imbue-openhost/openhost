@@ -57,6 +57,35 @@ SAFE_CAPABILITIES: frozenset[str] = frozenset(
     }
 )
 
+# Devices whose existence on the host the rootless ``host`` user can
+# reasonably be expected to access, and which don't expose bulk host
+# memory or kernel-control surfaces.  Anything outside this set is
+# rejected at manifest parse time — granting a device inside a rootless
+# container that the host user cannot open would fail mysteriously at
+# ``podman run`` time anyway, and granting e.g. ``/dev/mem`` or
+# ``/dev/kmem`` would entirely defeat the user-namespace sandbox.
+SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
+    {
+        # TUN/TAP for VPN-like apps (Tailscale, WireGuard userspace).
+        "/dev/net/tun",
+        # Hardware entropy devices are safe to expose read-only; the
+        # kernel enforces its own access semantics.
+        "/dev/random",
+        "/dev/urandom",
+        # Null / zero sinks and sources.
+        "/dev/null",
+        "/dev/zero",
+        # FUSE for user-mountable filesystems.
+        "/dev/fuse",
+        # Serial ports / USB-TTY for apps that talk to hardware over UART.
+        # (Only the first eight slots of each family; add more here if a
+        # real app needs them.)
+        *(f"/dev/ttyS{i}" for i in range(8)),
+        *(f"/dev/ttyUSB{i}" for i in range(8)),
+        *(f"/dev/ttyACM{i}" for i in range(8)),
+    }
+)
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class PortMapping:
@@ -111,6 +140,32 @@ class AppManifest:
     hidden: bool = False
 
     raw_toml: str = ""
+
+
+def _validate_devices(devices: list[Any]) -> list[str]:
+    """Normalise and validate ``[runtime.container].devices`` entries.
+
+    Podman's ``--device`` accepts ``<host-path>[:<container-path>][:rwm]``
+    forms; we only parse off the host path for validation and pass the
+    full string through unchanged.  Rejects anything outside
+    ``SAFE_DEVICE_PATHS`` so e.g. ``/dev/mem``, ``/dev/kmem``,
+    ``/dev/kvm``, or arbitrary block devices can't be requested by an
+    untrusted manifest.
+    """
+    if not isinstance(devices, list):
+        raise ValueError("[runtime.container].devices must be a list of strings")
+    validated: list[str] = []
+    for entry in devices:
+        if not isinstance(entry, str):
+            raise ValueError(f"[runtime.container].devices must contain strings, got {type(entry).__name__}")
+        host_path = entry.split(":", 1)[0].strip()
+        if host_path not in SAFE_DEVICE_PATHS:
+            allowed = ", ".join(sorted(SAFE_DEVICE_PATHS))
+            raise ValueError(
+                f"[runtime.container].devices entry {entry!r} is not in the allowlist.  Allowed host paths: {allowed}."
+            )
+        validated.append(entry)
+    return validated
 
 
 def _validate_capabilities(caps: list[Any]) -> list[str]:
@@ -239,7 +294,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     manifest.container_port = container["port"]
     manifest.container_command = container.get("command")
     manifest.capabilities = _validate_capabilities(container.get("capabilities", []))
-    manifest.devices = container.get("devices", [])
+    manifest.devices = _validate_devices(container.get("devices", []))
 
     manifest.port_mappings = _parse_ports(data.get("ports", []))
 

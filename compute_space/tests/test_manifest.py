@@ -273,9 +273,9 @@ class TestContainerParsing:
         assert manifest.capabilities == ["NET_ADMIN"]
 
     def test_devices(self):
-        toml = MINIMAL + 'devices = ["/dev/tun"]\n'
+        toml = MINIMAL + 'devices = ["/dev/net/tun"]\n'
         manifest = parse_manifest_from_string(toml)
-        assert manifest.devices == ["/dev/tun"]
+        assert manifest.devices == ["/dev/net/tun"]
 
 
 class TestValidation:
@@ -345,6 +345,48 @@ class TestCapabilitiesValidation:
         the offending entry."""
         toml = MINIMAL + "capabilities = [123]\n"
         with pytest.raises(ValueError, match="must contain strings"):
+            parse_manifest_from_string(toml)
+
+
+class TestDevicesValidation:
+    """Rootless podman constraints on [runtime.container].devices."""
+
+    def test_safe_device_accepted(self):
+        toml = MINIMAL + 'devices = ["/dev/net/tun"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.devices == ["/dev/net/tun"]
+
+    def test_device_with_rwm_spec_accepted(self):
+        """podman --device accepts <host>:<container>:<perm> forms; the
+        validator must parse off the host-path and validate that alone."""
+        toml = MINIMAL + 'devices = ["/dev/net/tun:/dev/net/tun:rwm"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.devices == ["/dev/net/tun:/dev/net/tun:rwm"]
+
+    def test_dev_mem_rejected(self):
+        """/dev/mem exposes host RAM — must never reach the runtime."""
+        toml = MINIMAL + 'devices = ["/dev/mem"]\n'
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            parse_manifest_from_string(toml)
+
+    def test_dev_kvm_rejected(self):
+        toml = MINIMAL + 'devices = ["/dev/kvm"]\n'
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            parse_manifest_from_string(toml)
+
+    def test_arbitrary_block_device_rejected(self):
+        toml = MINIMAL + 'devices = ["/dev/sda"]\n'
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            parse_manifest_from_string(toml)
+
+    def test_non_string_device_entry_rejected(self):
+        toml = MINIMAL + "devices = [123]\n"
+        with pytest.raises(ValueError, match="must contain strings"):
+            parse_manifest_from_string(toml)
+
+    def test_non_list_devices_rejected(self):
+        toml = MINIMAL + 'devices = "/dev/net/tun"\n'
+        with pytest.raises(ValueError, match="list of strings"):
             parse_manifest_from_string(toml)
 
 

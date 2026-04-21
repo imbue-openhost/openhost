@@ -21,7 +21,7 @@ A few things that work under classical Docker don't work here:
 
 - `[[ports]].host_port` values below 80 are rejected at manifest parse time — rootless podman cannot bind to privileged ports under 80 (the router lowers the unprivileged-port floor from 1024 to 80 so HTTP/HTTPS still work).
 - `[runtime.container].capabilities` is a tight allowlist.  Safe caps for rootless user namespaces (`NET_ADMIN`, `NET_RAW`, `NET_BIND_SERVICE`, `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID`, `KILL`, `MKNOD`, `SYS_CHROOT`, `IPC_LOCK`, a few others) are accepted; capabilities that require real host privilege (`SYS_ADMIN`, `SYS_MODULE`, `SYS_PTRACE`, ...) are rejected.  The exact list lives in `compute_space.core.manifest.SAFE_CAPABILITIES`.
-- `[runtime.container].devices` still works but the device must be accessible to the unprivileged `host` user on the server.  Standard devices like `/dev/net/tun` are fine once the host is configured for them.
+- `[runtime.container].devices` is a tight allowlist (`/dev/net/tun`, `/dev/fuse`, `/dev/random`, `/dev/urandom`, `/dev/null`, `/dev/zero`, `/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyACM*`). Requests for anything outside the list — `/dev/mem`, `/dev/kvm`, raw block devices, etc. — are rejected at manifest parse time.
 
 Here's an example of a simple app:
 

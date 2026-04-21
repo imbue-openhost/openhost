@@ -111,7 +111,18 @@ def _remove_dir(dir_path: str) -> None:
             capture_output=True,
             timeout=30,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as sudo_err:
+    except subprocess.CalledProcessError as sudo_err:
+        # capture_output=True hides stderr from the default string repr;
+        # surface it explicitly so operators see things like
+        # 'sudo: a password is required' without running the command by hand.
+        stderr = (sudo_err.stderr or b"").decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "Failed to clean data dir %s via sudo (exit %d): %s",
+            dir_path,
+            sudo_err.returncode,
+            stderr or "<no stderr>",
+        )
+    except (subprocess.TimeoutExpired, OSError) as sudo_err:
         logger.warning("Failed to clean data dir %s via sudo: %s", dir_path, sudo_err)
 
 

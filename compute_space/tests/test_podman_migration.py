@@ -11,6 +11,7 @@ test_migrations.py matrix:
 import sqlite3
 
 from compute_space.core.containers import UID_MAP_BASE_START
+from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
 from compute_space.core.containers import compute_uid_map_base
 from compute_space.db.migrations import migrate
@@ -196,6 +197,36 @@ def test_docker_container_id_rename_runs_before_table_recreation(tmp_path) -> No
         "must run before _recreate_table or the old column's data is "
         "dropped by _recreate_table's common-column filter."
     )
+
+
+def test_migrate_leaves_pool_overflow_rows_at_zero_sentinel(tmp_path) -> None:
+    """Rows whose id would overflow the subuid pool keep uid_map_base=0
+    during migration.  The server must still start (so the rest of the
+    apps keep running), and the overflowing app surfaces a clear error
+    only when it's actually started, not during the migration itself.
+
+    Regression for a bug in an earlier draft where pool exhaustion
+    during backfill crashed migrate() and therefore init_db()."""
+    db_path = str(tmp_path / "overflow.db")
+    _fresh_apps_with_docker_column(db_path)
+    overflow_id = UID_MAP_RANGE_SIZE // UID_MAP_WIDTH
+
+    db = sqlite3.connect(db_path)
+    db.execute(
+        "INSERT INTO apps (id, name, version, repo_path, local_port) VALUES (?, ?, ?, ?, ?)",
+        (overflow_id, "too-many", "1.0", "/repo", 9100),
+    )
+    db.commit()
+
+    # Must not raise.
+    migrate(db)
+
+    row = db.execute("SELECT uid_map_base FROM apps WHERE name = 'too-many'").fetchone()
+    db.close()
+    # Pool-overflow rows stay at the 0 sentinel; start_app_process will
+    # surface a ValueError on first start instead.
+    assert row is not None
+    assert row[0] == 0
 
 
 def test_migrate_is_idempotent_across_docker_to_podman_rename(tmp_path) -> None:

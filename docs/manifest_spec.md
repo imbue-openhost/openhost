@@ -22,7 +22,7 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 | `command` | string | no | — | Override container CMD |
 | `extra_ports` | string[] | no | `[]` | **Deprecated and ignored.** Use `[[ports]]` instead. |
 | `capabilities` | string[] | no | `[]` | Linux capabilities to grant inside the container. Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_CAPABILITIES`); entries like `"SYS_ADMIN"` are rejected at parse time. Accepts names with or without the `CAP_` prefix. |
-| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/net/tun"`). The host's `host` user must have permission on the device. |
+| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/net/tun"`). Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_DEVICE_PATHS`); paths like `/dev/mem`, `/dev/kvm`, or raw block devices are rejected at parse time. |
 
 ### `[[ports]]` — optional, repeatable
 
