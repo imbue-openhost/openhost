@@ -107,7 +107,7 @@ async def setup() -> ResponseReturnValue:
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     db.execute(
-        "INSERT INTO owner (id, username, password_hash, password_needs_set) VALUES (1, 'owner', ?, 0)",
+        "INSERT INTO owner (id, username, password_hash) VALUES (1, 'owner', ?)",
         (password_hash,),
     )
 
@@ -158,6 +158,7 @@ async def login() -> ResponseReturnValue:
             return response
         return await render_template("login.html")
 
+    # password_hash is NOT NULL, so no None check needed
     form = await request.form
     password = form.get("password", "")
 

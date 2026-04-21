@@ -83,80 +83,92 @@ def _recover_temp_tables(db: sqlite3.Connection) -> None:
 def migrate(db: sqlite3.Connection) -> None:
     """Migrate older databases: add missing columns, drop obsolete ones, and recreate tables when constraints change."""
     _recover_temp_tables(db)
+
+    # Check if this is a truly fresh/empty DB (no tables at all).
+    # If so, schema.sql will create everything — nothing to migrate.
+    existing_tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if not existing_tables:
+        return
+
     cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
-    if not columns:
-        return  # Fresh DB — table doesn't exist yet, schema.sql will create it
-    if "public_paths" not in columns:
-        db.execute("ALTER TABLE apps ADD COLUMN public_paths TEXT NOT NULL DEFAULT '[]'")
-        db.commit()
+    app_columns = {row[1] for row in cursor.fetchall()}
 
-    if "manifest_name" not in columns:
-        db.execute("ALTER TABLE apps ADD COLUMN manifest_name TEXT NOT NULL DEFAULT ''")
-        db.execute("UPDATE apps SET manifest_name = name")
-        db.commit()
+    # ── Apps table migrations ──
+    if app_columns:
+        if "public_paths" not in app_columns:
+            db.execute("ALTER TABLE apps ADD COLUMN public_paths TEXT NOT NULL DEFAULT '[]'")
+            db.commit()
 
-    # Re-read columns after potential ALTER TABLEs above so the drop-column
-    # migration copies all current columns (including just-added ones).
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+        if "manifest_name" not in app_columns:
+            db.execute("ALTER TABLE apps ADD COLUMN manifest_name TEXT NOT NULL DEFAULT ''")
+            db.execute("UPDATE apps SET manifest_name = name")
+            db.commit()
 
-    # Drop base_path and subdomain columns (no longer used).
-    # base_path has a UNIQUE constraint so ALTER TABLE DROP won't work;
-    # recreate the table with the correct schema instead.
-    drop_cols = {"base_path", "subdomain"} & columns
-    if drop_cols:
-        db.execute("PRAGMA foreign_keys=OFF")
-        try:
-            keep_cols = [c for c in columns if c not in drop_cols]
-            _recreate_table(db, "apps", keep_cols)
-        finally:
-            db.execute("PRAGMA foreign_keys=ON")
+        # Re-read columns after potential ALTER TABLEs above so the drop-column
+        # migration copies all current columns (including just-added ones).
+        cursor = db.execute("PRAGMA table_info(apps)")
+        app_columns = {row[1] for row in cursor.fetchall()}
 
-    # Re-read columns after potential table recreation
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+        # Drop base_path and subdomain columns (no longer used).
+        # base_path has a UNIQUE constraint so ALTER TABLE DROP won't work;
+        # recreate the table with the correct schema instead.
+        drop_cols = {"base_path", "subdomain"} & app_columns
+        if drop_cols:
+            db.execute("PRAGMA foreign_keys=OFF")
+            try:
+                keep_cols = [c for c in app_columns if c not in drop_cols]
+                _recreate_table(db, "apps", keep_cols)
+            finally:
+                db.execute("PRAGMA foreign_keys=ON")
 
-    if "repo_url" not in columns:
-        db.execute("ALTER TABLE apps ADD COLUMN repo_url TEXT")
-        db.commit()
+        # Re-read columns after potential table recreation
+        cursor = db.execute("PRAGMA table_info(apps)")
+        app_columns = {row[1] for row in cursor.fetchall()}
 
-    # Re-read columns after potential ALTER TABLE
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+        if "repo_url" not in app_columns:
+            db.execute("ALTER TABLE apps ADD COLUMN repo_url TEXT")
+            db.commit()
 
-    # Drop spin_pid column (serverless runtime removed) and update
-    # runtime_type CHECK constraint.  Requires table recreation since
-    # SQLite cannot drop columns with constraints.
-    if "spin_pid" in columns:
-        db.execute("PRAGMA foreign_keys=OFF")
-        try:
-            keep_cols = [c for c in columns if c != "spin_pid"]
-            _recreate_table(db, "apps", keep_cols)
-        finally:
-            db.execute("PRAGMA foreign_keys=ON")
+        # Re-read columns after potential ALTER TABLE
+        cursor = db.execute("PRAGMA table_info(apps)")
+        app_columns = {row[1] for row in cursor.fetchall()}
 
-    # Migrate owner table: add password_needs_set, make password_hash nullable.
-    # SQLite cannot ALTER a column's NOT NULL constraint, so we recreate the
-    # table when the old schema had password_hash NOT NULL.
+        # Drop spin_pid column (serverless runtime removed) and update
+        # runtime_type CHECK constraint.  Requires table recreation since
+        # SQLite cannot drop columns with constraints.
+        if "spin_pid" in app_columns:
+            db.execute("PRAGMA foreign_keys=OFF")
+            try:
+                keep_cols = [c for c in app_columns if c != "spin_pid"]
+                _recreate_table(db, "apps", keep_cols)
+            finally:
+                db.execute("PRAGMA foreign_keys=ON")
+
+    # Migrate owner table: ensure password_hash is NOT NULL, drop password_needs_set.
+    # Older schemas may have password_hash nullable or include password_needs_set;
+    # recreate the table to match the current schema.sql definition.
     cursor = db.execute("PRAGMA table_info(owner)")
     owner_rows = cursor.fetchall()
     owner_columns = {row[1] for row in owner_rows}
 
     needs_recreate = False
     if owner_columns:
-        # Check if password_hash is still NOT NULL (old schema)
         for row in owner_rows:
-            if row[1] == "password_hash" and row[3] == 1:  # notnull == 1
+            # password_hash should be NOT NULL — recreate if it's currently nullable
+            if row[1] == "password_hash" and row[3] == 0:  # notnull == 0
                 needs_recreate = True
                 break
-        if "password_needs_set" not in owner_columns:
+        if "password_needs_set" in owner_columns:
             needs_recreate = True
 
     if needs_recreate and owner_columns:
+        # Remove incomplete owner rows (NULL password_hash) before recreating
+        # with NOT NULL constraint — these represent unfinished setup.
+        db.execute("DELETE FROM owner WHERE password_hash IS NULL")
         db.execute("PRAGMA foreign_keys=OFF")
         try:
-            _recreate_table(db, "owner", list(owner_columns))
+            keep_cols = [c for c in owner_columns if c != "password_needs_set"]
+            _recreate_table(db, "owner", keep_cols)
         finally:
             db.execute("PRAGMA foreign_keys=ON")
 

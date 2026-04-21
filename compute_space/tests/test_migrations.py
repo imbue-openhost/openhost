@@ -53,7 +53,7 @@ def _run_init_db(db_path):
 # ---------------------------------------------------------------------------
 # Oldest-known schema: before public_paths, manifest_name were added, and
 # with base_path + subdomain columns still present, and owner table lacking
-# password_needs_set.
+# password_needs_set (since removed).
 # ---------------------------------------------------------------------------
 
 _OLDEST_ROUTER_SCHEMA = """\
@@ -142,7 +142,7 @@ class TestRouterMigrations:
         # Key columns that migrations add
         assert "public_paths" in snap["tables"]["apps"]
         assert "manifest_name" in snap["tables"]["apps"]
-        assert "password_needs_set" in snap["tables"]["owner"]
+        assert "password_needs_set" not in snap["tables"]["owner"]
         # Columns that should NOT exist
         assert "base_path" not in snap["tables"]["apps"]
         assert "subdomain" not in snap["tables"]["apps"]
@@ -261,12 +261,20 @@ class TestRouterMigrations:
         assert row["manifest_name"] == "testapp"
         assert row["public_paths"] == "[]"
 
-    def test_migrate_adds_password_needs_set(self, tmp_path):
-        """Migration adds password_needs_set to owner table."""
+    def test_migrate_drops_password_needs_set(self, tmp_path):
+        """Migration drops password_needs_set from owner table and preserves data."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
-        # Insert an owner so the owner table exists and has a row
+        # Simulate a DB with the old schema (nullable password_hash + password_needs_set)
+        db.executescript("""
+            CREATE TABLE owner (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT,
+                password_needs_set INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
         db.execute("INSERT INTO owner (id, username, password_hash) VALUES (1, 'admin', 'hash123')")
         db.commit()
         db.close()
@@ -276,15 +284,40 @@ class TestRouterMigrations:
         db = sqlite3.connect(db_path)
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM owner WHERE id = 1").fetchone()
-        cols = {r[1]: r for r in db.execute("PRAGMA table_info(owner)").fetchall()}
+        cols = {r[1] for r in db.execute("PRAGMA table_info(owner)").fetchall()}
         db.close()
 
-        assert "password_needs_set" in cols
-        assert row["password_needs_set"] == 0
+        assert "password_needs_set" not in cols
         # Verify existing owner data survived the table recreation
         assert row["username"] == "admin"
         assert row["password_hash"] == "hash123"
         assert row["created_at"] is not None
+
+    def test_migrate_deletes_null_password_hash_owner(self, tmp_path):
+        """Migration deletes owner rows with NULL password_hash (incomplete setup)."""
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+            CREATE TABLE owner (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT,
+                password_needs_set INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
+        db.execute("INSERT INTO owner (id, username, password_hash) VALUES (1, 'admin', NULL)")
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        row = db.execute("SELECT * FROM owner").fetchone()
+        db.close()
+
+        # Incomplete owner row should be deleted
+        assert row is None
 
     def test_fresh_db_migrate_is_noop(self, tmp_path):
         """migrate on an empty DB should not raise (early-return path)."""
@@ -364,8 +397,7 @@ class TestRouterMigrations:
             CREATE TABLE owner (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 username TEXT NOT NULL UNIQUE,
-                password_hash TEXT,
-                password_needs_set INTEGER NOT NULL DEFAULT 0,
+                password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE refresh_tokens (
