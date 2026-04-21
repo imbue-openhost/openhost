@@ -18,7 +18,9 @@ from compute_space.core.containers import UID_MAP_RANGE_SIZE
 from compute_space.core.containers import UID_MAP_WIDTH
 from compute_space.core.containers import _translate_env_for_container
 from compute_space.core.containers import build_image
+from compute_space.core.containers import build_log_path
 from compute_space.core.containers import compute_uid_map_base
+from compute_space.core.containers import get_app_logs
 from compute_space.core.containers import get_container_status
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
@@ -460,3 +462,70 @@ def test_get_container_status_returns_unknown_on_failure(monkeypatch: pytest.Mon
 
 # NOTE: build-cache drop is exercised in test_build_cache.py with the
 # same subprocess mock plus kwarg assertions.  Not duplicated here.
+
+
+# ---------------------------------------------------------------------------
+# get_app_logs
+# ---------------------------------------------------------------------------
+
+
+def test_get_app_logs_returns_build_log_when_no_container(tmp_path) -> None:
+    """When the app has no running container, get_app_logs should still
+    return the build log contents (and skip the podman logs call)."""
+    log_file = build_log_path("notes", str(tmp_path))
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    with open(log_file, "w") as f:
+        f.write("build-line-1\nbuild-line-2\n")
+
+    output = get_app_logs("notes", str(tmp_path), container_id=None)
+    assert "build-line-1" in output
+    assert "build-line-2" in output
+    # No "Container logs" header should appear since no container id.
+    assert "=== Container logs ===" not in output
+
+
+def test_get_app_logs_appends_podman_logs_when_container_id_set(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a container id, get_app_logs should also run ``podman logs
+    --tail <N>`` and concatenate the output under a 'Container logs' header."""
+    log_file = build_log_path("notes", str(tmp_path))
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    with open(log_file, "w") as f:
+        f.write("=== Build complete ===\n")
+
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=10, **_):  # type: ignore[no-untyped-def]
+        captured.append(list(cmd))
+        return _FakeCompleted(0, stdout="app stdout line\n")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    output = get_app_logs("notes", str(tmp_path), container_id="abc123", tail=500)
+
+    assert captured == [["podman", "logs", "--tail", "500", "abc123"]]
+    assert "=== Build complete ===" in output
+    assert "=== Container logs ===" in output
+    assert "app stdout line" in output
+
+
+def test_get_app_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Color codes and carriage returns from podman logs should be
+    stripped before we hand the text back to the dashboard (which
+    otherwise renders them as garbage text)."""
+    log_file = build_log_path("notes", str(tmp_path))
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    with open(log_file, "w") as f:
+        f.write("")
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=10, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(
+            0,
+            stdout="\x1b[31mred text\x1b[0m plain\r\n",
+        )
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    output = get_app_logs("notes", str(tmp_path), container_id="abc123")
+    assert "\x1b[" not in output
+    assert "\r" not in output
+    assert "red text plain" in output
