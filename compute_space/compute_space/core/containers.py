@@ -1,24 +1,28 @@
 """Container lifecycle using rootless Podman.
 
-Every container runs under the unprivileged ``host`` Linux user with a
-per-app user-namespace mapping (``--uidmap``/``--gidmap``), so container-root
-is an unprivileged subuid on the host.  Host bind mounts use idmapped mounts
-(``:idmap``) so files written by container-root land on disk owned by the
-``host`` user, which lets the router manage them without ``sudo`` or
-chmod 0o777 on the data directory.
+Every container runs under the unprivileged ``host`` Linux user in
+podman's default rootless user namespace (the one /etc/subuid allocates
+at host-user-creation time).  Host bind mounts use idmapped mounts
+(``:idmap``) so files written by container-root land on disk owned by
+the ``host`` user, which lets the router manage them without ``sudo``
+or chmod 0o777 on the data directory.
+
+Cross-app isolation comes from podman's per-container mount / network /
+pid / ipc namespaces plus the fact that each app only has its own
+``/data/...`` bind-mount subdirectory (unless ``access_all_data`` is
+set).  Two apps can't see each other's process tree, network state or
+files even though they share the rootless UID namespace.
 
 Security defaults applied to every container:
 
-- ``--cap-drop=ALL`` plus ``--cap-add`` for each capability listed in the
-  manifest.  The manifest validator restricts capabilities to a
+- ``--cap-drop=ALL`` plus ``--cap-add`` for each capability listed in
+  the manifest.  The manifest validator restricts capabilities to a
   rootless-safe allowlist (``SAFE_CAPABILITIES``), so anything reaching
-  here is safe to grant inside the user namespace.
+  here is safe to grant.
 - ``--device`` is only added for entries in ``SAFE_DEVICE_PATHS``; the
   manifest parser rejects everything else (``/dev/mem``, ``/dev/kmem``,
   raw block devices, etc.) before deploy.
 - ``--security-opt=no-new-privileges=true``.
-- ``--uidmap`` / ``--gidmap`` give every app its own 65536-UID window,
-  disjoint from every other app's.
 
 App-facing contract: images are built from ``Dockerfile``, bind mounts
 appear at ``/data/app_data/<app>`` and the like, and the
@@ -43,33 +47,6 @@ from compute_space.core.manifest import PortMapping
 # container filesystem stays clean (no data dirs mixed with /bin, /etc, etc).
 CONTAINER_ROOT = "/data"
 
-# Width of a per-app user-namespace mapping (the standard subuid window size).
-# Every app gets a disjoint block of this many UIDs inside the host's
-# subuid range, so UID 0 inside the container is a subuid unique to that
-# app and UID N is that subuid + N (up to 65535).
-UID_MAP_WIDTH = 65536
-
-# First subuid/subgid allocated to per-app mappings.  Must match the range
-# allocated to the ``host`` user by ansible (see ansible/tasks/podman.yml).
-UID_MAP_BASE_START = 10_000_000
-
-# Size of the subuid/subgid range allocated to the ``host`` user.  Must
-# match the ``host:10000000:10000000`` entry ansible writes to /etc/subuid
-# and /etc/subgid.  The router refuses to allocate a uid_map window that
-# would spill past this range — an exhausted pool is an operator problem
-# (too many apps, or many creates/deletes of apps with SQLite autoincrement
-# never reusing ids), and must surface as a clear error rather than a
-# malformed ``--uidmap`` that podman would reject later with a cryptic
-# message.
-UID_MAP_RANGE_SIZE = 10_000_000
-
-# Cap on app_id values that the deterministic formula can accept without
-# overflowing the allocated range.  app_id goes into uid_map_base as
-# UID_MAP_BASE_START + app_id * UID_MAP_WIDTH, and the window ends at
-# uid_map_base + UID_MAP_WIDTH.  Solving for that to stay within
-# (UID_MAP_BASE_START + UID_MAP_RANGE_SIZE) gives this bound.
-_MAX_APP_ID_FOR_UID_MAP = (UID_MAP_RANGE_SIZE // UID_MAP_WIDTH) - 1
-
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 
 # Marker we prefix RuntimeError messages with when a build failure is
@@ -89,31 +66,6 @@ _BUILD_CACHE_CORRUPT_FRAGMENTS = (
     "storage-driver errored",
     "layer not known",
 )
-
-
-def compute_uid_map_base(app_id: int) -> int:
-    """Deterministic subuid base for an app id.
-
-    Each app gets its own disjoint 65536-UID window in the host's subuid
-    range, so two apps never share container-root and can't read each
-    other's files even if one escapes its mount namespace.
-
-    Raises ``ValueError`` if ``app_id`` is negative or if the resulting
-    window would fall outside the subuid range allocated to the host user.
-    Exhaustion is an operator-level problem (too many total apps created,
-    even counting deleted ones — SQLite's ``AUTOINCREMENT`` never reuses
-    ids) and surfaces here rather than being passed through to podman.
-    """
-    if app_id < 0:
-        raise ValueError(f"app_id must be non-negative, got {app_id}")
-    if app_id > _MAX_APP_ID_FOR_UID_MAP:
-        raise ValueError(
-            f"app_id {app_id} exceeds the per-host subuid pool "
-            f"(supports up to {_MAX_APP_ID_FOR_UID_MAP + 1} total apps over "
-            f"the lifetime of this server).  Expand host's /etc/subuid + "
-            f"/etc/subgid allocation and adjust UID_MAP_RANGE_SIZE to match."
-        )
-    return UID_MAP_BASE_START + app_id * UID_MAP_WIDTH
 
 
 def _log_path(app_name: str, temp_data_dir: str) -> str:
@@ -220,14 +172,17 @@ def run_container(
     env_vars: dict[str, str],
     data_dir: str,
     temp_data_dir: str,
-    uid_map_base: int,
     port_mappings: list[PortMapping] | None = None,
 ) -> str:
     """Start a detached container for an app.  Returns the container ID.
 
-    ``uid_map_base`` is the starting host subuid for this app's 65536-UID
-    user-namespace mapping.  It must be allocated from the host's
-    ``/etc/subuid`` range (see ansible/tasks/podman.yml).
+    Containers run in podman's default rootless user namespace (the one
+    /etc/subuid allocates to the ``host`` user at user-creation time).
+    Cross-app isolation comes from mount/network/pid namespaces plus the
+    fact that each app only has its own ``/data/...`` bind mounts; the
+    filesystem-side ownership is handled by ``:idmap`` on every volume,
+    which translates container-root writes to the host ``host`` user on
+    disk so the router can manage files without sudo or chmod 0o777.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -274,10 +229,6 @@ def run_container(
         # for the old runtime keep working unchanged.
         "--add-host=host.docker.internal:host-gateway",
         "--add-host=host.containers.internal:host-gateway",
-        # Per-app user namespace: container UID 0 -> host subuid uid_map_base.
-        # Two apps always get disjoint 65536-UID windows.
-        f"--uidmap=0:{uid_map_base}:{UID_MAP_WIDTH}",
-        f"--gidmap=0:{uid_map_base}:{UID_MAP_WIDTH}",
         # Start from zero capabilities and add back only what the manifest
         # explicitly requests.  The manifest validator rejects caps that
         # require host privilege (SYS_ADMIN, SYS_MODULE, SYS_PTRACE, ...)

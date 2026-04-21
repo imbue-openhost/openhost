@@ -2,11 +2,6 @@ import os
 import re
 import sqlite3
 
-# Imported lazily-ish at top-level for the subuid backfill.  Kept here
-# rather than inside migrate() to make the dependency obvious.
-from compute_space.core.containers import compute_uid_map_base
-from compute_space.core.logging import logger
-
 
 def _schema_path() -> str:
     return os.path.join(os.path.dirname(__file__), "schema.sql")
@@ -149,40 +144,6 @@ def migrate(db: sqlite3.Connection) -> None:
             _recreate_table(db, "apps", keep_cols)
         finally:
             db.execute("PRAGMA foreign_keys=ON")
-
-    columns = _apps_columns(db)
-
-    # Add uid_map_base column (per-app subuid base for rootless podman).
-    # Rows inserted before this column existed get a 0 sentinel; the
-    # migration below tries to compute a proper base for each, but rows
-    # whose id falls outside the allocated subuid pool are left at 0 so
-    # the server can still start — start_app_process raises a clear
-    # error the first time such an app is started.  That turns an
-    # otherwise fatal startup failure into a per-app problem.
-    if "uid_map_base" not in columns:
-        db.execute("ALTER TABLE apps ADD COLUMN uid_map_base INTEGER NOT NULL DEFAULT 0")
-        rows = db.execute("SELECT id, name FROM apps WHERE uid_map_base = 0").fetchall()
-        for row_id, row_name in rows:
-            try:
-                base = compute_uid_map_base(row_id)
-            except ValueError as e:
-                # Leave uid_map_base=0.  The app will fail cleanly the
-                # first time start_app_process tries to run it, which is
-                # the right surface for the error (the dashboard shows it
-                # against that specific app).  Log here so the operator
-                # has a visible signal at server startup too.
-                logger.warning(
-                    "Could not allocate uid_map_base for app %r (id=%d) during migration: %s",
-                    row_name,
-                    row_id,
-                    e,
-                )
-                continue
-            db.execute(
-                "UPDATE apps SET uid_map_base = ? WHERE id = ?",
-                (base, row_id),
-            )
-        db.commit()
 
     # Migrate owner table: add password_needs_set, make password_hash nullable.
     # SQLite cannot ALTER a column's NOT NULL constraint, so we recreate the

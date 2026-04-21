@@ -11,13 +11,6 @@ CREATE TABLE IF NOT EXISTS apps (
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
     container_id TEXT,
-    -- Host subuid base for this app's rootless-podman user namespace.
-    -- Allocated at insert time (see compute_uid_map_base) and sticky across
-    -- rebuilds so on-disk file ownership stays consistent.  A value of 0
-    -- is the "not yet assigned" sentinel used for rows migrated in from
-    -- the pre-podman schema.  db.migrations backfills those at startup,
-    -- and start_app_process re-backfills on first use as a safety net.
-    uid_map_base INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,

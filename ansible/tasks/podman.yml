@@ -1,12 +1,13 @@
 ---
 # Install rootless Podman for the `host` user.  Runs with become: yes.
 #
-# OpenHost runs every app container under the unprivileged `host` user via
-# rootless podman + per-app --uidmap.  This task installs the runtime,
-# allocates the subuid/subgid range each app draws from, enables user
-# systemd lingering so containers survive reboots, lowers the unprivileged
-# port floor so apps can publish ports >= 80, and fails the play early if
-# the data filesystem doesn't support idmapped bind mounts.
+# OpenHost runs every app container under the unprivileged `host` user
+# via rootless podman in podman's default single-user namespace.  This
+# task installs the runtime, enables user systemd lingering so
+# containers survive reboots, lowers the unprivileged port floor so apps
+# can publish ports >= 80, and fails the play early if the data
+# filesystem doesn't support idmapped bind mounts (used by every
+# ``-v`` the router hands to ``podman run``).
 
 # ---------------------------------------------------------------------------
 # Packages
@@ -27,57 +28,14 @@
       # replacement, needed for user-defined podman networks.
       - netavark
       - aardvark-dns
-      # uidmap ships newuidmap/newgidmap, required to set up unprivileged
-      # user namespaces with ranges larger than a single UID.
+      # uidmap ships newuidmap/newgidmap, used by podman's default
+      # rootless user namespace setup.
       - uidmap
       # Rootless overlay fallback for kernels that don't expose the native
       # unprivileged overlay mount.  Harmless when unused.
       - fuse-overlayfs
     state: present
     update_cache: yes
-
-# ---------------------------------------------------------------------------
-# subuid / subgid allocation for the host user
-# ---------------------------------------------------------------------------
-#
-# Every app gets its own disjoint 65536-UID window inside the host's subuid
-# range, keyed by app id (see compute_uid_map_base).  10,000,000 – 20,000,000
-# gives room for ~150 apps without collision and doesn't overlap with any
-# UID the host itself assigns.
-
-- name: Allocate subuid range to host user
-  lineinfile:
-    path: /etc/subuid
-    regexp: '^host:'
-    line: "host:10000000:10000000"
-    create: yes
-    mode: "0644"
-  register: _subuid_change
-
-- name: Allocate subgid range to host user
-  lineinfile:
-    path: /etc/subgid
-    regexp: '^host:'
-    line: "host:10000000:10000000"
-    create: yes
-    mode: "0644"
-  register: _subgid_change
-
-# Podman caches the effective subuid range inside its storage metadata at
-# first use.  If anything has already invoked podman as the host user
-# (e.g. a prior bootstrap) with the small default subuid allocation,
-# those cached idmappings are narrower than what we need and remain in
-# effect until cleared.  Reset podman state whenever subuid/subgid was
-# just rewritten so the next invocation re-reads the new range.
-- name: Reset podman state after subuid/subgid changes
-  become: yes
-  become_user: host
-  command: podman system reset --force
-  when: _subuid_change.changed or _subgid_change.changed
-  changed_when: true
-  # podman reset exits non-zero if there's nothing to clean up, which is
-  # fine on a brand-new install.
-  failed_when: false
 
 # ---------------------------------------------------------------------------
 # systemd user lingering
@@ -129,8 +87,8 @@
 # ---------------------------------------------------------------------------
 #
 # Every bind mount from the router uses ``:idmap`` so container-root file
-# writes land on disk owned by the host user rather than by the mapped
-# subuid.  idmapped mounts require:
+# writes land on disk owned by the host user rather than by podman's
+# rootless mapped subuid.  idmapped mounts require:
 #   - Linux >= 5.12 (6.8 on Ubuntu 24.04 — fine)
 #   - filesystem that supports it (ext4, xfs, btrfs, tmpfs are all OK;
 #     some exotic setups like ZFS < 2.2 or certain fuse filesystems are not)
@@ -154,11 +112,10 @@
       - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs']
     fail_msg: >-
       Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
-      support idmapped bind mounts.  Rootless podman with per-app uidmaps
-      will not work here.  Reprovision onto ext4, xfs, btrfs, or tmpfs.
-      (Note: Linux reports every ext2/3/4 filesystem as 'ext2/ext3', so
-      ext4 IS supported — this failure means you're on something else
-      entirely, e.g. ZFS or a FUSE filesystem.)
+      support idmapped bind mounts.  Reprovision onto ext4, xfs, btrfs,
+      or tmpfs.  (Note: Linux reports every ext2/3/4 filesystem as
+      'ext2/ext3', so ext4 IS supported — this failure means you're on
+      something else entirely, e.g. ZFS or a FUSE filesystem.)
     success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
 
 # ---------------------------------------------------------------------------
@@ -178,5 +135,4 @@
       - (_podman_info.stdout | from_json).host.security.rootless | bool
     fail_msg: >-
       podman is not configured for rootless operation as the host user.
-      subuid/subgid may not have been allocated correctly.
     success_msg: "podman rootless for host user: OK"

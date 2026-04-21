@@ -13,11 +13,7 @@ import subprocess
 import pytest
 
 from compute_space.core import containers
-from compute_space.core.containers import UID_MAP_BASE_START
-from compute_space.core.containers import UID_MAP_RANGE_SIZE
-from compute_space.core.containers import UID_MAP_WIDTH
 from compute_space.core.containers import build_image
-from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.containers import get_container_status
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
@@ -37,40 +33,6 @@ class _FakeCompleted:
 def _patch_subprocess_run(monkeypatch: pytest.MonkeyPatch, handler):
     """Replace subprocess.run globally with a callable that records + returns."""
     monkeypatch.setattr(subprocess, "run", handler)
-
-
-def test_compute_uid_map_base_is_deterministic() -> None:
-    """Same app id -> same subuid window, across calls."""
-    assert compute_uid_map_base(1) == compute_uid_map_base(1)
-    assert compute_uid_map_base(42) == compute_uid_map_base(42)
-
-
-def test_compute_uid_map_base_windows_are_disjoint() -> None:
-    """No two app ids share any overlapping UID range."""
-    windows = [(compute_uid_map_base(i), compute_uid_map_base(i) + UID_MAP_WIDTH) for i in range(10)]
-    # Adjacent pairs: end of N <= start of N+1 (touching is fine, overlapping isn't).
-    for (_, end), (start, _) in zip(windows, windows[1:], strict=False):
-        assert end <= start
-
-
-def test_compute_uid_map_base_rejects_negative_ids() -> None:
-    with pytest.raises(ValueError, match="non-negative"):
-        compute_uid_map_base(-1)
-
-
-def test_compute_uid_map_base_starts_at_the_configured_base() -> None:
-    """id=0 maps to the base of the subuid range (matches ansible allocation)."""
-    assert compute_uid_map_base(0) == UID_MAP_BASE_START
-
-
-def test_compute_uid_map_base_rejects_ids_past_the_allocated_range() -> None:
-    """AUTOINCREMENT ids never reuse slots, so the formula eventually
-    exceeds the 10M subuid range allocated to host.  That must surface
-    as a clear error, not a malformed --uidmap argument to podman."""
-    # One past the last id that fits.
-    overflow_id = UID_MAP_RANGE_SIZE // UID_MAP_WIDTH  # same as _MAX_APP_ID_FOR_UID_MAP + 1
-    with pytest.raises(ValueError, match="subuid pool"):
-        compute_uid_map_base(overflow_id)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +168,6 @@ def _run_and_capture(
     tmp_path,
     port_mappings: list[PortMapping] | None = None,
     env_vars: dict[str, str] | None = None,
-    uid_map_base: int = 10_000_000,
 ) -> list[str]:
     """Invoke run_container with mocked subprocess and return the built argv."""
     runs: list[list[str]] = []
@@ -235,7 +196,6 @@ def _run_and_capture(
         env_vars=env_vars or {},
         data_dir=data_dir,
         temp_data_dir=temp_data_dir,
-        uid_map_base=uid_map_base,
         port_mappings=port_mappings,
     )
     # The "run" call is the one after the pre-cleanup "rm".
@@ -256,13 +216,6 @@ def test_run_container_has_hardening_flags(tmp_path, monkeypatch: pytest.MonkeyP
     assert "--security-opt=no-new-privileges=true" in argv
     assert "--add-host=host.docker.internal:host-gateway" in argv
     assert "--add-host=host.containers.internal:host-gateway" in argv
-
-
-def test_run_container_maps_uidmap_and_gidmap(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    manifest = _basic_manifest()
-    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path, uid_map_base=10_500_000)
-    assert f"--uidmap=0:10500000:{UID_MAP_WIDTH}" in argv
-    assert f"--gidmap=0:10500000:{UID_MAP_WIDTH}" in argv
 
 
 def test_run_container_mounts_use_idmap_option(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

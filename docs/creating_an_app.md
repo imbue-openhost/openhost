@@ -11,7 +11,7 @@ The router reads `openhost.toml`, builds the container image from your `Dockerfi
 
 ## Writing an app to run on OpenHost
 
-Apps can be anything that can run in an OCI container, and accessed via HTTP(s). OpenHost runs every app in rootless mode with its own user namespace, so the app image's root is mapped to an unprivileged subuid on the host.
+Apps can be anything that can run in an OCI container, and accessed via HTTP(s). OpenHost runs every app under rootless podman, so container-root maps to an unprivileged subuid on the host rather than real root.
 
 An `openhost.toml` manifest must be placed at the root of your repo, to indicate to OpenHost how to run your app. See the [manifest spec](manifest_spec.md) for the full field reference.
 

@@ -21,9 +21,7 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.core.containers import build_image
-from compute_space.core.containers import compute_uid_map_base
 from compute_space.core.containers import run_container
-from compute_space.core.data import deprovision_data
 from compute_space.core.data import provision_data
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
@@ -244,7 +242,7 @@ def insert_and_deploy(
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
     )
 
-    cursor = db.execute(
+    db.execute(
         """INSERT INTO apps
            (name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
@@ -268,33 +266,6 @@ def insert_and_deploy(
             manifest.raw_toml,
             "building",
         ),
-    )
-    # Allocate this app's subuid/subgid window now that we have its id.
-    # The mapping is sticky across rebuilds/restarts so on-disk file
-    # ownership stays consistent.  If allocation fails (subuid pool
-    # exhausted), clean up the filesystem directories we already
-    # created in provision_data so a failed deploy doesn't orphan
-    # /data/app_data/<name> and /data/app_temp_data/<name>.
-    app_id = cursor.lastrowid
-    assert app_id is not None, "SQLite should always populate lastrowid on INSERT"
-    try:
-        uid_map_base = compute_uid_map_base(app_id)
-    except ValueError:
-        # Roll back the INSERT so the app row doesn't end up partially
-        # persisted on the next unrelated commit.  sqlite3's default
-        # isolation_level keeps the INSERT's transaction open until
-        # somebody commits or rolls back; if we just re-raise here, the
-        # next committed statement on this connection would flush the
-        # half-created row.
-        db.rollback()
-        # deprovision_data / _remove_dir already log any cleanup failure
-        # internally, so no extra handler here — we'd double-log at best
-        # and mask the original ValueError at worst.
-        deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
-        raise
-    db.execute(
-        "UPDATE apps SET uid_map_base = ? WHERE id = ?",
-        (uid_map_base, app_id),
     )
 
     # Store resolved port mappings
@@ -352,45 +323,6 @@ def insert_and_deploy(
     return app_name
 
 
-def _resolve_uid_map_base(db: sqlite3.Connection, app_name: str) -> int:
-    """Return the per-app subuid base, allocating on first use if needed.
-
-    A stored value of 0 is the schema's "not yet assigned" sentinel (rows
-    inserted before the column existed, or rows whose id fell outside the
-    pool at migration time).  We compute the real base via the
-    deterministic formula and persist it so every subsequent start reuses
-    the same host UID window, keeping on-disk file ownership stable.
-
-    The caller's transaction is committed when this function persists a
-    newly-allocated base — callers pass long-lived router DB connections
-    where surrounding writes are all single-row status updates that are
-    safe to commit together, so this is the simplest contract.
-
-    Raises ``RuntimeError`` if the app isn't in the database, and propagates
-    ``ValueError`` from ``compute_uid_map_base`` for ids past the pool.
-    """
-    row = db.execute(
-        "SELECT id, uid_map_base FROM apps WHERE name = ?",
-        (app_name,),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(f"App {app_name!r} not found in database")
-    base = row["uid_map_base"]
-    # Explicit sentinel check (rather than a truthiness test on `base`) so
-    # this stays correct even if future code ever makes 0 a legitimate
-    # allocated base.  The schema's NOT NULL + DEFAULT 0 invariant makes
-    # int(base) always safe here.
-    if int(base) != 0:
-        return int(base)
-    base = compute_uid_map_base(row["id"])
-    db.execute(
-        "UPDATE apps SET uid_map_base = ? WHERE name = ?",
-        (base, app_name),
-    )
-    db.commit()
-    return base
-
-
 def deploy_app_background(
     manifest: AppManifest,
     repo_path: str,
@@ -439,7 +371,6 @@ def deploy_app_background(
             (app_name,),
         )
         db.commit()
-        uid_map_base = _resolve_uid_map_base(db, app_name)
         container_id = run_container(
             app_name,
             image_tag,
@@ -448,7 +379,6 @@ def deploy_app_background(
             env_vars,
             config.persistent_data_dir,
             config.temporary_data_dir,
-            uid_map_base=uid_map_base,
             port_mappings=port_mappings,
         )
         db.execute(
@@ -604,7 +534,6 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         manifest.container_image,
         temp_data_dir=config.temporary_data_dir,
     )
-    uid_map_base = _resolve_uid_map_base(db, app_name)
     container_id = run_container(
         app_row["name"],
         image_tag,
@@ -613,7 +542,6 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         env_vars,
         config.persistent_data_dir,
         config.temporary_data_dir,
-        uid_map_base=uid_map_base,
         port_mappings=port_mappings,
     )
     db.execute(
