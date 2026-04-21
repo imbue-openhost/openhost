@@ -4,6 +4,7 @@ identical to a fresh database created by schema.sql, and that data is
 preserved correctly through each migration path.
 """
 
+import hashlib
 import os
 import sqlite3
 
@@ -437,8 +438,6 @@ class TestRouterMigrations:
 
     def test_migrate_hashes_refresh_tokens(self, tmp_path):
         """Migration renames token -> token_hash and hashes existing plaintext values."""
-        import hashlib
-
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         db.executescript(_OLDEST_ROUTER_SCHEMA)
@@ -472,8 +471,6 @@ class TestRouterMigrations:
 
     def test_migrate_hashes_app_tokens(self, tmp_path):
         """Migration renames token -> token_hash and hashes existing plaintext values in app_tokens."""
-        import hashlib
-
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         db.executescript(_OLDEST_ROUTER_SCHEMA)
@@ -508,8 +505,6 @@ class TestRouterMigrations:
 
     def test_token_hash_migration_idempotent(self, tmp_path):
         """Running init_db twice doesn't double-hash tokens."""
-        import hashlib
-
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         db.executescript(_OLDEST_ROUTER_SCHEMA)
