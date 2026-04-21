@@ -281,10 +281,10 @@ def insert_and_deploy(
     try:
         uid_map_base = compute_uid_map_base(app_id)
     except ValueError:
-        try:
-            deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
-        except Exception as cleanup_err:
-            logger.warning("Failed to clean up orphaned data dirs for %s: %s", app_name, cleanup_err)
+        # deprovision_data / _remove_dir already log any cleanup failure
+        # internally, so no extra handler here — we'd double-log at best
+        # and mask the original ValueError at worst.
+        deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
         raise
     db.execute(
         "UPDATE apps SET uid_map_base = ? WHERE id = ?",
