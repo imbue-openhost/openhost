@@ -83,16 +83,14 @@ def provision_data(
 def _remove_dir(dir_path: str) -> None:
     """Remove a directory tree.
 
-    With rootless podman + idmapped mounts, every file the router-managed
-    container writes is owned by the ``host`` user on disk, so a plain
-    ``shutil.rmtree`` succeeds without sudo.  A ``sudo -n rm -rf`` fallback
-    covers the residual case where legacy Docker-era root-owned files
-    linger on a host that was code-upgraded without reprovisioning; on a
-    clean podman install it is never used.
+    Routine removals succeed with ``shutil.rmtree``; for entries owned by
+    a UID the router can't chmod (rare but possible when files ended up
+    under an unexpected owner), we fall back to ``sudo -n rm -rf`` via
+    the NOPASSWD sudoers rule ansible installs.
 
-    Errors from the sudo fallback are still swallowed (with a warning) so
-    a cleanup failure can't block removal of the app row from the database
-    or leave the storage guard stuck.
+    Errors from both paths are swallowed (with a warning) so a cleanup
+    failure can't block removal of the app row from the database or
+    leave the storage guard stuck.
     """
     if not os.path.exists(dir_path):
         return

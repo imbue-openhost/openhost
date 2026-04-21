@@ -355,6 +355,11 @@ def _resolve_uid_map_base(db: sqlite3.Connection, app_name: str) -> int:
     deterministic formula and persist it so every subsequent start reuses
     the same host UID window, keeping on-disk file ownership stable.
 
+    The caller's transaction is committed when this function persists a
+    newly-allocated base — callers pass long-lived router DB connections
+    where surrounding writes are all single-row status updates that are
+    safe to commit together, so this is the simplest contract.
+
     Raises ``RuntimeError`` if the app isn't in the database, and propagates
     ``ValueError`` from ``compute_uid_map_base`` for ids past the pool.
     """

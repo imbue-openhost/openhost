@@ -116,15 +116,10 @@ def compute_uid_map_base(app_id: int) -> int:
 def build_log_path(app_name: str, temp_data_dir: str) -> str:
     """Return the path to the build/deploy log file for an app.
 
-    The single source of truth for where build and runtime logs land.
-    Every caller (router, dashboard log view, app_log_path helper) should
-    funnel through this function rather than recomputing the path.
-
-    The on-disk filename is ``docker.log`` for compatibility with existing
-    deployments' log paths — renaming it would invalidate bookmarks,
-    shipped log-viewer URLs, and log-rotation configs without a real
-    benefit.  If you change it, update every migration runbook and
-    external doc that mentions the path.
+    Single source of truth for where build and runtime logs land — every
+    caller (router, dashboard log view, app_log_path helper) funnels
+    through this function rather than recomputing the path, so the
+    filename and layout can only change in one place.
     """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 
@@ -138,6 +133,17 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
 
 def _is_build_cache_corrupt(output: str) -> bool:
     return any(frag in output for frag in _BUILD_CACHE_CORRUPT_FRAGMENTS)
+
+
+def _raise_if_build_cache_corrupt(output: str) -> None:
+    """Raise a RuntimeError tagged with BUILD_CACHE_CORRUPT_MARKER if the
+    given build output matches any of the cache-corruption fragments.
+
+    Shared between the streaming and non-streaming build paths so the
+    error string stays identical in both places.
+    """
+    if _is_build_cache_corrupt(output):
+        raise RuntimeError(f"{BUILD_CACHE_CORRUPT_MARKER} Container build cache is corrupted.")
 
 
 def build_image(
@@ -177,8 +183,7 @@ def build_image(
             proc.kill()
             raise
         if proc.returncode != 0:
-            if _is_build_cache_corrupt(build_output):
-                raise RuntimeError(f"{BUILD_CACHE_CORRUPT_MARKER} Container build cache is corrupted.")
+            _raise_if_build_cache_corrupt(build_output)
             # Include the tail of build output so the error is visible in
             # the main router log (the full output is already in the app log).
             tail = build_output[-2000:] if len(build_output) > 2000 else build_output
@@ -187,8 +192,7 @@ def build_image(
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             combined = result.stdout + result.stderr
-            if _is_build_cache_corrupt(combined):
-                raise RuntimeError(f"{BUILD_CACHE_CORRUPT_MARKER} Container build cache is corrupted.")
+            _raise_if_build_cache_corrupt(combined)
             raise RuntimeError(f"Container build failed:\n{combined}")
 
     if temp_data_dir:
