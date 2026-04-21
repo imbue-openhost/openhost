@@ -52,6 +52,7 @@
     line: "host:10000000:10000000"
     create: yes
     mode: "0644"
+  register: _subuid_change
 
 - name: Allocate subgid range to host user
   lineinfile:
@@ -60,6 +61,23 @@
     line: "host:10000000:10000000"
     create: yes
     mode: "0644"
+  register: _subgid_change
+
+# Podman caches the effective subuid range inside its storage metadata at
+# first use.  If anything has already invoked podman as the host user
+# (e.g. a prior bootstrap) with the small default subuid allocation,
+# those cached idmappings are narrower than what we need and remain in
+# effect until cleared.  Reset podman state whenever subuid/subgid was
+# just rewritten so the next invocation re-reads the new range.
+- name: Reset podman state after subuid/subgid changes
+  become: yes
+  become_user: host
+  command: podman system reset --force
+  when: _subuid_change.changed or _subgid_change.changed
+  changed_when: true
+  # podman reset exits non-zero if there's nothing to clean up, which is
+  # fine on a brand-new install.
+  failed_when: false
 
 # ---------------------------------------------------------------------------
 # systemd user lingering

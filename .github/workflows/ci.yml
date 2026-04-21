@@ -25,44 +25,11 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
 
-  test-podman:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      # GitHub-hosted ubuntu-latest ships with podman pre-installed but not
-      # fully configured for rootless operation.  Allocate the host user's
-      # subuid/subgid range and lower the unprivileged-port floor to match
-      # what ansible/tasks/podman.yml does on production hosts.
-      - name: Configure rootless podman for the runner user
-        run: |
-          # Replace the runner's subuid/subgid lines with a single
-          # contiguous 10M range that covers every per-app window
-          # OpenHost would allocate.  We replace rather than --add so
-          # the existing small default allocation doesn't confuse
-          # podman's span-based storage-chown-by-maps check with two
-          # disjoint ranges.  (Matches what ansible/tasks/podman.yml
-          # does on production hosts.)
-          sudo sed -i '/^runner:/d' /etc/subuid /etc/subgid
-          echo "runner:10000000:10000000" | sudo tee -a /etc/subuid
-          echo "runner:10000000:10000000" | sudo tee -a /etc/subgid
-          # Force fuse-overlayfs as the rootless storage driver.  The
-          # default native overlay on GitHub-hosted runners hits
-          # 'lchown etc/shadow: invalid argument' during the id-mapped
-          # layer copy podman does for per-app --uidmap; fuse-overlayfs
-          # handles the chown by emulation and works across the same
-          # image layers.
-          sudo apt-get update -qq && sudo apt-get install -y -qq fuse-overlayfs
-          mkdir -p "$HOME/.config/containers"
-          cat > "$HOME/.config/containers/storage.conf" <<'EOF'
-          [storage]
-          driver = "overlay"
-          [storage.options]
-          mount_program = "/usr/bin/fuse-overlayfs"
-          EOF
-          # Reset podman's cached subuid/storage state so it picks up
-          # the new subuid range we just wrote.
-          podman system reset --force || true
-          # Let rootless containers publish ports >= 80.
-          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
-      - run: uv run pytest --run-podman -k requires_podman
+  # Note: integration tests that need a correctly-configured rootless
+  # podman environment (per-app --uidmap, :idmap bind mounts, etc.) run
+  # on real cloud VMs via the e2e workflow rather than here.  The
+  # GitHub-hosted runner's containers-storage state and default subuid
+  # allocation interact badly with per-app uidmaps in ways that aren't
+  # representative of production, so we deliberately don't try to run
+  # `pytest --run-podman` under ubuntu-latest.  See tests/test_e2e.py
+  # for the full-stack coverage.
