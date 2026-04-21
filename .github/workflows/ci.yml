@@ -36,10 +36,16 @@ jobs:
       # what ansible/tasks/podman.yml does on production hosts.
       - name: Configure rootless podman for the runner user
         run: |
-          # Allocate the same per-app subuid/subgid range ansible
-          # installs on production (see ansible/tasks/podman.yml).
-          sudo usermod --add-subuids 10000000-19999999 runner
-          sudo usermod --add-subgids 10000000-19999999 runner
+          # Replace the runner's subuid/subgid lines with a single
+          # contiguous 10M range that covers every per-app window
+          # OpenHost would allocate.  We replace rather than --add so
+          # the existing small default allocation doesn't confuse
+          # podman's span-based storage-chown-by-maps check with two
+          # disjoint ranges.  (Matches what ansible/tasks/podman.yml
+          # does on production hosts.)
+          sudo sed -i '/^runner:/d' /etc/subuid /etc/subgid
+          echo "runner:10000000:10000000" | sudo tee -a /etc/subuid
+          echo "runner:10000000:10000000" | sudo tee -a /etc/subgid
           # Force fuse-overlayfs as the rootless storage driver.  The
           # default native overlay on GitHub-hosted runners hits
           # 'lchown etc/shadow: invalid argument' during the id-mapped
@@ -54,11 +60,9 @@ jobs:
           [storage.options]
           mount_program = "/usr/bin/fuse-overlayfs"
           EOF
-          # podman caches the effective subuid range on first use; tell
-          # it to re-read /etc/subuid and /etc/subgid now that we've
-          # widened them, otherwise app_id values past ~2 exhaust the
-          # runner-user default allocation.
-          podman system migrate
+          # Reset podman's cached subuid/storage state so it picks up
+          # the new subuid range we just wrote.
+          podman system reset --force || true
           # Let rootless containers publish ports >= 80.
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
       - run: uv run pytest --run-podman -k requires_podman
