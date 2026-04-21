@@ -69,22 +69,24 @@ def test_docker_container_id_is_renamed_preserving_data(tmp_path) -> None:
     _fresh_apps_with_docker_column(db_path)
 
     db = sqlite3.connect(db_path)
-    db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, docker_container_id) "
-        "VALUES ('notes', '1.0', '/repo/notes', 9100, 'container-abc')"
-    )
-    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, docker_container_id) "
+            "VALUES ('notes', '1.0', '/repo/notes', 9100, 'container-abc')"
+        )
+        db.commit()
 
-    migrate(db)
+        migrate(db)
 
-    cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
-    assert "container_id" in cols
-    assert "docker_container_id" not in cols
+        cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+        assert "container_id" in cols
+        assert "docker_container_id" not in cols
 
-    row = db.execute("SELECT container_id FROM apps WHERE name = 'notes'").fetchone()
-    db.close()
-    assert row is not None
-    assert row[0] == "container-abc"
+        row = db.execute("SELECT container_id FROM apps WHERE name = 'notes'").fetchone()
+        assert row is not None
+        assert row[0] == "container-abc"
+    finally:
+        db.close()
 
 
 def test_uid_map_base_is_added_and_backfilled(tmp_path) -> None:
@@ -92,24 +94,26 @@ def test_uid_map_base_is_added_and_backfilled(tmp_path) -> None:
     _fresh_apps_with_docker_column(db_path)
 
     db = sqlite3.connect(db_path)
-    db.executemany(
-        "INSERT INTO apps (name, version, repo_path, local_port) VALUES (?, ?, ?, ?)",
-        [
-            ("app1", "1.0", "/repo/1", 9100),
-            ("app2", "1.0", "/repo/2", 9101),
-            ("app3", "1.0", "/repo/3", 9102),
-        ],
-    )
-    db.commit()
-    rows_before = db.execute("SELECT id, name FROM apps ORDER BY id").fetchall()
+    try:
+        db.executemany(
+            "INSERT INTO apps (name, version, repo_path, local_port) VALUES (?, ?, ?, ?)",
+            [
+                ("app1", "1.0", "/repo/1", 9100),
+                ("app2", "1.0", "/repo/2", 9101),
+                ("app3", "1.0", "/repo/3", 9102),
+            ],
+        )
+        db.commit()
+        rows_before = db.execute("SELECT id, name FROM apps ORDER BY id").fetchall()
 
-    migrate(db)
+        migrate(db)
 
-    cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
-    assert "uid_map_base" in cols
+        cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+        assert "uid_map_base" in cols
 
-    rows_after = db.execute("SELECT id, uid_map_base FROM apps ORDER BY id").fetchall()
-    db.close()
+        rows_after = db.execute("SELECT id, uid_map_base FROM apps ORDER BY id").fetchall()
+    finally:
+        db.close()
 
     assert [r[0] for r in rows_after] == [r[0] for r in rows_before]
     bases = [uid_base for _, uid_base in rows_after]
@@ -174,29 +178,31 @@ def test_docker_container_id_rename_runs_before_table_recreation(tmp_path) -> No
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
-    db.execute(
-        "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, "
-        "repo_path, local_port, docker_container_id) "
-        "VALUES ('notes', '/notes', 'notes', '1.0', 'serverfull', '/repo', 9100, "
-        "'container-abc')"
-    )
-    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, "
+            "repo_path, local_port, docker_container_id) "
+            "VALUES ('notes', '/notes', 'notes', '1.0', 'serverfull', '/repo', 9100, "
+            "'container-abc')"
+        )
+        db.commit()
 
-    migrate(db)
+        migrate(db)
 
-    cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
-    assert "container_id" in cols
-    assert "docker_container_id" not in cols
-    # The original container id must have survived the table recreation
-    # and the rename — this is the whole point of the ordering.
-    row = db.execute("SELECT container_id FROM apps WHERE name = 'notes'").fetchone()
-    db.close()
-    assert row is not None
-    assert row[0] == "container-abc", (
-        "docker_container_id data was lost during migration.  The rename "
-        "must run before _recreate_table or the old column's data is "
-        "dropped by _recreate_table's common-column filter."
-    )
+        cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+        assert "container_id" in cols
+        assert "docker_container_id" not in cols
+        # The original container id must have survived the table recreation
+        # and the rename — this is the whole point of the ordering.
+        row = db.execute("SELECT container_id FROM apps WHERE name = 'notes'").fetchone()
+        assert row is not None
+        assert row[0] == "container-abc", (
+            "docker_container_id data was lost during migration.  The rename "
+            "must run before _recreate_table or the old column's data is "
+            "dropped by _recreate_table's common-column filter."
+        )
+    finally:
+        db.close()
 
 
 def test_migrate_leaves_pool_overflow_rows_at_zero_sentinel(tmp_path) -> None:
@@ -212,17 +218,19 @@ def test_migrate_leaves_pool_overflow_rows_at_zero_sentinel(tmp_path) -> None:
     overflow_id = UID_MAP_RANGE_SIZE // UID_MAP_WIDTH
 
     db = sqlite3.connect(db_path)
-    db.execute(
-        "INSERT INTO apps (id, name, version, repo_path, local_port) VALUES (?, ?, ?, ?, ?)",
-        (overflow_id, "too-many", "1.0", "/repo", 9100),
-    )
-    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO apps (id, name, version, repo_path, local_port) VALUES (?, ?, ?, ?, ?)",
+            (overflow_id, "too-many", "1.0", "/repo", 9100),
+        )
+        db.commit()
 
-    # Must not raise.
-    migrate(db)
+        # Must not raise.
+        migrate(db)
 
-    row = db.execute("SELECT uid_map_base FROM apps WHERE name = 'too-many'").fetchone()
-    db.close()
+        row = db.execute("SELECT uid_map_base FROM apps WHERE name = 'too-many'").fetchone()
+    finally:
+        db.close()
     # Pool-overflow rows stay at the 0 sentinel; start_app_process will
     # surface a ValueError on first start instead.
     assert row is not None
@@ -235,22 +243,24 @@ def test_migrate_is_idempotent_across_docker_to_podman_rename(tmp_path) -> None:
     _fresh_apps_with_docker_column(db_path)
 
     db = sqlite3.connect(db_path)
-    db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, docker_container_id) "
-        "VALUES ('notes', '1.0', '/repo/notes', 9100, 'cid-x')"
-    )
-    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, docker_container_id) "
+            "VALUES ('notes', '1.0', '/repo/notes', 9100, 'cid-x')"
+        )
+        db.commit()
 
-    migrate(db)
-    # Second call must be a no-op for already-renamed + already-backfilled
-    # databases — it's the code path every subsequent router start-up hits.
-    migrate(db)
+        migrate(db)
+        # Second call must be a no-op for already-renamed +
+        # already-backfilled databases — it's the code path every
+        # subsequent router start-up hits.
+        migrate(db)
 
-    row = db.execute("SELECT container_id, uid_map_base FROM apps WHERE name = 'notes'").fetchone()
-    db.close()
+        row = db.execute("SELECT container_id, uid_map_base FROM apps WHERE name = 'notes'").fetchone()
+    finally:
+        db.close()
     assert row is not None
     assert row[0] == "cid-x"
     # App was inserted with id=1, so uid_map_base should be the first
     # per-app window above the base.
     assert row[1] == compute_uid_map_base(1)
-    assert row[1] == UID_MAP_BASE_START + UID_MAP_WIDTH

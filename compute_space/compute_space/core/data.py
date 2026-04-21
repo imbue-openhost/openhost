@@ -3,10 +3,71 @@ from __future__ import annotations
 import os
 import secrets as secrets_mod
 import shutil
+import stat
 import subprocess
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
+
+
+def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> None:
+    """Remove a directory tree, falling back to ``sudo -n rm -rf`` for
+    files the router can't chmod itself.
+
+    The fast path is ``shutil.rmtree`` with an onexc hook that retries
+    after chmodding entries read-only git clones might have left behind.
+    The sudo fallback is reserved for the rare case where the router's
+    unprivileged UID can't delete a file at all — it works because the
+    ansible bootstrap installs a NOPASSWD sudoers rule for the ``host``
+    user.
+
+    If ``raise_on_failure`` is False (the default for data-deprovision
+    code paths), both stages log and swallow their errors so a cleanup
+    failure can't block removal of the app row from the database.  If
+    True, the failure re-raises (used by the web route's code-sync
+    helper, where a failed rmtree is a hard error).
+    """
+    if not os.path.exists(path):
+        return
+
+    def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
+        os.chmod(err_path, stat.S_IRWXU)
+        func(err_path)
+
+    try:
+        shutil.rmtree(path, onexc=_make_writable_and_retry)
+        return
+    except PermissionError as rmtree_err:
+        logger.warning(
+            "rmtree failed on %s (%s), falling back to sudo rm -rf",
+            path,
+            rmtree_err,
+        )
+
+    try:
+        subprocess.run(
+            ["sudo", "-n", "rm", "-rf", path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as sudo_err:
+        # capture_output=True hides stderr from the default string repr;
+        # surface it explicitly so operators see things like
+        # 'sudo: a password is required' without running the command by hand.
+        stderr = (sudo_err.stderr or b"").decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "Failed to clean data dir %s via sudo (exit %d): %s",
+            path,
+            sudo_err.returncode,
+            stderr or "<no stderr>",
+        )
+        if raise_on_failure:
+            raise
+    except (subprocess.TimeoutExpired, OSError) as sudo_err:
+        logger.warning("Failed to clean data dir %s via sudo: %s", path, sudo_err)
+        if raise_on_failure:
+            raise
 
 
 def provision_data(
@@ -81,49 +142,10 @@ def provision_data(
 
 
 def _remove_dir(dir_path: str) -> None:
-    """Remove a directory tree.
-
-    Routine removals succeed with ``shutil.rmtree``; for entries owned by
-    a UID the router can't chmod (rare but possible when files ended up
-    under an unexpected owner), we fall back to ``sudo -n rm -rf`` via
-    the NOPASSWD sudoers rule ansible installs.
-
-    Errors from both paths are swallowed (with a warning) so a cleanup
-    failure can't block removal of the app row from the database or
-    leave the storage guard stuck.
-    """
-    if not os.path.exists(dir_path):
-        return
-    try:
-        shutil.rmtree(dir_path)
-        return
-    except OSError as rmtree_err:
-        logger.warning(
-            "rmtree failed on %s (%s); falling back to sudo rm -rf",
-            dir_path,
-            rmtree_err,
-        )
-
-    try:
-        subprocess.run(
-            ["sudo", "-n", "rm", "-rf", dir_path],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-    except subprocess.CalledProcessError as sudo_err:
-        # capture_output=True hides stderr from the default string repr;
-        # surface it explicitly so operators see things like
-        # 'sudo: a password is required' without running the command by hand.
-        stderr = (sudo_err.stderr or b"").decode("utf-8", errors="replace").strip()
-        logger.warning(
-            "Failed to clean data dir %s via sudo (exit %d): %s",
-            dir_path,
-            sudo_err.returncode,
-            stderr or "<no stderr>",
-        )
-    except (subprocess.TimeoutExpired, OSError) as sudo_err:
-        logger.warning("Failed to clean data dir %s via sudo: %s", dir_path, sudo_err)
+    """Remove an app's data directory.  Cleanup failures are logged but
+    never re-raised so they can't block removal of the app row from the
+    database or leave the storage guard stuck."""
+    rmtree_with_sudo_fallback(dir_path, raise_on_failure=False)
 
 
 def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:

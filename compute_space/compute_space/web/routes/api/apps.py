@@ -3,8 +3,6 @@ import dataclasses
 import os
 import re
 import shutil
-import stat
-import subprocess
 import threading
 
 from quart import Blueprint
@@ -30,6 +28,7 @@ from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
 from compute_space.core.data import deprovision_data
 from compute_space.core.data import deprovision_temp_data
+from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.ports import check_port_available
@@ -41,26 +40,13 @@ from compute_space.web.middleware import login_required
 
 
 def _rmtree_force(path: str) -> None:
-    """Remove a directory tree, making entries writable if needed.
+    """Remove a directory tree, re-raising on failure.
 
-    Tries a normal ``shutil.rmtree`` first, chmodding and retrying on any
-    permission error (this is enough for both the router's own files and
-    for container-written files on a rootless-podman setup, where
-    idmapped bind mounts make container-root writes land under the host
-    user).  Falls back to ``sudo -n rm -rf`` only for the rare case where
-    a file is owned by an UID the router cannot chmod — that path is
-    guarded by the NOPASSWD sudoers entry installed by ansible.
+    Thin wrapper over ``rmtree_with_sudo_fallback`` for the code-sync /
+    redeploy path where a failed rmtree must propagate (as opposed to
+    data-dir deprovision, which swallows cleanup errors).
     """
-
-    def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
-        os.chmod(err_path, stat.S_IRWXU)
-        func(err_path)
-
-    try:
-        shutil.rmtree(path, onexc=_make_writable_and_retry)
-    except PermissionError:
-        logger.warning("rmtree failed on %s, falling back to sudo rm -rf", path)
-        subprocess.run(["sudo", "-n", "rm", "-rf", path], check=True, timeout=30)
+    rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
