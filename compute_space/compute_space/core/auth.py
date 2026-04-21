@@ -170,7 +170,7 @@ def set_auth_cookies(
         httponly=True,
         secure=get_config().tls_enabled,
         samesite="Lax",
-        max_age=REFRESH_TOKEN_EXPIRY,
+        max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
     )
     if refresh_token:
         response.set_cookie(
