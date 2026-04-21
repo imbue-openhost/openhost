@@ -180,7 +180,7 @@ async def login() -> ResponseReturnValue:
     return response
 
 
-@auth_bp.route("/logout", methods=["GET", "POST"])
+@auth_bp.route("/logout", methods=["POST"])
 def logout() -> ResponseReturnValue:
     refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
     if refresh_tok:
