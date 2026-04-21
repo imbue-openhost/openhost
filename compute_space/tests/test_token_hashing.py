@@ -3,8 +3,6 @@
 import hashlib
 import sqlite3
 
-import pytest
-
 from compute_space.db.connection import init_db
 
 

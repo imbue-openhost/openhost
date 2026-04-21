@@ -435,7 +435,6 @@ class TestRouterMigrations:
         assert row["created_at"] is not None
         assert row["updated_at"] is not None
 
-
     def test_migrate_hashes_refresh_tokens(self, tmp_path):
         """Migration renames token -> token_hash and hashes existing plaintext values."""
         db_path = str(tmp_path / "test.db")
@@ -508,9 +507,7 @@ class TestRouterMigrations:
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         db.executescript(_OLDEST_ROUTER_SCHEMA)
-        db.execute(
-            "INSERT INTO refresh_tokens (token, expires_at) VALUES ('my-token', '2099-01-01T00:00:00')"
-        )
+        db.execute("INSERT INTO refresh_tokens (token, expires_at) VALUES ('my-token', '2099-01-01T00:00:00')")
         db.commit()
         db.close()
 
