@@ -5,6 +5,7 @@ Extracted from routes/apps.py — no HTTP/Quart dependencies.
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -283,9 +284,10 @@ def insert_and_deploy(
         )
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
+        app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token) VALUES (?, ?)",
-            (app_name, app_token),
+            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
+            (app_name, app_token_hash),
         )
 
     for svc_name in manifest.provides_services:
@@ -507,9 +509,10 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
+        app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token) VALUES (?, ?)",
-            (app_name, app_token),
+            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
+            (app_name, app_token_hash),
         )
 
     db.execute("DELETE FROM service_providers WHERE app_name = ?", (app_name,))

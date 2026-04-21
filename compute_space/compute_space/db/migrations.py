@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import sqlite3
@@ -178,3 +179,60 @@ def migrate(db: sqlite3.Connection) -> None:
     )
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_port_mappings_host_port ON app_port_mappings(host_port)")
     db.commit()
+
+    # Migrate refresh_tokens: rename token -> token_hash and hash existing values.
+    # Can't use _recreate_table because column name changes (token -> token_hash).
+    rt_cols = {row[1] for row in db.execute("PRAGMA table_info(refresh_tokens)").fetchall()}
+    if "token" in rt_cols and "token_hash" not in rt_cols:
+        db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            db.execute("DROP TABLE IF EXISTS refresh_tokens_new")
+            db.execute(
+                """CREATE TABLE refresh_tokens_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_hash TEXT UNIQUE NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            db.execute(
+                "INSERT INTO refresh_tokens_new (id, token_hash, expires_at, revoked) "
+                "SELECT id, token, expires_at, revoked FROM refresh_tokens"
+            )
+            db.execute("DROP TABLE refresh_tokens")
+            db.execute("ALTER TABLE refresh_tokens_new RENAME TO refresh_tokens")
+            # Hash the plaintext values now in token_hash column
+            rows = db.execute("SELECT id, token_hash FROM refresh_tokens").fetchall()
+            for row in rows:
+                hashed = hashlib.sha256(row[1].encode()).hexdigest()
+                db.execute("UPDATE refresh_tokens SET token_hash = ? WHERE id = ?", (hashed, row[0]))
+            db.commit()
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")
+
+    # Migrate app_tokens: rename token -> token_hash and hash existing values
+    at_cols = {row[1] for row in db.execute("PRAGMA table_info(app_tokens)").fetchall()}
+    if "token" in at_cols and "token_hash" not in at_cols:
+        db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            db.execute("DROP TABLE IF EXISTS app_tokens_new")
+            db.execute(
+                """CREATE TABLE app_tokens_new (
+                    app_name TEXT PRIMARY KEY,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+                )"""
+            )
+            db.execute(
+                "INSERT INTO app_tokens_new (app_name, token_hash) "
+                "SELECT app_name, token FROM app_tokens"
+            )
+            db.execute("DROP TABLE app_tokens")
+            db.execute("ALTER TABLE app_tokens_new RENAME TO app_tokens")
+            rows = db.execute("SELECT app_name, token_hash FROM app_tokens").fetchall()
+            for row in rows:
+                hashed = hashlib.sha256(row[1].encode()).hexdigest()
+                db.execute("UPDATE app_tokens SET token_hash = ? WHERE app_name = ?", (hashed, row[0]))
+            db.commit()
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")

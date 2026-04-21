@@ -1,3 +1,4 @@
+import hashlib
 import json
 from urllib.parse import urlparse
 
@@ -60,7 +61,8 @@ def _authenticate_and_resolve_consumer_app() -> str | None:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        token_row = db.execute("SELECT app_name FROM app_tokens WHERE token = ?", (token,)).fetchone()
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        token_row = db.execute("SELECT app_name FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
         return token_row["app_name"] if token_row else None
 
     # Browser auth: verify JWT cookie, derive app from Origin

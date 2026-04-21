@@ -435,6 +435,110 @@ class TestRouterMigrations:
         assert row["updated_at"] is not None
 
 
+    def test_migrate_hashes_refresh_tokens(self, tmp_path):
+        """Migration renames token -> token_hash and hashes existing plaintext values."""
+        import hashlib
+
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        # Insert plaintext refresh tokens
+        db.execute(
+            "INSERT INTO refresh_tokens (token, expires_at) VALUES ('plaintext-refresh-1', '2099-01-01T00:00:00')"
+        )
+        db.execute(
+            "INSERT INTO refresh_tokens (token, expires_at) VALUES ('plaintext-refresh-2', '2099-01-01T00:00:00')"
+        )
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        cols = {row[1] for row in db.execute("PRAGMA table_info(refresh_tokens)").fetchall()}
+        assert "token_hash" in cols
+        assert "token" not in cols
+
+        rows = db.execute("SELECT token_hash FROM refresh_tokens ORDER BY id").fetchall()
+        assert len(rows) == 2
+        expected_1 = hashlib.sha256(b"plaintext-refresh-1").hexdigest()
+        expected_2 = hashlib.sha256(b"plaintext-refresh-2").hexdigest()
+        assert rows[0]["token_hash"] == expected_1
+        assert rows[1]["token_hash"] == expected_2
+        # Must not be the original plaintext
+        assert rows[0]["token_hash"] != "plaintext-refresh-1"
+        db.close()
+
+    def test_migrate_hashes_app_tokens(self, tmp_path):
+        """Migration renames token -> token_hash and hashes existing plaintext values in app_tokens."""
+        import hashlib
+
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        # Need an app row for the FK
+        db.execute(
+            "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, repo_path, local_port) "
+            "VALUES ('myapp', '/myapp', 'myapp', '1.0', 'serverfull', '/repo', 9000)"
+        )
+        # app_tokens table doesn't exist in oldest schema, create it with old column name
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS app_tokens ("
+            "app_name TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, "
+            "FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE)"
+        )
+        db.execute("INSERT INTO app_tokens (app_name, token) VALUES ('myapp', 'plaintext-app-token')")
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        cols = {row[1] for row in db.execute("PRAGMA table_info(app_tokens)").fetchall()}
+        assert "token_hash" in cols
+        assert "token" not in cols
+
+        row = db.execute("SELECT token_hash FROM app_tokens WHERE app_name = 'myapp'").fetchone()
+        expected = hashlib.sha256(b"plaintext-app-token").hexdigest()
+        assert row["token_hash"] == expected
+        assert row["token_hash"] != "plaintext-app-token"
+        db.close()
+
+    def test_token_hash_migration_idempotent(self, tmp_path):
+        """Running init_db twice doesn't double-hash tokens."""
+        import hashlib
+
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.execute(
+            "INSERT INTO refresh_tokens (token, expires_at) VALUES ('my-token', '2099-01-01T00:00:00')"
+        )
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        hash_after_first = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()["token_hash"]
+        db.close()
+
+        # Run again — should be no-op since column is already token_hash
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        hash_after_second = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()["token_hash"]
+        db.close()
+
+        expected = hashlib.sha256(b"my-token").hexdigest()
+        assert hash_after_first == expected
+        assert hash_after_second == expected
+
+
 class TestCrashRecovery:
     """Verify that _recreate_table recovers from a prior crash that left the
     database in an intermediate state (original table dropped, temp table
