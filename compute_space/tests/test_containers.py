@@ -508,6 +508,35 @@ def test_get_app_logs_appends_podman_logs_when_container_id_set(tmp_path, monkey
     assert "app stdout line" in output
 
 
+def test_get_app_logs_falls_back_to_legacy_docker_log_filename(tmp_path) -> None:
+    """Deployments whose build log was written under the pre-rename
+    filename (``docker.log``) must still show up in the dashboard until
+    the next rebuild switches them to ``build.log``.  Exercise that
+    backward-compat read path."""
+    app_temp = os.path.join(str(tmp_path), "app_temp_data", "notes")
+    os.makedirs(app_temp, exist_ok=True)
+    with open(os.path.join(app_temp, "docker.log"), "w") as f:
+        f.write("legacy build output\n")
+
+    output = get_app_logs("notes", str(tmp_path), container_id=None)
+    assert "legacy build output" in output
+
+
+def test_get_app_logs_prefers_build_log_over_legacy_name(tmp_path) -> None:
+    """When both filenames exist (we shouldn't normally see this, but a
+    half-migrated deployment can), the current filename wins."""
+    app_temp = os.path.join(str(tmp_path), "app_temp_data", "notes")
+    os.makedirs(app_temp, exist_ok=True)
+    with open(os.path.join(app_temp, "docker.log"), "w") as f:
+        f.write("stale legacy content\n")
+    with open(os.path.join(app_temp, "build.log"), "w") as f:
+        f.write("fresh build content\n")
+
+    output = get_app_logs("notes", str(tmp_path), container_id=None)
+    assert "fresh build content" in output
+    assert "stale legacy content" not in output
+
+
 def test_get_app_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Color codes and carriage returns from podman logs should be
     stripped before we hand the text back to the dashboard (which

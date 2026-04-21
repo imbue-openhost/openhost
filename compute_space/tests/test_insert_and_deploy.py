@@ -28,6 +28,7 @@ from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.db.connection import init_db
 
+from .conftest import FakeApp
 from .conftest import _make_test_config
 
 _MANIFEST = """
@@ -41,18 +42,13 @@ port = 8080
 """.lstrip()
 
 
-class _FakeApp:
-    def __init__(self, db_path: str) -> None:
-        self.config = {"DB_PATH": db_path}
-
-
 class _NoopThread:
     def start(self) -> None:
         pass
 
 
 def _open_db(cfg: Config) -> sqlite3.Connection:
-    init_db(_FakeApp(cfg.db_path))
+    init_db(FakeApp(cfg.db_path))
     db = sqlite3.connect(cfg.db_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     return db

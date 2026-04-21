@@ -125,7 +125,18 @@ def build_log_path(app_name: str, temp_data_dir: str) -> str:
     Runtime container logs are not written to this file; they're fetched
     live via ``podman logs`` from ``get_app_logs``.
     """
-    return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
+    return os.path.join(temp_data_dir, "app_temp_data", app_name, "build.log")
+
+
+# Historical filename from the Docker-era layout.  ``get_app_logs`` falls
+# back to reading this when ``build.log`` doesn't exist yet so existing
+# deployments' log files stay visible through one deploy cycle; after
+# the next rebuild everything switches to ``build.log``.
+_LEGACY_BUILD_LOG_NAME = "docker.log"
+
+
+def _legacy_build_log_path(app_name: str, temp_data_dir: str) -> str:
+    return os.path.join(temp_data_dir, "app_temp_data", app_name, _LEGACY_BUILD_LOG_NAME)
 
 
 def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
@@ -501,14 +512,21 @@ def get_app_logs(
     """
     parts = []
 
-    # Build/deploy log (full, no truncation)
-    log_file = build_log_path(app_name, temp_data_dir)
-    if os.path.exists(log_file):
-        try:
-            with open(log_file) as f:
-                parts.append(f.read())
-        except OSError:
-            pass
+    # Build/deploy log (full, no truncation).  Read from the current
+    # filename first; fall back to the legacy filename so already-running
+    # deployments keep surfacing their log until the next rebuild writes
+    # build.log.
+    for candidate in (
+        build_log_path(app_name, temp_data_dir),
+        _legacy_build_log_path(app_name, temp_data_dir),
+    ):
+        if os.path.exists(candidate):
+            try:
+                with open(candidate) as f:
+                    parts.append(f.read())
+            except OSError:
+                pass
+            break
 
     # Live container logs
     if container_id:
