@@ -183,9 +183,10 @@ async def api_add_app() -> ResponseReturnValue:
             port_overrides=port_overrides,
         )
     except (RuntimeError, ValueError) as e:
-        # ValueError covers uid_map pool exhaustion (see compute_uid_map_base)
-        # and other manifest-validation errors raised at insert time; both
-        # map to a 400 rather than a 500.
+        # ValueError covers manifest-validation errors raised at insert time
+        # (unsafe capabilities/devices, host_port below the unprivileged
+        # floor, etc.); RuntimeError covers port-allocation and similar
+        # runtime failures.  Both map to a 400 rather than a 500.
         return jsonify({"error": str(e)}), 400
 
     return jsonify({"ok": True, "app_name": app_name, "status": "building"})

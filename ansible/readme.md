@@ -10,7 +10,7 @@
 
 ## runtime
 
-app containers run under rootless podman as the `host` user, with per-app user-namespace mappings (uidmap) and idmapped bind mounts for file ownership.  the server must be running on a filesystem that supports idmapped mounts (ext4, xfs, btrfs, tmpfs).  the bootstrap fails early with a clear error if this is not the case.
+app containers run under rootless podman as the `host` user, sharing podman's default single-user namespace (the one `/etc/subuid` allocates at user-creation time).  every bind mount uses idmapped mounts so container-root writes land on disk owned by the `host` user rather than the mapped subuid.  the server must be running on a filesystem that supports idmapped mounts (ext4, xfs, btrfs, tmpfs).  the bootstrap fails early with a clear error if this is not the case.
 
 ## full setup (fresh server)
 
