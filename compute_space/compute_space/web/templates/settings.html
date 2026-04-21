@@ -51,22 +51,42 @@ async function checkForUpdates() {
 
     const checkAgainBtn = '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Check again</button>';
 
+    // If the host has not been prepared for the current router runtime
+    // (e.g. existing Docker-era instance that hasn't had ansible/tasks
+    // /podman.yml run against it), the new router binary will refuse
+    // to start after Update & restart.  Show a banner with the exact
+    // remediation instead of offering the update button.
+    let hostPrepBanner = '';
+    if (data.host_prep_ok === false) {
+      hostPrepBanner = '<div class="error" style="margin-bottom:0.75em;padding:0.5em;border:1px solid #c00;">'
+        + '<strong>Host not prepared for this router version.</strong> '
+        + 'Updating now would leave the router unable to start.  '
+        + esc(data.host_prep_message || '')
+        + '</div>';
+    }
+
     if (data.state === 'UP_TO_DATE') {
-      el.innerHTML = '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
+      el.innerHTML = hostPrepBanner + '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
     } else if (data.state === 'NO_REMOTE') {
-      el.innerHTML = '<p>No git remote configured. Set a remote URL above to enable updates.</p>' + checkAgainBtn;
+      el.innerHTML = hostPrepBanner + '<p>No git remote configured. Set a remote URL above to enable updates.</p>' + checkAgainBtn;
     } else if (data.state === 'BEHIND_REMOTE') {
-      el.innerHTML = '<p>Updates available. Reset local repo to match remote?</p>'
-        + '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> '
-        + checkAgainBtn;
+      const updateBtn = (data.host_prep_ok === false)
+        ? '<button class="btn btn-primary" disabled title="Host prep required before updating">Update &amp; restart</button> '
+        : '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> ';
+      el.innerHTML = hostPrepBanner + '<p>Updates available. Reset local repo to match remote?</p>'
+        + updateBtn + checkAgainBtn;
     } else if (data.state === 'DIRTY') {
-      el.innerHTML = '<p>Local repo has uncommitted changes. Reset to remote head?</p>'
-        + '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> '
-        + checkAgainBtn;
+      const resetBtn = (data.host_prep_ok === false)
+        ? '<button class="btn btn-primary" disabled title="Host prep required before updating">Reset &amp; restart</button> '
+        : '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> ';
+      el.innerHTML = hostPrepBanner + '<p>Local repo has uncommitted changes. Reset to remote head?</p>'
+        + resetBtn + checkAgainBtn;
     } else if (data.state === 'AHEAD_OF_REMOTE') {
-      el.innerHTML = '<p>Local repo is ahead of remote (unpushed commits). Reset to remote head?</p>'
-        + '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> '
-        + checkAgainBtn;
+      const resetBtn = (data.host_prep_ok === false)
+        ? '<button class="btn btn-primary" disabled title="Host prep required before updating">Reset &amp; restart</button> '
+        : '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> ';
+      el.innerHTML = hostPrepBanner + '<p>Local repo is ahead of remote (unpushed commits). Reset to remote head?</p>'
+        + resetBtn + checkAgainBtn;
     }
   } catch (e) {
     showError('Failed to check for updates: ' + e.message);

@@ -61,4 +61,5 @@ jobs:
             compute_space/tests/test_data_rmtree.py \
             compute_space/tests/test_app_status.py \
             compute_space/tests/test_manifest.py \
+            compute_space/tests/test_runtime_sentinel.py \
             -v

@@ -12,6 +12,7 @@ from compute_space.core.git_ops import get_remote_url
 from compute_space.core.git_ops import init_repo_if_nonexistent
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.git_ops import set_remote_url
+from compute_space.core.runtime_sentinel import host_prep_status
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
@@ -79,7 +80,20 @@ async def check_for_updates() -> ResponseReturnValue:
         state = await check_git_state(config.openhost_repo_path)
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
-    return jsonify({"ok": True, "state": str(state)})
+
+    # Include host-prep status so the dashboard can warn the user if
+    # clicking Update would produce a router that refuses to start
+    # against the current host.  See compute_space.core.runtime_sentinel.
+    prep = host_prep_status()
+    payload: dict[str, object] = {
+        "ok": True,
+        "state": str(state),
+        "host_prep_ok": prep.ok,
+    }
+    if not prep.ok:
+        payload["host_prep_reason"] = prep.reason
+        payload["host_prep_message"] = prep.message
+    return jsonify(payload)
 
 
 @api_settings_bp.route("/api/settings/update_repo_state", methods=["POST"])
@@ -87,6 +101,26 @@ async def check_for_updates() -> ResponseReturnValue:
 async def update_repo_state() -> ResponseReturnValue:
     """git reset to local origin/[branch] + check that pixi install works."""
     config = get_config()
+
+    # Server-side gate: even if the dashboard banner is bypassed (older
+    # cached page, direct curl, future CLI), refuse to apply an update
+    # that would leave the next router boot unable to start because the
+    # host hasn't been prepped.  Operator must run the ansible task
+    # first.  409 Conflict is the right code here — the request is well-
+    # formed but the server's current state can't accept it.
+    prep = host_prep_status()
+    if not prep.ok:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": prep.message,
+                    "host_prep_reason": prep.reason,
+                }
+            ),
+            409,
+        )
+
     ref = await get_current_ref(config.openhost_repo_path)
     try:
         await hard_checkout_and_validate(config.openhost_repo_path, ref)

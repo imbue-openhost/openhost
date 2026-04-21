@@ -136,3 +136,36 @@
     fail_msg: >-
       podman is not configured for rootless operation as the host user.
     success_msg: "podman rootless for host user: OK"
+
+# ---------------------------------------------------------------------------
+# Host-runtime sentinel
+# ---------------------------------------------------------------------------
+#
+# The router reads /etc/openhost/runtime on startup and refuses to boot if
+# runtime / runtime_version don't match what its code expects.  This is the
+# gate that protects existing Docker-era instances from clicking the
+# dashboard's "Update & restart" button and ending up with every app in
+# an error state: the new router binary simply won't come up until the
+# operator has re-run this ansible task, and the Update endpoint surfaces
+# a clear banner in advance telling them exactly that.
+#
+# Bump runtime_version here AND compute_space.core.runtime_sentinel
+# .EXPECTED_RUNTIME_VERSION together whenever a host-side change ships
+# that existing hosts must adopt before their next router restart.
+
+- name: Ensure /etc/openhost exists
+  file:
+    path: /etc/openhost
+    state: directory
+    mode: "0755"
+
+- name: Write host runtime sentinel
+  copy:
+    content: |
+      # Managed by ansible/tasks/podman.yml; do not edit by hand.
+      # Consumed by compute_space.core.runtime_sentinel on router startup
+      # and by the dashboard's update-check endpoint.
+      runtime=podman
+      runtime_version=1
+    dest: /etc/openhost/runtime
+    mode: "0644"
