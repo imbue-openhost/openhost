@@ -37,7 +37,12 @@ def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> N
     try:
         shutil.rmtree(path, onexc=_make_writable_and_retry)
         return
-    except PermissionError as rmtree_err:
+    except OSError as rmtree_err:
+        # Intentionally catch the full OSError family (ENOENT races,
+        # EBUSY, ESTALE on NFS, EROFS, etc.) not just PermissionError,
+        # so the raise_on_failure=False contract really is total.  The
+        # sudo fallback is unlikely to fix non-permission errors but
+        # trying it is cheap and the logging path is the same.
         logger.warning(
             "rmtree failed on %s (%s), falling back to sudo rm -rf",
             path,

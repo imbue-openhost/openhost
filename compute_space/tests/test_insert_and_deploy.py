@@ -70,26 +70,29 @@ def _stub_deps(monkeypatch: pytest.MonkeyPatch, local_port: int = 19005) -> None
 def test_insert_and_deploy_sets_uid_map_base_from_formula(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_test_config(tmp_path, port=18080)
     db = _open_db(cfg)
-    manifest: AppManifest = parse_manifest_from_string(_MANIFEST)
-    _stub_deps(monkeypatch)
+    try:
+        manifest: AppManifest = parse_manifest_from_string(_MANIFEST)
+        _stub_deps(monkeypatch)
 
-    repo_path = str(tmp_path / "repo")
-    Path(repo_path).mkdir()
-    (Path(repo_path) / "Dockerfile").write_text("FROM scratch\n")
+        repo_path = str(tmp_path / "repo")
+        Path(repo_path).mkdir()
+        (Path(repo_path) / "Dockerfile").write_text("FROM scratch\n")
 
-    name = insert_and_deploy(
-        manifest,
-        repo_path,
-        cfg,
-        db,
-        grant_permissions=set(),
-    )
-    assert name == "notes"
+        name = insert_and_deploy(
+            manifest,
+            repo_path,
+            cfg,
+            db,
+            grant_permissions=set(),
+        )
+        assert name == "notes"
 
-    row = db.execute("SELECT id, uid_map_base FROM apps WHERE name = 'notes'").fetchone()
-    assert row is not None
-    assert row["uid_map_base"] == compute_uid_map_base(row["id"])
-    assert row["uid_map_base"] != 0
+        row = db.execute("SELECT id, uid_map_base FROM apps WHERE name = 'notes'").fetchone()
+        assert row is not None
+        assert row["uid_map_base"] == compute_uid_map_base(row["id"])
+        assert row["uid_map_base"] != 0
+    finally:
+        db.close()
 
 
 def test_insert_and_deploy_surfaces_pool_exhaustion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,32 +104,48 @@ def test_insert_and_deploy_surfaces_pool_exhaustion(tmp_path: Path, monkeypatch:
     """
     cfg = _make_test_config(tmp_path, port=18081)
     db = _open_db(cfg)
-    # Manifest with sqlite + app_temp_data so provision_data actually
-    # creates a non-trivial filesystem layout we can assert was cleaned up.
-    manifest: AppManifest = parse_manifest_from_string(
-        _MANIFEST + '\n[data]\nsqlite = ["main"]\napp_temp_data = true\n'
-    )
-    _stub_deps(monkeypatch)
-
-    def _boom(_app_id: int) -> int:
-        raise ValueError("subuid pool exhausted")
-
-    monkeypatch.setattr(apps_mod, "compute_uid_map_base", _boom)
-
-    repo_path = str(tmp_path / "repo")
-    Path(repo_path).mkdir()
-    (Path(repo_path) / "Dockerfile").write_text("FROM scratch\n")
-
-    with pytest.raises(ValueError, match="subuid pool"):
-        insert_and_deploy(
-            manifest,
-            repo_path,
-            cfg,
-            db,
-            grant_permissions=set(),
+    try:
+        # Manifest with sqlite + app_temp_data so provision_data actually
+        # creates a non-trivial filesystem layout we can assert was cleaned up.
+        manifest: AppManifest = parse_manifest_from_string(
+            _MANIFEST + '\n[data]\nsqlite = ["main"]\napp_temp_data = true\n'
         )
+        _stub_deps(monkeypatch)
 
-    # provision_data eagerly created these; the failure path must
-    # remove them so a retry doesn't leak anything.
-    assert not os.path.exists(os.path.join(cfg.persistent_data_dir, "app_data", "notes"))
-    assert not os.path.exists(os.path.join(cfg.temporary_data_dir, "app_temp_data", "notes"))
+        def _boom(_app_id: int) -> int:
+            raise ValueError("subuid pool exhausted")
+
+        monkeypatch.setattr(apps_mod, "compute_uid_map_base", _boom)
+
+        repo_path = str(tmp_path / "repo")
+        Path(repo_path).mkdir()
+        (Path(repo_path) / "Dockerfile").write_text("FROM scratch\n")
+
+        with pytest.raises(ValueError, match="subuid pool"):
+            insert_and_deploy(
+                manifest,
+                repo_path,
+                cfg,
+                db,
+                grant_permissions=set(),
+            )
+
+        # provision_data eagerly created these; the failure path must
+        # remove them so a retry doesn't leak anything.
+        assert not os.path.exists(os.path.join(cfg.persistent_data_dir, "app_data", "notes"))
+        assert not os.path.exists(os.path.join(cfg.temporary_data_dir, "app_temp_data", "notes"))
+
+        # The half-created app row must have been rolled back — a later
+        # unrelated commit on this connection would otherwise flush it
+        # and leave an orphan row the dashboard would show with no
+        # backing data dirs.
+        row = db.execute("SELECT id FROM apps WHERE name = 'notes'").fetchone()
+        assert row is None
+        # Force a write that would surface any uncommitted work in the
+        # transaction above — proves there's nothing still pending.
+        db.execute("CREATE TABLE _ping (x INTEGER)")
+        db.commit()
+        row = db.execute("SELECT id FROM apps WHERE name = 'notes'").fetchone()
+        assert row is None
+    finally:
+        db.close()

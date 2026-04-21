@@ -281,6 +281,13 @@ def insert_and_deploy(
     try:
         uid_map_base = compute_uid_map_base(app_id)
     except ValueError:
+        # Roll back the INSERT so the app row doesn't end up partially
+        # persisted on the next unrelated commit.  sqlite3's default
+        # isolation_level keeps the INSERT's transaction open until
+        # somebody commits or rolls back; if we just re-raise here, the
+        # next committed statement on this connection would flush the
+        # half-created row.
+        db.rollback()
         # deprovision_data / _remove_dir already log any cleanup failure
         # internally, so no extra handler here — we'd double-log at best
         # and mask the original ValueError at worst.
