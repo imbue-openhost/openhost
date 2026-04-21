@@ -105,7 +105,8 @@ def create_refresh_token() -> str:
 def decode_access_token(token: str) -> dict[str, Any] | None:
     """Verify and decode a JWT. Returns claims dict or None."""
     try:
-        assert _public_key is not None
+        if _public_key is None:
+            raise RuntimeError("public key not loaded")
         return jwt.decode(token, _public_key, algorithms=["RS256"])
     except jwt.InvalidTokenError:
         return None
@@ -114,7 +115,8 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
 def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
     """Decode a JWT ignoring expiry -- used during token refresh."""
     try:
-        assert _public_key is not None
+        if _public_key is None:
+            raise RuntimeError("public key not loaded")
         return jwt.decode(
             token,
             _public_key,
