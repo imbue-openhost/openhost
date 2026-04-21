@@ -1,8 +1,17 @@
 import asyncio
 import functools
+import os
 from collections.abc import Callable
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any
+
+
+def write_restricted(path: Path, content: str) -> None:
+    """Write a file that is only readable by the owner (mode 0o600)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
 
 
 def assert_type[T](value: Any, expected_type: type[T]) -> T:
