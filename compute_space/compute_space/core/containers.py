@@ -158,7 +158,15 @@ def build_image(
                 _append_log(app_name, temp_data_dir, line)
             proc.wait(timeout=300)
         except subprocess.TimeoutExpired:
+            # proc.kill() only sends SIGKILL; we still have to reap the
+            # child to avoid leaving a zombie hanging off this long-
+            # running router process.  Give it a bounded wait so a
+            # pathological build can't wedge cleanup indefinitely.
             proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("Build process %d did not exit within 5s of SIGKILL", proc.pid)
             raise
         if proc.returncode != 0:
             _raise_if_build_cache_corrupt(build_output)

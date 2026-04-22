@@ -93,8 +93,12 @@
 #   - filesystem that supports it (ext4, xfs, btrfs, tmpfs are all OK;
 #     some exotic setups like ZFS < 2.2 or certain fuse filesystems are not)
 #
-# We check the filesystem of the OpenHost data root and fail loudly here
-# rather than letting the router fail at runtime with a confusing error.
+# The router's data_root_dir defaults to ``/home/host/.openhost/...``
+# (see ansible/templates/config.toml.j2) which lives on the same
+# filesystem as ``/home/host``, so we check ``/home/host`` here.  If a
+# future deployment ever moves data_root_dir onto a separate mount,
+# update this check to stat the actual data root instead — idmap
+# support is per-filesystem, not per-host.
 
 - name: Find filesystem of data root
   command: stat -f -c '%T' /home/host

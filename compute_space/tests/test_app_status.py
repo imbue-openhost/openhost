@@ -19,12 +19,8 @@ from compute_space.config import get_config
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
 
+from .conftest import _FakeApp
 from .conftest import _make_test_config
-
-
-class _FakeApp:
-    def __init__(self, db_path: str) -> None:
-        self.config = {"DB_PATH": db_path}
 
 
 async def _app_status_response(tmp_path: Path, *, error_message: str, port: int) -> tuple[int, dict]:

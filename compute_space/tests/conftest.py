@@ -21,6 +21,19 @@ ROUTER_PORT = 18080
 OWNER_PASSWORD = "testpass123"
 
 
+class _FakeApp:
+    """Minimal Quart-like stand-in exposing just ``.config['DB_PATH']``.
+
+    Used by tests that call ``compute_space.db.connection.init_db``
+    (which reads ``app.config['DB_PATH']``) without setting up a real
+    Quart app.  Shared here to avoid three identical copies in
+    test_app_status, test_migrations, and test_podman_availability.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self.config = {"DB_PATH": db_path}
+
+
 def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
     """Create a DefaultConfig with temp dirs under tmp_path. Returns the Config object."""
     cfg = DefaultConfig(
