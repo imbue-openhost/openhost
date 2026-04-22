@@ -4,6 +4,7 @@ import pytest
 
 from compute_space.core.manifest import SAFE_CAPABILITIES
 from compute_space.core.manifest import SAFE_DEVICE_PATHS
+from compute_space.core.manifest import UNPRIVILEGED_PORT_FLOOR
 from compute_space.core.manifest import parse_manifest_from_string
 
 MINIMAL = """\
@@ -415,27 +416,34 @@ class TestDevicesValidation:
 
 
 class TestUnprivilegedPortFloor:
-    """Rootless podman can't bind host_port < UNPRIVILEGED_PORT_FLOOR."""
+    """Rootless podman can't bind host_port < UNPRIVILEGED_PORT_FLOOR.
 
-    def test_port_80_accepted(self):
-        toml = MINIMAL + '\n[[ports]]\nlabel = "http"\ncontainer_port = 80\nhost_port = 80\n'
+    Tests derive their boundary values from the production constant
+    rather than hard-coding 80, so a change to the floor (e.g. if a
+    future kernel permits lower unprivileged binds) automatically
+    re-aligns the assertions.
+    """
+
+    def test_floor_is_accepted(self):
+        floor = UNPRIVILEGED_PORT_FLOOR
+        toml = MINIMAL + f'\n[[ports]]\nlabel = "http"\ncontainer_port = {floor}\nhost_port = {floor}\n'
         manifest = parse_manifest_from_string(toml)
-        assert manifest.port_mappings[0].host_port == 80
+        assert manifest.port_mappings[0].host_port == floor
 
-    def test_port_443_accepted(self):
+    def test_port_above_floor_accepted(self):
         toml = MINIMAL + '\n[[ports]]\nlabel = "https"\ncontainer_port = 443\nhost_port = 443\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.port_mappings[0].host_port == 443
 
     def test_port_below_floor_rejected(self):
-        toml = MINIMAL + '\n[[ports]]\nlabel = "smtp"\ncontainer_port = 25\nhost_port = 25\n'
+        below = UNPRIVILEGED_PORT_FLOOR - 1
+        toml = MINIMAL + f'\n[[ports]]\nlabel = "low"\ncontainer_port = {below}\nhost_port = {below}\n'
         with pytest.raises(ValueError, match="unprivileged port floor"):
             parse_manifest_from_string(toml)
 
     def test_port_zero_still_allowed_for_autoassign(self):
         """host_port=0 means the router auto-assigns; the floor check must
-        not clobber that sentinel.
-        """
+        not clobber that sentinel."""
         toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.port_mappings[0].host_port == 0

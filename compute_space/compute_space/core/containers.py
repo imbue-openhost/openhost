@@ -447,13 +447,14 @@ def drop_docker_build_cache() -> str:
     layers.  Stopped-app images will be rebuilt on next deploy.
 
     The HTTP endpoint path ``/api/drop-docker-cache`` keeps "docker"
-    in the URL for backward compatibility with external callers.  On
-    Podman 4.9
-    (Ubuntu 24.04 LTS) this command does not accept ``--build-cache``,
-    so the persistent ``--mount=type=cache`` cache is not reclaimed;
-    on newer podman versions ``podman system prune --volumes`` would
-    cover more ground but we stick with ``image prune`` for LTS
-    portability.
+    in the URL for backward compatibility with external callers.
+
+    ``image prune`` does not reclaim persistent ``RUN --mount=type=cache``
+    build mounts (those are scoped per-image and managed separately
+    by buildah/podman's build cache).  ``podman system prune`` would
+    additionally remove stopped containers and unused networks; we
+    keep the narrower ``image prune`` so the button's scope matches
+    its dashboard label and leaves network / container state alone.
     """
     cmd = ["podman", "image", "prune", "--all", "--force"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))

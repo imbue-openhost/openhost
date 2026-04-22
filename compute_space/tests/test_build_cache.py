@@ -60,10 +60,9 @@ def test_drop_docker_build_cache_raises_on_error(
 
 
 def test_drop_docker_build_cache_surfaces_podman_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """If podman isn't installed (Docker-era host that just self-updated,
-    operator uninstalled podman), clicking 'Drop Build Cache' must
-    surface PODMAN_MISSING_ERROR, not a raw FileNotFoundError
-    traceback through the HTTP handler."""
+    """If podman isn't installed on the host, clicking 'Drop Build
+    Cache' must surface PODMAN_MISSING_ERROR — not a raw
+    FileNotFoundError traceback through the HTTP handler."""
 
     def fake_run(*_a, **_kw):  # type: ignore[no-untyped-def]
         raise FileNotFoundError(2, "No such file or directory: 'podman'")
