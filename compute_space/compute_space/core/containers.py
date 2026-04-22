@@ -547,7 +547,12 @@ def get_docker_logs(
             if combined:
                 combined = _ANSI_RE.sub("", combined)
                 parts.append("=== Container logs ===\n" + combined)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        except subprocess.TimeoutExpired:
+            # Don't fail the whole call — the build log portion is
+            # still useful.  Log so an operator who notices "=== Container
+            # logs ===" missing from an app's log page has a trail.
+            logger.warning("podman logs timed out after 10s for %s", container_id)
+        except OSError as e:
+            logger.warning("podman logs failed for %s with OSError: %s", container_id, e)
 
     return "\n".join(parts) if parts else ""
