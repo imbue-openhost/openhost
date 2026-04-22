@@ -9,7 +9,7 @@ from oauth import SCOPE_MAP
 from oauth import ZONE_DOMAIN
 from oauth import AuthRedirectRequired
 from oauth import OAuthError
-from oauth import SecretsServiceUnavailable
+from oauth import OAuthServiceUnavailable
 from oauth import get_accounts
 from oauth import get_oauth_token
 from quart import Blueprint
@@ -28,7 +28,7 @@ async def get_token_or_redirect(provider: str, scopes: list[str], account: str =
         return await get_oauth_token(provider, scopes, account, return_to=return_to)
     except AuthRedirectRequired as e:
         return redirect(e.url)
-    except (SecretsServiceUnavailable, OAuthError) as e:
+    except (OAuthServiceUnavailable, OAuthError) as e:
         return await render_template("error.html", error=str(e))
 
 
@@ -40,7 +40,7 @@ async def index():
         entry = {**p, "accounts": []}
         try:
             entry["accounts"] = await get_accounts(p["name"])
-        except SecretsServiceUnavailable as e:
+        except OAuthServiceUnavailable as e:
             return await render_template("secrets_required.html", error=str(e))
         except OAuthError as e:
             error = str(e)
@@ -64,7 +64,7 @@ async def connect():
         await get_oauth_token(provider, scopes, account, return_to=index_url)
     except AuthRedirectRequired as e:
         return redirect(e.url)
-    except (SecretsServiceUnavailable, OAuthError) as e:
+    except (OAuthServiceUnavailable, OAuthError) as e:
         return await render_template("error.html", error=str(e))
 
     return redirect("/server/")

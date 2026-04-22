@@ -183,15 +183,3 @@ def _json_error(error: str, message: str, status: int) -> Response:
         status=status,
         content_type="application/json",
     )
-
-
-# ─── OAuth Callback Proxy ───
-
-
-@services_bp.route("/secrets/oauth/callback")
-async def oauth_callback_proxy() -> Response:
-    try:
-        provider_app, provider_port = get_service_provider("secrets")
-    except ServiceNotAvailable as e:
-        return _json_error("service_not_available", e.message, 503)
-    return await proxy_request(request, provider_port, "", override_path="/oauth/callback")

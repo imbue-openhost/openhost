@@ -14,3 +14,7 @@ health_check = "/health"
 [resources]
 memory_mb = 64
 cpu_millicores = 100
+
+[[permissions_v2]]
+service = "github.com/imbue-openhost/openhost/services/secrets"
+grants = [{key = "TEST_SECRET"}]

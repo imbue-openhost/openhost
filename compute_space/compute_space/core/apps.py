@@ -30,6 +30,7 @@ from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.permissions import grant_permissions as grant_permissions_fn
+from compute_space.core.permissions_v2 import grant_permission_v2
 from compute_space.core.ports import allocate_port
 from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
@@ -231,6 +232,7 @@ def insert_and_deploy(
     config: Config,
     db: sqlite3.Connection,
     grant_permissions: set[str],
+    grant_permissions_v2: bool = False,
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
@@ -240,6 +242,8 @@ def insert_and_deploy(
     Returns app_name. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
+    grant_permissions_v2: if True, grant all [[permissions_v2]] entries
+        from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     """
     if app_name is None:
@@ -340,6 +344,15 @@ def insert_and_deploy(
     unknown = grant_permissions - all_manifest_keys
     if unknown:
         logger.warning("App %s granted unknown permissions not in manifest: %s", app_name, unknown)
+
+    if grant_permissions_v2 and manifest.permissions_v2:
+        for perm in manifest.permissions_v2:
+            for grant_payload in perm.grants:
+                grant_permission_v2(
+                    consumer_app=app_name,
+                    service_url=perm.service,
+                    grant_payload=grant_payload,
+                )
 
     threading.Thread(
         target=deploy_app_background,

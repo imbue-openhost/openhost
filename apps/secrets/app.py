@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sqlite3
@@ -196,7 +197,147 @@ async def service_list():
     return jsonify({"keys": [{"key": r["key"], "description": r["description"]} for r in rows]})
 
 
-# ─── OAuth Service API ───
+# ─── V2 Service API (permissions validated by provider) ───
+
+
+def _parse_v2_grants() -> tuple[set[str], bool]:
+    """Read X-OpenHost-Permissions header and return (granted_keys, grant_all)."""
+    perms_header = request.headers.get("X-OpenHost-Permissions", "[]")
+    try:
+        grants = json.loads(perms_header)
+    except json.JSONDecodeError:
+        return set(), False
+
+    granted_keys: set[str] = set()
+    for g in grants:
+        payload = g.get("grant", {})
+        if isinstance(payload, dict):
+            if payload.get("key") == "*":
+                return set(), True
+            if "key" in payload:
+                granted_keys.add(payload["key"])
+    return granted_keys, False
+
+
+@app.route("/_service_v2/get", methods=["POST"])
+async def service_v2_get():
+    """Return secret values for the requested keys (V2: provider-side permission check)."""
+    data = await request.get_json()
+    requested_keys = data.get("keys", []) if data else []
+
+    if not requested_keys:
+        return jsonify({"error": "No keys requested"}), 400
+
+    granted_keys, grant_all = _parse_v2_grants()
+    if not grant_all:
+        missing_perms = [k for k in requested_keys if k not in granted_keys]
+        if missing_perms:
+            return jsonify(
+                {
+                    "error": "permission_required",
+                    "required_grants": [{"key": k} for k in missing_perms],
+                }
+            ), 403
+
+    with closing(get_db()) as db:
+        result = {}
+        for key in requested_keys:
+            row = db.execute("SELECT value FROM secrets WHERE key = ?", (key,)).fetchone()
+            if row:
+                result[key] = row["value"]
+
+    missing = [k for k in requested_keys if k not in result]
+    response = {"secrets": result}
+    if missing:
+        response["missing"] = missing
+    return jsonify(response)
+
+
+@app.route("/_service_v2/list", methods=["GET"])
+async def service_v2_list():
+    """List available secret keys (V2: no permission check needed for names)."""
+    with closing(get_db()) as db:
+        rows = db.execute("SELECT key, description FROM secrets ORDER BY key").fetchall()
+    return jsonify({"keys": [{"key": r["key"], "description": r["description"]} for r in rows]})
+
+
+# ─── OAuth V2 Service API (permissions validated by provider) ───
+
+
+def _parse_oauth_v2_grants() -> list[tuple[str, str]]:
+    """Read X-OpenHost-Permissions header and return granted (provider, scope) pairs."""
+    perms_header = request.headers.get("X-OpenHost-Permissions", "[]")
+    try:
+        grants = json.loads(perms_header)
+    except json.JSONDecodeError:
+        return []
+
+    result = []
+    for g in grants:
+        payload = g.get("grant", {})
+        if isinstance(payload, dict) and "provider" in payload and "scope" in payload:
+            result.append((payload["provider"], payload["scope"]))
+    return result
+
+
+def _check_oauth_v2_permission(provider: str, scopes: list[str]) -> list[dict]:
+    """Check if the caller has grants for all requested provider+scope pairs.
+
+    Returns a list of missing grant payloads (empty if all granted).
+    """
+    granted = set(_parse_oauth_v2_grants())
+    missing = []
+    for scope in scopes:
+        if (provider, scope) not in granted:
+            missing.append({"provider": provider, "scope": scope})
+    return missing
+
+
+@app.route("/_oauth_v2/token", methods=["POST"])
+async def oauth_v2_token():
+    """V2 OAuth token endpoint — provider-side permission check."""
+    data = await request.get_json()
+    if not data or not data.get("provider") or not data.get("scopes"):
+        return jsonify({"error": "provider and scopes are required"}), 400
+
+    provider = data["provider"]
+    scopes = data["scopes"]
+
+    missing = _check_oauth_v2_permission(provider, scopes)
+    if missing:
+        return jsonify(
+            {
+                "error": "permission_required",
+                "required_grants": missing,
+            }
+        ), 403
+
+    return await service_oauth_token()
+
+
+@app.route("/_oauth_v2/accounts", methods=["POST"])
+async def oauth_v2_accounts():
+    """V2 OAuth accounts endpoint — provider-side permission check."""
+    data = await request.get_json()
+    if not data or not data.get("provider") or not data.get("scopes"):
+        return jsonify({"error": "provider and scopes are required"}), 400
+
+    provider = data["provider"]
+    scopes = data["scopes"]
+
+    missing = _check_oauth_v2_permission(provider, scopes)
+    if missing:
+        return jsonify(
+            {
+                "error": "permission_required",
+                "required_grants": missing,
+            }
+        ), 403
+
+    return await service_oauth_accounts()
+
+
+# ─── OAuth Service API (shared handlers) ───
 
 
 APP_NAME = os.environ["OPENHOST_APP_NAME"]

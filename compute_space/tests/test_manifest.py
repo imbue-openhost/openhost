@@ -340,3 +340,74 @@ class TestValidation:
         toml = '[app]\nname = "x"\nversion = "1"\n[runtime.container]\nimage = "Dockerfile"\n'
         with pytest.raises(ValueError, match="port"):
             parse_manifest_from_string(toml)
+
+
+class TestServicesV2Parsing:
+    """Verify [[services_v2.provides]] and [[permissions_v2]] parsing."""
+
+    def test_single_service_provides(self):
+        toml = (
+            MINIMAL
+            + """
+[[services_v2.provides]]
+service = "github.com/org/repo/services/secrets"
+version = "0.1.0"
+endpoint = "/_service_v2/"
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.provides_services_v2) == 1
+        sp = manifest.provides_services_v2[0]
+        assert sp.service == "github.com/org/repo/services/secrets"
+        assert sp.version == "0.1.0"
+        assert sp.endpoint == "/_service_v2/"
+
+    def test_multiple_services_provides(self):
+        toml = (
+            MINIMAL
+            + """
+[[services_v2.provides]]
+service = "github.com/org/repo/services/secrets"
+version = "0.1.0"
+endpoint = "/_service_v2/"
+
+[[services_v2.provides]]
+service = "github.com/org/repo/services/oauth"
+version = "0.1.0"
+endpoint = "/_oauth_v2/"
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.provides_services_v2) == 2
+        assert manifest.provides_services_v2[0].service.endswith("/secrets")
+        assert manifest.provides_services_v2[1].service.endswith("/oauth")
+        assert manifest.provides_services_v2[1].endpoint == "/_oauth_v2/"
+
+    def test_permissions_v2_parsing(self):
+        toml = (
+            MINIMAL
+            + """
+[[permissions_v2]]
+service = "github.com/org/repo/services/oauth"
+grants = [
+    {provider = "google", scope = "https://www.googleapis.com/auth/gmail.readonly"},
+    {provider = "github", scope = "repo"},
+]
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.permissions_v2) == 1
+        perm = manifest.permissions_v2[0]
+        assert perm.service == "github.com/org/repo/services/oauth"
+        assert len(perm.grants) == 2
+        assert perm.grants[0] == {"provider": "google", "scope": "https://www.googleapis.com/auth/gmail.readonly"}
+
+    def test_permissions_v2_missing_service_raises(self):
+        toml = MINIMAL + '\n[[permissions_v2]]\ngrants = [{key = "X"}]\n'
+        with pytest.raises(ValueError, match="service"):
+            parse_manifest_from_string(toml)
+
+    def test_services_v2_missing_version_raises(self):
+        toml = MINIMAL + '\n[[services_v2.provides]]\nservice = "github.com/x"\nendpoint = "/"\n'
+        with pytest.raises(ValueError, match="version"):
+            parse_manifest_from_string(toml)

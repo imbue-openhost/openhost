@@ -14,8 +14,16 @@ Run:
 """
 
 import asyncio
+import json
 import os
+import threading
 import time
+from http.server import BaseHTTPRequestHandler
+from http.server import HTTPServer
+from urllib.parse import parse_qs
+from urllib.parse import quote
+from urllib.parse import urlencode
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -33,6 +41,10 @@ from compute_space.testing import wait_app_running
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 _TEST_APP_DIR = os.path.join(_APPS_DIR, "test_app")
+_SECRETS_DIR = os.path.join(_APPS_DIR, "secrets")
+_OAUTH_DEMO_DIR = os.path.join(_APPS_DIR, "oauth_demo")
+
+SECRETS_SERVICE_URL = "github.com/imbue-openhost/openhost/services/secrets"
 
 ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
@@ -119,7 +131,7 @@ def test_app_deployed(admin_session, router_url):
     repo_url = f"file://{_TEST_APP_DIR}"
     r = admin_session.post(
         f"{router_url}/api/add_app",
-        data={"repo_url": repo_url},
+        data={"repo_url": repo_url, "grant_permissions_v2": "true"},
         timeout=120,
     )
     assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
@@ -131,6 +143,41 @@ def test_app_deployed(admin_session, router_url):
         "session": admin_session,
         "router_url": router_url,
     }
+
+
+@pytest.fixture(scope="module")
+def secrets_app_deployed(admin_session, router_url):
+    """Deploy the secrets app and store a test secret."""
+    r = admin_session.post(
+        f"{router_url}/api/add_app",
+        data={"repo_url": f"file://{_SECRETS_DIR}"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
+    assert r.json().get("app_name") == "secrets"
+
+    wait_app_running(admin_session, router_url, "secrets")
+
+    # Store a test secret via the secrets app API
+    def _store():
+        try:
+            r = admin_session.post(
+                f"{router_url}/secrets/api/secrets",
+                json={"key": "TEST_SECRET", "value": "s3cret_value_42"},
+                timeout=10,
+            )
+            return r.status_code == 200
+        except requests.ConnectionError:
+            return False
+
+    poll(_store, timeout=30, interval=2, fail_msg="Could not store test secret")
+
+    yield {
+        "session": admin_session,
+        "router_url": router_url,
+    }
+
+    admin_session.post(f"{router_url}/remove_app/secrets", timeout=30)
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +700,480 @@ class TestAppRename:
             interval=2,
             fail_msg="test-app not responding after rename back",
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests — V2 Services (cross-app service proxy)
+# ---------------------------------------------------------------------------
+
+
+@requires_docker
+class TestServicesV2:
+    """Test V2 cross-app services: secrets app provides, test-app consumes.
+
+    The test-app manifest declares [[permissions_v2]] requesting
+    TEST_SECRET from the secrets service. It is deployed with
+    grant_permissions_v2=true so the permission is granted at install time.
+    """
+
+    def test_service_registered(self, secrets_app_deployed, admin_session, router_url):
+        """Deploying the secrets app registers its V2 service provider."""
+        r = admin_session.get(f"{router_url}/api/services_v2", timeout=10)
+        assert r.status_code == 200
+        services = r.json()
+        providers = [s for s in services if s["service_url"] == SECRETS_SERVICE_URL]
+        assert len(providers) == 1
+        assert providers[0]["app_name"] == "secrets"
+        assert providers[0]["version"] == "0.1.0"
+
+    def test_install_time_grant_works(self, secrets_app_deployed, test_app_deployed):
+        """test-app was deployed with grant_permissions_v2=true, so it can
+        fetch the secret immediately without an explicit grant call."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["secrets"]["TEST_SECRET"] == "s3cret_value_42"
+
+    def test_revoke_then_denied(self, secrets_app_deployed, test_app_deployed):
+        """After revoking the permission, fetching the secret returns 403."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/api/permissions_v2/revoke",
+            json={
+                "app": "test-app",
+                "service_url": SECRETS_SERVICE_URL,
+                "grant": {"key": "TEST_SECRET"},
+            },
+            timeout=10,
+        )
+        assert r.status_code == 200
+
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 403
+        data = r.json()
+        assert data["error"] == "permission_required"
+
+    def test_regrant_then_works(self, secrets_app_deployed, test_app_deployed):
+        """Re-granting the permission restores access."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/api/permissions_v2/grant",
+            json={
+                "app": "test-app",
+                "service_url": SECRETS_SERVICE_URL,
+                "grant": {"key": "TEST_SECRET"},
+            },
+            timeout=10,
+        )
+        assert r.status_code == 200
+
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["secrets"]["TEST_SECRET"] == "s3cret_value_42"
+
+    def test_ungranted_key_still_denied(self, secrets_app_deployed, test_app_deployed):
+        """A key not covered by any grant is denied."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+        r = s.get(f"{url}/test-app/fetch-secret/OTHER_SECRET", timeout=15)
+        assert r.status_code == 403
+
+    def test_version_mismatch_rejected(self, secrets_app_deployed, admin_session, router_url):
+        """Requesting an incompatible version returns 503."""
+        encoded_svc = quote(SECRETS_SERVICE_URL, safe="")
+        # Create an API token to act as a consumer
+        r = admin_session.post(
+            f"{router_url}/api/tokens",
+            data={"name": "v2-test-token", "expiry_hours": "1"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        token = r.json()["token"]
+
+        r = requests.post(
+            f"{router_url}/_services_v2/{encoded_svc}/get?version=>=99.0.0",
+            json={"keys": ["TEST_SECRET"]},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        assert r.status_code == 503
+
+        # Cleanup token
+        tokens = admin_session.get(f"{router_url}/api/tokens", timeout=10).json()
+        for t in tokens:
+            if t["name"] == "v2-test-token":
+                admin_session.delete(f"{router_url}/api/tokens/{t['id']}", timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# Mock OAuth Service
+# ---------------------------------------------------------------------------
+
+
+class MockOAuthService(BaseHTTPRequestHandler):
+    """Mock implementation of the OAuth service API (token + accounts).
+
+    Simulates a Google-like provider with auth code flow and multiple accounts.
+    State is stored on the server instance's class-level dict.
+    """
+
+    # Class-level state shared across requests
+    tokens: dict[str, dict[str, str]] = {}  # (provider, scopes, account) key → token info
+    authorize_base_url: str = ""
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.tokens.clear()
+
+    @classmethod
+    def add_token(cls, provider: str, scopes: str, account: str, access_token: str) -> None:
+        key = f"{provider}:{scopes}:{account}"
+        cls.tokens[key] = {"access_token": access_token, "account": account}
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(content_length)) if content_length else {}
+
+        if self.path.startswith("/token"):
+            self._handle_token(body)
+        elif self.path.startswith("/accounts"):
+            self._handle_accounts(body)
+        elif self.path.startswith("/authorize-complete"):
+            self._handle_authorize_complete(body)
+        else:
+            self._json_response(404, {"error": "not_found"})
+
+    def do_GET(self) -> None:
+        if self.path.startswith("/authorize-complete"):
+            qs = parse_qs(urlparse(self.path).query)
+            body = {
+                "provider": qs.get("provider", [""])[0],
+                "scopes": qs.get("scopes", [""])[0],
+                "account": qs.get("account", [""])[0],
+                "access_token": qs.get("access_token", [""])[0],
+            }
+            self._handle_authorize_complete(body)
+        else:
+            self._json_response(404, {"error": "not_found"})
+
+    def _handle_token(self, body: dict) -> None:
+        provider = body.get("provider", "")
+        scopes = body.get("scopes", [])
+        account = body.get("account", "default")
+        return_to = body.get("return_to", "/")
+        scopes_key = " ".join(sorted(scopes))
+
+        key = f"{provider}:{scopes_key}:{account}"
+        token_info = self.tokens.get(key)
+
+        # Fall back: if requesting "default" and there's exactly one token for
+        # this provider+scopes, return it.
+        if not token_info and account == "default":
+            prefix = f"{provider}:{scopes_key}:"
+            matches = {k: v for k, v in self.tokens.items() if k.startswith(prefix)}
+            if len(matches) == 1:
+                token_info = next(iter(matches.values()))
+
+        if token_info:
+            self._json_response(
+                200,
+                {
+                    "access_token": token_info["access_token"],
+                    "expires_at": None,
+                    "token_type": "Bearer",
+                },
+            )
+            return
+
+        authorize_url = f"{self.authorize_base_url}/authorize-complete?" + urlencode(
+            {"provider": provider, "scopes": scopes_key, "account": account, "return_to": return_to}
+        )
+        self._json_response(
+            401,
+            {
+                "status": "authorization_required",
+                "authorize_url": authorize_url,
+            },
+        )
+
+    def _handle_accounts(self, body: dict) -> None:
+        provider = body.get("provider", "")
+        scopes = body.get("scopes", [])
+        scopes_key = " ".join(sorted(scopes))
+        prefix = f"{provider}:{scopes_key}:"
+        accounts = [v["account"] for k, v in sorted(self.tokens.items()) if k.startswith(prefix)]
+        self._json_response(200, {"accounts": accounts})
+
+    def _handle_authorize_complete(self, body: dict) -> None:
+        provider = body.get("provider", "")
+        scopes_key = body.get("scopes", "")
+        account = body.get("account", "default")
+        access_token = body.get("access_token", "")
+
+        if not access_token:
+            access_token = f"mock_token_{provider}_{account}"
+
+        key = f"{provider}:{scopes_key}:{account}"
+        self.tokens[key] = {"access_token": access_token, "account": account}
+        self._json_response(200, {"ok": True, "account": account})
+
+    def _json_response(self, status: int, data: dict) -> None:
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+MOCK_OAUTH_PORT = 29199
+
+
+@pytest.fixture(scope="module")
+def mock_oauth_server():
+    """Run a mock OAuth service on the host, reachable from Docker containers
+    at http://host.docker.internal:MOCK_OAUTH_PORT."""
+    MockOAuthService.reset()
+    MockOAuthService.authorize_base_url = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
+
+    server = HTTPServer(("0.0.0.0", MOCK_OAUTH_PORT), MockOAuthService)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+
+
+@pytest.fixture(scope="module")
+def oauth_demo_deployed(admin_session, router_url):
+    """Deploy the oauth-demo app."""
+    r = admin_session.post(
+        f"{router_url}/api/add_app",
+        data={"repo_url": f"file://{_OAUTH_DEMO_DIR}"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
+    assert r.json().get("app_name") == "oauth-demo"
+
+    wait_app_running(admin_session, router_url, "oauth-demo")
+
+    yield {
+        "session": admin_session,
+        "router_url": router_url,
+    }
+
+    admin_session.post(f"{router_url}/remove_app/oauth-demo", timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# Tests — OAuth Flow (multi-account, mock provider)
+# ---------------------------------------------------------------------------
+
+
+@requires_docker
+class TestOAuthFlow:
+    """Test the OAuth flow through the oauth-demo app against a mock OAuth service.
+
+    Verifies token retrieval, authorization redirects, and multi-account support
+    for a Google-like provider.
+    """
+
+    def test_configure_mock(self, oauth_demo_deployed, mock_oauth_server):
+        """Point the oauth-demo app at the mock OAuth service."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+        mock_url = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
+
+        r = s.post(
+            f"{url}/oauth-demo/test/set-mock-url",
+            json={"url": mock_url},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        assert r.json()["mock_url"] == mock_url
+
+    def test_no_token_returns_redirect(self, oauth_demo_deployed, mock_oauth_server):
+        """When no token exists, requesting one returns an authorization redirect."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "default"},
+            timeout=10,
+        )
+        assert r.status_code == 401
+        data = r.json()
+        assert "redirect_url" in data
+        assert "authorize-complete" in data["redirect_url"]
+        assert "provider=google" in data["redirect_url"]
+
+    def test_authorize_first_account(self, oauth_demo_deployed, mock_oauth_server):
+        """Complete authorization for the first account (alice@example.com)."""
+        MockOAuthService.add_token(
+            "google",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "alice@example.com",
+            "mock_token_alice",
+        )
+
+    def test_get_token_first_account(self, oauth_demo_deployed, mock_oauth_server):
+        """After authorization, requesting a token returns it."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "alice@example.com"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["access_token"] == "mock_token_alice"
+
+    def test_default_account_resolves(self, oauth_demo_deployed, mock_oauth_server):
+        """With one account, requesting 'default' returns that account's token."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "default"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "mock_token_alice"
+
+    def test_accounts_shows_first(self, oauth_demo_deployed, mock_oauth_server):
+        """Accounts endpoint lists the connected account."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/accounts",
+            json={"provider": "google"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["accounts"] == ["alice@example.com"]
+
+    def test_authorize_second_account(self, oauth_demo_deployed, mock_oauth_server):
+        """Connect a second Google account (bob@example.com)."""
+        MockOAuthService.add_token(
+            "google",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "bob@example.com",
+            "mock_token_bob",
+        )
+
+    def test_accounts_shows_both(self, oauth_demo_deployed, mock_oauth_server):
+        """After connecting a second account, both are listed."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/accounts",
+            json={"provider": "google"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data["accounts"]) == {"alice@example.com", "bob@example.com"}
+
+    def test_default_ambiguous_redirects(self, oauth_demo_deployed, mock_oauth_server):
+        """With multiple accounts, requesting 'default' requires explicit selection."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "default"},
+            timeout=10,
+        )
+        assert r.status_code == 401
+        assert "redirect_url" in r.json()
+
+    def test_get_token_specific_account(self, oauth_demo_deployed, mock_oauth_server):
+        """Each account's token is retrievable by name."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "alice@example.com"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "mock_token_alice"
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "bob@example.com"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "mock_token_bob"
+
+    def test_different_provider_independent(self, oauth_demo_deployed, mock_oauth_server):
+        """Tokens for different providers are independent."""
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "github", "account": "default"},
+            timeout=10,
+        )
+        assert r.status_code == 401, "GitHub should have no tokens yet"
+
+        MockOAuthService.add_token("github", "repo", "octocat", "mock_token_github")
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "github", "account": "octocat"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "mock_token_github"
+
+    def test_authorize_via_redirect_flow(self, oauth_demo_deployed, mock_oauth_server):
+        """Test the full redirect flow: get authorize URL, visit it, then get token."""
+        MockOAuthService.reset()
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "new"},
+            timeout=10,
+        )
+        assert r.status_code == 401
+        authorize_url = r.json()["redirect_url"]
+
+        # "Visit" the authorize URL — this hits the mock's authorize-complete
+        # endpoint which stores the token. The mock server listens on localhost.
+        local_url = authorize_url.replace("host.docker.internal", "127.0.0.1")
+        local_url += "&access_token=redirected_token_123"
+        r = requests.get(local_url, timeout=10)
+        assert r.status_code == 200
+
+        r = s.post(
+            f"{url}/oauth-demo/test/token",
+            json={"provider": "google", "account": "new"},
+            timeout=10,
+        )
+        assert r.status_code == 200
+        assert r.json()["access_token"] == "redirected_token_123"
 
 
 # ---------------------------------------------------------------------------

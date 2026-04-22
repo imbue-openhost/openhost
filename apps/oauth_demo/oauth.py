@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote
 
 import httpx
 
@@ -6,6 +7,22 @@ ROUTER_URL = os.environ.get("OPENHOST_ROUTER_URL")
 APP_TOKEN = os.environ.get("OPENHOST_APP_TOKEN")
 APP_NAME = os.environ.get("OPENHOST_APP_NAME")
 ZONE_DOMAIN = os.environ.get("OPENHOST_ZONE_DOMAIN")
+
+OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
+_ENCODED_SVC = quote(OAUTH_SERVICE_URL, safe="")
+OAUTH_V2_BASE = f"{ROUTER_URL}/_services_v2/{_ENCODED_SVC}"
+
+_mock_base_url: str | None = None
+
+
+def set_mock_oauth_url(url: str | None) -> None:
+    global _mock_base_url
+    _mock_base_url = url.rstrip("/") if url else None
+
+
+def _base_url() -> str:
+    return _mock_base_url or OAUTH_V2_BASE
+
 
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GITHUB_SCOPE = "repo"
@@ -44,8 +61,8 @@ class OAuthError(Exception):
     """OAuth token request failed with a displayable error."""
 
 
-class SecretsServiceUnavailable(Exception):
-    """The secrets service is not installed or not running."""
+class OAuthServiceUnavailable(Exception):
+    """The OAuth service is not installed or not running."""
 
 
 class _PermissionDenied(Exception):
@@ -68,7 +85,13 @@ def _check_error_response(resp: httpx.Response) -> None:
         raise OAuthError(f"Request failed: {resp.status_code} {resp.text}") from e
     error = data.get("error")
     if error in ("service_not_found", "service_not_running", "service_not_available"):
-        raise SecretsServiceUnavailable(data.get("message", "Secrets service unavailable"))
+        raise OAuthServiceUnavailable(data.get("message", "OAuth service unavailable"))
+    # V2 permission_required (from provider via router)
+    if error == "permission_required":
+        grants = data.get("grants_needed", [])
+        approve_url = grants[0].get("approve_url", "") if grants else ""
+        raise _PermissionDenied(approve_url=approve_url)
+    # V1 permission_denied
     if error == "permission_denied":
         raise _PermissionDenied(approve_url=data.get("approve_url", ""))
     if resp.status_code == 401 and data.get("authorize_url"):
@@ -86,7 +109,7 @@ async def get_accounts(provider: str) -> list[str]:
         raise ValueError(f"Unknown provider: {provider}")
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            f"{ROUTER_URL}/_services/secrets/oauth/accounts",
+            f"{_base_url()}/accounts?version=>=0.1.0",
             json={"provider": provider, "scopes": scopes},
             headers=AUTH_HEADERS,
         )
@@ -108,7 +131,7 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
 
     Raises:
         AuthRedirectRequired: User needs to visit a URL (permissions or OAuth consent).
-        SecretsServiceUnavailable: The secrets service is not installed or not running.
+        OAuthServiceUnavailable: The OAuth service is not installed or not running.
         OAuthError: Other failures.
     """
     if not return_to:
@@ -116,7 +139,7 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                f"{ROUTER_URL}/_services/secrets/oauth/token",
+                f"{_base_url()}/token?version=>=0.1.0",
                 json={
                     "provider": provider,
                     "scopes": scopes,

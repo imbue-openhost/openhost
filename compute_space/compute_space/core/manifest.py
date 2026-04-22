@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
+import attrs
+
 from compute_space.core.logging import logger
 
 
@@ -28,6 +30,12 @@ class ServiceProvides:
     service: str
     version: str
     endpoint: str
+
+
+@attrs.frozen
+class PermissionV2Request:
+    service: str
+    grants: list[dict[str, Any]]
 
 
 @dataclass
@@ -72,6 +80,9 @@ class AppManifest:
 
     # [services_v2]
     provides_services_v2: list[ServiceProvides] = field(default_factory=list)
+
+    # [[permissions_v2]]
+    permissions_v2: list[PermissionV2Request] = field(default_factory=list)
 
     # [app] metadata
     hidden: bool = False
@@ -175,6 +186,18 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         if not ver or not isinstance(ver, str):
             raise ValueError("[[services_v2.provides]] requires a string 'version' field")
         manifest.provides_services_v2.append(ServiceProvides(service=svc, version=ver, endpoint=ep))
+
+    # Parse [[permissions_v2]] section
+    for entry in data.get("permissions_v2", []):
+        if not isinstance(entry, dict):
+            raise ValueError("Each [[permissions_v2]] entry must be a table")
+        svc = entry.get("service")
+        if not svc or not isinstance(svc, str):
+            raise ValueError("[[permissions_v2]] requires a string 'service' field")
+        grants = entry.get("grants", [])
+        if not isinstance(grants, list):
+            raise ValueError("[[permissions_v2]] 'grants' must be a list")
+        manifest.permissions_v2.append(PermissionV2Request(service=svc, grants=grants))
 
     container = runtime.get("container", {})
     if not container.get("image"):
