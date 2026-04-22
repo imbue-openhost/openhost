@@ -13,6 +13,7 @@ import subprocess
 import pytest
 
 from compute_space.core import containers
+from compute_space.core.containers import _bind_mount_arg
 from compute_space.core.containers import build_image
 from compute_space.core.containers import get_container_status
 from compute_space.core.containers import get_docker_logs
@@ -556,6 +557,16 @@ def test_get_docker_logs_returns_build_log_when_no_container(tmp_path) -> None:
     assert "=== Container logs ===" not in output
 
 
+def test_get_docker_logs_returns_empty_when_no_build_log_and_no_container(tmp_path) -> None:
+    """Fresh app that failed before any _append_log call has neither
+    a build log file nor a container id.  The function's os.path.exists
+    guard must short-circuit both branches and return "" rather than
+    trying to read a missing file or call podman inspect."""
+    # No _make_build_log call — the build log file does not exist.
+    output = get_docker_logs("brand-new", str(tmp_path), container_id=None)
+    assert output == ""
+
+
 def test_get_docker_logs_appends_podman_logs_when_container_id_set(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With a container id, get_docker_logs should also run ``podman logs
     --tail <N>`` and concatenate the output under a 'Container logs' header."""
@@ -595,3 +606,33 @@ def test_get_docker_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pyt
     assert "\x1b[" not in output
     assert "\r" not in output
     assert "red text plain" in output
+
+
+# ---------------------------------------------------------------------------
+# _bind_mount_arg
+# ---------------------------------------------------------------------------
+
+
+def test_bind_mount_arg_rw_appends_idmap() -> None:
+    """Read-write mounts must carry the bare ``:idmap`` option so
+    container-root writes land on disk under the unprivileged host
+    user rather than the mapped subuid."""
+    assert _bind_mount_arg("/srv/data", "/data") == "/srv/data:/data:idmap"
+
+
+def test_bind_mount_arg_ro_emits_ro_idmap() -> None:
+    """Read-only mounts must combine ``ro`` with ``idmap``.  The
+    ordering (``ro,idmap``) matters for operator readability of
+    ``podman ps`` output; pin the canonical rendering here even though
+    podman parses the options order-independently."""
+    assert _bind_mount_arg("/srv/data", "/data", read_only=True) == "/srv/data:/data:ro,idmap"
+
+
+def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
+    """Host and container paths pass through unchanged — no
+    normalisation, no trailing-slash stripping.  Callers already
+    join paths to their canonical form; this function shouldn't
+    re-touch them because any mutation could change the mount
+    target vs. what the app's env var points at."""
+    arg = _bind_mount_arg("/a/b/c/", "/data/app_data/myapp/")
+    assert arg == "/a/b/c/:/data/app_data/myapp/:idmap"

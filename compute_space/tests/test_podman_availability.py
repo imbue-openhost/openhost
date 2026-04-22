@@ -201,15 +201,15 @@ def test_check_app_status_marks_running_apps_error_when_podman_missing(
     finally:
         db.close()
 
-    assert rows["notes"][1] == "error"
-    assert rows["notes"][2] == PODMAN_MISSING_ERROR
-    assert rows["notes"][3] is None, "container_id should be cleared since it's no longer meaningful"
-
-    assert rows["wiki"][1] == "error"
-    assert rows["wiki"][2] == PODMAN_MISSING_ERROR
-
-    assert rows["blog"][1] == "error"
-    assert rows["blog"][2] == PODMAN_MISSING_ERROR
+    # All three affected apps (running, starting, building) must have
+    # been flipped to error AND had their container_id cleared — pin
+    # this explicitly for every row so a regression that only cleared
+    # some statuses is caught.
+    for name in ("notes", "wiki", "blog"):
+        status, err, cid = rows[name][1:]
+        assert status == "error", f"{name}: expected status=error, got {status}"
+        assert err == PODMAN_MISSING_ERROR, f"{name}: wrong error_message"
+        assert cid is None, f"{name}: container_id should be cleared, got {cid}"
 
     # A stopped app stays stopped — its error_message stays whatever
     # it was (None here) rather than getting stomped.

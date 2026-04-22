@@ -41,12 +41,15 @@ from compute_space.db import get_db
 from compute_space.web.middleware import login_required
 
 
-def _rmtree_force(path: str) -> None:
+def _rmtree_strict(path: str) -> None:
     """Remove a directory tree, re-raising on failure.
 
-    Thin wrapper over ``rmtree_with_sudo_fallback`` for the code-sync /
-    redeploy path where a failed rmtree must propagate (as opposed to
-    data-dir deprovision, which swallows cleanup errors).
+    Thin wrapper over ``rmtree_with_sudo_fallback(raise_on_failure=True)``
+    for the code-sync / redeploy path where a failed rmtree must
+    propagate.  Named ``_strict`` rather than ``_force`` to avoid
+    implying rm(1) ``-f`` semantics — the whole point is that this
+    DOES raise if the tree can't be removed, unlike the deprovision
+    path which intentionally swallows cleanup errors.
     """
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
@@ -156,7 +159,7 @@ async def api_add_app() -> ResponseReturnValue:
 
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
     if os.path.exists(final_dir):
-        _rmtree_force(final_dir)
+        _rmtree_strict(final_dir)
     os.makedirs(os.path.dirname(final_dir), exist_ok=True)
     shutil.move(clone_dir, final_dir)
 
