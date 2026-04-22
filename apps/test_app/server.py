@@ -63,6 +63,7 @@ async def handle_ws(request: aiohttp.web.Request) -> aiohttp.web.WebSocketRespon
 async def handle_fetch_secret(request: aiohttp.web.Request) -> aiohttp.web.Response:
     """Fetch a secret from the secrets service via the V2 service proxy."""
     key = request.match_info["key"]
+    version = request.query.get("version", ">=0.1.0")
     router_url = os.environ.get("OPENHOST_ROUTER_URL", "")
     app_token = os.environ.get("OPENHOST_APP_TOKEN", "")
 
@@ -70,7 +71,7 @@ async def handle_fetch_secret(request: aiohttp.web.Request) -> aiohttp.web.Respo
         return _json_response({"error": "OPENHOST_ROUTER_URL or OPENHOST_APP_TOKEN not set"}, status=500)
 
     encoded_svc = quote(SECRETS_SERVICE_URL, safe="")
-    url = f"{router_url}/_services_v2/{encoded_svc}/get?version=>=0.1.0"
+    url = f"{router_url}/_services_v2/{encoded_svc}/get?version={quote(version, safe='')}"
 
     async with aiohttp.ClientSession() as session:
         async with session.post(

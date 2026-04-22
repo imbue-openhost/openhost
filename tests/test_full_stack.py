@@ -21,7 +21,6 @@ import time
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
 from urllib.parse import parse_qs
-from urllib.parse import quote
 from urllib.parse import urlencode
 from urllib.parse import urlparse
 
@@ -785,31 +784,16 @@ class TestServicesV2:
         r = s.get(f"{url}/test-app/fetch-secret/OTHER_SECRET", timeout=15)
         assert r.status_code == 403
 
-    def test_version_mismatch_rejected(self, secrets_app_deployed, admin_session, router_url):
+    def test_version_mismatch_rejected(self, secrets_app_deployed, test_app_deployed):
         """Requesting an incompatible version returns 503."""
-        encoded_svc = quote(SECRETS_SERVICE_URL, safe="")
-        # Create an API token to act as a consumer
-        r = admin_session.post(
-            f"{router_url}/api/tokens",
-            data={"name": "v2-test-token", "expiry_hours": "1"},
-            timeout=10,
-        )
-        assert r.status_code == 200
-        token = r.json()["token"]
-
-        r = requests.post(
-            f"{router_url}/_services_v2/{encoded_svc}/get?version=>=99.0.0",
-            json={"keys": ["TEST_SECRET"]},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+        r = s.get(
+            f"{url}/test-app/fetch-secret/TEST_SECRET",
+            params={"version": ">=99.0.0"},
+            timeout=15,
         )
         assert r.status_code == 503
-
-        # Cleanup token
-        tokens = admin_session.get(f"{router_url}/api/tokens", timeout=10).json()
-        for t in tokens:
-            if t["name"] == "v2-test-token":
-                admin_session.delete(f"{router_url}/api/tokens/{t['id']}", timeout=10)
 
 
 # ---------------------------------------------------------------------------
