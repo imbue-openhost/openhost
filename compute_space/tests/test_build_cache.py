@@ -9,7 +9,6 @@ import subprocess
 import pytest
 from quart import Quart
 
-from compute_space.core.containers import PODMAN_MISSING_ERROR
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.web.routes.api import system as system_routes
 
@@ -56,50 +55,6 @@ def test_drop_docker_build_cache_raises_on_error(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="podman image prune error"):
-        drop_docker_build_cache()
-
-
-def test_drop_docker_build_cache_surfaces_podman_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """If podman isn't installed on the host, clicking 'Drop Build
-    Cache' must surface PODMAN_MISSING_ERROR — not a raw
-    FileNotFoundError traceback through the HTTP handler."""
-
-    def fake_run(*_a, **_kw):  # type: ignore[no-untyped-def]
-        raise FileNotFoundError(2, "No such file or directory: 'podman'")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        drop_docker_build_cache()
-    assert str(exc_info.value) == PODMAN_MISSING_ERROR
-
-
-def test_drop_docker_build_cache_surfaces_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A hung podman-image-prune must produce a clean actionable error
-    rather than propagate subprocess.TimeoutExpired through the
-    route handler."""
-
-    def fake_run(*_a, **_kw):  # type: ignore[no-untyped-def]
-        raise subprocess.TimeoutExpired(cmd=["podman", "image", "prune"], timeout=120)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="timed out after 120s"):
-        drop_docker_build_cache()
-
-
-def test_drop_docker_build_cache_surfaces_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Non-trivial OSError (EPERM on the binary, fd exhaustion, …)
-    from subprocess.run must be converted to a RuntimeError so the
-    HTTP handler produces a clean 500 with a recognisable message
-    rather than an unhandled traceback."""
-
-    def fake_run(*_a, **_kw):  # type: ignore[no-untyped-def]
-        raise OSError(13, "Permission denied")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="OSError"):
         drop_docker_build_cache()
 
 

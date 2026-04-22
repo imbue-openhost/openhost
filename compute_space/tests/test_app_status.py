@@ -17,7 +17,6 @@ from quart import Quart
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.config import get_config
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
-from compute_space.core.containers import LEGACY_BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
 
 from .conftest import _FakeApp
@@ -72,7 +71,7 @@ async def test_legacy_marker_still_maps_to_build_cache_corrupt_error_kind(tmp_pa
     must still trigger the 'drop cache' remediation toast in the UI."""
     status, payload = await _app_status_response(
         tmp_path,
-        error_message=f"{LEGACY_BUILD_CACHE_CORRUPT_MARKER} Docker build cache is corrupted.",
+        error_message="[CACHE_CORRUPT] Docker build cache is corrupted.",
         port=20101,
     )
     assert status == 200

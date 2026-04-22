@@ -56,12 +56,6 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 # surface a "drop build cache" remediation to the user.
 BUILD_CACHE_CORRUPT_MARKER = "[BUILD_CACHE_CORRUPT]"
 
-# Legacy marker that still appears in error_message columns written by
-# older router versions.  The status endpoint treats both markers as
-# equivalent so the "drop cache" UI keeps firing for rows that predate
-# the rename.  Exported so callers search by symbol, not by string.
-LEGACY_BUILD_CACHE_CORRUPT_MARKER = "[CACHE_CORRUPT]"
-
 # Patterns in podman build output that indicate the local storage/cache
 # is in a state that can be fixed by pruning and retrying.  Matching any of
 # these triggers the BUILD_CACHE_CORRUPT_MARKER path in build_image().
@@ -463,17 +457,7 @@ def drop_docker_build_cache() -> str:
     """
     cmd = ["podman", "image", "prune", "--all", "--force"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except FileNotFoundError as e:
-        # Matches the pattern in podman_available and get_container_status:
-        # missing podman must surface as a clean remediation message, not
-        # a bare FileNotFoundError traceback through the HTTP handler.
-        raise RuntimeError(PODMAN_MISSING_ERROR) from e
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError("podman image prune timed out after 120s") from e
-    except OSError as e:
-        raise RuntimeError(f"podman image prune failed with OSError: {e}") from e
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
         raise RuntimeError(output or "podman image prune failed")

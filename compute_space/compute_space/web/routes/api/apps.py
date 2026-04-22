@@ -3,7 +3,6 @@ import dataclasses
 import os
 import re
 import shutil
-import subprocess
 import threading
 
 from quart import Blueprint
@@ -23,7 +22,6 @@ from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
-from compute_space.core.containers import LEGACY_BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
@@ -41,15 +39,12 @@ from compute_space.db import get_db
 from compute_space.web.middleware import login_required
 
 
-def _rmtree_strict(path: str) -> None:
+def _rmtree_force(path: str) -> None:
     """Remove a directory tree, re-raising on failure.
 
-    Thin wrapper over ``rmtree_with_sudo_fallback(raise_on_failure=True)``
-    for the code-sync / redeploy path where a failed rmtree must
-    propagate.  Named ``_strict`` rather than ``_force`` to avoid
-    implying rm(1) ``-f`` semantics — the whole point is that this
-    DOES raise if the tree can't be removed, unlike the deprovision
-    path which intentionally swallows cleanup errors.
+    Thin wrapper over ``rmtree_with_sudo_fallback`` for the code-sync /
+    redeploy path where a failed rmtree must propagate (as opposed to
+    data-dir deprovision, which swallows cleanup errors).
     """
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
@@ -150,16 +145,12 @@ async def api_add_app() -> ResponseReturnValue:
     db = get_db()
     validation_error = validate_manifest(manifest, db, app_name=app_name)
     if validation_error:
-        # Use the sudo-fallback helper so a git clone that left
-        # read-only objects is still cleaned up.  raise_on_failure
-        # stays False because a leftover temp clone on manifest
-        # validation failure shouldn't turn the 400 into a 500.
-        rmtree_with_sudo_fallback(clone_dir, raise_on_failure=False)
+        shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
     if os.path.exists(final_dir):
-        _rmtree_strict(final_dir)
+        _rmtree_force(final_dir)
     os.makedirs(os.path.dirname(final_dir), exist_ok=True)
     shutil.move(clone_dir, final_dir)
 
@@ -192,10 +183,9 @@ async def api_add_app() -> ResponseReturnValue:
             port_overrides=port_overrides,
         )
     except (RuntimeError, ValueError) as e:
-        # ValueError covers manifest-validation errors raised at insert time
-        # (unsafe capabilities/devices, host_port below the unprivileged
-        # floor, etc.); RuntimeError covers port-allocation and similar
-        # runtime failures.  Both map to a 400 rather than a 500.
+        # ValueError covers uid_map pool exhaustion (see compute_uid_map_base)
+        # and other manifest-validation errors raised at insert time; both
+        # map to a 400 rather than a 500.
         return jsonify({"error": str(e)}), 400
 
     return jsonify({"ok": True, "app_name": app_name, "status": "building"})
@@ -225,9 +215,9 @@ def app_status(app_name: str) -> ResponseReturnValue:
     error_msg = app_row["error_message"]
     error_kind = None
     # error_message may carry either the current BUILD_CACHE_CORRUPT_MARKER
-    # or the legacy one; both trigger the same 'drop cache and rebuild'
-    # remediation in the UI.
-    if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or LEGACY_BUILD_CACHE_CORRUPT_MARKER in error_msg):
+    # or the legacy ``[CACHE_CORRUPT]`` marker; both trigger the same
+    # 'drop cache and rebuild' remediation in the UI.
+    if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or "[CACHE_CORRUPT]" in error_msg):
         error_kind = "build_cache_corrupt"
         error_msg = "Container build cache is corrupted."
     return jsonify({"status": app_row["status"], "error": error_msg, "error_kind": error_kind})
@@ -477,14 +467,10 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if was_running:
         # Persist failures instead of letting them 500 out: the rename
         # has already succeeded, and the dashboard needs a visible error
-        # on the app rather than a generic server error.  Catch the full
-        # family of failures start_app_process can surface: RuntimeError
-        # (build/run failures), ValueError (manifest validation),
-        # subprocess.TimeoutExpired (build timeouts in the streaming
-        # path), and OSError (missing podman, transient FS errors).
+        # on the app rather than a generic server error.
         try:
             start_app_process(new_name, db, config)
-        except (RuntimeError, ValueError, subprocess.TimeoutExpired, OSError) as e:
+        except (RuntimeError, ValueError) as e:
             logger.warning("Failed to restart %s after rename: %s", new_name, e)
             db.execute(
                 "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",

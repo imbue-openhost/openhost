@@ -1,5 +1,3 @@
-import asyncio
-
 import git
 from quart import Blueprint
 from quart import jsonify
@@ -80,20 +78,11 @@ def _host_prep_payload() -> dict[str, object]:
     """Return a dict describing whether the host is ready to run the
     currently-installed router code.
 
-    Combines two signals:
-
-    - The ``/etc/openhost/runtime`` sentinel written by ansible, which
-      declares which runtime + version the host has been prepared for.
-      Covers host-side changes that aren't detectable from the binary
-      alone (a new sysctl, a new sudoers rule, an allowlist change).
-    - A live probe of ``podman --version``, which is the authoritative
-      signal for runtime availability.  The sentinel can't detect a
-      missing binary (an operator could delete podman out from under
-      the router), so the live probe runs independently and takes
-      precedence when it fails.
-
-    Returns a payload with ``host_prep_ok`` plus a reason/message when
-    it's not ok.  Safe to call from any request handler; never raises.
+    Combines a live ``podman --version`` probe (authoritative signal
+    for runtime availability) with the ``/etc/openhost/runtime``
+    sentinel (covers host-side provisioning changes that aren't
+    detectable from the binary alone, e.g. a new sysctl or sudoers
+    rule).  Never raises.
     """
     podman_ok = podman_available()
     prep = host_prep_status()
@@ -119,13 +108,8 @@ async def check_for_updates() -> ResponseReturnValue:
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
 
-    # _host_prep_payload shells out to `podman --version` (up to 5s) and
-    # stats /etc/openhost/runtime; offload both to a worker thread so
-    # they don't block the hypercorn event loop and starve other
-    # requests under concurrent load.
-    prep = await asyncio.to_thread(_host_prep_payload)
     payload: dict[str, object] = {"ok": True, "state": str(state)}
-    payload.update(prep)
+    payload.update(_host_prep_payload())
     return jsonify(payload)
 
 
@@ -136,29 +120,22 @@ async def update_repo_state() -> ResponseReturnValue:
 
     Refuses with HTTP 409 if the host isn't prepared for the current
     router runtime (podman not installed, or /etc/openhost/runtime
-    reports the wrong version).  This protects users from bypassing
-    the dashboard banner via older cached pages, direct curl calls,
-    or future CLI clients.
+    reports the wrong version) — the dashboard banner is a UI layer
+    on top of this; the 409 guards against stale pages and direct
+    curl calls.
     """
     config = get_config()
 
-    # Offload the blocking podman probe to a worker thread (see
-    # check_for_updates for the same pattern).
-    prep = await asyncio.to_thread(_host_prep_payload)
+    prep = _host_prep_payload()
     if not prep["host_prep_ok"]:
         payload: dict[str, object] = {"ok": False, "error": prep["host_prep_message"]}
         payload.update(prep)
         return jsonify(payload), 409
 
+    ref = await get_current_ref(config.openhost_repo_path)
     try:
-        ref = await get_current_ref(config.openhost_repo_path)
         await hard_checkout_and_validate(config.openhost_repo_path, ref)
     except Exception as e:
-        # Wrap both the ref lookup and the checkout: get_current_ref
-        # can raise git.InvalidGitRepositoryError / NoSuchPathError on
-        # a missing or malformed openhost_repo_path, and those must
-        # surface as structured JSON errors rather than raw 500
-        # tracebacks through the HTTP handler.
         return jsonify({"ok": False, "error": repr(e)}), 500
     return jsonify({"ok": True})
 

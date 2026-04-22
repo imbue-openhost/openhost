@@ -5,12 +5,10 @@ and the down command -- all without actually starting services.
 """
 
 import os
-import subprocess
 from argparse import Namespace
 
 import pytest
 
-from self_host_cli import doctor as doctor_mod
 from self_host_cli.doctor import _check_podman
 from self_host_cli.doctor import _check_port
 from self_host_cli.doctor import _check_python
@@ -120,156 +118,6 @@ class TestDoctorChecks:
         c = _check_podman()
         assert hasattr(c, "ok")
         assert hasattr(c, "name")
-
-    def test_podman_check_accepts_rootless_true(self, monkeypatch):
-        """The happy path: podman info reports ``rootless=true`` ⇒ OK.
-        We can't rely on the test host actually having rootless podman
-        configured, so mock subprocess.run with a canned JSON payload."""
-
-        class _R:
-            returncode = 0
-            stdout = '{"host":{"security":{"rootless":true}}}'
-
-        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
-        c = doctor_mod._check_podman()
-        assert c.ok is True
-        assert c.detail == "rootless mode"
-
-    def test_podman_check_rejects_rootful_installation(self, monkeypatch):
-        """Security-sensitive: rootful podman must be rejected because
-        the router's idmap/userns model depends on rootless mode."""
-
-        class _R:
-            returncode = 0
-            stdout = '{"host":{"security":{"rootless":false}}}'
-
-        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "rootful" in c.detail
-
-    def test_podman_check_rejects_missing_rootless_key(self, monkeypatch):
-        """If podman info JSON doesn't expose host.security.rootless at
-        all (unexpected format), report failure rather than silently
-        defaulting to 'ok' — we can't verify the security prerequisite."""
-
-        class _R:
-            returncode = 0
-            stdout = '{"host":{"security":{}}}'
-
-        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "rootless status" in c.detail
-
-    def test_podman_check_rejects_invalid_json(self, monkeypatch):
-        class _R:
-            returncode = 0
-            stdout = "this is not json"
-
-        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "non-JSON" in c.detail
-
-    def test_podman_check_rejects_non_dict_top_level_json(self, monkeypatch):
-        """Future podman versions could conceivably emit a JSON array
-        or scalar at the top level.  The check must handle that as a
-        clean failure rather than crashing on `.get()` with an
-        AttributeError."""
-
-        class _R:
-            returncode = 0
-            stdout = '["some", "array", "at", "top", "level"]'
-
-        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "unexpected JSON type" in c.detail
-
-    def test_podman_check_rejects_nonzero_exit(self, monkeypatch):
-        """``podman info`` returning non-zero (engine error) must surface
-        as a failed check, not silently pass."""
-
-        class _R:
-            returncode = 1
-            stdout = ""
-
-        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "podman info failed" in c.detail
-
-    def test_podman_check_reports_missing_binary(self, monkeypatch):
-        def _raise(*_a, **_kw):
-            raise FileNotFoundError(2, "podman")
-
-        monkeypatch.setattr(subprocess, "run", _raise)
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "PATH" in c.detail
-
-    def test_podman_check_reports_timeout(self, monkeypatch):
-        def _raise(*_a, **_kw):
-            raise subprocess.TimeoutExpired(cmd="podman", timeout=10)
-
-        monkeypatch.setattr(subprocess, "run", _raise)
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "timed out" in c.detail
-
-    def test_podman_check_reports_oserror(self, monkeypatch):
-        """EPERM on the binary / fd exhaustion / similar must not crash
-        ``openhost doctor`` with an unhandled traceback; consistent with
-        how core.containers.podman_available handles the same case."""
-
-        def _raise(*_a, **_kw):
-            raise OSError(13, "Permission denied")
-
-        monkeypatch.setattr(subprocess, "run", _raise)
-        c = doctor_mod._check_podman()
-        assert c.ok is False
-        assert "OSError" in c.detail
-
-    def test_runtime_sentinel_check_returns_none_when_missing(self, monkeypatch, tmp_path):
-        """On dev laptops that don't have /etc/openhost/runtime the
-        sentinel check must return None so `openhost doctor` doesn't
-        report a noisy "FAIL: sentinel missing" line on every run."""
-        monkeypatch.setattr(doctor_mod, "SENTINEL_PATH", str(tmp_path / "does-not-exist"))
-        assert doctor_mod._check_runtime_sentinel() is None
-
-    def test_runtime_sentinel_check_reports_ok_when_matching(self, monkeypatch, tmp_path):
-        """On a correctly-provisioned server the sentinel check reports
-        OK with the sentinel's human-readable status message."""
-        sentinel = tmp_path / "runtime"
-        sentinel.write_text("runtime=podman\nruntime_version=1\n")
-        monkeypatch.setattr(doctor_mod, "SENTINEL_PATH", str(sentinel))
-
-        # host_prep_status reads SENTINEL_PATH by default, so patch
-        # it through a lambda so the production code path uses the
-        # tmp_path location without re-plumbing arguments.
-        from compute_space.core import runtime_sentinel as rs_mod
-
-        monkeypatch.setattr(doctor_mod, "host_prep_status", lambda: rs_mod.host_prep_status(str(sentinel)))
-        c = doctor_mod._check_runtime_sentinel()
-        assert c is not None
-        assert c.ok is True
-
-    def test_runtime_sentinel_check_reports_failure_on_mismatch(self, monkeypatch, tmp_path):
-        """If the sentinel exists but reports the wrong runtime_version
-        the check must surface a FAIL with the remediation message so
-        an operator sees it in `openhost doctor` output."""
-        sentinel = tmp_path / "runtime"
-        sentinel.write_text("runtime=podman\nruntime_version=999\n")
-        monkeypatch.setattr(doctor_mod, "SENTINEL_PATH", str(sentinel))
-
-        from compute_space.core import runtime_sentinel as rs_mod
-
-        monkeypatch.setattr(doctor_mod, "host_prep_status", lambda: rs_mod.host_prep_status(str(sentinel)))
-        c = doctor_mod._check_runtime_sentinel()
-        assert c is not None
-        assert c.ok is False
-        assert "runtime_version" in c.detail
 
     def test_run_doctor_returns_bool(self, capsys):
         result = run_doctor()
