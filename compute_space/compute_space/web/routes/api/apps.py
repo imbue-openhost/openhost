@@ -147,7 +147,11 @@ async def api_add_app() -> ResponseReturnValue:
     db = get_db()
     validation_error = validate_manifest(manifest, db, app_name=app_name)
     if validation_error:
-        shutil.rmtree(clone_dir, ignore_errors=True)
+        # Use the sudo-fallback helper so a git clone that left
+        # read-only objects is still cleaned up.  raise_on_failure
+        # stays False because a leftover temp clone on manifest
+        # validation failure shouldn't turn the 400 into a 500.
+        rmtree_with_sudo_fallback(clone_dir, raise_on_failure=False)
         return jsonify({"error": validation_error}), 400
 
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")

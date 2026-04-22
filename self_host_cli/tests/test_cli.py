@@ -203,6 +203,19 @@ class TestDoctorChecks:
         assert c.ok is False
         assert "timed out" in c.detail
 
+    def test_podman_check_reports_oserror(self, monkeypatch):
+        """EPERM on the binary / fd exhaustion / similar must not crash
+        ``openhost doctor`` with an unhandled traceback; consistent with
+        how core.containers.podman_available handles the same case."""
+
+        def _raise(*_a, **_kw):
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr(subprocess, "run", _raise)
+        c = doctor_mod._check_podman()
+        assert c.ok is False
+        assert "OSError" in c.detail
+
     def test_run_doctor_returns_bool(self, capsys):
         result = run_doctor()
         assert isinstance(result, bool)

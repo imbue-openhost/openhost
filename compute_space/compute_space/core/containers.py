@@ -66,16 +66,13 @@ LEGACY_BUILD_CACHE_CORRUPT_MARKER = "[CACHE_CORRUPT]"
 # is in a state that can be fixed by pruning and retrying.  Matching any of
 # these triggers the BUILD_CACHE_CORRUPT_MARKER path in build_image().
 #
-# Substrings are used rather than regexes because the surrounding text
-# varies by podman / containers-storage version; what's constant is the
-# specific failure mode phrasing, not the exact error prefix.  Each
-# fragment below is specific enough that normal build progress output
-# (layer digests referenced in status lines, storage driver probes, etc.)
-# won't false-match and incorrectly prompt the "drop cache" remediation.
-# The missing-layer pattern is handled specially in
-# ``_is_build_cache_corrupt_line`` because it needs a sha256 co-check
-# to distinguish real missing layers from unrelated "file not found"
-# errors (missing Dockerfile, missing base image, etc.).
+# Substrings and a targeted regex are used rather than a single pattern
+# because the surrounding text varies by podman / containers-storage
+# version; what's constant is the specific failure mode phrasing.
+# Each pattern below is specific enough that normal build progress
+# output (layer digests in status lines, storage driver probes,
+# registry pull errors, etc.) won't false-match and incorrectly prompt
+# the "drop cache" remediation.
 _BUILD_CACHE_CORRUPT_FRAGMENTS_UNCONDITIONAL = (
     # Podman / containers-storage surfacing cache corruption under
     # different wordings depending on the storage driver.  Both
@@ -84,6 +81,15 @@ _BUILD_CACHE_CORRUPT_FRAGMENTS_UNCONDITIONAL = (
     "layer not known",
 )
 
+# The classic "missing layer blob in local storage" error has the form:
+#   content digest sha256:<hex>: not found
+# This regex requires the digest to follow the "content digest" phrase
+# and the ": not found" suffix to follow the digest, so it doesn't
+# false-match unrelated errors like a registry pull failure
+# ("Error: pulling sha256:abc: not found in registry") or normal
+# layer-status output that happens to mention a digest.
+_MISSING_LAYER_RE = re.compile(r"content digest sha256:[0-9a-f]+:\s*not found", re.IGNORECASE)
+
 
 def _is_build_cache_corrupt_line(line: str) -> bool:
     """Return True if ``line`` is a cache-corruption indicator.
@@ -91,14 +97,15 @@ def _is_build_cache_corrupt_line(line: str) -> bool:
     A line matches if either:
     - It contains an unconditional fragment (storage-driver errored,
       layer not known, …), OR
-    - It contains both ``": not found"`` AND a ``sha256:`` digest, i.e.
-      the missing-layer pattern.  The sha256 co-check rules out
-      unrelated "file not found" errors that share the ``: not found``
-      suffix but have their own remediation path.
+    - It matches the specific "content digest sha256:<hex>: not found"
+      pattern that containers-storage emits for a locally-missing
+      layer blob.  Requiring the exact phrasing rules out registry
+      pull errors and other unrelated "not found" errors that happen
+      to mention a sha256 digest.
     """
     if any(frag in line for frag in _BUILD_CACHE_CORRUPT_FRAGMENTS_UNCONDITIONAL):
         return True
-    return ": not found" in line and "sha256:" in line
+    return bool(_MISSING_LAYER_RE.search(line))
 
 
 # Error message used when podman is expected but not available.  The
@@ -130,8 +137,9 @@ def podman_available() -> bool:
             timeout=5,
         )
     except FileNotFoundError:
-        # The common case on a Docker-era host that just self-updated;
-        # no need to spam the log for it.
+        # Expected whenever podman isn't installed.  No log spam because
+        # the caller already surfaces PODMAN_MISSING_ERROR with a clear
+        # remediation; operators don't need a per-probe log entry.
         return False
     except subprocess.TimeoutExpired:
         logger.warning("podman --version timed out after 5s; treating podman as unavailable")
@@ -434,9 +442,9 @@ def drop_docker_build_cache() -> str:
     that aren't currently running — plus all dangling intermediate
     layers.  Stopped-app images will be rebuilt on next deploy.
 
-    The function name and the HTTP endpoint path ``/api/drop-docker-
-    cache`` both keep "docker" in the identifier for backward
-    compatibility with external callers of the API.  On Podman 4.9
+    The HTTP endpoint path ``/api/drop-docker-cache`` keeps "docker"
+    in the URL for backward compatibility with external callers.  On
+    Podman 4.9
     (Ubuntu 24.04 LTS) this command does not accept ``--build-cache``,
     so the persistent ``--mount=type=cache`` cache is not reclaimed;
     on newer podman versions ``podman system prune --volumes`` would

@@ -61,6 +61,11 @@ def _check_podman() -> _Check:
         return _Check("Podman available", False, "podman not found on PATH")
     except subprocess.TimeoutExpired:
         return _Check("Podman available", False, "podman info timed out")
+    except OSError as e:
+        # EPERM on the binary, fd exhaustion, etc.  Match the OSError
+        # handling in compute_space.core.containers.podman_available so
+        # `openhost doctor` never crashes with a bare traceback.
+        return _Check("Podman available", False, f"podman info failed with OSError: {e}")
 
     if r.returncode != 0:
         return _Check("Podman available", False, "podman info failed")

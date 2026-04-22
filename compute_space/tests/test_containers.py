@@ -217,6 +217,12 @@ def test_build_image_streaming_path_reaps_child_on_timeout(tmp_path, monkeypatch
         # ": not found".
         "error: /app/build.sh: not found",
         "COPY failed: file /src/missing.txt: not found in build context",
+        # Registry pull failure: mentions a sha256 digest AND ": not
+        # found" but the failure mode is "base image not published to
+        # the registry", not "local cache corrupt".  Retrying the pull
+        # would help; dropping the local cache would not.
+        "Error: initializing source docker://registry.example.com/unknown@sha256:abc: image not found",
+        "Error: pulling image sha256:abc123: manifest not found in registry",
     ],
 )
 def test_build_image_does_not_misclassify_innocuous_output_as_cache_corrupt(

@@ -39,6 +39,16 @@ def pytest_addoption(parser):
 
 
 def _podman_available():
+    """Gate for --run-podman tests: is podman *usable* on this host?
+
+    Runs ``podman info`` (not just ``--version``) because the
+    ``requires_podman`` tests need a working rootless namespace, not
+    just the binary on PATH.  This is intentionally a heavier probe
+    than the production ``compute_space.core.containers.podman_available``
+    which only verifies binary presence — those two probes answer
+    different questions (can I build/run containers? vs should I
+    surface the 'runtime missing' banner?) and deliberately diverge.
+    """
     try:
         r = subprocess.run(["podman", "info"], capture_output=True, timeout=10)
         return r.returncode == 0
