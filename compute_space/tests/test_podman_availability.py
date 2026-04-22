@@ -26,9 +26,9 @@ from compute_space.core import startup as startup_mod
 from compute_space.core.containers import PODMAN_MISSING_ERROR
 from compute_space.core.containers import get_container_status
 from compute_space.core.containers import podman_available
+from compute_space.db.connection import init_db as real_init_db
 
 from .conftest import _make_test_config
-
 
 # ---------------------------------------------------------------------------
 # podman_available
@@ -124,13 +124,12 @@ def _insert_app(db_path: str, name: str, status: str, container_id: str | None) 
 
 def _init_schema(db_path: str) -> None:
     """Create the minimal apps schema we need for these tests."""
-    from compute_space.db.connection import init_db
 
     class _FakeApp:
         def __init__(self, p: str) -> None:
             self.config = {"DB_PATH": p}
 
-    init_db(_FakeApp(db_path))
+    real_init_db(_FakeApp(db_path))
 
 
 def test_check_app_status_marks_running_apps_error_when_podman_missing(
