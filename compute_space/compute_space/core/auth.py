@@ -112,8 +112,11 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return None
 
 
+REFRESH_GRACE_PERIOD = timedelta(hours=2)
+
+
 def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
-    """Decode a JWT ignoring expiry -- used during token refresh."""
+    """Decode a JWT allowing up to REFRESH_GRACE_PERIOD past expiry -- used during token refresh."""
     try:
         if _public_key is None:
             raise RuntimeError("public key not loaded")
@@ -121,7 +124,7 @@ def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
             token,
             _public_key,
             algorithms=["RS256"],
-            options={"verify_exp": False},
+            leeway=REFRESH_GRACE_PERIOD,
         )
     except jwt.InvalidTokenError:
         return None
@@ -167,7 +170,7 @@ def set_auth_cookies(
         httponly=True,
         secure=get_config().tls_enabled,
         samesite="Lax",
-        max_age=REFRESH_TOKEN_EXPIRY,
+        max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
     )
     if refresh_token:
         response.set_cookie(
