@@ -525,8 +525,11 @@ def get_docker_logs(
 ) -> str:
     """Combined build log + recent container logs for an app.
 
-    Returns the full build log file contents followed by the tail of the
-    runtime container's stdout/stderr, with ANSI escapes stripped.
+    Returns the full build log file contents verbatim, followed by
+    the tail of the runtime container's stdout/stderr.  ANSI escapes
+    are stripped from the podman-logs portion only — build log
+    contents are preserved as-written so operators can still see the
+    literal bytes podman build emitted if they need to.
     """
     parts = []
 
