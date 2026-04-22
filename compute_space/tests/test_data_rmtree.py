@@ -135,3 +135,65 @@ def test_rmtree_sudo_success_after_rmtree_failure(tmp_path: Path, monkeypatch: p
 
     assert not root.exists()
     assert captured[0][:3] == ["sudo", "-n", "rm"]
+
+
+def test_rmtree_swallows_sudo_timeout_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sudo fallback catches TimeoutExpired/OSError separately from
+    CalledProcessError.  With raise_on_failure=False, both branches
+    must log-and-swallow so a cleanup failure can't block removal of
+    the app row from the database."""
+    root = tmp_path / "sticky"
+    _make_tree(root)
+
+    def fake_rmtree(path, onexc=None):  # type: ignore[no-untyped-def]
+        raise OSError("simulated EBUSY")
+
+    def fake_run(cmd, **_kw):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+    monkeypatch.setattr(data_mod.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(data_mod.subprocess, "run", fake_run)
+
+    # Must not raise.
+    rmtree_with_sudo_fallback(str(root), raise_on_failure=False)
+
+
+def test_rmtree_reraises_sudo_timeout_when_opted_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Symmetric to the CalledProcessError re-raise test: operators who
+    opted in to raise_on_failure must actually see the failure when
+    sudo itself times out rather than having it silently swallowed."""
+    root = tmp_path / "sticky"
+    _make_tree(root)
+
+    def fake_rmtree(path, onexc=None):  # type: ignore[no-untyped-def]
+        raise OSError("simulated EBUSY")
+
+    def fake_run(cmd, **_kw):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+    monkeypatch.setattr(data_mod.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(data_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        rmtree_with_sudo_fallback(str(root), raise_on_failure=True)
+
+
+def test_rmtree_reraises_sudo_oserror_when_opted_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sudo fallback's OSError branch (distinct from both
+    CalledProcessError and TimeoutExpired) must also re-raise under
+    raise_on_failure=True — otherwise an unexpected OSError from the
+    subprocess machinery would silently leave the tree in place."""
+    root = tmp_path / "sticky"
+    _make_tree(root)
+
+    def fake_rmtree(path, onexc=None):  # type: ignore[no-untyped-def]
+        raise OSError("simulated EBUSY")
+
+    def fake_run(cmd, **_kw):  # type: ignore[no-untyped-def]
+        raise OSError(13, "Permission denied running sudo")
+
+    monkeypatch.setattr(data_mod.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(data_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(OSError, match="Permission denied"):
+        rmtree_with_sudo_fallback(str(root), raise_on_failure=True)

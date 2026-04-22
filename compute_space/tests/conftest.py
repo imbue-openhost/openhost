@@ -26,8 +26,8 @@ class _FakeApp:
 
     Used by tests that call ``compute_space.db.connection.init_db``
     (which reads ``app.config['DB_PATH']``) without setting up a real
-    Quart app.  Shared here to avoid three identical copies in
-    test_app_status, test_migrations, and test_podman_availability.
+    Quart app.  Lives in conftest so every test module that needs one
+    can import a single shared implementation.
     """
 
     def __init__(self, db_path: str) -> None:

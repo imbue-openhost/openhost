@@ -25,8 +25,18 @@ from compute_space.core.runtime_sentinel import HostPrepStatus
 from compute_space.core.updates import GitState
 
 
-def _make_app() -> Quart:
+def _make_app_with_repo(repo_path: Path) -> Quart:
+    """Build a Quart app with the minimal ``openhost_config`` attribute
+    the settings handlers read.  Shared by every test in this module
+    because check_for_updates/update_repo_state both look up
+    config.openhost_repo_path and nothing else from the config object.
+    """
+
+    class _Cfg:
+        openhost_repo_path = repo_path
+
     app = Quart(__name__)
+    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
     return app
 
 
@@ -45,11 +55,7 @@ async def test_check_for_updates_reports_podman_ok_and_sentinel_ok(
     monkeypatch.setattr(settings_mod, "podman_available", lambda: True)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    class _Cfg:
-        openhost_repo_path = tmp_path
-
-    app = _make_app()
-    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
+    app = _make_app_with_repo(tmp_path)
     async with app.test_request_context("/api/settings/check_for_updates", method="POST"):
         response = await settings_mod.check_for_updates.__wrapped__()
         payload = await response.get_json()
@@ -83,11 +89,7 @@ async def test_check_for_updates_reports_podman_missing_as_authoritative(
     # response must STILL surface the podman-missing reason.
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    class _Cfg:
-        openhost_repo_path = tmp_path
-
-    app = _make_app()
-    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
+    app = _make_app_with_repo(tmp_path)
     async with app.test_request_context("/api/settings/check_for_updates", method="POST"):
         response = await settings_mod.check_for_updates.__wrapped__()
         payload = await response.get_json()
@@ -120,11 +122,7 @@ async def test_check_for_updates_surfaces_sentinel_mismatch_when_podman_ok(
         lambda: HostPrepStatus(False, "wrong_version", "re-run ansible to bump runtime_version"),
     )
 
-    class _Cfg:
-        openhost_repo_path = tmp_path
-
-    app = _make_app()
-    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
+    app = _make_app_with_repo(tmp_path)
     async with app.test_request_context("/api/settings/check_for_updates", method="POST"):
         response = await settings_mod.check_for_updates.__wrapped__()
         payload = await response.get_json()
@@ -157,11 +155,7 @@ async def test_update_repo_state_refuses_with_409_when_podman_missing(
     monkeypatch.setattr(settings_mod, "podman_available", lambda: False)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    class _Cfg:
-        openhost_repo_path = tmp_path
-
-    app = _make_app()
-    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
+    app = _make_app_with_repo(tmp_path)
     async with app.test_request_context("/api/settings/update_repo_state", method="POST"):
         result = await settings_mod.update_repo_state.__wrapped__()
     # Quart returns a (Response, status_code) tuple when the view
@@ -193,11 +187,7 @@ async def test_update_repo_state_refuses_with_409_when_sentinel_mismatched(
         lambda: HostPrepStatus(False, "wrong_version", "bump required"),
     )
 
-    class _Cfg:
-        openhost_repo_path = tmp_path
-
-    app = _make_app()
-    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
+    app = _make_app_with_repo(tmp_path)
     async with app.test_request_context("/api/settings/update_repo_state", method="POST"):
         result = await settings_mod.update_repo_state.__wrapped__()
     assert isinstance(result, tuple)
@@ -226,11 +216,7 @@ async def test_update_repo_state_proceeds_when_host_prepared(monkeypatch: pytest
     monkeypatch.setattr(settings_mod, "podman_available", lambda: True)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    class _Cfg:
-        openhost_repo_path = tmp_path
-
-    app = _make_app()
-    app.openhost_config = _Cfg()  # type: ignore[attr-defined]
+    app = _make_app_with_repo(tmp_path)
     async with app.test_request_context("/api/settings/update_repo_state", method="POST"):
         response = await settings_mod.update_repo_state.__wrapped__()
         payload = await response.get_json()

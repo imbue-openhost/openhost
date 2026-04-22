@@ -82,13 +82,13 @@ def _host_prep_payload() -> dict[str, object]:
 
     - The ``/etc/openhost/runtime`` sentinel written by ansible, which
       declares which runtime + version the host has been prepared for.
-      Useful for future upgrades that bump ``runtime_version`` without
-      changing what binary is on PATH (e.g. a new sysctl).
+      Covers host-side changes that aren't detectable from the binary
+      alone (a new sysctl, a new sudoers rule, an allowlist change).
     - A live probe of ``podman --version``, which is the authoritative
-      signal for the initial Docker → podman transition (where the
-      old dashboard is running pre-PR code, has no sentinel knowledge
-      anyway, and the only way to tell the host needs ansible is to
-      ask "is podman actually installed?").
+      signal for runtime availability.  The sentinel can't detect a
+      missing binary (an operator could delete podman out from under
+      the router), so the live probe runs independently and takes
+      precedence when it fails.
 
     Returns a payload with ``host_prep_ok`` plus a reason/message when
     it's not ok.  Safe to call from any request handler; never raises.

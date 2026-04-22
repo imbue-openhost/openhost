@@ -42,7 +42,10 @@ def _podman_available():
     try:
         r = subprocess.run(["podman", "info"], capture_output=True, timeout=10)
         return r.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # OSError covers odd failure modes (EPERM on the binary, fd
+        # exhaustion, etc.) that would otherwise crash pytest
+        # collection rather than gracefully skip --run-podman tests.
         return False
 
 

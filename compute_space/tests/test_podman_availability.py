@@ -81,6 +81,23 @@ def test_podman_available_returns_false_on_nonzero_exit(monkeypatch: pytest.Monk
     assert podman_available() is False
 
 
+def test_podman_available_returns_false_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EPERM / fd exhaustion / similar odd failure modes must not crash
+    the caller; podman_available must catch OSError and return False
+    rather than propagating, because the downstream caller in
+    _check_app_status treats any exception as fatal.  (The WARNING
+    log that accompanies this path is visible in journalctl but
+    awkward to capture in tests because the project uses loguru; we
+    pin behavior via return-value here and the log-message string is
+    covered by reading the source."""
+
+    def fake_run(cmd, capture_output, timeout):  # type: ignore[no-untyped-def]
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert podman_available() is False
+
+
 # ---------------------------------------------------------------------------
 # get_container_status
 # ---------------------------------------------------------------------------
@@ -102,6 +119,21 @@ def test_get_container_status_returns_unknown_on_filenotfound(monkeypatch: pytes
 def test_get_container_status_returns_unknown_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert get_container_status("container-id") == "unknown"
+
+
+def test_get_container_status_returns_unknown_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Symmetric to podman_available's OSError handling.  An unexpected
+    OSError from subprocess.run must not propagate — the caller in
+    _check_app_status would treat it as fatal.  (Loguru's log is
+    emitted and visible in journalctl but not captured via caplog, so
+    this test pins the return-value contract; the WARNING message
+    string is verified by code review.)"""
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert get_container_status("container-id") == "unknown"

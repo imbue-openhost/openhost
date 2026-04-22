@@ -66,13 +66,12 @@ BUILD_CACHE_CORRUPT_MARKER = "[BUILD_CACHE_CORRUPT]"
 # fragment below is specific enough that normal build progress output
 # (layer digests referenced in status lines, storage driver probes, etc.)
 # won't false-match and incorrectly prompt the "drop cache" remediation.
-_BUILD_CACHE_CORRUPT_FRAGMENTS = (
-    # Content-store corruption: a manifest references a layer digest
-    # that isn't present on disk.  The ": not found" suffix makes this
-    # specific to the missing-layer error; layer references in normal
-    # build progress output never carry that suffix.
-    ": not found",
-    # Podman / containers-storage surfacing the same failure under
+# The missing-layer pattern is handled specially in
+# ``_is_build_cache_corrupt_line`` because it needs a sha256 co-check
+# to distinguish real missing layers from unrelated "file not found"
+# errors (missing Dockerfile, missing base image, etc.).
+_BUILD_CACHE_CORRUPT_FRAGMENTS_UNCONDITIONAL = (
+    # Podman / containers-storage surfacing cache corruption under
     # different wordings depending on the storage driver.  Both
     # phrasings only ever appear in error paths.
     "storage-driver errored",
@@ -81,14 +80,19 @@ _BUILD_CACHE_CORRUPT_FRAGMENTS = (
 
 
 def _is_build_cache_corrupt_line(line: str) -> bool:
-    """Tighter match: ``": not found"`` only counts as cache corruption
-    when it appears on a line that also mentions a sha256 digest, to
-    avoid matching unrelated "file not found" errors (missing Dockerfile,
-    missing base image, etc.) that have their own remediation path.
+    """Return True if ``line`` is a cache-corruption indicator.
+
+    A line matches if either:
+    - It contains an unconditional fragment (storage-driver errored,
+      layer not known, …), OR
+    - It contains both ``": not found"`` AND a ``sha256:`` digest, i.e.
+      the missing-layer pattern.  The sha256 co-check rules out
+      unrelated "file not found" errors that share the ``: not found``
+      suffix but have their own remediation path.
     """
-    if ": not found" in line and "sha256:" in line:
+    if any(frag in line for frag in _BUILD_CACHE_CORRUPT_FRAGMENTS_UNCONDITIONAL):
         return True
-    return any(frag in line for frag in _BUILD_CACHE_CORRUPT_FRAGMENTS[1:])
+    return ": not found" in line and "sha256:" in line
 
 
 # Error message used when podman is expected but not available.  The
