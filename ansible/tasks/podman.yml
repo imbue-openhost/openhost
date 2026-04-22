@@ -83,6 +83,41 @@
   changed_when: false
 
 # ---------------------------------------------------------------------------
+# Registry search configuration
+# ---------------------------------------------------------------------------
+#
+# Unlike Docker, podman has no default registry.  An unqualified image
+# reference in a Dockerfile (``FROM golang:1.24-alpine``) fails with
+# "short-name ... did not resolve to an alias and no unqualified-search
+# registries are defined" unless the host's registries.conf lists a
+# default search registry.  Ubuntu's podman package ships the file with
+# the ``unqualified-search-registries`` line commented out.
+#
+# We add a small override file that registers docker.io as the search
+# registry, matching the Docker default so existing app Dockerfiles
+# continue to build without modification.  This lives as a drop-in under
+# registries.conf.d/ rather than editing the main file in place, so
+# package upgrades don't clobber it and operators can override by
+# dropping a later-alphabetical file.
+
+- name: Ensure registries.conf.d directory exists
+  file:
+    path: /etc/containers/registries.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Register docker.io as the default short-name search registry
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      # Matches Docker's implicit default so unqualified FROM lines
+      # in app Dockerfiles (``FROM golang:1.24-alpine``) resolve without
+      # operator intervention.
+      unqualified-search-registries = ["docker.io"]
+    dest: /etc/containers/registries.conf.d/00-openhost.conf
+    mode: "0644"
+
+# ---------------------------------------------------------------------------
 # Idmapped mount sanity check
 # ---------------------------------------------------------------------------
 #
