@@ -9,12 +9,15 @@ Checks:
 """
 
 import json
+import os
 import shutil
 import socket
 import subprocess
 import sys
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
+from compute_space.core.runtime_sentinel import SENTINEL_PATH
+from compute_space.core.runtime_sentinel import host_prep_status
 
 
 class _Check:
@@ -120,6 +123,25 @@ def _check_router_code() -> _Check:
     return _Check("Router code", False, f"__main__.py not found in {COMPUTE_SPACE_PACKAGE_DIR}")
 
 
+def _check_runtime_sentinel() -> _Check | None:
+    """Check the host-runtime sentinel if present.
+
+    Returns None (no check reported) when the sentinel doesn't exist
+    — dev laptops and ``openhost up --dev`` runs legitimately don't
+    have ``/etc/openhost/runtime``, so omitting the check there keeps
+    `openhost doctor` output clean.  On ansible-provisioned servers
+    the sentinel exists and the check surfaces version-skew between
+    the host provisioning and the router code (the exact scenario the
+    sentinel was designed for).
+    """
+    if not os.path.exists(SENTINEL_PATH):
+        return None
+    status = host_prep_status()
+    if status.ok:
+        return _Check("Host runtime sentinel", True, status.message)
+    return _Check("Host runtime sentinel", False, status.message)
+
+
 def _print_checks(label: str, checks: list[_Check]) -> bool:
     """Print check results and return True if all passed."""
     print(f"{label}:")
@@ -142,6 +164,13 @@ def run_doctor() -> bool:
         _check_port(8080),
         _check_router_code(),
     ]
+    # Sentinel check only fires on ansible-provisioned servers where
+    # /etc/openhost/runtime exists; dev laptops legitimately don't have
+    # it and shouldn't see a noisy WARN line every time they run
+    # ``openhost doctor``.
+    sentinel_check = _check_runtime_sentinel()
+    if sentinel_check is not None:
+        checks.append(sentinel_check)
     ok = _print_checks("Checks", checks)
     print()
     if ok:

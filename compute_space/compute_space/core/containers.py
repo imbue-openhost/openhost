@@ -155,7 +155,7 @@ def _log_path(app_name: str, temp_data_dir: str) -> str:
 
     The file is named ``docker.log`` for continuity with existing
     ansible-deployed instances whose log-collection tooling greps for
-    that filename; the contents are now podman build/run output.
+    that filename; the contents are podman build/run output.
     """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 

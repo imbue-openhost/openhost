@@ -83,7 +83,7 @@ function showToast(message, actions) {
 
 function clearCacheAndReload() {
     showToast('Clearing build cache...', []);
-    fetch(config.dropDockerCacheUrl, {method: 'POST', credentials: 'same-origin'})
+    fetch(config.dropBuildCacheUrl, {method: 'POST', credentials: 'same-origin'})
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.ok) { alert('Failed to clear cache: ' + (data.error || 'unknown error')); return; }
