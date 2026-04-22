@@ -22,6 +22,7 @@ from quart import Quart
 import compute_space.web.routes.api.settings as settings_mod
 from compute_space.core.containers import PODMAN_MISSING_ERROR
 from compute_space.core.runtime_sentinel import HostPrepStatus
+from compute_space.core.updates import GitState
 
 
 def _make_app() -> Quart:
@@ -37,7 +38,6 @@ async def test_check_for_updates_reports_podman_ok_and_sentinel_ok(
     reason/message fields appear in the response."""
 
     async def fake_check_git_state(_repo_path):  # type: ignore[no-untyped-def]
-        from compute_space.core.updates import GitState
 
         return GitState.UP_TO_DATE
 
@@ -74,7 +74,6 @@ async def test_check_for_updates_reports_podman_missing_as_authoritative(
     never had sentinels."""
 
     async def fake_check_git_state(_repo_path):  # type: ignore[no-untyped-def]
-        from compute_space.core.updates import GitState
 
         return GitState.BEHIND_REMOTE
 
@@ -110,7 +109,6 @@ async def test_check_for_updates_surfaces_sentinel_mismatch_when_podman_ok(
     to do."""
 
     async def fake_check_git_state(_repo_path):  # type: ignore[no-untyped-def]
-        from compute_space.core.updates import GitState
 
         return GitState.BEHIND_REMOTE
 

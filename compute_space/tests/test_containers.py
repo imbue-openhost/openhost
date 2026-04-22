@@ -154,6 +154,94 @@ def test_build_image_generic_failure_does_not_use_cache_marker(
     assert "Dockerfile not found" in msg
 
 
+def test_build_image_streaming_path_reaps_child_on_timeout(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard for the zombie-safety fix: when proc.wait(timeout=
+    300) raises TimeoutExpired in the streaming path, build_image must
+    call proc.kill() followed by a bounded proc.wait().  A kill without
+    a subsequent wait leaves a zombie child hanging off the long-running
+    router process.
+    """
+
+    kill_calls: list[int] = []
+    wait_calls: list[int] = []
+
+    class _HangingPopen:
+        """Fakes a podman-build that hangs: iterating stdout finishes
+        cleanly but proc.wait() raises TimeoutExpired."""
+
+        def __init__(self, *_a, **_kw) -> None:
+            self.stdout = iter(["building...\n"])
+            self.returncode = -9
+            self.pid = 99999
+
+        def wait(self, timeout: int | None = None) -> int:
+            wait_calls.append(timeout or 0)
+            if timeout == 5:
+                # The bounded wait inside the except block: simulate a
+                # well-behaved kill that does reap.
+                return self.returncode
+            # The first wait (the 300s build wait) is the one that times out.
+            raise subprocess.TimeoutExpired(cmd=["podman", "build"], timeout=timeout or 0)
+
+        def kill(self) -> None:
+            kill_calls.append(self.pid)
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_exc):  # type: ignore[no-untyped-def]
+            return False
+
+    monkeypatch.setattr("compute_space.core.containers.subprocess.Popen", _HangingPopen)
+
+    temp_data_dir = str(tmp_path / "temp")
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", "myapp"), exist_ok=True)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=temp_data_dir)
+
+    # Must have invoked kill and then a bounded wait with timeout=5.
+    assert kill_calls == [99999], f"expected one kill, got {kill_calls}"
+    assert 5 in wait_calls, f"expected bounded wait(timeout=5) after kill, got {wait_calls}"
+
+
+@pytest.mark.parametrize(
+    "innocuous_output",
+    [
+        # Normal build progress mentioning a layer digest — must NOT
+        # be classified as cache corruption.
+        "Copying blob sha256:abcdef1234567890 done",
+        "STEP 1/3: FROM sha256:deadbeef",
+        # File-not-found error unrelated to any digest — must NOT be
+        # classified as cache corruption just because it contains
+        # ": not found".
+        "error: /app/build.sh: not found",
+        "COPY failed: file /src/missing.txt: not found in build context",
+    ],
+)
+def test_build_image_does_not_misclassify_innocuous_output_as_cache_corrupt(
+    monkeypatch: pytest.MonkeyPatch, innocuous_output: str
+) -> None:
+    """Regression guard: the cache-corruption matcher must require BOTH
+    a sha256 digest AND a ": not found" suffix on the same line.  A
+    naive substring match would trigger on normal layer status output
+    (which mentions sha256 digests) or on unrelated file-not-found
+    errors, causing the dashboard to prompt a misleading "Drop Cache
+    & Rebuild" and masking the actual build error."""
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(1, stderr=innocuous_output)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    msg = str(exc_info.value)
+    assert containers.BUILD_CACHE_CORRUPT_MARKER not in msg, (
+        f"Expected generic build failure, got cache-corrupt marker for output: {innocuous_output!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # run_container
 # ---------------------------------------------------------------------------
@@ -381,6 +469,35 @@ def test_get_container_status_returns_unknown_on_failure(monkeypatch: pytest.Mon
 
     _patch_subprocess_run(monkeypatch, fake_run)
     assert get_container_status("bogus") == "unknown"
+
+
+def test_get_container_status_returns_runtime_reported_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Baseline happy path: when ``podman inspect`` exits 0, the function
+    returns exactly what podman wrote to stdout (trimmed).  Guards against
+    a regression where the defensive try/except accidentally always
+    returned ``"unknown"``."""
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(0, stdout="running\n")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+    assert get_container_status("real-container") == "running"
+
+
+def test_get_container_status_passes_through_non_running_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The function's contract is "return whatever podman reports"; the
+    docstring mentions ``"created"``, ``"paused"``, etc. explicitly so
+    callers can branch on those strings.  Pin that pass-through so a
+    future caller that relies on e.g. ``status == "paused"`` isn't
+    broken by a regression that collapsed everything-non-running into
+    ``"unknown"``.
+    """
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(0, stdout="paused\n")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+    assert get_container_status("paused-container") == "paused"
 
 
 # NOTE: build-cache drop is exercised in test_build_cache.py with the

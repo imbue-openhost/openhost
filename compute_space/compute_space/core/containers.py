@@ -54,18 +54,40 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 # surface a "drop build cache" remediation to the user.
 BUILD_CACHE_CORRUPT_MARKER = "[BUILD_CACHE_CORRUPT]"
 
-# Fragments from podman build output that indicate the local storage/cache
+# Patterns in podman build output that indicate the local storage/cache
 # is in a state that can be fixed by pruning and retrying.  Matching any of
-# these triggers the BUILD_CACHE_CORRUPT_MARKER path.
+# these triggers the BUILD_CACHE_CORRUPT_MARKER path in build_image().
+#
+# Substrings are used rather than regexes because the surrounding text
+# varies by podman / containers-storage version; what's constant is the
+# specific failure mode phrasing, not the exact error prefix.  Each
+# fragment below is specific enough that normal build progress output
+# (layer digests referenced in status lines, storage driver probes, etc.)
+# won't false-match and incorrectly prompt the "drop cache" remediation.
 _BUILD_CACHE_CORRUPT_FRAGMENTS = (
-    # Content-store corruption: a manifest references a layer digest that
-    # isn't present on disk.  Pruning the build cache almost always fixes it.
-    "content digest sha256:",
-    # Podman / containers-storage surfacing the same failure via different
-    # wording depending on the storage driver.
+    # Content-store corruption: a manifest references a layer digest
+    # that isn't present on disk.  The ": not found" suffix makes this
+    # specific to the missing-layer error; layer references in normal
+    # build progress output never carry that suffix.
+    ": not found",
+    # Podman / containers-storage surfacing the same failure under
+    # different wordings depending on the storage driver.  Both
+    # phrasings only ever appear in error paths.
     "storage-driver errored",
     "layer not known",
 )
+
+
+def _is_build_cache_corrupt_line(line: str) -> bool:
+    """Tighter match: ``": not found"`` only counts as cache corruption
+    when it appears on a line that also mentions a sha256 digest, to
+    avoid matching unrelated "file not found" errors (missing Dockerfile,
+    missing base image, etc.) that have their own remediation path.
+    """
+    if ": not found" in line and "sha256:" in line:
+        return True
+    return any(frag in line for frag in _BUILD_CACHE_CORRUPT_FRAGMENTS[1:])
+
 
 # Error message used when podman is expected but not available.  The
 # settings-UI banner and per-app error rows both show this so the
@@ -110,7 +132,13 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
 
 
 def _is_build_cache_corrupt(output: str) -> bool:
-    return any(frag in output for frag in _BUILD_CACHE_CORRUPT_FRAGMENTS)
+    """Return True if any line of build output matches a cache-corruption
+    pattern.  Line-based matching is important here: ``": not found"``
+    only counts when the same line also carries a sha256 digest, which
+    only happens in the missing-layer error path and not in unrelated
+    "file not found" errors from Dockerfile / base image resolution.
+    """
+    return any(_is_build_cache_corrupt_line(line) for line in output.splitlines())
 
 
 def _raise_if_build_cache_corrupt(output: str) -> None:
