@@ -13,6 +13,7 @@ import subprocess
 import pytest
 
 from compute_space.core import containers
+from compute_space.core.containers import DEFAULT_CAPABILITIES
 from compute_space.core.containers import _bind_mount_arg
 from compute_space.core.containers import build_image
 from compute_space.core.containers import get_container_status
@@ -375,8 +376,6 @@ def test_run_container_grants_docker_default_capabilities_by_default(
     postgres, redis, nginx, rabbitmq — keep working under podman without
     the manifest needing to enumerate every capability Docker grants
     implicitly."""
-    from compute_space.core.containers import DEFAULT_CAPABILITIES
-
     manifest = _basic_manifest()  # no explicit capabilities
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
@@ -394,8 +393,6 @@ def test_run_container_does_not_duplicate_baseline_caps_from_manifest(
     CHOWN) must not produce a second --cap-add entry for it — the
     operator-visible argv should stay clean and match what podman
     sees."""
-    from compute_space.core.containers import DEFAULT_CAPABILITIES
-
     # Pick a capability that's in both the baseline and the allowlist.
     redundant = next(iter(DEFAULT_CAPABILITIES))
     manifest = _basic_manifest(capabilities=[redundant, "NET_ADMIN"])
