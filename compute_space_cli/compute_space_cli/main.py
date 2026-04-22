@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import time
 from typing import Annotated
@@ -402,10 +404,38 @@ class InstanceCmd:
         print(f"Default instance set to '{name}'")
 
 
+@cappa.command(name="curl", help="curl with your OpenHost bearer token injected.")
+@attrs.define
+class Curl:
+    args: Annotated[
+        list[str],
+        cappa.Arg(num_args=-1, help="Arguments passed to curl"),
+    ] = attrs.Factory(list)
+
+    def __call__(self, cfg: Annotated[config.Instance, Dep(resolve_instance)]) -> None:
+        curl = shutil.which("curl")
+        if not curl:
+            print("curl not found on PATH", file=sys.stderr)
+            raise SystemExit(1)
+
+        url_args = []
+        remaining = list(self.args)
+        for arg in remaining:
+            if not arg.startswith("-"):
+                if "://" not in arg:
+                    arg = f"{cfg.url.rstrip('/')}/{arg.lstrip('/')}"
+                url_args.append(arg)
+            else:
+                url_args.append(arg)
+
+        cmd = [curl, "-H", f"Authorization: Bearer {cfg.token}", *url_args]
+        raise SystemExit(subprocess.call(cmd))
+
+
 @cappa.command(name="oh", help="OpenHost compute space CLI — manage things in your compute space.")
 @attrs.define
 class Oh:
-    subcommand: cappa.Subcommands[Status | Login | AppCmd | TokensCmd | LogsCmd | InstanceCmd]
+    subcommand: cappa.Subcommands[Status | Login | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl]
     instance: Annotated[
         str | None,
         cappa.Arg(long=True, default=None, help="Target a specific named instance"),

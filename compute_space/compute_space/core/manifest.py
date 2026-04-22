@@ -23,6 +23,13 @@ class PortMapping:
     host_port: int = 0  # 0 = auto-assign
 
 
+@dataclass(frozen=True)
+class ServiceProvides:
+    service: str
+    version: str
+    endpoint: str
+
+
 @dataclass
 class AppManifest:
     # [app]
@@ -62,6 +69,9 @@ class AppManifest:
     provides_services: list[str] = field(default_factory=list)
     requires_services: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
+
+    # [services_v2]
+    provides_services_v2: list[ServiceProvides] = field(default_factory=list)
 
     # [app] metadata
     hidden: bool = False
@@ -151,6 +161,20 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
             continue
         if isinstance(svc_config, dict) and "keys" in svc_config:
             manifest.requires_services[svc_name] = svc_config["keys"]
+
+    # Parse [services_v2] section
+    services_v2 = data.get("services_v2", {})
+    for entry in services_v2.get("provides", []):
+        if not isinstance(entry, dict):
+            raise ValueError("Each [[services_v2.provides]] entry must be a table")
+        svc = entry.get("service")
+        ver = entry.get("version")
+        ep = entry.get("endpoint", "/_service/")
+        if not svc or not isinstance(svc, str):
+            raise ValueError("[[services_v2.provides]] requires a string 'service' field")
+        if not ver or not isinstance(ver, str):
+            raise ValueError("[[services_v2.provides]] requires a string 'version' field")
+        manifest.provides_services_v2.append(ServiceProvides(service=svc, version=ver, endpoint=ep))
 
     container = runtime.get("container", {})
     if not container.get("image"):

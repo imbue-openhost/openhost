@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+{% block title_suffix %} — Approve Permission{% endblock %}
+{% block content %}
+<h2>{{ app_name }} is requesting a permission</h2>
+
+<p>Service: <code>{{ service_url }}</code></p>
+
+{% if already_granted %}
+<p>This permission is already granted.</p>
+{% else %}
+<p>Grant: <code>{{ grant | tojson }}</code></p>
+
+<form method="POST" action="/approve-permissions-v2">
+  <input type="hidden" name="app" value="{{ app_name }}">
+  <input type="hidden" name="service" value="{{ service_url }}">
+  <input type="hidden" name="grant" value="{{ grant_json }}">
+  <input type="hidden" name="return_to" value="{{ redirect_url or '' }}">
+  <button type="submit" class="btn btn-primary">Grant</button>
+</form>
+{% endif %}
+{% endblock %}
