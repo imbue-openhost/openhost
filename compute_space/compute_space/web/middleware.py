@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -52,10 +53,11 @@ def _try_refresh() -> dict[str, Any] | None:
     if expired_claims is None:
         return None
 
+    refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
     db = get_db()
     rt = db.execute(
-        "SELECT * FROM refresh_tokens WHERE token = ? AND revoked = 0",
-        (refresh_tok,),
+        "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
+        (refresh_tok_hash,),
     ).fetchone()
     if rt is None:
         return None
