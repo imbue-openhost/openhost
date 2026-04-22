@@ -146,11 +146,14 @@
 # ---------------------------------------------------------------------------
 #
 # The dashboard's `/api/settings/check_for_updates` endpoint reads
-# /etc/openhost/runtime and refuses to apply updates (HTTP 409) if
-# runtime / runtime_version don't match what the installed router code
-# expects, showing a banner with the remediation.  This is a soft
-# preflight gate, not a hard startup check — the hard check for the
-# Docker → podman transition specifically is the live podman probe in
+# /etc/openhost/runtime and includes a `host_prep_ok` field in its
+# JSON response so the dashboard can render a banner when
+# runtime / runtime_version don't match what the installed router
+# code expects.  `/api/settings/update_repo_state` separately refuses
+# with HTTP 409 under the same mismatch condition, preventing a user
+# who bypasses the banner (direct curl, stale dashboard) from
+# applying an update the host isn't ready for.  This is a soft
+# preflight gate only — the authoritative runtime check lives in
 # compute_space.core.containers.podman_available, which keeps the
 # dashboard reachable even on an unprepared host.
 #

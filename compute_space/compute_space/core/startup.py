@@ -17,14 +17,14 @@ from compute_space.db import init_db
 
 def _mark_running_apps_podman_missing(config: Config) -> int:
     """Flip every running/starting/building app to ``status='error'`` with
-    a clear remediation message rather than attempt a rebuild we know
-    will fail.
+    ``PODMAN_MISSING_ERROR`` as the remediation message, and clear
+    ``container_id`` since any stored ID is no longer meaningful.
 
-    Returns the number of rows updated.  This is the self-update
-    transition safety net: a Docker-era instance that clicks Update
-    before running ansible/tasks/podman.yml would previously crash
-    the router; now the dashboard stays up and per-app errors point
-    the operator at the fix.
+    Returns the number of rows updated.  Called from
+    ``_check_app_status`` when podman isn't available on the host:
+    attempting a rebuild would crash the router and take the dashboard
+    down, so instead we surface a per-app error that points the
+    operator at the ansible remediation and leave the dashboard up.
     """
     db = sqlite3.connect(config.db_path)
     try:

@@ -1,8 +1,7 @@
 """Tests for the ``/api/drop-docker-cache`` endpoint and its backing helper.
 
 The endpoint runs ``podman image prune --all --force`` via
-``drop_docker_build_cache`` in compute_space.core.containers.  The URL
-path and Python function names retain ``docker`` for API stability.
+``drop_docker_build_cache`` in compute_space.core.containers.
 """
 
 import subprocess

@@ -120,10 +120,10 @@ async def clone_and_read_manifest(
                 manifest = parse_manifest(clone_dir)
                 return manifest, clone_dir, None
             except ValueError as e:
-                shutil.rmtree(tmp_parent, ignore_errors=True)
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
                 return None, None, str(e)
             except Exception as e:
-                shutil.rmtree(tmp_parent, ignore_errors=True)
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
                 return None, None, f"Copy failed: {e}"
 
     if github_token:
@@ -138,7 +138,7 @@ async def clone_and_read_manifest(
         clone_cmd.extend([clone_url, clone_dir])
         result = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
             return None, None, f"Git clone failed: {result.stderr.strip()}"
         # If we cloned with a token, reset the remote URL so the token isn't persisted
         if github_token and clone_url != base_url:
@@ -152,14 +152,14 @@ async def clone_and_read_manifest(
         try:
             manifest = parse_manifest(clone_dir)
         except ValueError as e:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
             return None, None, str(e)
         return manifest, clone_dir, None
     except subprocess.TimeoutExpired:
-        shutil.rmtree(tmp_parent, ignore_errors=True)
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
         return None, None, "Git clone timed out"
     except Exception as e:
-        shutil.rmtree(tmp_parent, ignore_errors=True)
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
         return None, None, f"Clone failed: {e}"
 
 
