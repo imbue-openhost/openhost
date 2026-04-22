@@ -2,7 +2,6 @@ import asyncio
 import os
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -14,20 +13,12 @@ from compute_space.config import load_config
 from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
 from compute_space.core.logging import logger
-from compute_space.core.runtime_sentinel import RuntimeSentinelMismatch
-from compute_space.core.runtime_sentinel import check_runtime_sentinel
 from compute_space.core.terminal import cleanup_all as cleanup_terminal_sessions
 from compute_space.core.tls.acquire_cert import acquire_tls_cert
 from compute_space.core.tls.acquire_cert import check_if_cert_exists
 from compute_space.core.updates import RESTART_EXIT_CODE
 from compute_space.core.updates import initialize_shutdown_event
 from compute_space.web.app import create_app
-
-# Exit code used when the host-runtime sentinel is missing/mismatched.
-# Deliberately distinct from RESTART_EXIT_CODE (42) and from 0/1 so
-# systemd's RestartForceExitStatus doesn't relaunch us in a tight loop
-# and so the operator can grep logs for the specific condition.
-RUNTIME_SENTINEL_EXIT_CODE = 78
 
 
 def _terminate_children(children: list[subprocess.Popen[bytes]]) -> None:
@@ -43,44 +34,9 @@ def _terminate_children(children: list[subprocess.Popen[bytes]]) -> None:
             proc.kill()
 
 
-def _enforce_runtime_sentinel_if_requested() -> None:
-    """Gate startup on /etc/openhost/runtime when running under systemd.
-
-    The ansible playbook sets ``OPENHOST_CHECK_RUNTIME_SENTINEL=1`` in the
-    service unit so that only fully ansible-managed servers enforce the
-    sentinel.  ``openhost up --dev`` and the test suite leave the env var
-    unset and skip the check entirely — neither flow has any reason to
-    write ``/etc/openhost/runtime`` and failing those would be worse than
-    the problem the gate exists to prevent.
-
-    On mismatch, prints the remediation to stderr and exits with
-    ``RUNTIME_SENTINEL_EXIT_CODE``.  Because the systemd unit's
-    ``RestartForceExitStatus`` is 42 (the update-restart code), a
-    sentinel-mismatch exit does NOT cause systemd to relaunch us, which
-    is exactly what we want: the pre-update router is still running and
-    will keep serving until the operator re-runs the ansible playbook.
-    """
-    if os.environ.get("OPENHOST_CHECK_RUNTIME_SENTINEL") != "1":
-        return
-    try:
-        check_runtime_sentinel()
-    except RuntimeSentinelMismatch as e:
-        # stderr so journalctl captures it; logger isn't guaranteed to
-        # be wired up this early, and we want the operator to see this
-        # message as prominently as possible.
-        print(f"openhost: refusing to start: {e}", file=sys.stderr, flush=True)
-        sys.exit(RUNTIME_SENTINEL_EXIT_CODE)
-
-
 def main() -> None:
     # Allow group members to write files/dirs we create (files 664, dirs 775).
     os.umask(0o002)
-
-    # Must run before load_config / make_all_dirs / any subprocess to
-    # podman: on a host that hasn't been prepared for this router
-    # version we want to fail fast and leave the existing router in
-    # place, not half-initialise state under the new runtime.
-    _enforce_runtime_sentinel_if_requested()
 
     config = load_config()
     config.make_all_dirs()

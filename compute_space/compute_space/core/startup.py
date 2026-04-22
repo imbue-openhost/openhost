@@ -7,10 +7,36 @@ from quart import Quart
 from compute_space.config import Config
 from compute_space.core import identity
 from compute_space.core.apps import start_app_process
+from compute_space.core.containers import PODMAN_MISSING_ERROR
 from compute_space.core.containers import get_container_status
+from compute_space.core.containers import podman_available
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
 from compute_space.db import init_db
+
+
+def _mark_running_apps_podman_missing(config: Config) -> int:
+    """Flip every running/starting/building app to ``status='error'`` with
+    a clear remediation message rather than attempt a rebuild we know
+    will fail.
+
+    Returns the number of rows updated.  This is the self-update
+    transition safety net: a Docker-era instance that clicks Update
+    before running ansible/tasks/podman.yml would previously crash
+    the router; now the dashboard stays up and per-app errors point
+    the operator at the fix.
+    """
+    db = sqlite3.connect(config.db_path)
+    try:
+        cursor = db.execute(
+            "UPDATE apps SET status = 'error', error_message = ?, container_id = NULL "
+            "WHERE status IN ('running', 'starting', 'building')",
+            (PODMAN_MISSING_ERROR,),
+        )
+        db.commit()
+        return cursor.rowcount
+    finally:
+        db.close()
 
 
 def _check_app_status(config: Config) -> None:
@@ -19,7 +45,25 @@ def _check_app_status(config: Config) -> None:
     Apps that need rebuilding are restarted sequentially in a single
     background thread to avoid concurrent image builds against the same
     containers-storage instance.
+
+    If podman is not available on this host (the self-update transition
+    case, before ansible has been re-run), running apps are marked as
+    ``status='error'`` with a clear remediation message and no rebuild
+    is attempted.  The dashboard still boots so the operator can see
+    what happened.
     """
+    if not podman_available():
+        affected = _mark_running_apps_podman_missing(config)
+        if affected:
+            logger.error(
+                "podman runtime missing; marked %d running/starting apps as error. %s",
+                affected,
+                PODMAN_MISSING_ERROR,
+            )
+        else:
+            logger.warning("podman runtime missing; no running apps to mark.")
+        return
+
     db = sqlite3.connect(config.db_path)
     db.row_factory = sqlite3.Row
     apps_to_restart: list[str] = []

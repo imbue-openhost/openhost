@@ -67,6 +67,35 @@ _BUILD_CACHE_CORRUPT_FRAGMENTS = (
     "layer not known",
 )
 
+# Error message used when podman is expected but not available.  The
+# settings-UI banner and per-app error rows both show this so the
+# operator has a single, greppable remediation string.
+PODMAN_MISSING_ERROR = (
+    "podman runtime not available — run `ansible-playbook ansible/setup.yml` "
+    "(or at minimum `ansible-playbook ansible/tasks/podman.yml`) on this host."
+)
+
+
+def podman_available() -> bool:
+    """Return True if ``podman --version`` succeeds.
+
+    Called from startup and from the update preflight to tell the
+    difference between 'fresh host that legitimately has no running
+    apps' and 'host that thinks apps are running but whose container
+    runtime is missing entirely'.  Catches FileNotFoundError so this
+    works even when podman isn't on PATH, returns False on any failure
+    (including permission errors and timeouts).
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "--version"],
+            capture_output=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
 
 def _log_path(app_name: str, temp_data_dir: str) -> str:
     """Return the path to the build/deploy log file for an app (in temp data)."""
@@ -348,13 +377,22 @@ def drop_docker_build_cache() -> str:
 
 
 def get_container_status(container_id: str) -> str:
-    """Return ``"running"``, ``"exited"``, or ``"unknown"``."""
-    result = subprocess.run(
-        ["podman", "inspect", "--format", "{{.State.Status}}", container_id],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    """Return ``"running"``, ``"exited"``, or ``"unknown"``.
+
+    Never raises: ``podman`` being missing from PATH (the self-update
+    transition case, before ansible has been re-run) must not cause
+    the caller to crash — it shows up as ``"unknown"`` and the caller
+    decides how to surface that.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "inspect", "--format", "{{.State.Status}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return "unknown"
     if result.returncode != 0:
         return "unknown"
     return result.stdout.strip()

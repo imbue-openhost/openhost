@@ -1,31 +1,28 @@
 """Host-runtime sentinel file.
 
 ``tasks/podman.yml`` writes ``/etc/openhost/runtime`` with ``runtime=podman``
-plus a ``runtime_version`` integer.  The router reads the same file on
-startup (and the dashboard's "check for updates" endpoint consults it)
-to confirm the host has been provisioned for the version of the router
-about to run.
+plus a ``runtime_version`` integer.  The dashboard's "check for
+updates" endpoint consults this file (alongside a live
+``podman --version`` probe, see ``core.containers.podman_available``)
+to decide whether to warn the operator that clicking Update would
+produce a router whose runtime prerequisites aren't satisfied.
 
-Contract:
+The sentinel is deliberately NOT used as a hard startup gate: during
+the initial Docker → podman transition the pre-upgrade router is
+running pre-PR code that knows nothing about sentinels, so any
+file-based check would be bypassed anyway.  The startup-side
+protection for that transition lives in
+``core.startup._check_app_status`` via the live podman probe, which
+refuses to attempt a rebuild when podman is missing and instead
+marks each affected app with a clear remediation message so the
+dashboard stays reachable.
 
-- If the file is missing, or the runtime/version don't match what the
-  router code declares, ``check_runtime_sentinel()`` raises
-  ``RuntimeSentinelMismatch`` with a human-readable error.  ``main()``
-  in ``web/start.py`` prints the error and exits non-zero, leaving the
-  previous (Docker-era, or otherwise out-of-sync) router running under
-  systemd until an operator runs ``ansible-playbook ansible/setup.yml``
-  (or a targeted playbook that re-runs ``tasks/podman.yml``).
-
-- The dashboard's update flow calls ``host_prep_status()`` before
-  offering an Update button; if the host isn't prepared it surfaces a
-  banner explaining what to do rather than letting the user brick
-  themselves by clicking Update.
-
-Why a file, not probing podman directly: an admin might have podman
-installed but not have run the rest of the ansible prep (lingering,
-port floor sysctl, idmap FS check).  The sentinel is the single
-source of truth that says "this host has been fully prepared for
-router runtime version N," not "podman happens to be on the PATH."
+Where the sentinel IS useful: future upgrades that bump
+``runtime_version`` without changing what binary is on PATH (a new
+sysctl, a new sudoers rule, a new kernel feature, an allowlist
+change).  By then the operator is already running code that knows
+how to read it, and the settings-UI banner can warn them before
+they click Update.
 """
 
 from __future__ import annotations
@@ -49,16 +46,6 @@ EXPECTED_RUNTIME: Final[str] = "podman"
 EXPECTED_RUNTIME_VERSION: Final[int] = 1
 
 
-class RuntimeSentinelMismatch(RuntimeError):
-    """Raised when the sentinel is missing or doesn't match expectations.
-
-    The message is deliberately verbose: it is printed directly to the
-    operator via stderr on router startup and surfaced to the user via
-    the settings UI, and in both places the only useful thing is a
-    clear remediation.
-    """
-
-
 @dataclass(frozen=True)
 class HostPrepStatus:
     """Snapshot of sentinel state for the settings UI."""
@@ -76,9 +63,10 @@ def _parse_sentinel(contents: str) -> dict[str, str]:
     """Parse the sentinel's key=value format.
 
     The format is intentionally trivial so ansible can template it and
-    the router can parse it without pulling in a TOML/YAML dependency
-    this early in startup.  Blank lines and ``#``-prefixed comments
-    are ignored.
+    the router can parse it without pulling in a TOML/YAML dependency.
+    Blank lines and ``#``-prefixed comments are ignored.  Unknown keys
+    are ignored (forward compatibility: a future ansible version may
+    add fields the current router doesn't know about).
     """
     values: dict[str, str] = {}
     for raw_line in contents.splitlines():
@@ -86,11 +74,6 @@ def _parse_sentinel(contents: str) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            # Ignore unrecognised lines rather than fail — future
-            # ansible versions may write extra metadata the current
-            # router code doesn't know about.  Forward compatibility
-            # matters here because the sentinel is specifically about
-            # host/router version skew.
             continue
         key, _, value = line.partition("=")
         values[key.strip()] = value.strip()
@@ -105,9 +88,9 @@ def _read_sentinel(path: str) -> HostPrepStatus:
             reason="missing",
             message=(
                 f"Host runtime sentinel {path} is missing.  This build of the "
-                f"router requires rootless podman; the host must be prepared "
-                f"by running `ansible-playbook ansible/setup.yml` (or at "
-                f"minimum `ansible/tasks/podman.yml`) before upgrading."
+                f"router expects the host to have been provisioned by "
+                f"`ansible-playbook ansible/setup.yml` (or at minimum "
+                f"`ansible/tasks/podman.yml`)."
             ),
         )
     try:
@@ -171,16 +154,3 @@ def host_prep_status(path: str = SENTINEL_PATH) -> HostPrepStatus:
     Safe to call on every update-check request.
     """
     return _read_sentinel(path)
-
-
-def check_runtime_sentinel(path: str = SENTINEL_PATH) -> None:
-    """Startup-facing: raise if the sentinel is missing or mismatched.
-
-    Called from ``web/start.py`` before any DB migration or
-    ``_check_app_status`` runs, so a mismatched host doesn't result in
-    half-migrated state or every app flipping to ``error`` with a
-    cryptic "podman not found" message.
-    """
-    status = _read_sentinel(path)
-    if not status.ok:
-        raise RuntimeSentinelMismatch(status.message)

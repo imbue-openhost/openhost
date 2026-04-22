@@ -6,6 +6,8 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core.apps import inject_github_token_in_url
+from compute_space.core.containers import PODMAN_MISSING_ERROR
+from compute_space.core.containers import podman_available
 from compute_space.core.git_ops import RemoteNotSetError
 from compute_space.core.git_ops import get_current_ref
 from compute_space.core.git_ops import get_remote_url
@@ -72,6 +74,40 @@ async def set_remote() -> ResponseReturnValue:
     return jsonify({"ok": True, "token_applied": token_applied})
 
 
+def _host_prep_payload() -> dict[str, object]:
+    """Return a dict describing whether the host is ready to run the
+    currently-installed router code.
+
+    Combines two signals:
+
+    - The ``/etc/openhost/runtime`` sentinel written by ansible, which
+      declares which runtime + version the host has been prepared for.
+      Useful for future upgrades that bump ``runtime_version`` without
+      changing what binary is on PATH (e.g. a new sysctl).
+    - A live probe of ``podman --version``, which is the authoritative
+      signal for the initial Docker → podman transition (where the
+      old dashboard is running pre-PR code, has no sentinel knowledge
+      anyway, and the only way to tell the host needs ansible is to
+      ask "is podman actually installed?").
+
+    Returns a payload with ``host_prep_ok`` plus a reason/message when
+    it's not ok.  Safe to call from any request handler; never raises.
+    """
+    podman_ok = podman_available()
+    prep = host_prep_status()
+    payload: dict[str, object] = {
+        "host_prep_ok": podman_ok and prep.ok,
+        "podman_available": podman_ok,
+    }
+    if not podman_ok:
+        payload["host_prep_reason"] = "podman_missing"
+        payload["host_prep_message"] = PODMAN_MISSING_ERROR
+    elif not prep.ok:
+        payload["host_prep_reason"] = prep.reason
+        payload["host_prep_message"] = prep.message
+    return payload
+
+
 @api_settings_bp.route("/api/settings/check_for_updates", methods=["POST"])
 @login_required
 async def check_for_updates() -> ResponseReturnValue:
@@ -81,45 +117,29 @@ async def check_for_updates() -> ResponseReturnValue:
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
 
-    # Include host-prep status so the dashboard can warn the user if
-    # clicking Update would produce a router that refuses to start
-    # against the current host.  See compute_space.core.runtime_sentinel.
-    prep = host_prep_status()
-    payload: dict[str, object] = {
-        "ok": True,
-        "state": str(state),
-        "host_prep_ok": prep.ok,
-    }
-    if not prep.ok:
-        payload["host_prep_reason"] = prep.reason
-        payload["host_prep_message"] = prep.message
+    payload: dict[str, object] = {"ok": True, "state": str(state)}
+    payload.update(_host_prep_payload())
     return jsonify(payload)
 
 
 @api_settings_bp.route("/api/settings/update_repo_state", methods=["POST"])
 @login_required
 async def update_repo_state() -> ResponseReturnValue:
-    """git reset to local origin/[branch] + check that pixi install works."""
+    """git reset to local origin/[branch] + check that pixi install works.
+
+    Refuses with HTTP 409 if the host isn't prepared for the current
+    router runtime (podman not installed, or /etc/openhost/runtime
+    reports the wrong version).  This protects users from bypassing
+    the dashboard banner via older cached pages, direct curl calls,
+    or future CLI clients.
+    """
     config = get_config()
 
-    # Server-side gate: even if the dashboard banner is bypassed (older
-    # cached page, direct curl, future CLI), refuse to apply an update
-    # that would leave the next router boot unable to start because the
-    # host hasn't been prepped.  Operator must run the ansible task
-    # first.  409 Conflict is the right code here — the request is well-
-    # formed but the server's current state can't accept it.
-    prep = host_prep_status()
-    if not prep.ok:
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": prep.message,
-                    "host_prep_reason": prep.reason,
-                }
-            ),
-            409,
-        )
+    prep = _host_prep_payload()
+    if not prep["host_prep_ok"]:
+        payload: dict[str, object] = {"ok": False, "error": prep["host_prep_message"]}
+        payload.update(prep)
+        return jsonify(payload), 409
 
     ref = await get_current_ref(config.openhost_repo_path)
     try:
