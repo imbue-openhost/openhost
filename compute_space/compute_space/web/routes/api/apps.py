@@ -3,6 +3,7 @@ import dataclasses
 import os
 import re
 import shutil
+import subprocess
 import threading
 
 from quart import Blueprint
@@ -468,10 +469,14 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if was_running:
         # Persist failures instead of letting them 500 out: the rename
         # has already succeeded, and the dashboard needs a visible error
-        # on the app rather than a generic server error.
+        # on the app rather than a generic server error.  Catch the full
+        # family of failures start_app_process can surface: RuntimeError
+        # (build/run failures), ValueError (manifest validation),
+        # subprocess.TimeoutExpired (build timeouts in the streaming
+        # path), and OSError (missing podman, transient FS errors).
         try:
             start_app_process(new_name, db, config)
-        except (RuntimeError, ValueError) as e:
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired, OSError) as e:
             logger.warning("Failed to restart %s after rename: %s", new_name, e)
             db.execute(
                 "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",

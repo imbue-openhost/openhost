@@ -111,12 +111,23 @@ def test_build_image_streaming_path_detects_cache_corrupt(
             # test iterates over proc.stdout and appends to build_output.
             self.stdout = iter([fragment + "\n"])
             self.returncode = 1
+            self.pid = 12345
 
         def wait(self, timeout: int | None = None) -> int:
             return self.returncode
 
         def kill(self) -> None:
             pass
+
+        # Popen is used as a context manager in build_image's streaming
+        # path so child processes are reaped and pipes closed even if
+        # the body raises.  Mirror that here so the test fake behaves
+        # like the real thing.
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_exc):  # type: ignore[no-untyped-def]
+            return False
 
     monkeypatch.setattr("compute_space.core.containers.subprocess.Popen", _FakePopen)
 

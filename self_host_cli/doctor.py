@@ -8,6 +8,7 @@ Checks:
   - Router code present
 """
 
+import json
 import shutil
 import socket
 import subprocess
@@ -42,19 +43,39 @@ def _check_uv() -> _Check:
 
 
 def _check_podman() -> _Check:
+    """Verify podman is installed AND configured to run rootless.
+
+    The router relies on rootless mode for its security model (idmapped
+    bind mounts, per-container user namespaces), so reporting "available"
+    for a rootful-only installation would be misleading.  We parse
+    ``podman info`` JSON and explicitly assert the rootless flag.
+    """
     try:
         r = subprocess.run(
-            ["podman", "info"],
+            ["podman", "info", "--format", "json"],
             capture_output=True,
+            text=True,
             timeout=10,
         )
-        if r.returncode == 0:
-            return _Check("Podman available", True, "rootless mode")
-        return _Check("Podman available", False, "podman info failed")
     except FileNotFoundError:
         return _Check("Podman available", False, "podman not found on PATH")
     except subprocess.TimeoutExpired:
         return _Check("Podman available", False, "podman info timed out")
+
+    if r.returncode != 0:
+        return _Check("Podman available", False, "podman info failed")
+
+    try:
+        info = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return _Check("Podman available", False, "podman info returned non-JSON output")
+
+    rootless = info.get("host", {}).get("security", {}).get("rootless")
+    if rootless is True:
+        return _Check("Podman available", True, "rootless mode")
+    if rootless is False:
+        return _Check("Podman available", False, "podman is running rootful; rootless required")
+    return _Check("Podman available", False, "could not determine rootless status from podman info")
 
 
 def _check_port(port: int) -> _Check:

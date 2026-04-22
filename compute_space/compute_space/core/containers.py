@@ -148,26 +148,34 @@ def build_image(
         _append_log(app_name, temp_data_dir, f"=== Building image: {image_tag} ===\n")
 
     if temp_data_dir:
-        # Stream build output line-by-line so the dashboard can show progress
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # Stream build output line-by-line so the dashboard can show progress.
+        # Wrap the Popen in a with-block so the pipe is closed and the
+        # child is reaped on every exit path — including unrelated
+        # exceptions from _append_log (OSError on disk full, etc.) that
+        # would otherwise leak a running podman-build process.
         build_output = ""
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                build_output += line
-                _append_log(app_name, temp_data_dir, line)
-            proc.wait(timeout=300)
-        except subprocess.TimeoutExpired:
-            # proc.kill() only sends SIGKILL; we still have to reap the
-            # child to avoid leaving a zombie hanging off this long-
-            # running router process.  Give it a bounded wait so a
-            # pathological build can't wedge cleanup indefinitely.
-            proc.kill()
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
             try:
-                proc.wait(timeout=5)
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    build_output += line
+                    _append_log(app_name, temp_data_dir, line)
+                proc.wait(timeout=300)
             except subprocess.TimeoutExpired:
-                logger.warning("Build process %d did not exit within 5s of SIGKILL", proc.pid)
-            raise
+                # proc.kill() only sends SIGKILL; we still have to reap
+                # the child to avoid leaving a zombie.  The Popen
+                # context manager does a final wait on __exit__ too,
+                # but giving it a bounded wait here makes the failure
+                # mode explicit and loggable if the kill doesn't land.
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Build process %d did not exit within 5s of SIGKILL",
+                        proc.pid,
+                    )
+                raise
         if proc.returncode != 0:
             _raise_if_build_cache_corrupt(build_output)
             # Include the tail of build output so the error is visible in

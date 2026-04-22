@@ -20,11 +20,7 @@ PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "co
 SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
 
 
-class _FakeApp:
-    """Minimal stand-in for a Quart app so init_db(app) can read app.config."""
-
-    def __init__(self, db_path):
-        self.config = {"DB_PATH": db_path}
+from .conftest import _FakeApp  # noqa: E402
 
 
 def _fresh_db(path):
