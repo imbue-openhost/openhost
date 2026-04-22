@@ -1,17 +1,5 @@
 ---
 # Install rootless Podman for the `host` user.  Runs with become: yes.
-#
-# OpenHost runs every app container under the unprivileged `host` user
-# via rootless podman in podman's default single-user namespace.  This
-# task installs the runtime, enables user systemd lingering so
-# containers survive reboots, lowers the unprivileged port floor so apps
-# can publish ports >= 80, and fails the play early if the data
-# filesystem doesn't support idmapped bind mounts (used by every
-# ``-v`` the router hands to ``podman run``).
-
-# ---------------------------------------------------------------------------
-# Packages
-# ---------------------------------------------------------------------------
 
 - name: Install podman and rootless networking tooling
   apt:
@@ -20,60 +8,40 @@
       - podman
       - crun
       # Rootless networking backends.  passt provides `pasta` (preferred);
-      # slirp4netns is the fallback used when pasta is unavailable.
-      # Install both for resilience across Ubuntu minor versions.
+      # slirp4netns is the fallback.  Install both for cross-version
+      # resilience.
       - passt
       - slirp4netns
-      # netavark + aardvark-dns are Podman's rootless-friendly CNI
-      # replacement, needed for user-defined podman networks.
+      # Rootless-friendly CNI replacement, needed for user-defined networks.
       - netavark
       - aardvark-dns
-      # uidmap ships newuidmap/newgidmap, used by podman's default
-      # rootless user namespace setup.
+      # newuidmap/newgidmap for podman's rootless userns setup.
       - uidmap
-      # Rootless overlay fallback for kernels that don't expose the native
-      # unprivileged overlay mount.  Harmless when unused.
+      # Rootless overlay fallback for kernels without native unprivileged
+      # overlay support.
       - fuse-overlayfs
     state: present
     update_cache: yes
 
-# ---------------------------------------------------------------------------
-# systemd user lingering
-# ---------------------------------------------------------------------------
-#
 # Without lingering, the user's systemd instance exits when the last
-# interactive session ends, which would kill any `podman run --restart=...`
-# containers.  Lingering starts the user manager at boot.
-
+# session ends, which would kill `podman run --restart=...` containers.
 - name: Check whether user lingering is already enabled for host
   stat:
     path: /var/lib/systemd/linger/host
   register: _linger_sentinel
 
 - name: Enable user lingering for host
-  # loginctl enable-linger is idempotent so the unconditional invocation
-  # is safe on re-runs; the real "changed" signal comes from whether the
-  # sentinel file existed beforehand.
   command: loginctl enable-linger host
   when: not _linger_sentinel.stat.exists
   changed_when: true
 
-# ---------------------------------------------------------------------------
-# sysctl: allow rootless binding to common ports
-# ---------------------------------------------------------------------------
-#
-# By default the kernel reserves ports < 1024 for root.  Rootless podman
-# needs to publish app ports (the router's [[ports]] manifest field binds
-# on 0.0.0.0:<host_port>), so we lower the floor to 80.  This matches what
-# pixi.yml already does for caddy/coredns via setcap — same idea, different
-# mechanism.  The manifest parser rejects host_port values below this floor
-# (see compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR).
-
+# Rootless podman needs to publish ports >= 80 (the router's [[ports]]
+# binds on 0.0.0.0:<host_port>).  Must match
+# compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
 - name: Configure unprivileged port floor
   copy:
     content: |
-      # Allow unprivileged processes (rootless podman containers) to bind
-      # TCP/UDP ports >= 80.  Managed by OpenHost; do not edit by hand.
+      # Managed by OpenHost; do not edit by hand.
       net.ipv4.ip_unprivileged_port_start = 80
     dest: /etc/sysctl.d/90-openhost-podman.conf
     mode: "0644"
@@ -82,24 +50,9 @@
   command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
   changed_when: false
 
-# ---------------------------------------------------------------------------
-# Registry search configuration
-# ---------------------------------------------------------------------------
-#
-# Unlike Docker, podman has no default registry.  An unqualified image
-# reference in a Dockerfile (``FROM golang:1.24-alpine``) fails with
-# "short-name ... did not resolve to an alias and no unqualified-search
-# registries are defined" unless the host's registries.conf lists a
-# default search registry.  Ubuntu's podman package ships the file with
-# the ``unqualified-search-registries`` line commented out.
-#
-# We add a small override file that registers docker.io as the search
-# registry, matching the Docker default so existing app Dockerfiles
-# continue to build without modification.  This lives as a drop-in under
-# registries.conf.d/ rather than editing the main file in place, so
-# package upgrades don't clobber it and operators can override by
-# dropping a later-alphabetical file.
-
+# Unlike Docker, podman has no default registry.  Drop-in file sets
+# docker.io as the short-name search registry so unqualified `FROM`
+# lines in app Dockerfiles resolve without operator intervention.
 - name: Ensure registries.conf.d directory exists
   file:
     path: /etc/containers/registries.conf.d
@@ -110,42 +63,19 @@
   copy:
     content: |
       # Managed by OpenHost; do not edit by hand.
-      # Matches Docker's implicit default so unqualified FROM lines
-      # in app Dockerfiles (``FROM golang:1.24-alpine``) resolve without
-      # operator intervention.
       unqualified-search-registries = ["docker.io"]
     dest: /etc/containers/registries.conf.d/00-openhost.conf
     mode: "0644"
 
-# ---------------------------------------------------------------------------
-# Idmapped mount sanity check
-# ---------------------------------------------------------------------------
-#
-# Every bind mount from the router uses ``:idmap`` so container-root file
-# writes land on disk owned by the host user rather than by podman's
-# rootless mapped subuid.  idmapped mounts require:
-#   - Linux >= 5.12 (6.8 on Ubuntu 24.04 — fine)
-#   - filesystem that supports it (ext4, xfs, btrfs, tmpfs are all OK;
-#     some exotic setups like ZFS < 2.2 or certain fuse filesystems are not)
-#
-# The router's data_root_dir defaults to ``/home/host/.openhost/...``
-# (see ansible/templates/config.toml.j2) which lives on the same
-# filesystem as ``/home/host``, so we check ``/home/host`` here.  If a
-# future deployment ever moves data_root_dir onto a separate mount,
-# update this check to stat the actual data root instead — idmap
-# support is per-filesystem, not per-host.
-
+# Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
+# as ext2/ext3 by stat -f -c '%T'), xfs, btrfs, tmpfs.  ZFS < 2.2 and
+# certain FUSE filesystems don't support it.
 - name: Find filesystem of data root
   command: stat -f -c '%T' /home/host
   register: _data_fs
   changed_when: false
 
 - name: Verify data filesystem supports idmapped mounts
-  # Note: `stat -f -c '%T'` reports the kernel's type name for the
-  # filesystem.  Ext2, ext3 and ext4 all share the reported name
-  # 'ext2/ext3' (the kernel uses the same on-disk family name), so a
-  # distinct 'ext4' entry would never match on Linux — keep the shared
-  # name in the allowlist.
   assert:
     that:
       - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs']
@@ -153,13 +83,9 @@
       Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
       support idmapped bind mounts.  Reprovision onto ext4, xfs, btrfs,
       or tmpfs.  (Note: Linux reports every ext2/3/4 filesystem as
-      'ext2/ext3', so ext4 IS supported — this failure means you're on
-      something else entirely, e.g. ZFS or a FUSE filesystem.)
+      'ext2/ext3', so ext4 IS supported — this failure means something
+      else entirely, e.g. ZFS or a FUSE filesystem.)
     success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
-
-# ---------------------------------------------------------------------------
-# Sanity probe
-# ---------------------------------------------------------------------------
 
 - name: Verify podman works for host user
   become: yes
@@ -172,30 +98,14 @@
   assert:
     that:
       - (_podman_info.stdout | from_json).host.security.rootless | bool
-    fail_msg: >-
-      podman is not configured for rootless operation as the host user.
+    fail_msg: podman is not configured for rootless operation as the host user.
     success_msg: "podman rootless for host user: OK"
 
-# ---------------------------------------------------------------------------
-# Host-runtime sentinel
-# ---------------------------------------------------------------------------
-#
-# The dashboard's `/api/settings/check_for_updates` endpoint reads
-# /etc/openhost/runtime and includes a `host_prep_ok` field in its
-# JSON response so the dashboard can render a banner when
-# runtime / runtime_version don't match what the installed router
-# code expects.  `/api/settings/update_repo_state` separately refuses
-# with HTTP 409 under the same mismatch condition, preventing a user
-# who bypasses the banner (direct curl, stale dashboard) from
-# applying an update the host isn't ready for.  This is a soft
-# preflight gate only — the authoritative runtime check lives in
-# compute_space.core.containers.podman_available, which keeps the
-# dashboard reachable even on an unprepared host.
-#
-# Bump runtime_version here AND compute_space.core.runtime_sentinel
-# .EXPECTED_RUNTIME_VERSION together whenever a host-side change ships
-# that existing hosts must adopt before their next router restart.
-
+# /etc/openhost/runtime is read by compute_space.core.runtime_sentinel
+# and the dashboard update-check endpoint.  Bump runtime_version here
+# AND compute_space.core.runtime_sentinel.EXPECTED_RUNTIME_VERSION
+# together whenever a host-side change ships that existing hosts must
+# adopt before their next router restart.
 - name: Ensure /etc/openhost exists
   file:
     path: /etc/openhost
@@ -206,8 +116,6 @@
   copy:
     content: |
       # Managed by ansible/tasks/podman.yml; do not edit by hand.
-      # Consumed by compute_space.core.runtime_sentinel and by the
-      # dashboard's /api/settings/check_for_updates endpoint.
       runtime=podman
       runtime_version=1
     dest: /etc/openhost/runtime

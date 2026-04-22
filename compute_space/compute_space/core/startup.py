@@ -17,14 +17,7 @@ from compute_space.db import init_db
 
 def _mark_running_apps_podman_missing(config: Config) -> int:
     """Flip every running/starting/building app to ``status='error'`` with
-    ``PODMAN_MISSING_ERROR`` as the remediation message, and clear
-    ``container_id`` since any stored ID is no longer meaningful.
-
-    Returns the number of rows updated.  Called from
-    ``_check_app_status`` when podman isn't available on the host:
-    attempting a rebuild would crash the router and take the dashboard
-    down, so instead we surface a per-app error that points the
-    operator at the ansible remediation and leave the dashboard up.
+    ``PODMAN_MISSING_ERROR`` and clear ``container_id``.  Returns rowcount.
     """
     db = sqlite3.connect(config.db_path)
     try:
@@ -44,13 +37,10 @@ def _check_app_status(config: Config) -> None:
 
     Apps that need rebuilding are restarted sequentially in a single
     background thread to avoid concurrent image builds against the same
-    containers-storage instance.
-
-    If podman is not available on this host (the self-update transition
-    case, before ansible has been re-run), running apps are marked as
-    ``status='error'`` with a clear remediation message and no rebuild
-    is attempted.  The dashboard still boots so the operator can see
-    what happened.
+    containers-storage instance.  When podman isn't available, every
+    running/starting/building app is flipped to 'error' with a
+    remediation message and no rebuild is attempted — the dashboard
+    stays reachable so the operator can see what happened.
     """
     if not podman_available():
         affected = _mark_running_apps_podman_missing(config)

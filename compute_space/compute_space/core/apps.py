@@ -344,11 +344,9 @@ def deploy_app_background(
     try:
         storage.check_before_deploy(config)
 
-        # Retry container builds for transient failures (network blip during
-        # base-image pull, temporary lock contention, etc.).  Cache-corrupt
-        # failures re-raise immediately because retrying can't fix a corrupt
-        # local cache — the dashboard needs to surface the "Drop Cache"
-        # remediation without first wasting 15+ seconds on futile retries.
+        # Retry container builds for transient failures.  Cache-corrupt
+        # failures re-raise immediately — retrying can't fix them and
+        # the dashboard needs the marker to surface the remediation.
         max_build_attempts = 3
         image_tag = ""
         for attempt in range(1, max_build_attempts + 1):
@@ -679,11 +677,8 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
                             pass
             if source_dir and os.path.isdir(source_dir):
                 if os.path.exists(repo_path):
-                    # Use the sudo-fallback helper: git clones can leave
-                    # read-only objects that bare shutil.rmtree refuses.
-                    # raise_on_failure=True so a genuinely stuck tree
-                    # surfaces as an error instead of silently leaving
-                    # the old contents for copytree to clash with.
+                    # Git clones can leave read-only objects that plain
+                    # shutil.rmtree refuses; fall back to sudo rm -rf.
                     rmtree_with_sudo_fallback(repo_path, raise_on_failure=True)
                 shutil.copytree(source_dir, repo_path)
                 logger.info("Re-copied %s from %s", app_name, source_dir)

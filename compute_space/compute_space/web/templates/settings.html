@@ -51,11 +51,7 @@ async function checkForUpdates() {
 
     const checkAgainBtn = '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Check again</button>';
 
-    // If the host has not been prepared for the current router runtime
-    // (e.g. existing Docker-era instance that hasn't had ansible/tasks
-    // /podman.yml run against it), the new router binary will refuse
-    // to start after Update & restart.  Show a banner with the exact
-    // remediation instead of offering the update button.
+    // Banner when host prep is needed; Update button is disabled below.
     let hostPrepBanner = '';
     if (data.host_prep_ok === false) {
       hostPrepBanner = '<div class="error" style="margin-bottom:0.75em;padding:0.5em;border:1px solid #c00;">'

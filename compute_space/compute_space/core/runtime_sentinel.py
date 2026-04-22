@@ -1,25 +1,15 @@
 """Host-runtime sentinel file.
 
 ``ansible/tasks/podman.yml`` writes ``/etc/openhost/runtime`` with
-``runtime=podman`` plus a ``runtime_version`` integer.  The
-dashboard's "check for updates" endpoint consults this file
-(alongside a live ``podman --version`` probe, see
-``core.containers.podman_available``) to decide whether to warn the
-operator that clicking Update would produce a router whose runtime
-prerequisites aren't satisfied.
+``runtime=podman`` and a ``runtime_version`` integer.  The dashboard's
+update flow reads this (via ``host_prep_status``) to warn the operator
+when clicking Update would land on a host whose runtime_version doesn't
+match what the router code expects.
 
-The sentinel is used as a soft signal only, not a hard startup gate:
-the live podman probe in ``core.containers.podman_available`` is the
-authoritative check.  ``host_prep_status()`` is suitable for the
-settings-UI banner and for the ``/api/settings/update_repo_state``
-preflight, where the goal is to warn or refuse before committing to
-an upgrade — not to prevent the router from booting.
-
-The sentinel's primary value is signalling runtime_version skew for
-host-side changes that wouldn't otherwise be detectable by probing
-the binary: a new sysctl, a new sudoers rule, a new kernel feature
-prerequisite, or an allowlist change that the router code expects
-the host to already honour.
+Soft signal only — the authoritative runtime check is the live
+``podman_available()`` probe in ``core.containers``.  The sentinel's
+value is detecting host-side prep changes that the binary probe can't
+(new sysctl, new sudoers rule, new kernel feature requirement, …).
 """
 
 from __future__ import annotations
@@ -28,43 +18,32 @@ import os
 from dataclasses import dataclass
 from typing import Final
 
-# Canonical location managed by ansible.  Deliberately under /etc/ so
-# it survives package / venv upgrades and can only be written by an
-# operator with sudo (matching the trust boundary: the router itself
-# should never be writing this).
 SENTINEL_PATH: Final[str] = "/etc/openhost/runtime"
 
-# What the currently-running router code expects.  Bump the version
-# whenever a host-side change ships that existing hosts need to adopt
-# before their next router restart (new package, new sysctl, new
-# sudoers rule, etc.) and update ``ansible/tasks/podman.yml`` to write the
-# new value.
+# Bump ``EXPECTED_RUNTIME_VERSION`` (here) and the value written by
+# ``ansible/tasks/podman.yml`` together whenever a host-side change
+# ships that existing hosts must adopt before their next router start.
 EXPECTED_RUNTIME: Final[str] = "podman"
 EXPECTED_RUNTIME_VERSION: Final[int] = 1
 
 
 @dataclass(frozen=True)
 class HostPrepStatus:
-    """Snapshot of sentinel state for the settings UI."""
+    """Snapshot of sentinel state for the settings UI.
+
+    When ``ok`` is False, ``reason`` is one of ``missing``,
+    ``wrong_runtime``, ``wrong_version``, ``unreadable`` so the UI can
+    branch on it; ``message`` is a human-readable explanation with
+    remediation.
+    """
 
     ok: bool
-    # When ``ok`` is False, ``reason`` is a short machine-readable tag
-    # (``missing``, ``wrong_runtime``, ``wrong_version``, ``unreadable``)
-    # so the dashboard can branch on it; ``message`` is the verbose
-    # human-readable explanation with remediation.
     reason: str
     message: str
 
 
 def _parse_sentinel(contents: str) -> dict[str, str]:
-    """Parse the sentinel's key=value format.
-
-    The format is intentionally trivial so ansible can template it and
-    the router can parse it without pulling in a TOML/YAML dependency.
-    Blank lines and ``#``-prefixed comments are ignored.  Unknown keys
-    are ignored (forward compatibility: a future ansible version may
-    add fields the current router doesn't know about).
-    """
+    """Parse ``key=value`` lines; ignore blanks, ``#`` comments, and unknown keys."""
     values: dict[str, str] = {}
     for raw_line in contents.splitlines():
         line = raw_line.strip()
@@ -78,7 +57,6 @@ def _parse_sentinel(contents: str) -> dict[str, str]:
 
 
 def _read_sentinel(path: str) -> HostPrepStatus:
-    """Read and validate the sentinel; return a HostPrepStatus."""
     if not os.path.exists(path):
         return HostPrepStatus(
             ok=False,
@@ -90,13 +68,9 @@ def _read_sentinel(path: str) -> HostPrepStatus:
             ),
         )
     try:
-        # Explicitly use utf-8 with errors="replace" so a corrupted or
-        # accidentally-binary sentinel doesn't raise UnicodeDecodeError
-        # (which isn't an OSError and would otherwise propagate through
-        # host_prep_status's "never raises" contract into request
-        # handlers).  Replacement characters will still produce a
-        # parse miss, which surfaces as ``reason="wrong_runtime"``
-        # with an actionable message.
+        # errors="replace" so a corrupted/binary file surfaces as
+        # reason="wrong_runtime" rather than raising UnicodeDecodeError
+        # (not an OSError, so our "never raises" contract would break).
         with open(path, encoding="utf-8", errors="replace") as f:
             contents = f.read()
     except OSError as e:
@@ -150,9 +124,5 @@ def _read_sentinel(path: str) -> HostPrepStatus:
 
 
 def host_prep_status(path: str = SENTINEL_PATH) -> HostPrepStatus:
-    """Dashboard-facing: return the current sentinel status.
-
-    Never raises; always returns a HostPrepStatus the UI can branch on.
-    Safe to call on every update-check request.
-    """
+    """Return the current sentinel status.  Never raises."""
     return _read_sentinel(path)

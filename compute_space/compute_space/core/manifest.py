@@ -8,78 +8,57 @@ import attr
 
 from compute_space.core.logging import logger
 
-# Unprivileged port floor.  Must match net.ipv4.ip_unprivileged_port_start
-# set by ansible/tasks/podman.yml.  Rootless podman containers cannot bind
-# the host side of a -p mapping below this value, so we reject such
-# manifests at parse time with a clear error.
+# Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/podman.yml.
+# host_port values below this are rejected at parse time.
 UNPRIVILEGED_PORT_FLOOR = 80
 
-# Capabilities that are safe to grant inside a rootless podman user
-# namespace.  The kernel restricts these to the namespace; they do not
-# grant any host privilege.  Anything outside this set is rejected at
-# parse time — either because it requires real host privilege
-# (SYS_ADMIN, SYS_MODULE, SYS_PTRACE, SYS_RAWIO, SYS_TIME, SYS_BOOT,
-# MAC_ADMIN, MAC_OVERRIDE) or because it effectively requires
-# CAP_SYS_ADMIN to do anything useful.
-#
-# Kept as a tight allowlist rather than a denylist so future kernel
-# capabilities are denied by default until someone vets them.
+# Linux capabilities that can be safely granted inside a rootless podman
+# user namespace.  Anything outside this set is rejected at parse time
+# because it either requires real host privilege (SYS_ADMIN, SYS_MODULE,
+# SYS_PTRACE, SYS_RAWIO, SYS_TIME, SYS_BOOT, MAC_ADMIN, MAC_OVERRIDE) or
+# effectively requires CAP_SYS_ADMIN to do anything.  Allowlist (not
+# denylist) so future kernel caps are denied by default.
 SAFE_CAPABILITIES: frozenset[str] = frozenset(
     {
-        # Networking: needed by VPN-style apps (tailscale, wireguard).
+        # Networking (VPN-style apps: tailscale, wireguard).
         "NET_ADMIN",
         "NET_RAW",
         "NET_BIND_SERVICE",
         "NET_BROADCAST",
-        # File ownership / permissions within the user ns.
+        # File ownership / permissions within the userns.
         "CHOWN",
         "DAC_OVERRIDE",
         "DAC_READ_SEARCH",
         "FOWNER",
         "FSETID",
         "SETFCAP",
-        # Process control within the user ns.
+        # Process control within the userns.
         "KILL",
         "SETUID",
         "SETGID",
         "SETPCAP",
-        # Device node creation (needed by a few init systems); harmless
-        # inside a rootless user namespace since mknod is restricted.
+        # Device node creation (restricted by rootless anyway).
         "MKNOD",
-        # Audit writes (rarely used but harmless).
         "AUDIT_WRITE",
-        # ipc_lock for processes that mlock memory (e.g. some DBs).
+        # mlock (some DBs) + chroot (some init systems).
         "IPC_LOCK",
         "IPC_OWNER",
-        # Allow chroot(2) within the container's user namespace (needed by
-        # some init systems and container-in-container setups).
         "SYS_CHROOT",
     }
 )
 
-# Devices whose existence on the host the rootless ``host`` user can
-# reasonably be expected to access, and which don't expose bulk host
-# memory or kernel-control surfaces.  Anything outside this set is
-# rejected at manifest parse time — granting a device inside a rootless
-# container that the host user cannot open would fail mysteriously at
-# ``podman run`` time anyway, and granting e.g. ``/dev/mem`` or
-# ``/dev/kmem`` would entirely defeat the user-namespace sandbox.
+# Host devices safe to pass through to rootless containers.  Anything
+# outside this set (e.g. /dev/mem, /dev/kmem, raw block devices, /dev/kvm)
+# is rejected at parse time.
 SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
     {
-        # TUN/TAP for VPN-like apps (Tailscale, WireGuard userspace).
         "/dev/net/tun",
-        # Hardware entropy devices are safe to expose read-only; the
-        # kernel enforces its own access semantics.
         "/dev/random",
         "/dev/urandom",
-        # Null / zero sinks and sources.
         "/dev/null",
         "/dev/zero",
-        # FUSE for user-mountable filesystems.
         "/dev/fuse",
-        # Serial ports / USB-TTY for apps that talk to hardware over UART.
-        # (Only the first eight slots of each family; add more here if a
-        # real app needs them.)
+        # First 8 slots of each serial/USB-TTY family; expand if needed.
         *(f"/dev/ttyS{i}" for i in range(8)),
         *(f"/dev/ttyUSB{i}" for i in range(8)),
         *(f"/dev/ttyACM{i}" for i in range(8)),
@@ -145,12 +124,8 @@ class AppManifest:
 def _validate_devices(devices: list[Any]) -> list[str]:
     """Normalise and validate ``[runtime.container].devices`` entries.
 
-    Podman's ``--device`` accepts ``<host-path>[:<container-path>][:rwm]``
-    forms; we only parse off the host path for validation and pass the
-    full string through unchanged.  Rejects anything outside
-    ``SAFE_DEVICE_PATHS`` so e.g. ``/dev/mem``, ``/dev/kmem``,
-    ``/dev/kvm``, or arbitrary block devices can't be requested by an
-    untrusted manifest.
+    Accepts the ``<host>[:<container>][:rwm]`` form and validates only
+    the host path against ``SAFE_DEVICE_PATHS``.
     """
     if not isinstance(devices, list):
         raise ValueError("[runtime.container].devices must be a list of strings")
@@ -169,13 +144,10 @@ def _validate_devices(devices: list[Any]) -> list[str]:
 
 
 def _validate_capabilities(caps: list[Any]) -> list[str]:
-    """Normalise and validate [runtime.container].capabilities.
+    """Normalise and validate ``[runtime.container].capabilities``.
 
-    Accepts strings with or without the ``CAP_`` prefix (podman uses the
-    un-prefixed form).  Rejects any capability not in SAFE_CAPABILITIES —
-    those either require real host privilege or effectively require it to
-    do anything useful, and granting them inside a rootless user namespace
-    either silently no-ops (confusing) or grants more power than intended.
+    Accepts ``CAP_`` prefix or bare names (podman uses bare).  Rejects
+    anything not in ``SAFE_CAPABILITIES``.
     """
     if not isinstance(caps, list):
         raise ValueError("[runtime.container].capabilities must be a list of strings")

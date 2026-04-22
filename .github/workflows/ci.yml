@@ -25,13 +25,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
 
-  # Rootless podman integration tests.  Ubuntu 24.04 ships podman with
-  # a default rootless configuration that is good enough for the unit-
-  # level podman suites (container build/run/stop argv, cache-corrupt
-  # detection, migration tests).  The full-stack `requires_podman`
-  # classes that rely on idmapped bind mounts against real filesystems
-  # still run in the e2e workflow on real cloud VMs — GitHub's hosted
-  # runners don't reliably support `:idmap` on the workspace mount.
+  # Rootless podman unit suites.  The full-stack @requires_podman
+  # classes that rely on idmapped bind mounts run in the e2e workflow
+  # on real VMs — GitHub runners don't reliably support :idmap on the
+  # workspace mount.
   test-podman:
     runs-on: ubuntu-latest
     steps:
@@ -46,13 +43,7 @@ jobs:
       - name: Verify rootless podman works
         run: |
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
-      - name: Run podman-marked tests that don't need :idmap FS support
-        # Limit to the pure-python tests that exercise the podman argv
-        # construction, manifest validation, migration, and rmtree
-        # helpers.  The e2e classes in test_integration.py and
-        # test_full_stack.py are excluded here because they need
-        # idmapped bind mounts on the workspace filesystem, which
-        # GitHub runners don't reliably provide.
+      - name: Run podman-marked unit tests
         run: |
           uv run --group dev pytest \
             compute_space/tests/test_containers.py \

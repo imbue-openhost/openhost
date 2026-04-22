@@ -75,14 +75,10 @@ async def set_remote() -> ResponseReturnValue:
 
 
 def _host_prep_payload() -> dict[str, object]:
-    """Return a dict describing whether the host is ready to run the
-    currently-installed router code.
+    """Return whether the host is ready to run the installed router code.
 
-    Combines a live ``podman --version`` probe (authoritative signal
-    for runtime availability) with the ``/etc/openhost/runtime``
-    sentinel (covers host-side provisioning changes that aren't
-    detectable from the binary alone, e.g. a new sysctl or sudoers
-    rule).  Never raises.
+    Combines a live ``podman --version`` probe with the
+    ``/etc/openhost/runtime`` sentinel.  Never raises.
     """
     podman_ok = podman_available()
     prep = host_prep_status()
@@ -116,13 +112,10 @@ async def check_for_updates() -> ResponseReturnValue:
 @api_settings_bp.route("/api/settings/update_repo_state", methods=["POST"])
 @login_required
 async def update_repo_state() -> ResponseReturnValue:
-    """git reset to local origin/[branch] + check that pixi install works.
+    """git reset to local origin/[branch] + pixi install.
 
-    Refuses with HTTP 409 if the host isn't prepared for the current
-    router runtime (podman not installed, or /etc/openhost/runtime
-    reports the wrong version) — the dashboard banner is a UI layer
-    on top of this; the 409 guards against stale pages and direct
-    curl calls.
+    Returns HTTP 409 when the host isn't prepared for the installed
+    runtime (the dashboard banner is the UI layer on top).
     """
     config = get_config()
 

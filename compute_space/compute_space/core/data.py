@@ -11,21 +11,15 @@ from compute_space.core.manifest import AppManifest
 
 
 def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> None:
-    """Remove a directory tree, falling back to ``sudo -n rm -rf`` for
-    files the router can't chmod itself.
+    """Remove a directory tree, falling back to ``sudo -n rm -rf``.
 
-    The fast path is ``shutil.rmtree`` with an onexc hook that retries
-    after chmodding entries read-only git clones might have left behind.
-    The sudo fallback is reserved for the rare case where the router's
-    unprivileged UID can't delete a file at all — it works because the
-    ansible bootstrap installs a NOPASSWD sudoers rule for the ``host``
-    user.
+    The fast path is ``shutil.rmtree`` with an onexc hook that chmods
+    read-only entries (git-clone artefacts) and retries.  The sudo
+    fallback relies on the NOPASSWD sudoers rule installed by ansible.
 
-    If ``raise_on_failure`` is False (the default for data-deprovision
-    code paths), both stages log and swallow their errors so a cleanup
-    failure can't block removal of the app row from the database.  If
-    True, the failure re-raises (used by the web route's code-sync
-    helper, where a failed rmtree is a hard error).
+    With ``raise_on_failure=False`` both stages log and swallow errors
+    so cleanup failures can't block the deprovision flow.  With
+    ``raise_on_failure=True`` the error re-raises.
     """
     if not os.path.exists(path):
         return
@@ -38,11 +32,6 @@ def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> N
         shutil.rmtree(path, onexc=_make_writable_and_retry)
         return
     except OSError as rmtree_err:
-        # Intentionally catch the full OSError family (ENOENT races,
-        # EBUSY, ESTALE on NFS, EROFS, etc.) not just PermissionError,
-        # so the raise_on_failure=False contract really is total.  The
-        # sudo fallback is unlikely to fix non-permission errors but
-        # trying it is cheap and the logging path is the same.
         logger.warning(
             "rmtree failed on %s (%s), falling back to sudo rm -rf",
             path,
@@ -57,9 +46,8 @@ def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> N
             timeout=30,
         )
     except subprocess.CalledProcessError as sudo_err:
-        # capture_output=True hides stderr from the default string repr;
-        # surface it explicitly so operators see things like
-        # 'sudo: a password is required' without running the command by hand.
+        # Surface captured stderr so the operator sees 'sudo: a password
+        # is required' etc. without re-running the command by hand.
         stderr = (sudo_err.stderr or b"").decode("utf-8", errors="replace").strip()
         logger.warning(
             "Failed to clean data dir %s via sudo (exit %d): %s",
@@ -90,10 +78,6 @@ def provision_data(
     Apps only get filesystem access to directories they explicitly request
     via app_data and app_temp_data flags in [data]. SQLite entries
     implicitly enable app_data.
-
-    Under rootless podman with idmapped bind mounts, directories don't need
-    world-writable (0o777) permissions: the kernel rewrites uid/gid on
-    access so container-root writes land on disk owned by the ``host`` user.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -131,11 +115,8 @@ def provision_data(
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)
 
     # Apps run in bridge-mode containers where 127.0.0.1 is the container
-    # itself, not the host.  podman run is invoked with
-    # --add-host=host.docker.internal:host-gateway (alongside
-    # host.containers.internal) so this URL resolves to the host's
-    # interface regardless of the runtime.  The Docker-style alias is
-    # preserved so manifests written for the old runtime need no change.
+    # itself, not the host.  host.docker.internal (and the podman-native
+    # host.containers.internal alias) are registered by run_container.
     env_vars["OPENHOST_ROUTER_URL"] = f"http://host.docker.internal:{port}"
 
     # Zone identity info so apps can build federated auth flows
@@ -147,19 +128,13 @@ def provision_data(
 
 
 def _remove_dir(dir_path: str) -> None:
-    """Remove an app's data directory during deprovision.  Cleanup
-    failures are logged but never re-raised so they can't block the
-    higher-level deprovision flow from removing the app row from the
-    database."""
+    """Remove an app's data dir during deprovision; log-and-swallow on failure."""
     rmtree_with_sudo_fallback(dir_path, raise_on_failure=False)
 
 
 def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:
-    """Remove the app's temporary data directory (app_temp_data/{name}).
-
-    This includes the repo clone, build artifacts, runtime logs, and any
-    files the app stored under OPENHOST_APP_TEMP_DIR.  Persistent data
-    in app_data/{name} (SQLite databases) is not touched.
+    """Remove the app's temp dir (repo clone, build artefacts, logs,
+    OPENHOST_APP_TEMP_DIR contents).  Persistent data is not touched.
     """
     _remove_dir(os.path.join(temp_data_dir, "app_temp_data", app_name))
 
