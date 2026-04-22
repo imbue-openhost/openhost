@@ -231,6 +231,46 @@ class TestDoctorChecks:
         assert c.ok is False
         assert "OSError" in c.detail
 
+    def test_runtime_sentinel_check_returns_none_when_missing(self, monkeypatch, tmp_path):
+        """On dev laptops that don't have /etc/openhost/runtime the
+        sentinel check must return None so `openhost doctor` doesn't
+        report a noisy "FAIL: sentinel missing" line on every run."""
+        monkeypatch.setattr(doctor_mod, "SENTINEL_PATH", str(tmp_path / "does-not-exist"))
+        assert doctor_mod._check_runtime_sentinel() is None
+
+    def test_runtime_sentinel_check_reports_ok_when_matching(self, monkeypatch, tmp_path):
+        """On a correctly-provisioned server the sentinel check reports
+        OK with the sentinel's human-readable status message."""
+        sentinel = tmp_path / "runtime"
+        sentinel.write_text("runtime=podman\nruntime_version=1\n")
+        monkeypatch.setattr(doctor_mod, "SENTINEL_PATH", str(sentinel))
+
+        # host_prep_status reads SENTINEL_PATH by default, so patch
+        # it through a lambda so the production code path uses the
+        # tmp_path location without re-plumbing arguments.
+        from compute_space.core import runtime_sentinel as rs_mod
+
+        monkeypatch.setattr(doctor_mod, "host_prep_status", lambda: rs_mod.host_prep_status(str(sentinel)))
+        c = doctor_mod._check_runtime_sentinel()
+        assert c is not None
+        assert c.ok is True
+
+    def test_runtime_sentinel_check_reports_failure_on_mismatch(self, monkeypatch, tmp_path):
+        """If the sentinel exists but reports the wrong runtime_version
+        the check must surface a FAIL with the remediation message so
+        an operator sees it in `openhost doctor` output."""
+        sentinel = tmp_path / "runtime"
+        sentinel.write_text("runtime=podman\nruntime_version=999\n")
+        monkeypatch.setattr(doctor_mod, "SENTINEL_PATH", str(sentinel))
+
+        from compute_space.core import runtime_sentinel as rs_mod
+
+        monkeypatch.setattr(doctor_mod, "host_prep_status", lambda: rs_mod.host_prep_status(str(sentinel)))
+        c = doctor_mod._check_runtime_sentinel()
+        assert c is not None
+        assert c.ok is False
+        assert "runtime_version" in c.detail
+
     def test_run_doctor_returns_bool(self, capsys):
         result = run_doctor()
         assert isinstance(result, bool)
