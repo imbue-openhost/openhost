@@ -454,7 +454,17 @@ def drop_docker_build_cache() -> str:
     """
     cmd = ["podman", "image", "prune", "--all", "--force"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except FileNotFoundError as e:
+        # Matches the pattern in podman_available and get_container_status:
+        # missing podman must surface as a clean remediation message, not
+        # a bare FileNotFoundError traceback through the HTTP handler.
+        raise RuntimeError(PODMAN_MISSING_ERROR) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("podman image prune timed out after 120s") from e
+    except OSError as e:
+        raise RuntimeError(f"podman image prune failed with OSError: {e}") from e
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
         raise RuntimeError(output or "podman image prune failed")

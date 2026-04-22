@@ -75,7 +75,24 @@ def _check_podman() -> _Check:
     except json.JSONDecodeError:
         return _Check("Podman available", False, "podman info returned non-JSON output")
 
-    rootless = info.get("host", {}).get("security", {}).get("rootless")
+    # A future podman version could conceivably emit a JSON array or
+    # scalar instead of an object.  Guard against `.get()` on non-dicts
+    # so an unexpected format surfaces as a clean failure rather than
+    # crashing `openhost doctor` with AttributeError.
+    if not isinstance(info, dict):
+        return _Check(
+            "Podman available",
+            False,
+            f"podman info returned unexpected JSON type {type(info).__name__}",
+        )
+
+    host = info.get("host") or {}
+    if not isinstance(host, dict):
+        host = {}
+    security = host.get("security") or {}
+    if not isinstance(security, dict):
+        security = {}
+    rootless = security.get("rootless")
     if rootless is True:
         return _Check("Podman available", True, "rootless mode")
     if rootless is False:
