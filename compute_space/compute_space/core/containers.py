@@ -151,7 +151,12 @@ def podman_available() -> bool:
 
 
 def _log_path(app_name: str, temp_data_dir: str) -> str:
-    """Return the path to the build/deploy log file for an app (in temp data)."""
+    """Return the path to the build/deploy log file for an app (in temp data).
+
+    The file is named ``docker.log`` for continuity with existing
+    ansible-deployed instances whose log-collection tooling greps for
+    that filename; the contents are now podman build/run output.
+    """
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
 
 
@@ -531,8 +536,12 @@ def get_docker_logs(
         try:
             with open(log_file) as f:
                 parts.append(f.read())
-        except OSError:
-            pass
+        except OSError as e:
+            # Log but don't fail — the podman-logs portion below is
+            # still useful.  Matches the logging done for the podman
+            # logs call so an empty-looking log page is always
+            # accompanied by a journalctl trail.
+            logger.warning("Could not read build log %s: %s", log_file, e)
 
     # Live container logs
     if container_id:

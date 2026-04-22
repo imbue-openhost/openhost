@@ -172,6 +172,21 @@ class TestDoctorChecks:
         assert c.ok is False
         assert "non-JSON" in c.detail
 
+    def test_podman_check_rejects_non_dict_top_level_json(self, monkeypatch):
+        """Future podman versions could conceivably emit a JSON array
+        or scalar at the top level.  The check must handle that as a
+        clean failure rather than crashing on `.get()` with an
+        AttributeError."""
+
+        class _R:
+            returncode = 0
+            stdout = '["some", "array", "at", "top", "level"]'
+
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _R())
+        c = doctor_mod._check_podman()
+        assert c.ok is False
+        assert "unexpected JSON type" in c.detail
+
     def test_podman_check_rejects_nonzero_exit(self, monkeypatch):
         """``podman info`` returning non-zero (engine error) must surface
         as a failed check, not silently pass."""
