@@ -164,10 +164,13 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
 
 def _is_build_cache_corrupt(output: str) -> bool:
     """Return True if any line of build output matches a cache-corruption
-    pattern.  Line-based matching is important here: ``": not found"``
-    only counts when the same line also carries a sha256 digest, which
-    only happens in the missing-layer error path and not in unrelated
-    "file not found" errors from Dockerfile / base image resolution.
+    pattern.  Delegates to ``_is_build_cache_corrupt_line`` for each
+    line, which matches either an unconditional fragment
+    (``storage-driver errored``, ``layer not known``) or the specific
+    ``content digest sha256:<hex>: not found`` missing-layer regex.
+    Line-based matching matters because the ``: not found`` suffix
+    alone isn't enough — unrelated Dockerfile / base-image ``not
+    found`` errors share it and have their own remediation path.
     """
     return any(_is_build_cache_corrupt_line(line) for line in output.splitlines())
 
