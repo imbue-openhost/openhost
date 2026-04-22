@@ -15,10 +15,12 @@ files even though they share the rootless UID namespace.
 
 Security defaults applied to every container:
 
-- ``--cap-drop=ALL`` plus ``--cap-add`` for each capability listed in
-  the manifest.  The manifest validator restricts capabilities to a
+- ``--cap-drop=ALL`` plus ``--cap-add`` for each capability in
+  ``DEFAULT_CAPABILITIES`` (Docker's default baseline, needed for apps
+  written against Docker to keep working) plus each capability listed
+  in the manifest.  The manifest validator restricts capabilities to a
   rootless-safe allowlist (``SAFE_CAPABILITIES``), so anything reaching
-  here is safe to grant.
+  here is safe to grant inside the user namespace.
 - ``--device`` is only added for entries in ``SAFE_DEVICE_PATHS``; the
   manifest parser rejects everything else (``/dev/mem``, ``/dev/kmem``,
   raw block devices, etc.) before deploy.
@@ -55,6 +57,40 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 # specifically a corrupted local build cache.  The HTTP API uses this to
 # surface a "drop build cache" remediation to the user.
 BUILD_CACHE_CORRUPT_MARKER = "[BUILD_CACHE_CORRUPT]"
+
+# Baseline Linux capabilities granted to every container, matching
+# Docker's default set.  Apps written against Docker assume container-root
+# can CHOWN, override DAC, bind low ports, setuid, etc. within the
+# container — debian-packaged daemons (tor, postgres, redis, nginx,
+# rabbitmq, …) break in non-obvious ways if these are dropped.  Under
+# rootless podman's user namespace these capabilities are confined to
+# the userns and have no effect on the host kernel, so restoring them
+# costs nothing and preserves the "docker apps keep working" contract.
+#
+# Capabilities outside this set (NET_ADMIN, IPC_LOCK, SYS_CHROOT, ...)
+# must still be requested explicitly via the manifest's
+# ``[runtime.container].capabilities`` field, matching Docker's
+# ``--cap-add`` behaviour.
+DEFAULT_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "NET_BIND_SERVICE",
+        "SETFCAP",
+        "SETGID",
+        "SETPCAP",
+        "SETUID",
+        "SYS_CHROOT",
+        # Docker also grants NET_RAW, MKNOD, and AUDIT_WRITE by default.
+        # Keep them in the baseline for the same app-compat reason.
+        "NET_RAW",
+        "MKNOD",
+        "AUDIT_WRITE",
+    }
+)
 
 # Patterns in podman build output that indicate the local storage/cache
 # is in a state that can be fixed by pruning and retrying.  Matching any of
@@ -338,14 +374,19 @@ def run_container(
         # directly.
         "--add-host=host.docker.internal:host-gateway",
         "--add-host=host.containers.internal:host-gateway",
-        # Start from zero capabilities and add back only what the manifest
-        # explicitly requests.  The manifest validator rejects caps that
-        # require host privilege (SYS_ADMIN, SYS_MODULE, SYS_PTRACE, ...)
-        # so anything reaching here is safe to grant inside the user ns.
+        # Start from zero capabilities and then add back Docker's default
+        # baseline (see DEFAULT_CAPABILITIES) so apps written against
+        # Docker keep working unchanged.  The manifest's capabilities
+        # field adds further caps on top of the baseline, restricted to
+        # SAFE_CAPABILITIES by the validator.
         "--cap-drop=ALL",
         # A compromised process can't gain privileges via setuid binaries.
         "--security-opt=no-new-privileges=true",
     ]
+    # Grant the Docker-default baseline in a deterministic order so
+    # snapshot tests and operator-visible argv stay stable across runs.
+    for cap in sorted(DEFAULT_CAPABILITIES):
+        cmd.extend(["--cap-add", cap])
 
     # Mount data volumes following the logical structure from docs/data.md.
     # Every bind mount uses :idmap so host-side ownership stays sane.
@@ -380,8 +421,12 @@ def run_container(
             cmd.extend(["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/tcp"])
             cmd.extend(["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/udp"])
 
+    # Manifest-requested caps beyond the baseline.  Skip caps already in
+    # DEFAULT_CAPABILITIES to avoid duplicate --cap-add flags in the argv
+    # (podman accepts duplicates but it clutters operator-visible output).
     for cap in manifest.capabilities:
-        cmd.extend(["--cap-add", cap])
+        if cap not in DEFAULT_CAPABILITIES:
+            cmd.extend(["--cap-add", cap])
 
     for device in manifest.devices:
         cmd.extend(["--device", device])

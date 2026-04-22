@@ -21,7 +21,7 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 | `port` | integer | yes | — | Port the container listens on |
 | `command` | string | no | — | Override container CMD |
 | `extra_ports` | string[] | no | `[]` | **Deprecated.** Present entries emit a WARNING log at parse time but do not produce any port mappings.  Use `[[ports]]` instead. |
-| `capabilities` | string[] | no | `[]` | Linux capabilities to grant inside the container. Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_CAPABILITIES`); entries like `"SYS_ADMIN"` are rejected at parse time. Accepts names with or without the `CAP_` prefix. |
+| `capabilities` | string[] | no | `[]` | **Additional** Linux capabilities to grant inside the container, on top of the Docker-default baseline (CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT, NET_RAW, MKNOD, AUDIT_WRITE) that every container receives automatically. Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_CAPABILITIES`); entries like `"SYS_ADMIN"` are rejected at parse time. Accepts names with or without the `CAP_` prefix. |
 | `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/net/tun"`). Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_DEVICE_PATHS`); paths like `/dev/mem`, `/dev/kvm`, or raw block devices are rejected at parse time. |
 
 ### `[[ports]]` — optional, repeatable

@@ -366,6 +366,47 @@ def test_run_container_adds_manifest_capabilities(tmp_path, monkeypatch: pytest.
         assert pair_idx > drop_idx, "cap-drop must come before cap-add"
 
 
+def test_run_container_grants_docker_default_capabilities_by_default(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Apps with no manifest capabilities still get Docker's default set
+    (CHOWN, DAC_OVERRIDE, SETUID, etc.) so debian-packaged daemons that
+    assume container-root can override DAC on image-layer files — tor,
+    postgres, redis, nginx, rabbitmq — keep working under podman without
+    the manifest needing to enumerate every capability Docker grants
+    implicitly."""
+    from compute_space.core.containers import DEFAULT_CAPABILITIES
+
+    manifest = _basic_manifest()  # no explicit capabilities
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    drop_idx = argv.index("--cap-drop=ALL")
+    for cap in sorted(DEFAULT_CAPABILITIES):
+        pair_idx = argv.index(cap)
+        assert argv[pair_idx - 1] == "--cap-add", f"{cap}: expected --cap-add, got {argv[pair_idx - 1]!r}"
+        assert pair_idx > drop_idx, f"{cap}: --cap-drop=ALL must precede --cap-add"
+
+
+def test_run_container_does_not_duplicate_baseline_caps_from_manifest(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest that redundantly lists a baseline capability (e.g.
+    CHOWN) must not produce a second --cap-add entry for it — the
+    operator-visible argv should stay clean and match what podman
+    sees."""
+    from compute_space.core.containers import DEFAULT_CAPABILITIES
+
+    # Pick a capability that's in both the baseline and the allowlist.
+    redundant = next(iter(DEFAULT_CAPABILITIES))
+    manifest = _basic_manifest(capabilities=[redundant, "NET_ADMIN"])
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    # The redundant cap appears exactly once (from the baseline loop);
+    # NET_ADMIN appears exactly once (from the manifest loop).
+    assert argv.count(redundant) == 1, f"expected one {redundant}, got {argv.count(redundant)}"
+    assert argv.count("NET_ADMIN") == 1
+
+
 def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``manifest.devices`` entries must be passed to podman as
     ``--device <entry>`` pairs.  Symmetric to the capabilities test:
