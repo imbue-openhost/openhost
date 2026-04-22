@@ -303,11 +303,6 @@ def _run_and_capture(
     return run_cmds[0]
 
 
-# ---------------------------------------------------------------------------
-# run_container
-# ---------------------------------------------------------------------------
-
-
 def test_run_container_has_hardening_flags(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _basic_manifest()
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)

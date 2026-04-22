@@ -107,7 +107,7 @@ The router injects these environment variables into your app:
 |----------|---------|-----------------------------------------------------------------------------------------------------------------|
 | `OPENHOST_APP_NAME` | `my-app` | Your app's name, as registered with OpenHost. This will be the subdomain the app is routeable at.               |
 | `OPENHOST_APP_TOKEN` | `kF3xP_2qA-bN4...` (43-char url-safe token) | Random per-app token used to authenticate cross-app service calls                                               |
-| `OPENHOST_ROUTER_URL` | `http://host.docker.internal:8080` | internal URL of the router, used for constructing service requests                                              |
+| `OPENHOST_ROUTER_URL` | `http://host.docker.internal:8080` | internal URL of the router, used for constructing service requests. Resolves via `host.docker.internal` (kept for compatibility) or equivalently `host.containers.internal`. |
 | `OPENHOST_ZONE_DOMAIN` | `user.host.imbue.com` | The compute space's domain                                                                                      |
 | `OPENHOST_MY_REDIRECT_DOMAIN` | `my.selfhost.imbue.com` | The shared `my.*` OAuth redirect domain. This hosts a browser-local page that redirects the user to their zone. |
 | `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data`, `sqlite`, or `access_all_data` is requested   |

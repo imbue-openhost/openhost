@@ -20,9 +20,11 @@ import httpx
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
+from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
 from compute_space.core.containers import run_container
 from compute_space.core.data import provision_data
+from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -343,7 +345,10 @@ def deploy_app_background(
         storage.check_before_deploy(config)
 
         # Retry container builds for transient failures (network blip during
-        # base-image pull, temporary lock contention, etc.).
+        # base-image pull, temporary lock contention, etc.).  Cache-corrupt
+        # failures re-raise immediately because retrying can't fix a corrupt
+        # local cache — the dashboard needs to surface the "Drop Cache"
+        # remediation without first wasting 15+ seconds on futile retries.
         max_build_attempts = 3
         image_tag = ""
         for attempt in range(1, max_build_attempts + 1):
@@ -355,7 +360,9 @@ def deploy_app_background(
                     temp_data_dir=config.temporary_data_dir,
                 )
                 break
-            except RuntimeError:
+            except RuntimeError as e:
+                if BUILD_CACHE_CORRUPT_MARKER in str(e):
+                    raise
                 if attempt == max_build_attempts:
                     raise
                 logger.warning(
@@ -672,7 +679,12 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
                             pass
             if source_dir and os.path.isdir(source_dir):
                 if os.path.exists(repo_path):
-                    shutil.rmtree(repo_path)
+                    # Use the sudo-fallback helper: git clones can leave
+                    # read-only objects that bare shutil.rmtree refuses.
+                    # raise_on_failure=True so a genuinely stuck tree
+                    # surfaces as an error instead of silently leaving
+                    # the old contents for copytree to clash with.
+                    rmtree_with_sudo_fallback(repo_path, raise_on_failure=True)
                 shutil.copytree(source_dir, repo_path)
                 logger.info("Re-copied %s from %s", app_name, source_dir)
 

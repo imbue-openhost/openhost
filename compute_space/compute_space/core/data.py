@@ -147,9 +147,10 @@ def provision_data(
 
 
 def _remove_dir(dir_path: str) -> None:
-    """Remove an app's data directory.  Cleanup failures are logged but
-    never re-raised so they can't block removal of the app row from the
-    database or leave the storage guard stuck."""
+    """Remove an app's data directory during deprovision.  Cleanup
+    failures are logged but never re-raised so they can't block the
+    higher-level deprovision flow from removing the app row from the
+    database."""
     rmtree_with_sudo_fallback(dir_path, raise_on_failure=False)
 
 

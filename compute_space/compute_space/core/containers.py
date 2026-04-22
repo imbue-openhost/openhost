@@ -26,10 +26,12 @@ Security defaults applied to every container:
 
 App-facing contract: images are built from ``Dockerfile``, bind mounts
 appear at ``/data/app_data/<app>`` and the like, and the
-``OPENHOST_ROUTER_URL`` env var resolves via ``host.docker.internal``
-(kept for compatibility) or its podman-native equivalent
-``host.containers.internal``.  Both are registered as ``--add-host``
-entries pointing at the host gateway so either works.
+``OPENHOST_ROUTER_URL`` env var points at ``http://host.docker.internal:<port>``.
+Both ``host.docker.internal`` (kept for compatibility with apps written
+for the previous runtime) and ``host.containers.internal`` (podman-
+native) are registered as ``--add-host`` aliases resolving to the host
+gateway, so apps may look up either name — only the first form is
+written into the env var.
 """
 
 from __future__ import annotations
@@ -104,9 +106,12 @@ def podman_available() -> bool:
     Called from startup and from the update preflight to tell the
     difference between 'fresh host that legitimately has no running
     apps' and 'host that thinks apps are running but whose container
-    runtime is missing entirely'.  Catches FileNotFoundError so this
-    works even when podman isn't on PATH, returns False on any failure
-    (including permission errors and timeouts).
+    runtime is missing entirely'.  Returns False on any failure
+    (FileNotFoundError, timeout, OSError).  Unexpected errors (not the
+    common "binary missing" case) are logged at WARNING so an operator
+    whose probe is failing for a non-obvious reason — EPERM on the
+    binary, fd exhaustion, etc. — has a trail to follow beyond the
+    generic PODMAN_MISSING_ERROR that the caller surfaces.
     """
     try:
         result = subprocess.run(
@@ -114,7 +119,15 @@ def podman_available() -> bool:
             capture_output=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except FileNotFoundError:
+        # The common case on a Docker-era host that just self-updated;
+        # no need to spam the log for it.
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("podman --version timed out after 5s; treating podman as unavailable")
+        return False
+    except OSError as e:
+        logger.warning("podman --version failed with OSError (%s); treating podman as unavailable", e)
         return False
     return result.returncode == 0
 
@@ -402,14 +415,23 @@ def remove_image(app_name: str) -> None:
 
 
 def drop_docker_build_cache() -> str:
-    """Drop the container engine's build cache.  Returns human-readable output.
+    """Reclaim container-engine disk space.  Returns human-readable output.
 
-    Uses ``podman image prune --all --force``, which reclaims every
-    dangling and unused image layer.  That covers the large majority of
-    build-cache disk use on a rebuild-heavy host.  (Newer podman versions
+    Runs ``podman image prune --all --force``, which removes every
+    unused image (including ``openhost-<app>:latest`` images for apps
+    that aren't currently running) plus all dangling intermediate
+    layers.  This is materially broader than the old ``docker builder
+    prune --all --force`` it replaces — that cleared only BuildKit's
+    intermediate cache, not final images — but stopped-app images
+    will be rebuilt on next deploy, so the tradeoff is acceptable.
+
+    The endpoint is exposed as ``/api/drop-docker-cache`` and the
+    dashboard button is labelled "Drop Build Cache"; both names retain
+    "docker"/"build" for backward compatibility with callers that
+    were written against the Docker-era API.  (Newer podman versions
     expose a ``--build-cache`` flag specifically for the persistent
-    ``--mount=type=cache`` cache; we deliberately avoid it so the command
-    also works on the Podman 4.9 shipped with Ubuntu 24.04 LTS.)
+    ``--mount=type=cache`` cache; we deliberately avoid it so the
+    command also works on the Podman 4.9 shipped with Ubuntu 24.04 LTS.)
     """
     cmd = ["podman", "image", "prune", "--all", "--force"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))
@@ -433,7 +455,9 @@ def get_container_status(container_id: str) -> str:
     missing from PATH, timeout, OSError), so callers can distinguish
     "podman reported state X" from "couldn't ask podman at all."  Never
     raises: missing podman during a self-update transition must not
-    crash the caller.
+    crash the caller.  Unexpected errors (timeout, OSError) are logged
+    at WARNING so operators have a trail; FileNotFoundError is silent
+    because the caller handles that case explicitly.
     """
     try:
         result = subprocess.run(
@@ -442,7 +466,13 @@ def get_container_status(container_id: str) -> str:
             text=True,
             timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except FileNotFoundError:
+        return "unknown"
+    except subprocess.TimeoutExpired:
+        logger.warning("podman inspect timed out after 10s for %s", container_id)
+        return "unknown"
+    except OSError as e:
+        logger.warning("podman inspect failed for %s with OSError: %s", container_id, e)
         return "unknown"
     if result.returncode != 0:
         return "unknown"

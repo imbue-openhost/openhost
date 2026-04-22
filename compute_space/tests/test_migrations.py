@@ -12,15 +12,14 @@ from compute_space.db.migrations import migrate
 from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
 from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
 
+from .conftest import _FakeApp
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
 SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
-
-
-from .conftest import _FakeApp  # noqa: E402
 
 
 def _fresh_db(path):

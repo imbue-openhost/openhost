@@ -7,22 +7,18 @@ updates" endpoint consults this file (alongside a live
 to decide whether to warn the operator that clicking Update would
 produce a router whose runtime prerequisites aren't satisfied.
 
-The sentinel is deliberately NOT used as a hard startup gate: during
-the initial Docker → podman transition the pre-upgrade router is
-running pre-PR code that knows nothing about sentinels, so any
-file-based check would be bypassed anyway.  The startup-side
-protection for that transition lives in
-``core.startup._check_app_status`` via the live podman probe, which
-refuses to attempt a rebuild when podman is missing and instead
-marks each affected app with a clear remediation message so the
-dashboard stays reachable.
+The sentinel is used as a soft signal only, not a hard startup gate:
+the live podman probe in ``core.containers.podman_available`` is the
+authoritative check.  ``host_prep_status()`` is suitable for the
+settings-UI banner and for the ``/api/settings/update_repo_state``
+preflight, where the goal is to warn or refuse before committing to
+an upgrade — not to prevent the router from booting.
 
-Where the sentinel IS useful: future upgrades that bump
-``runtime_version`` without changing what binary is on PATH (a new
-sysctl, a new sudoers rule, a new kernel feature, an allowlist
-change).  By then the operator is already running code that knows
-how to read it, and the settings-UI banner can warn them before
-they click Update.
+The sentinel's primary value is signalling runtime_version skew for
+host-side changes that wouldn't otherwise be detectable by probing
+the binary: a new sysctl, a new sudoers rule, a new kernel feature
+prerequisite, or an allowlist change that the router code expects
+the host to already honour.
 """
 
 from __future__ import annotations
