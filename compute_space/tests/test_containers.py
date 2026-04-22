@@ -241,6 +241,25 @@ def test_run_container_adds_manifest_capabilities(tmp_path, monkeypatch: pytest.
         assert pair_idx > drop_idx, "cap-drop must come before cap-add"
 
 
+def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``manifest.devices`` entries must be passed to podman as
+    ``--device <entry>`` pairs.  Symmetric to the capabilities test:
+    the manifest validator restricts devices to SAFE_DEVICE_PATHS at
+    parse time, and run_container then forwards every entry unchanged.
+    A regression that silently dropped device passthrough would break
+    VPN-style apps (/dev/net/tun) and FUSE filesystems silently, so
+    pin the exact argv wiring."""
+    manifest = _basic_manifest(devices=["/dev/net/tun", "/dev/fuse"])
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    for device in ("/dev/net/tun", "/dev/fuse"):
+        pair_idx = argv.index(device)
+        assert argv[pair_idx - 1] == "--device", (
+            f"device {device!r} must appear as the value of a --device flag, "
+            f"got argv[{pair_idx - 1}]={argv[pair_idx - 1]!r}"
+        )
+
+
 def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With access_all_data, the app sees /data/app_data/ and
     /data/app_temp_data/ as whole-namespace parent mounts, not just its

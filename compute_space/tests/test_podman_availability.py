@@ -86,9 +86,10 @@ def test_podman_available_returns_false_on_nonzero_exit(monkeypatch: pytest.Monk
 
 
 def test_get_container_status_returns_unknown_on_filenotfound(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Before this PR, a missing podman binary would propagate
-    FileNotFoundError and crash _check_app_status.  Now it degrades to
-    ``unknown`` so the caller can handle it."""
+    """A missing podman binary must return ``"unknown"`` rather than
+    propagating FileNotFoundError, so ``_check_app_status`` can detect
+    the condition and mark apps with the proper remediation instead
+    of crashing the router."""
 
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         raise FileNotFoundError(2, "No such file or directory: 'podman'")

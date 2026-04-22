@@ -63,4 +63,5 @@ jobs:
             compute_space/tests/test_manifest.py \
             compute_space/tests/test_runtime_sentinel.py \
             compute_space/tests/test_podman_availability.py \
+            compute_space/tests/test_settings_host_prep.py \
             -v

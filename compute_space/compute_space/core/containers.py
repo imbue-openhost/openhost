@@ -377,12 +377,19 @@ def drop_docker_build_cache() -> str:
 
 
 def get_container_status(container_id: str) -> str:
-    """Return ``"running"``, ``"exited"``, or ``"unknown"``.
+    """Return the podman-reported state of a container.
 
-    Never raises: ``podman`` being missing from PATH (the self-update
-    transition case, before ansible has been re-run) must not cause
-    the caller to crash — it shows up as ``"unknown"`` and the caller
-    decides how to surface that.
+    Typical values are ``"running"`` and ``"exited"``; podman may also
+    report ``"created"``, ``"paused"``, ``"stopped"``, ``"dead"``,
+    ``"removing"``, or ``"configured"`` depending on engine version
+    and container lifecycle.  Callers that only care about "is it up?"
+    should compare against ``"running"`` specifically.
+
+    Returns ``"unknown"`` on any error (container not found, podman
+    missing from PATH, timeout, OSError), so callers can distinguish
+    "podman reported state X" from "couldn't ask podman at all."  Never
+    raises: missing podman during a self-update transition must not
+    crash the caller.
     """
     try:
         result = subprocess.run(
