@@ -2,6 +2,8 @@
 
 import pytest
 
+from compute_space.core.manifest import SAFE_CAPABILITIES
+from compute_space.core.manifest import SAFE_DEVICE_PATHS
 from compute_space.core.manifest import parse_manifest_from_string
 
 MINIMAL = """\
@@ -315,39 +317,13 @@ class TestCapabilitiesValidation:
         manifest = parse_manifest_from_string(toml)
         assert manifest.capabilities == ["NET_ADMIN"]
 
-    @pytest.mark.parametrize(
-        "cap",
-        [
-            # Representative spot-check across the SAFE_CAPABILITIES
-            # allowlist families: networking, file ownership, process
-            # control, device nodes, IPC, and chroot.  A typo in any
-            # frozenset entry would silently turn "safe" into "not
-            # safe" and reject legitimate manifests — this catches it.
-            "NET_ADMIN",
-            "NET_RAW",
-            "NET_BIND_SERVICE",
-            "NET_BROADCAST",
-            "CHOWN",
-            "DAC_OVERRIDE",
-            "DAC_READ_SEARCH",
-            "FOWNER",
-            "FSETID",
-            "SETFCAP",
-            "KILL",
-            "SETUID",
-            "SETGID",
-            "SETPCAP",
-            "MKNOD",
-            "AUDIT_WRITE",
-            "IPC_LOCK",
-            "IPC_OWNER",
-            "SYS_CHROOT",
-        ],
-    )
+    @pytest.mark.parametrize("cap", sorted(SAFE_CAPABILITIES))
     def test_every_safe_cap_is_accepted(self, cap):
-        """Every entry in SAFE_CAPABILITIES must actually parse.  The
-        allowlist is hand-maintained; this test is the guard against a
-        typo turning an intended-safe cap into an always-rejected one."""
+        """Every entry in SAFE_CAPABILITIES must actually parse.  By
+        parametrising directly on the production frozenset, adding a
+        new capability automatically adds a corresponding test case —
+        a typo in the frozenset will fail this test with the exact
+        unparseable entry as the pytest parameter id."""
         toml = MINIMAL + f'capabilities = ["{cap}"]\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.capabilities == [cap]
@@ -393,32 +369,13 @@ class TestDevicesValidation:
         manifest = parse_manifest_from_string(toml)
         assert manifest.devices == ["/dev/net/tun"]
 
-    @pytest.mark.parametrize(
-        "device",
-        [
-            # Spot-check across SAFE_DEVICE_PATHS families: VPN/TAP,
-            # entropy, null/zero sinks, FUSE, and representative samples
-            # from each of the tty families.  A typo in any entry of the
-            # hand-maintained allowlist would silently reject legitimate
-            # device-passthrough manifests without this test tripping.
-            "/dev/net/tun",
-            "/dev/random",
-            "/dev/urandom",
-            "/dev/null",
-            "/dev/zero",
-            "/dev/fuse",
-            "/dev/ttyS0",
-            "/dev/ttyS7",
-            "/dev/ttyUSB0",
-            "/dev/ttyUSB7",
-            "/dev/ttyACM0",
-            "/dev/ttyACM7",
-        ],
-    )
+    @pytest.mark.parametrize("device", sorted(SAFE_DEVICE_PATHS))
     def test_every_safe_device_is_accepted(self, device):
-        """Every entry in SAFE_DEVICE_PATHS must actually parse.  Guard
-        against allowlist typos turning intended-safe device paths into
-        always-rejected ones."""
+        """Every entry in SAFE_DEVICE_PATHS must actually parse.  By
+        parametrising directly on the production frozenset, adding a
+        new device automatically adds a corresponding test case, and
+        a typo in the frozenset will fail this test with the exact
+        unparseable path as the pytest parameter id."""
         toml = MINIMAL + f'devices = ["{device}"]\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.devices == [device]
