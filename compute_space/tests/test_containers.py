@@ -154,6 +154,30 @@ def test_build_image_generic_failure_does_not_use_cache_marker(
     assert "Dockerfile not found" in msg
 
 
+def test_build_image_non_streaming_path_inspects_stdout_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The non-streaming build path (temp_data_dir=None) concatenates
+    stdout and stderr before running the cache-corrupt check so it
+    catches corruption indicators regardless of which channel podman
+    emits them on.  Pin this by putting the corruption marker in
+    stdout only — a regression that inspected only stderr would miss
+    it and produce a generic build-failure error instead of the
+    'Drop Cache' remediation marker.
+    """
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(
+            1,
+            stdout="error: content digest sha256:deadbeef: not found\n",
+            stderr="",
+        )
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
+
+
 def test_build_image_streaming_path_reaps_child_on_timeout(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression guard for the zombie-safety fix: when proc.wait(timeout=
     300) raises TimeoutExpired in the streaming path, build_image must

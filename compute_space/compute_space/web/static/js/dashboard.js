@@ -104,7 +104,10 @@ function restartRouter() {
 }
 
 function dropBuildCache() {
-  if (!confirm('Drop container build cache? Running containers will not be stopped.')) return;
+  if (!confirm(
+    'Drop container build cache?\n\n' +
+    'Running containers will not be stopped, but images for stopped apps will be removed and rebuilt on next deploy.'
+  )) return;
 
   var btn = document.getElementById('drop-build-cache-btn');
   var msg = document.getElementById('drop-build-cache-msg');

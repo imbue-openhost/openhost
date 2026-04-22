@@ -259,8 +259,9 @@ def _bind_mount_arg(host_path: str, container_path: str, *, read_only: bool = Fa
 
     Every bind mount uses ``:idmap`` so container-root writes land on disk
     owned by the host ``host`` user (translated by the idmapped mount) rather
-    than by the mapped subuid.  Read-only mounts combine ``:idmap`` with
-    ``:ro``.
+    than by the mapped subuid.  Read-only mounts use ``:ro,idmap``.  Podman
+    parses the comma-separated options order-independently; the specific
+    rendering below is the canonical one we emit.
     """
     options = "idmap"
     if read_only:
