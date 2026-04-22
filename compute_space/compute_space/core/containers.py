@@ -72,7 +72,7 @@ _BUILD_CACHE_CORRUPT_FRAGMENTS = (
 # operator has a single, greppable remediation string.
 PODMAN_MISSING_ERROR = (
     "podman runtime not available — run `ansible-playbook ansible/setup.yml` "
-    "(or at minimum `ansible-playbook ansible/tasks/podman.yml`) on this host."
+    "on this host to install and configure rootless podman."
 )
 
 

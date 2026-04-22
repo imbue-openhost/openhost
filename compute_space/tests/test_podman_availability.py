@@ -110,12 +110,17 @@ def test_get_container_status_returns_unknown_on_timeout(monkeypatch: pytest.Mon
 # ---------------------------------------------------------------------------
 
 
-def _insert_app(db_path: str, name: str, status: str, container_id: str | None) -> None:
+def _insert_app(db_path: str, name: str, status: str, container_id: str | None, *, local_port: int) -> None:
+    """Insert a minimal apps row.  ``local_port`` is required and must be
+    unique within each test's DB (the schema enforces a UNIQUE constraint);
+    callers pass explicit integers rather than deriving from ``hash(name)``
+    because Python's process-random string hashing made that derivation
+    flaky across runs due to collisions modulo 1000."""
     db = sqlite3.connect(db_path)
     try:
         db.execute(
             "INSERT INTO apps (name, version, repo_path, local_port, status, container_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, "1.0", f"/repo/{name}", 9000 + hash(name) % 1000, status, container_id),
+            (name, "1.0", f"/repo/{name}", local_port, status, container_id),
         )
         db.commit()
     finally:
@@ -141,12 +146,12 @@ def test_check_app_status_marks_running_apps_error_when_podman_missing(
     the dashboard stays up, and no rebuild is attempted."""
     config = _make_test_config(tmp_path, port=18500)
     _init_schema(config.db_path)
-    _insert_app(config.db_path, "notes", "running", "docker-id-1")
-    _insert_app(config.db_path, "wiki", "starting", "docker-id-2")
-    _insert_app(config.db_path, "blog", "building", None)
+    _insert_app(config.db_path, "notes", "running", "docker-id-1", local_port=9100)
+    _insert_app(config.db_path, "wiki", "starting", "docker-id-2", local_port=9101)
+    _insert_app(config.db_path, "blog", "building", None, local_port=9102)
     # An app already in 'stopped' should NOT be touched — only
     # running/starting/building apps are the self-update victims.
-    _insert_app(config.db_path, "archive", "stopped", None)
+    _insert_app(config.db_path, "archive", "stopped", None, local_port=9103)
 
     # Simulate podman missing.  Patch at the consumption site in startup_mod
     # because it imported the name directly into its namespace.

@@ -89,8 +89,7 @@ def _read_sentinel(path: str) -> HostPrepStatus:
             message=(
                 f"Host runtime sentinel {path} is missing.  This build of the "
                 f"router expects the host to have been provisioned by "
-                f"`ansible-playbook ansible/setup.yml` (or at minimum "
-                f"`ansible/tasks/podman.yml`)."
+                f"`ansible-playbook ansible/setup.yml`."
             ),
         )
     try:
@@ -114,8 +113,7 @@ def _read_sentinel(path: str) -> HostPrepStatus:
             message=(
                 f"Host runtime sentinel {path} reports runtime={runtime!r}, "
                 f"but this build requires runtime={EXPECTED_RUNTIME!r}.  Run "
-                f"`ansible-playbook ansible/setup.yml` (or "
-                f"`ansible/tasks/podman.yml`) on this host to migrate."
+                f"`ansible-playbook ansible/setup.yml` on this host to migrate."
             ),
         )
 
