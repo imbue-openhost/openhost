@@ -150,10 +150,15 @@ async def update_repo_state() -> ResponseReturnValue:
         payload.update(prep)
         return jsonify(payload), 409
 
-    ref = await get_current_ref(config.openhost_repo_path)
     try:
+        ref = await get_current_ref(config.openhost_repo_path)
         await hard_checkout_and_validate(config.openhost_repo_path, ref)
     except Exception as e:
+        # Wrap both the ref lookup and the checkout: get_current_ref
+        # can raise git.InvalidGitRepositoryError / NoSuchPathError on
+        # a missing or malformed openhost_repo_path, and those must
+        # surface as structured JSON errors rather than raw 500
+        # tracebacks through the HTTP handler.
         return jsonify({"ok": False, "error": repr(e)}), 500
     return jsonify({"ok": True})
 
