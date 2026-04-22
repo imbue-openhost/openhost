@@ -56,6 +56,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 # surface a "drop build cache" remediation to the user.
 BUILD_CACHE_CORRUPT_MARKER = "[BUILD_CACHE_CORRUPT]"
 
+# Legacy marker that still appears in error_message columns written by
+# older router versions.  The status endpoint treats both markers as
+# equivalent so the "drop cache" UI keeps firing for rows that predate
+# the rename.  Exported so callers search by symbol, not by string.
+LEGACY_BUILD_CACHE_CORRUPT_MARKER = "[CACHE_CORRUPT]"
+
 # Patterns in podman build output that indicate the local storage/cache
 # is in a state that can be fixed by pruning and retrying.  Matching any of
 # these triggers the BUILD_CACHE_CORRUPT_MARKER path in build_image().
@@ -313,10 +319,12 @@ def run_container(
         f"--memory={manifest.memory_mb}m",
         f"--cpus={manifest.cpu_millicores / 1000.0}",
         "--restart=unless-stopped",
-        # Make every app reachable via both the historical Docker-specific
-        # alias and Podman's native one.  The OPENHOST_ROUTER_URL env var
-        # passed to apps points at host.docker.internal so manifests written
-        # for the old runtime keep working unchanged.
+        # Register both hostnames as aliases for the host gateway so the
+        # in-container OPENHOST_ROUTER_URL lookup works.  The env var
+        # points at host.docker.internal (preserved for app-level
+        # compatibility); host.containers.internal is podman's native
+        # alias and resolves to the same gateway for apps that use it
+        # directly.
         "--add-host=host.docker.internal:host-gateway",
         "--add-host=host.containers.internal:host-gateway",
         # Start from zero capabilities and add back only what the manifest
@@ -422,20 +430,18 @@ def drop_docker_build_cache() -> str:
     """Reclaim container-engine disk space.  Returns human-readable output.
 
     Runs ``podman image prune --all --force``, which removes every
-    unused image (including ``openhost-<app>:latest`` images for apps
-    that aren't currently running) plus all dangling intermediate
-    layers.  This is materially broader than the old ``docker builder
-    prune --all --force`` it replaces — that cleared only BuildKit's
-    intermediate cache, not final images — but stopped-app images
-    will be rebuilt on next deploy, so the tradeoff is acceptable.
+    unused image — including ``openhost-<app>:latest`` images for apps
+    that aren't currently running — plus all dangling intermediate
+    layers.  Stopped-app images will be rebuilt on next deploy.
 
-    The endpoint is exposed as ``/api/drop-docker-cache`` and the
-    dashboard button is labelled "Drop Build Cache"; both names retain
-    "docker"/"build" for backward compatibility with callers that
-    were written against the Docker-era API.  (Newer podman versions
-    expose a ``--build-cache`` flag specifically for the persistent
-    ``--mount=type=cache`` cache; we deliberately avoid it so the
-    command also works on the Podman 4.9 shipped with Ubuntu 24.04 LTS.)
+    The function name and the HTTP endpoint path ``/api/drop-docker-
+    cache`` both keep "docker" in the identifier for backward
+    compatibility with external callers of the API.  On Podman 4.9
+    (Ubuntu 24.04 LTS) this command does not accept ``--build-cache``,
+    so the persistent ``--mount=type=cache`` cache is not reclaimed;
+    on newer podman versions ``podman system prune --volumes`` would
+    cover more ground but we stick with ``image prune`` for LTS
+    portability.
     """
     cmd = ["podman", "image", "prune", "--all", "--force"]
     logger.info("Dropping container build cache: %s", " ".join(cmd))

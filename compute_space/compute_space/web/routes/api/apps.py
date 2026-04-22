@@ -23,6 +23,7 @@ from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
+from compute_space.core.containers import LEGACY_BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
@@ -217,9 +218,9 @@ def app_status(app_name: str) -> ResponseReturnValue:
     error_msg = app_row["error_message"]
     error_kind = None
     # error_message may carry either the current BUILD_CACHE_CORRUPT_MARKER
-    # or the legacy ``[CACHE_CORRUPT]`` marker; both trigger the same
-    # 'drop cache and rebuild' remediation in the UI.
-    if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or "[CACHE_CORRUPT]" in error_msg):
+    # or the legacy one; both trigger the same 'drop cache and rebuild'
+    # remediation in the UI.
+    if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or LEGACY_BUILD_CACHE_CORRUPT_MARKER in error_msg):
         error_kind = "build_cache_corrupt"
         error_msg = "Container build cache is corrupted."
     return jsonify({"status": app_row["status"], "error": error_msg, "error_kind": error_kind})

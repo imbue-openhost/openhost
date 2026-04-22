@@ -1,11 +1,12 @@
 """Host-runtime sentinel file.
 
-``tasks/podman.yml`` writes ``/etc/openhost/runtime`` with ``runtime=podman``
-plus a ``runtime_version`` integer.  The dashboard's "check for
-updates" endpoint consults this file (alongside a live
-``podman --version`` probe, see ``core.containers.podman_available``)
-to decide whether to warn the operator that clicking Update would
-produce a router whose runtime prerequisites aren't satisfied.
+``ansible/tasks/podman.yml`` writes ``/etc/openhost/runtime`` with
+``runtime=podman`` plus a ``runtime_version`` integer.  The
+dashboard's "check for updates" endpoint consults this file
+(alongside a live ``podman --version`` probe, see
+``core.containers.podman_available``) to decide whether to warn the
+operator that clicking Update would produce a router whose runtime
+prerequisites aren't satisfied.
 
 The sentinel is used as a soft signal only, not a hard startup gate:
 the live podman probe in ``core.containers.podman_available`` is the
@@ -36,7 +37,7 @@ SENTINEL_PATH: Final[str] = "/etc/openhost/runtime"
 # What the currently-running router code expects.  Bump the version
 # whenever a host-side change ships that existing hosts need to adopt
 # before their next router restart (new package, new sysctl, new
-# sudoers rule, etc.) and update ``tasks/podman.yml`` to write the
+# sudoers rule, etc.) and update ``ansible/tasks/podman.yml`` to write the
 # new value.
 EXPECTED_RUNTIME: Final[str] = "podman"
 EXPECTED_RUNTIME_VERSION: Final[int] = 1
@@ -89,7 +90,14 @@ def _read_sentinel(path: str) -> HostPrepStatus:
             ),
         )
     try:
-        with open(path) as f:
+        # Explicitly use utf-8 with errors="replace" so a corrupted or
+        # accidentally-binary sentinel doesn't raise UnicodeDecodeError
+        # (which isn't an OSError and would otherwise propagate through
+        # host_prep_status's "never raises" contract into request
+        # handlers).  Replacement characters will still produce a
+        # parse miss, which surfaces as ``reason="wrong_runtime"``
+        # with an actionable message.
+        with open(path, encoding="utf-8", errors="replace") as f:
             contents = f.read()
     except OSError as e:
         return HostPrepStatus(

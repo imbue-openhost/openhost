@@ -1,3 +1,5 @@
+import asyncio
+
 import git
 from quart import Blueprint
 from quart import jsonify
@@ -117,8 +119,13 @@ async def check_for_updates() -> ResponseReturnValue:
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
 
+    # _host_prep_payload shells out to `podman --version` (up to 5s) and
+    # stats /etc/openhost/runtime; offload both to a worker thread so
+    # they don't block the hypercorn event loop and starve other
+    # requests under concurrent load.
+    prep = await asyncio.to_thread(_host_prep_payload)
     payload: dict[str, object] = {"ok": True, "state": str(state)}
-    payload.update(_host_prep_payload())
+    payload.update(prep)
     return jsonify(payload)
 
 
@@ -135,7 +142,9 @@ async def update_repo_state() -> ResponseReturnValue:
     """
     config = get_config()
 
-    prep = _host_prep_payload()
+    # Offload the blocking podman probe to a worker thread (see
+    # check_for_updates for the same pattern).
+    prep = await asyncio.to_thread(_host_prep_payload)
     if not prep["host_prep_ok"]:
         payload: dict[str, object] = {"ok": False, "error": prep["host_prep_message"]}
         payload.update(prep)
