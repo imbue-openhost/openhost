@@ -18,6 +18,7 @@ from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy import text
 from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from compute_space.config import get_config
 from compute_space.core.apps import RESERVED_PATHS
@@ -40,6 +41,7 @@ from compute_space.core.ports import check_port_available
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
+from compute_space.db import get_engine
 from compute_space.db import get_session
 from compute_space.db.models import App
 from compute_space.db.models import AppDatabase
@@ -401,6 +403,38 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     return jsonify({"ok": True})
 
 
+async def _rename_app_in_db(engine: AsyncEngine, app_name: str, new_name: str) -> None:
+    """Rename an app and cascade the rename across FK-referencing child tables.
+
+    FKs on children are declared ``ON DELETE CASCADE`` but not ``ON UPDATE CASCADE``,
+    so we disable the FK check for the duration of the rename and update each table
+    explicitly. The PRAGMA must land outside a transaction — SQLite silently
+    ignores ``PRAGMA foreign_keys`` inside an active txn — so we use a dedicated
+    connection in AUTOCOMMIT isolation.
+    """
+    async with engine.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text("PRAGMA foreign_keys=OFF"))
+        await conn.execute(
+            update(App)
+            .where(App.name == app_name)
+            .values(name=new_name, repo_path=func.replace(App.repo_path, f"/{app_name}/", f"/{new_name}/"))
+        )
+        await conn.execute(update(AppDatabase).where(AppDatabase.app_name == app_name).values(app_name=new_name))
+        await conn.execute(update(AppToken).where(AppToken.app_name == app_name).values(app_name=new_name))
+        await conn.execute(
+            update(ServiceProvider).where(ServiceProvider.app_name == app_name).values(app_name=new_name)
+        )
+        await conn.execute(update(Permission).where(Permission.consumer_app == app_name).values(consumer_app=new_name))
+        await conn.execute(update(AppPortMapping).where(AppPortMapping.app_name == app_name).values(app_name=new_name))
+        await conn.execute(
+            update(AppDatabase)
+            .where(AppDatabase.app_name == new_name)
+            .values(db_path=func.replace(AppDatabase.db_path, f"/{app_name}/", f"/{new_name}/"))
+        )
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 @api_apps_bp.route("/rename_app/<app_name>", methods=["POST"])
 @login_required
 async def rename_app(app_name: str) -> ResponseReturnValue:
@@ -444,29 +478,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
         if os.path.exists(old_dir) and not os.path.exists(new_dir):
             os.rename(old_dir, new_dir)
 
-    # Rename the app. Cascades via FK ON UPDATE aren't defined, so update each
-    # referencing table explicitly. FKs are toggled off so the parent row can be
-    # renamed before child tables get updated.
-    await session.execute(text("PRAGMA foreign_keys=OFF"))
-    await session.execute(
-        update(App)
-        .where(App.name == app_name)
-        .values(name=new_name, repo_path=func.replace(App.repo_path, f"/{app_name}/", f"/{new_name}/"))
-    )
-    await session.execute(update(AppDatabase).where(AppDatabase.app_name == app_name).values(app_name=new_name))
-    await session.execute(update(AppToken).where(AppToken.app_name == app_name).values(app_name=new_name))
-    await session.execute(
-        update(ServiceProvider).where(ServiceProvider.app_name == app_name).values(app_name=new_name)
-    )
-    await session.execute(update(Permission).where(Permission.consumer_app == app_name).values(consumer_app=new_name))
-    await session.execute(update(AppPortMapping).where(AppPortMapping.app_name == app_name).values(app_name=new_name))
-    await session.execute(
-        update(AppDatabase)
-        .where(AppDatabase.app_name == new_name)
-        .values(db_path=func.replace(AppDatabase.db_path, f"/{app_name}/", f"/{new_name}/"))
-    )
-    await session.commit()
-    await session.execute(text("PRAGMA foreign_keys=ON"))
+    await _rename_app_in_db(get_engine(), app_name, new_name)
 
     if was_running:
         await start_app_process(new_name, session, config)
