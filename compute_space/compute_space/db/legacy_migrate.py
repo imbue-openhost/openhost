@@ -87,7 +87,7 @@ def migrate(db: sqlite3.Connection) -> None:
     cursor = db.execute("PRAGMA table_info(apps)")
     columns = {row[1] for row in cursor.fetchall()}
     if not columns:
-        return  # Fresh DB — table doesn't exist yet, schema.sql will create it
+        return  # Fresh DB — apps table doesn't exist; yoyo migration 0001 will create it
     if "public_paths" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN public_paths TEXT NOT NULL DEFAULT '[]'")
         db.commit()
