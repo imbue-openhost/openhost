@@ -6,12 +6,17 @@ from quart import render_template
 from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
+from sqlalchemy import select
 
 from compute_space.config import get_config
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.manifest import parse_manifest_from_string
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import App
+from compute_space.db.models import AppDatabase
+from compute_space.db.models import AppPortMapping
+from compute_space.db.models import Permission
 from compute_space.web.middleware import login_required
 
 apps_bp = Blueprint("apps", __name__)
@@ -24,8 +29,8 @@ apps_bp = Blueprint("apps", __name__)
 @apps_bp.route("/dashboard")
 @login_required
 async def dashboard() -> str:
-    db = get_db()
-    apps_list = db.execute("SELECT * FROM apps ORDER BY name").fetchall()
+    session = get_session()
+    apps_list = (await session.execute(select(App).order_by(App.name))).scalars().all()
     return await render_template("dashboard.html", apps=apps_list)
 
 
@@ -33,29 +38,35 @@ async def dashboard() -> str:
 @login_required
 async def app_detail(app_name: str) -> str | tuple[str, int]:
     config = get_config()
-    db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+    session = get_session()
+    app_row = (await session.execute(select(App).where(App.name == app_name))).scalar_one_or_none()
     if not app_row:
         return "App not found", 404
-    databases = db.execute("SELECT * FROM app_databases WHERE app_name = ?", (app_name,)).fetchall()
-    port_mappings = db.execute(
-        "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_name = ? ORDER BY label",
-        (app_name,),
-    ).fetchall()
-    permissions = db.execute(
-        "SELECT consumer_app, permission_key FROM permissions WHERE consumer_app = ? ORDER BY permission_key",
-        (app_name,),
-    ).fetchall()
-    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["docker_container_id"])
+    databases = (await session.execute(select(AppDatabase).where(AppDatabase.app_name == app_name))).scalars().all()
+    port_mappings = (
+        await session.execute(
+            select(AppPortMapping.label, AppPortMapping.container_port, AppPortMapping.host_port)
+            .where(AppPortMapping.app_name == app_name)
+            .order_by(AppPortMapping.label)
+        )
+    ).all()
+    permissions = (
+        await session.execute(
+            select(Permission.consumer_app, Permission.permission_key)
+            .where(Permission.consumer_app == app_name)
+            .order_by(Permission.permission_key)
+        )
+    ).all()
+    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row.docker_container_id)
     next_url = request.args.get("next", "")
 
     # Compute permissions the manifest declares but that haven't been granted yet,
     # so the owner can grant them retroactively (e.g. after installing the secrets app).
-    granted_keys = {row["permission_key"] for row in permissions}
-    missing_permissions: list[dict[str, str]] = []
-    if app_row["manifest_raw"]:
+    granted_keys = {row.permission_key for row in permissions}
+    missing_permissions: list[dict[str, str | bool]] = []
+    if app_row.manifest_raw:
         try:
-            manifest = parse_manifest_from_string(app_row["manifest_raw"])
+            manifest = parse_manifest_from_string(app_row.manifest_raw)
             for svc_name, keys in manifest.requires_services.items():
                 for key_spec in keys:
                     perm_key = f"{svc_name}/{key_spec['key']}"
@@ -87,7 +98,7 @@ async def app_detail(app_name: str) -> str | tuple[str, int]:
 
 @apps_bp.route("/handle_invite")
 @login_required
-def handle_invite() -> ResponseReturnValue:
+async def handle_invite() -> ResponseReturnValue:
     """Route invite links: if the app is installed, redirect to it; otherwise install first."""
     app_name = request.args.get("app", "")
     repo_url = request.args.get("repo", "")
@@ -95,11 +106,11 @@ def handle_invite() -> ResponseReturnValue:
     invite_params = {k: v for k, v in request.args.items() if k not in ("app", "repo")}
     invite_qs = urllib.parse.urlencode(invite_params)
 
-    db = get_db()
-    app_row = db.execute("SELECT name, status FROM apps WHERE name = ?", (app_name,)).fetchone()
+    session = get_session()
+    app_row = (await session.execute(select(App.name, App.status).where(App.name == app_name))).first()
 
     if app_row:
-        if app_row["status"] == "running":
+        if app_row.status == "running":
             ext_host = request.headers.get("X-Forwarded-Host", request.host)
             proto = request.headers.get("X-Forwarded-Proto", request.scheme)
             return redirect(f"{proto}://{app_name}.{ext_host}/handle_invite?{invite_qs}")

@@ -1,7 +1,7 @@
 import base64
 import json
-import sqlite3
 import urllib.parse
+from typing import Protocol
 
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_module
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -14,18 +14,29 @@ from quart import render_template
 from quart import request
 from quart import websocket
 from quart.typing import ResponseReturnValue
+from sqlalchemy import select
 
 from compute_space.config import get_config
 from compute_space.core import auth
 from compute_space.core import identity
 from compute_space.core.logging import logger
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import App
 from compute_space.web.middleware import _try_refresh
 from compute_space.web.middleware import login_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
 
 proxy_bp = Blueprint("proxy", __name__)
+
+
+class _AppRouting(Protocol):
+    """Minimal shape a proxied app row needs to satisfy."""
+
+    name: str
+    local_port: int
+    status: str
+    public_paths: str | None
 
 
 def _parse_app_from_host(host: str) -> str | None:
@@ -49,21 +60,17 @@ def _parse_app_from_host(host: str) -> str | None:
     return None
 
 
-def _find_app_by_name(name: str) -> sqlite3.Row | None:
-    row: sqlite3.Row | None = (
-        get_db()
-        .execute(
-            "SELECT name, local_port, status, public_paths FROM apps WHERE name = ?",
-            (name,),
-        )
-        .fetchone()
-    )
-    return row
+async def _find_app_by_name(name: str) -> _AppRouting | None:
+    session = get_session()
+    row = (
+        await session.execute(select(App.name, App.local_port, App.status, App.public_paths).where(App.name == name))
+    ).first()
+    return row  # narrow Row tuple satisfies _AppRouting
 
 
-def _is_public_path(app_row: sqlite3.Row, request_path: str, base_path: str) -> bool:
+def _is_public_path(app_row: _AppRouting, request_path: str, base_path: str) -> bool:
     rel_path = request_path[len(base_path) :] if base_path else request_path
-    public_paths = json.loads(app_row["public_paths"] or "[]")
+    public_paths = json.loads(app_row.public_paths or "[]")
     return any(rel_path == pp or rel_path.startswith(pp.rstrip("/") + "/") for pp in public_paths)
 
 
@@ -193,21 +200,21 @@ async def catch_all(path: str) -> ResponseReturnValue:
 
     app_subdomain = _parse_app_from_host(request.host)
     if app_subdomain:
-        app_row = _find_app_by_name(app_subdomain)
+        app_row = await _find_app_by_name(app_subdomain)
         if not app_row:
             return Response(f"App '{app_subdomain}' not found", status=404)
         return await _proxy_to_app(app_row, request_path, base_path="")
 
     segments = path.split("/", 1)
     if segments and segments[0]:
-        app_row = _find_app_by_name(segments[0])
+        app_row = await _find_app_by_name(segments[0])
         if app_row:
             return await _proxy_to_app(app_row, request_path, base_path=f"/{segments[0]}")
 
     return "Not found", 404
 
 
-async def _proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: str) -> Response:
+async def _proxy_to_app(app_row: _AppRouting, request_path: str, base_path: str) -> Response:
     """Auth check + proxy request to an app."""
     new_access_token = None
     claims = await auth.get_current_user_from_request(request)
@@ -226,7 +233,7 @@ async def _proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: str)
 
     response = await proxy_request(
         request,
-        app_row["local_port"],
+        app_row.local_port,
         base_path,
         extra_headers=_identity_headers(claims),  # type: ignore[arg-type]
         timeout=timeout,
@@ -254,22 +261,22 @@ async def ws_catch_all(path: str) -> None:
 
     app_subdomain = _parse_app_from_host(websocket.host)
     if app_subdomain:
-        app_row = _find_app_by_name(app_subdomain)
-        if app_row and app_row["status"] in ("running", "starting"):
+        app_row = await _find_app_by_name(app_subdomain)
+        if app_row and app_row.status in ("running", "starting"):
             await _ws_proxy_to_app(app_row, request_path, base_path="")
         return
 
     segments = path.split("/", 1)
     if segments and segments[0]:
-        app_row = _find_app_by_name(segments[0])
-        if app_row and app_row["status"] in ("running", "starting"):
+        app_row = await _find_app_by_name(segments[0])
+        if app_row and app_row.status in ("running", "starting"):
             await _ws_proxy_to_app(app_row, request_path, base_path=f"/{segments[0]}")
 
 
-async def _ws_proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: str) -> None:
+async def _ws_proxy_to_app(app_row: _AppRouting, request_path: str, base_path: str) -> None:
     """Auth check + proxy WebSocket to an app."""
     claims = await auth.get_current_user_from_request(websocket)  # type: ignore[arg-type]
     if claims is None and not _is_public_path(app_row, request_path, base_path):
         return
 
-    await ws_proxy(app_row["local_port"], base_path, websocket, identity_headers=_identity_headers(claims))
+    await ws_proxy(app_row.local_port, base_path, websocket, identity_headers=_identity_headers(claims))

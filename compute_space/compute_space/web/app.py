@@ -9,6 +9,7 @@ from quart import redirect
 from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
+from sqlalchemy import select
 
 from compute_space.config import Config
 from compute_space.config import load_config
@@ -18,7 +19,9 @@ from compute_space.core.startup import init_app
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import close_session
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import App
+from compute_space.db.models import Owner
 
 # ─── App Factory ───
 
@@ -85,8 +88,8 @@ def create_app(config: Config | None = None) -> Quart:
             return None
         if request.path in ("/setup", "/health"):
             return None
-        db = get_db()
-        owner = db.execute("SELECT 1 FROM owner LIMIT 1").fetchone()
+        session = get_session()
+        owner = (await session.execute(select(Owner.id).limit(1))).scalar_one_or_none()
         if owner is not None:
             app._owner_verified = True  # type: ignore[attr-defined]
             return None
@@ -104,11 +107,12 @@ def create_app(config: Config | None = None) -> Quart:
         app_subdomain = _parse_app_from_host(request.host)
         if not app_subdomain:
             return None
-        db = get_db()
-        app_row = db.execute(
-            "SELECT name, local_port, status, public_paths FROM apps WHERE name = ?",
-            (app_subdomain,),
-        ).fetchone()
+        session = get_session()
+        app_row = (
+            await session.execute(
+                select(App.name, App.local_port, App.status, App.public_paths).where(App.name == app_subdomain)
+            )
+        ).first()
         if not app_row:
             return Response(f"App '{app_subdomain}' not found", status=404)
         return await _proxy_to_app(app_row, request.path, base_path="")

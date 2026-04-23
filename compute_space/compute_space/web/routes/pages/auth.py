@@ -15,10 +15,14 @@ from quart import render_template
 from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
+from sqlalchemy import select
+from sqlalchemy import update
 
 from compute_space.config import get_config
 from compute_space.core import auth
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import Owner
+from compute_space.db.models import RefreshToken
 from compute_space.web.middleware import _try_refresh  # noqa: F401 — re-exported
 from compute_space.web.middleware import login_required  # noqa: F401 — re-exported
 
@@ -76,8 +80,8 @@ async def setup() -> ResponseReturnValue:
     config = get_config()
 
     # If owner already exists, setup is complete
-    db = get_db()
-    owner = db.execute("SELECT * FROM owner").fetchone()
+    session = get_session()
+    owner = (await session.execute(select(Owner).limit(1))).scalar_one_or_none()
     if owner is not None:
         return "This instance has already been set up.", 403
 
@@ -107,10 +111,7 @@ async def setup() -> ResponseReturnValue:
 
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
-    db.execute(
-        "INSERT INTO owner (id, username, password_hash, password_needs_set) VALUES (1, 'owner', ?, 0)",
-        (password_hash,),
-    )
+    session.add(Owner(id=1, username="owner", password_hash=password_hash, password_needs_set=0))
 
     access_token = auth.create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
@@ -118,11 +119,8 @@ async def setup() -> ResponseReturnValue:
     expires_at = datetime.now(UTC) + timedelta(
         seconds=auth.REFRESH_TOKEN_EXPIRY,
     )
-    db.execute(
-        "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
-        (refresh_token_hash, expires_at.isoformat()),
-    )
-    db.commit()
+    session.add(RefreshToken(token_hash=refresh_token_hash, expires_at=expires_at.isoformat()))
+    await session.commit()
 
     # Delete the claim token file so it can't be reused
     try:
@@ -148,8 +146,8 @@ async def login() -> ResponseReturnValue:
     # fresh cookies we'll set after successful login.
     has_stale_cookies = request.cookies.get(auth.COOKIE_ACCESS) is not None
 
-    db = get_db()
-    owner = db.execute("SELECT * FROM owner").fetchone()
+    session = get_session()
+    owner = (await session.execute(select(Owner).limit(1))).scalar_one_or_none()
     if owner is None:
         return redirect(url_for("auth.setup"))
 
@@ -163,7 +161,7 @@ async def login() -> ResponseReturnValue:
     form = await request.form
     password = form.get("password", "")
 
-    if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
+    if owner.password_hash is None or not bcrypt.checkpw(password.encode(), owner.password_hash.encode()):
         return await render_template("login.html", error="Invalid password")
 
     access_token = auth.create_access_token("owner")
@@ -172,11 +170,8 @@ async def login() -> ResponseReturnValue:
     expires_at = datetime.now(UTC) + timedelta(
         seconds=auth.REFRESH_TOKEN_EXPIRY,
     )
-    db.execute(
-        "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
-        (refresh_token_hash, expires_at.isoformat()),
-    )
-    db.commit()
+    session.add(RefreshToken(token_hash=refresh_token_hash, expires_at=expires_at.isoformat()))
+    await session.commit()
 
     response = redirect(url_for("apps.dashboard"))
     auth.set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
@@ -184,16 +179,15 @@ async def login() -> ResponseReturnValue:
 
 
 @auth_bp.route("/logout", methods=["POST"])
-def logout() -> ResponseReturnValue:
+async def logout() -> ResponseReturnValue:
     refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
     if refresh_tok:
         refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
-        db = get_db()
-        db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?",
-            (refresh_tok_hash,),
+        session = get_session()
+        await session.execute(
+            update(RefreshToken).where(RefreshToken.token_hash == refresh_tok_hash).values(revoked=1)
         )
-        db.commit()
+        await session.commit()
 
     response = redirect(url_for("auth.login"))
     auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
