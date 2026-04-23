@@ -3,6 +3,8 @@ import os
 import re
 import sqlite3
 
+from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
+
 
 def _schema_path() -> str:
     return os.path.join(os.path.dirname(__file__), "schema.sql")
@@ -257,13 +259,9 @@ def migrate(db: sqlite3.Connection) -> None:
         )"""
     )
 
-    # Versioned-migrations bootstrap: create the schema_version metadata table
-    # and stamp version = 1. This is the ONLY modification to this function
-    # since the versioned migration framework was introduced (see
-    # agent_docs/versioned_migrations/requirements.md REQ-LEG-2). All future
-    # schema changes must land as numbered migrations under db/versioned/.
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)"
-    )
-    db.execute("INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, 1)")
+    # Versioned-migrations bootstrap: create the schema_version metadata
+    # table. The runner stamps version = 1 AFTER schema.sql has run, so
+    # that a mid-bootstrap crash leaves the DB unstamped and next startup
+    # retries the whole legacy path cleanly (REQ-LEG-2).
+    db.execute(SCHEMA_VERSION_DDL)
     db.commit()

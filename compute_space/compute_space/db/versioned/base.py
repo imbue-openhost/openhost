@@ -7,6 +7,12 @@ import sqlite3
 from pathlib import Path
 from typing import ClassVar
 
+# DDL for the single-row schema-version metadata table. Kept here so both
+# the runner and the legacy migrate() import the exact same string.
+SCHEMA_VERSION_DDL = (
+    "CREATE TABLE IF NOT EXISTS schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)"
+)
+
 
 class Migration:
     """Base class for a single numbered schema migration.
