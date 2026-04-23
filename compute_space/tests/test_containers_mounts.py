@@ -159,6 +159,98 @@ class TestLegacyAccessAllData:
         assert legacy == fine
 
 
+class TestOpenhostStateMount:
+    def test_access_openhost_state_ro_alone(self):
+        # Asking for router-state access only — no data mounts at all.
+        mounts = _mounts(access_openhost_state_ro=True)
+        assert mounts == [("/host/data/openhost", "/data/openhost", "ro")]
+
+    def test_access_openhost_state_ro_with_access_all_data(self):
+        # Stacks cleanly on top of the legacy shorthand. Order: the
+        # three data-category mounts first, then openhost last.
+        mounts = _mounts(access_all_data=True, access_openhost_state_ro=True)
+        assert mounts == [
+            ("/host/data/app_data", "/data/app_data", None),
+            ("/host/temp/app_temp_data", "/data/app_temp_data", None),
+            ("/host/data/vm_data", "/data/vm_data", None),
+            ("/host/data/openhost", "/data/openhost", "ro"),
+        ]
+
+    def test_access_all_data_alone_does_not_mount_openhost_state(self):
+        # Guarantees the backward-compat invariant at the mount layer:
+        # existing manifests using only access_all_data must never
+        # expose /data/openhost.
+        mounts = _mounts(access_all_data=True)
+        assert all(m[1] != "/data/openhost" for m in mounts)
+
+    def test_openhost_state_host_path_helper_matches_mount(self):
+        # The host-side path for the router state dir is computed in
+        # two places (compute_data_mounts emits it into the mount
+        # tuple; run_container uses it as a sentinel for the
+        # no-autocreate guard). The shared helper exists specifically
+        # so these two places can never drift — pin that here.
+        from compute_space.core.containers import _openhost_state_host_path
+
+        mounts = _mounts(access_openhost_state_ro=True)
+        assert mounts[0][0] == _openhost_state_host_path("/host/data")
+
+
+class TestEnsureMountHostDirs:
+    """``_ensure_mount_host_dirs`` creates all requested host paths
+    except the router's own state dir, which is intentionally left
+    alone so a missing router dir fails loudly rather than silently
+    producing an empty backup."""
+
+    def test_creates_app_data_and_vm_data_dirs(self, tmp_path):
+        from compute_space.core.containers import _ensure_mount_host_dirs
+
+        data_dir = str(tmp_path / "data")
+        temp_dir = str(tmp_path / "temp")
+        mounts = [
+            (f"{data_dir}/app_data/testapp", "/data/app_data/testapp", None),
+            (f"{data_dir}/vm_data", "/data/vm_data", None),
+            (f"{temp_dir}/app_temp_data/testapp", "/data/app_temp_data/testapp", None),
+        ]
+        _ensure_mount_host_dirs(mounts, data_dir)
+        import os as _os
+
+        for host, _c, _o in mounts:
+            assert _os.path.isdir(host), f"{host} should have been created"
+
+    def test_does_not_create_openhost_state_dir(self, tmp_path):
+        """Even if the openhost mount is requested, the host dir
+        is not auto-created. Docker will fail the bind-mount on its
+        own if the dir is missing — that's the intended behaviour."""
+        from compute_space.core.containers import _ensure_mount_host_dirs
+
+        data_dir = str(tmp_path / "data")
+        mounts = [
+            (f"{data_dir}/openhost", "/data/openhost", "ro"),
+        ]
+        _ensure_mount_host_dirs(mounts, data_dir)
+        import os as _os
+
+        # Still absent.
+        assert not _os.path.exists(f"{data_dir}/openhost")
+
+    def test_creates_others_even_if_openhost_requested_too(self, tmp_path):
+        from compute_space.core.containers import _ensure_mount_host_dirs
+
+        data_dir = str(tmp_path / "data")
+        mounts = [
+            (f"{data_dir}/app_data", "/data/app_data", None),
+            (f"{data_dir}/vm_data", "/data/vm_data", None),
+            (f"{data_dir}/openhost", "/data/openhost", "ro"),
+        ]
+        _ensure_mount_host_dirs(mounts, data_dir)
+        import os as _os
+
+        assert _os.path.isdir(f"{data_dir}/app_data")
+        assert _os.path.isdir(f"{data_dir}/vm_data")
+        # openhost specifically skipped.
+        assert not _os.path.exists(f"{data_dir}/openhost")
+
+
 class TestManifestRejection:
     def test_vm_data_ro_and_rw_rejected_at_parse_time(self):
         toml = MINIMAL + "\n[data]\naccess_vm_data = true\naccess_vm_data_rw = true\n"

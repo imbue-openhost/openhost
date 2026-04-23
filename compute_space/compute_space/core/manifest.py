@@ -58,15 +58,22 @@ class AppManifest:
     app_temp_data: bool = False
     # Read-only access to the shared VM data directory:
     access_vm_data: bool = False
-    # Broad access to all apps' data. Each of these three fields can be
-    # requested independently — you can, for example, grant an app the
-    # ability to read every app's permanent data without also granting it
-    # access to temp data or to vm_data. ``access_all_data`` is kept as
-    # legacy shorthand that implies all three of the ``access_all_*``
-    # fields below plus a read/write mount of ``vm_data``.
+    # Broad access to all apps' data / VM-level shared state. Each of
+    # these three fields can be requested independently — e.g. grant an
+    # app access to every other app's permanent data without also
+    # granting access to temp data or to vm_data. ``access_all_data``
+    # is kept as legacy shorthand equivalent to setting all three.
     access_all_apps_data: bool = False
     access_all_apps_temp_data: bool = False
     access_vm_data_rw: bool = False
+    # Read-only access to the OpenHost router's own state directory
+    # (``{persistent_data_dir}/openhost/``: router.db, TLS cert + key,
+    # Corefile, Caddyfile, signing keys, claim token). Intended for
+    # full-instance backup/inspection tools. NOT implied by
+    # ``access_all_data`` because existing manifests using that flag do
+    # not expect router-state exposure; apps that want it must opt in
+    # explicitly.
+    access_openhost_state_ro: bool = False
     access_all_data: bool = False
 
     # [services]
@@ -135,6 +142,17 @@ class AppManifest:
     def wants_vm_data_rw(self) -> bool:
         """Read/write access to ``/data/vm_data``."""
         return bool(self.access_all_data or self.access_vm_data_rw)
+
+    @property
+    def wants_openhost_state_ro(self) -> bool:
+        """Read-only access to ``{persistent_data_dir}/openhost/``.
+
+        Intended for full-instance inspection / backup tools that need
+        to read the router's SQLite DB, TLS material, and other
+        control-plane state. Not implied by ``access_all_data``: apps
+        must opt in explicitly via ``access_openhost_state_ro = true``.
+        """
+        return bool(self.access_openhost_state_ro)
 
 
 def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
@@ -210,6 +228,9 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
             "access_all_apps_temp_data", False
         ),
         access_vm_data_rw=data_section.get("access_vm_data_rw", False),
+        access_openhost_state_ro=data_section.get(
+            "access_openhost_state_ro", False
+        ),
         access_all_data=data_section.get("access_all_data", False),
         raw_toml=raw_text,
     )

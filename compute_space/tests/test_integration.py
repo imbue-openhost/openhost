@@ -158,6 +158,26 @@ def test_provision_data_no_data_section_emits_no_data_env_vars(tmp_path):
     assert "OPENHOST_APP_TEMP_DIR" not in env_vars
 
 
+def test_provision_data_access_openhost_state_ro_is_a_noop(tmp_path):
+    """Router state is owned by the router — provision_data must NOT
+    create the /data/openhost dir or inject env vars for it."""
+    env_vars, data_dir, _temp_dir = _provision(
+        tmp_path, access_openhost_state_ro=True
+    )
+    # No app_data env var — this flag doesn't imply scoped app_data access.
+    assert "OPENHOST_APP_DATA_DIR" not in env_vars
+    # (app_temp_dir is always created by provision_data for internal
+    # use — build logs, repo clones — even when the app has no data
+    # permissions, so we don't assert it doesn't exist here.)
+    #
+    # The /data/openhost dir is the router's own path and
+    # provision_data must not pre-create it.
+    assert not os.path.exists(os.path.join(data_dir, "openhost"))
+    # No OPENHOST_OPENHOST_STATE_DIR or similar spurious env var.
+    for k in env_vars:
+        assert "openhost_state" not in k.lower()
+
+
 def test_pre_setup_security_audit(tmp_path):
     """Security audit via /health returns valid results before owner setup."""
     ROUTER_PORT = 18084

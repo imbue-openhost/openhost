@@ -122,7 +122,8 @@ Broad access to all apps' data or the VM's shared state (use sparingly):
 - **`access_all_apps_temp_data = true`** — read/write mount of `/data/app_temp_data/` (every app's temp data).
 - **`access_vm_data = true`** — read-only mount of `/data/vm_data/`.
 - **`access_vm_data_rw = true`** — read/write mount of `/data/vm_data/`. Mutually exclusive with `access_vm_data`.
-- **`access_all_data = true`** — legacy shorthand for all three broad flags (`access_all_apps_data` + `access_all_apps_temp_data` + `access_vm_data_rw`).
+- **`access_openhost_state_ro = true`** — read-only mount of the router's own state directory (`/data/openhost/`: `router.db`, TLS material, signing keys). Intended for full-instance backup or inspection tools. Not implied by `access_all_data`.
+- **`access_all_data = true`** — legacy shorthand for the three data-category broad flags (`access_all_apps_data` + `access_all_apps_temp_data` + `access_vm_data_rw`). Does **not** include router state; request `access_openhost_state_ro` separately if you need it.
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the dashboard to allow starting a file-browser app for cleanup.
 

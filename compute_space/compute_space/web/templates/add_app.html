@@ -182,11 +182,14 @@ function renderManifest(m, url) {
   const hasFs = m.app_data || m.app_temp_data || m.access_vm_data
     || m.access_vm_data_rw || m.access_all_apps_data
     || m.access_all_apps_temp_data || m.access_all_data
+    || m.access_openhost_state_ro
     || m.sqlite_dbs.length;
   if (hasFs) {
     section('Filesystem Permissions', '#fff3cd');
-    // access_all_data is the legacy "full power" shorthand; surface it
-    // explicitly so the user sees the aggregate they're granting.
+    // access_all_data is the legacy "full power" shorthand for the
+    // three data categories (app_data / app_temp_data / vm_data).
+    // It does NOT imply access_openhost_state_ro — that's an
+    // independent opt-in for full-instance tools.
     if (m.access_all_data) {
       row('Full data access', "Read/write to every app's permanent data and temporary data, plus read/write to VM shared data");
     } else {
@@ -205,6 +208,10 @@ function renderManifest(m, url) {
       if (m.access_vm_data) row('VM data (read-only)', 'Read-only access to VM shared data');
       if (m.access_vm_data_rw) row('VM data (read/write)', 'Read/write access to VM shared data');
     }
+    // Surfaced regardless of access_all_data since it's an independent flag.
+    if (m.access_openhost_state_ro)
+      row('Router state (read-only)',
+          "Read-only access to the OpenHost router's own state directory (router.db, TLS material, signing keys). Intended for full-instance backup/inspection tools. Grants visibility into all apps' API tokens and the owner password hash.");
   }
 
   if (m.public_paths.length) {

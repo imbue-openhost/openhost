@@ -15,6 +15,41 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 _CACHE_CORRUPT_RE = re.compile(r"content digest sha256:[0-9a-f]+: not found")
 
 
+def _openhost_state_host_path(data_dir: str) -> str:
+    """Single source of truth for where the router's state dir lives on
+    the host. Used both by ``compute_data_mounts`` (to emit the mount)
+    and by ``_ensure_mount_host_dirs`` (to decide which mounts get
+    auto-created).
+    """
+    return os.path.join(data_dir, "openhost")
+
+
+def _ensure_mount_host_dirs(
+    mounts: list[tuple[str, str, str | None]], data_dir: str
+) -> None:
+    """Create the host side of each bind mount on demand, with one
+    exception: the router's own state directory is never auto-created.
+
+    For app-lifecycle paths (app_data, app_temp_data, vm_data) we
+    create the host directory on demand so a fresh install doesn't
+    fail the Docker bind-mount. Those paths are owned by the
+    app-lifecycle code and creating them empty is semantically
+    correct.
+
+    The openhost state directory is owned by the router and should
+    already exist (``Config.make_all_dirs`` creates it at router
+    startup). If it's missing, Docker's bind-mount will fail, which is
+    the right behaviour — silently creating an empty dir would let a
+    backup tool produce an empty backup instead of surfacing the
+    misconfiguration.
+    """
+    openhost_state_dir = _openhost_state_host_path(data_dir)
+    for host_path, _container_path, _options in mounts:
+        if host_path == openhost_state_dir:
+            continue
+        os.makedirs(host_path, exist_ok=True)
+
+
 def compute_data_mounts(
     manifest: AppManifest,
     app_name: str,
@@ -28,25 +63,31 @@ def compute_data_mounts(
     for a default read/write bind. The caller is expected to pass these
     into ``docker run -v``.
 
-    Resolution rules (each category is independent — any combination of
-    the three ``access_all_apps_*`` / ``access_vm_data*`` fields can be
-    requested):
+    This function doesn't validate the manifest — that happens at parse
+    time in ``parse_manifest_from_string``. It only interprets the
+    already-resolved ``wants_*`` properties on the manifest and emits
+    the corresponding mount tuples.
+
+    Emission rules:
 
     * For app_data and app_temp_data, a broad (parent-directory) mount
       shadows the scoped (single-app) mount; only the broader mount is
       emitted since the scoped path would be a subpath of it anyway.
-    * For vm_data, the manifest guarantees at most one of RO / RW is
-      active: parsing rejects ``access_vm_data`` (RO) together with
-      either ``access_vm_data_rw`` or the legacy ``access_all_data``
-      shorthand (both of which imply RW). This function just emits
-      whichever mount was requested.
+    * For vm_data, at most one of RO / RW is emitted. Simultaneous
+      RO+RW requests can't occur because the parser rejects them.
+    * ``access_openhost_state_ro`` emits a separate read-only mount
+      for the router's own state directory (SQLite DB, TLS material,
+      etc.). Writes to router state go through the router itself, not
+      through a mounted volume.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
     vm_data_dir = os.path.join(data_dir, "vm_data")
+    openhost_state_dir = _openhost_state_host_path(data_dir)
     c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
     c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
     c_vm_data = f"{CONTAINER_ROOT}/vm_data"
+    c_openhost_state = f"{CONTAINER_ROOT}/openhost"
 
     mounts: list[tuple[str, str, str | None]] = []
 
@@ -76,6 +117,9 @@ def compute_data_mounts(
         mounts.append((vm_data_dir, c_vm_data, None))
     elif manifest.wants_vm_data_ro:
         mounts.append((vm_data_dir, c_vm_data, "ro"))
+
+    if manifest.wants_openhost_state_ro:
+        mounts.append((openhost_state_dir, c_openhost_state, "ro"))
 
     return mounts
 
@@ -169,8 +213,11 @@ def run_container(
     port_mappings: list[PortMapping] | None = None,
 ) -> str:
     """Run a Docker container. Returns the container ID."""
+    # app_data_dir is retained for env-var path translation below
+    # (OPENHOST_SQLITE_* variables that come in as host paths and need
+    # to be rewritten to the in-container layout). All mount host-path
+    # bookkeeping lives in ``compute_data_mounts``.
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
-    vm_data_dir = os.path.join(data_dir, "vm_data")
     container_name = f"openhost-{app_name}"
 
     # Container paths follow the logical structure under CONTAINER_ROOT.
@@ -208,14 +255,8 @@ def run_container(
 
     # Mount data volumes following the logical structure from docs/data.md.
     # See ``compute_data_mounts`` for the permission-resolution rules.
-    # The vm_data dir is shared among apps and may not exist yet on a
-    # fresh install, so create it on demand if the manifest asks for it.
-    # Detecting that by host path is more robust than by container path,
-    # since the container-path scheme is defined inside
-    # ``compute_data_mounts`` and could drift.
     mounts = compute_data_mounts(manifest, app_name, data_dir, temp_data_dir)
-    if any(host == vm_data_dir for host, _container, _opts in mounts):
-        os.makedirs(vm_data_dir, exist_ok=True)
+    _ensure_mount_host_dirs(mounts, data_dir)
     for host_path, container_path, options in mounts:
         spec = f"{host_path}:{container_path}"
         if options:

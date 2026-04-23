@@ -52,9 +52,11 @@ Declares additional port mappings for the container. Each entry binds a containe
 ### `[data]` — optional
 
 Apps must explicitly request filesystem access. Each category (permanent
-data, temporary data, VM data) can be requested for this app alone
-(scoped) or for every app on the host (broad). Any combination is
-allowed.
+data, temporary data, VM data, router state) can be requested for this
+app alone (scoped) or for every app on the host (broad). Most
+combinations are allowed; the exceptions are noted in the field
+descriptions (e.g. `access_vm_data` read-only cannot be combined with
+any flag that grants `vm_data` read/write access).
 
 #### Scoped access — just this app
 
@@ -67,21 +69,22 @@ allowed.
 #### Broad access — every app's data / shared state
 
 Use these to write apps that manage or inspect state across the whole
-host (backup/restore, file browsers, debugging tools). All three can be
+host (backup/restore, file browsers, debugging tools). All can be
 requested independently.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `access_all_apps_data` | boolean | no | false | Read/write mount of `/data/app_data` (every app's permanent data) |
 | `access_all_apps_temp_data` | boolean | no | false | Read/write mount of `/data/app_temp_data` (every app's temporary data) |
-| `access_vm_data` | boolean | no | false | Read-only mount of `/data/vm_data` (router DB, shared state) |
+| `access_vm_data` | boolean | no | false | Read-only mount of `/data/vm_data` (VM-level shared data, e.g. signing keys used by multiple apps). Mutually exclusive with `access_vm_data_rw` and `access_all_data`, both of which grant RW access to the same directory. |
 | `access_vm_data_rw` | boolean | no | false | Read/write mount of `/data/vm_data`. Mutually exclusive with `access_vm_data` (RO). Combining with `access_all_data` is redundant but accepted, since the legacy shorthand already grants RW. |
+| `access_openhost_state_ro` | boolean | no | false | Read-only mount of the OpenHost router's own state directory (`router.db`, TLS cert + key, Corefile, Caddyfile, signing keys, claim token). Intended for full-instance inspection / backup tools. **Not** implied by `access_all_data` — apps must opt in explicitly. Grants visibility into all apps' API tokens and the owner password hash. |
 
 #### Legacy shorthand
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `access_all_data` | boolean | no | false | Shorthand equivalent to `access_all_apps_data = true`, `access_all_apps_temp_data = true`, and `access_vm_data_rw = true`. |
+| `access_all_data` | boolean | no | false | Shorthand equivalent to `access_all_apps_data = true`, `access_all_apps_temp_data = true`, and `access_vm_data_rw = true`. Does **not** include `access_openhost_state_ro` — for backward compatibility, existing manifests using this flag do not silently gain access to router state. |
 
 ## Data Directory Structure
 
@@ -89,13 +92,21 @@ Apps have two storage areas on separate disks. **By default, apps have
 no filesystem access.** Each must be explicitly requested:
 
 - **Permanent data** (`/data/app_data/{app_name}/`) — backed up,
-  user-visible. Enabled by `app_data = true` or by requesting `sqlite`
-  entries.
+  user-visible. Enabled by `app_data = true`, by requesting `sqlite`
+  entries, or by any of the broader flags that imply app_data access
+  (`access_all_apps_data`, `access_all_data`).
 - **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed
-  up, recreatable. Enabled by `app_temp_data = true`.
-- **VM data** (`/data/vm_data/`) — router database and VM-level shared
-  data. Enabled by `access_vm_data = true` (RO) or
-  `access_vm_data_rw = true` (RW).
+  up, recreatable. Enabled by `app_temp_data = true` or by any flag
+  that implies temp-data access (`access_all_apps_temp_data`,
+  `access_all_data`).
+- **VM data** (`/data/vm_data/`) — VM-level shared data (e.g. signing
+  keys used by multiple apps). Enabled by `access_vm_data = true` (RO)
+  or `access_vm_data_rw = true` (RW). This does **not** contain the
+  router's own SQLite DB — that lives separately, see below.
+- **OpenHost router state** (`/data/openhost/`) — the router's own
+  `router.db`, TLS material, and related control-plane files. Enabled
+  only by `access_openhost_state_ro = true` (RO). Not implied by
+  `access_all_data`.
 
 The broad-access flags mount the **parent** directory instead of the
 scoped subdir, so your container sees every app's data at

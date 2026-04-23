@@ -51,6 +51,7 @@ class TestDefaults:
         assert manifest.access_all_apps_data is False
         assert manifest.access_all_apps_temp_data is False
         assert manifest.access_vm_data_rw is False
+        assert manifest.access_openhost_state_ro is False
 
     def test_sqlite_default_empty(self):
         manifest = parse_manifest_from_string(MINIMAL)
@@ -468,3 +469,27 @@ class TestFineGrainedDataAccess:
         assert m.wants_all_apps_data is False
         assert m.wants_all_apps_temp_data is True
         assert m.wants_vm_data_rw is True
+
+    # ----- access_openhost_state_ro -----
+
+    def test_access_openhost_state_ro_parsed(self):
+        m = parse_manifest_from_string(self._with_data(access_openhost_state_ro=True))
+        assert m.access_openhost_state_ro is True
+        assert m.wants_openhost_state_ro is True
+
+    def test_access_all_data_does_NOT_imply_openhost_state(self):
+        # Key backward-compatibility guarantee: existing manifests that
+        # set access_all_data must not silently gain access to the
+        # router's state directory. That permission is always opt-in.
+        m = parse_manifest_from_string(self._with_data(access_all_data=True))
+        assert m.wants_openhost_state_ro is False
+
+    def test_openhost_state_ro_composes_with_other_permissions(self):
+        # It's a standalone flag, so pair it with anything and both
+        # should resolve independently.
+        m = parse_manifest_from_string(
+            self._with_data(access_all_data=True, access_openhost_state_ro=True)
+        )
+        assert m.wants_all_apps_data is True
+        assert m.wants_vm_data_rw is True
+        assert m.wants_openhost_state_ro is True
