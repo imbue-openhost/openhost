@@ -115,9 +115,10 @@ def provision_data(
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)
 
     # Apps run in bridge-mode containers where 127.0.0.1 is the container
-    # itself, not the host.  host.docker.internal (and the podman-native
-    # host.containers.internal alias) are registered by run_container.
-    env_vars["OPENHOST_ROUTER_URL"] = f"http://host.docker.internal:{port}"
+    # itself, not the host.  host.containers.internal (podman's host-gateway
+    # alias) and the host.docker.internal back-compat alias are both
+    # registered by run_container; we advertise the podman-native one.
+    env_vars["OPENHOST_ROUTER_URL"] = f"http://host.containers.internal:{port}"
 
     # Zone identity info so apps can build federated auth flows
     env_vars["OPENHOST_ZONE_DOMAIN"] = zone_domain
@@ -127,19 +128,14 @@ def provision_data(
     return env_vars
 
 
-def _remove_dir(dir_path: str) -> None:
-    """Remove an app's data dir during deprovision; log-and-swallow on failure."""
-    rmtree_with_sudo_fallback(dir_path, raise_on_failure=False)
-
-
 def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:
     """Remove the app's temp dir (repo clone, build artefacts, logs,
     OPENHOST_APP_TEMP_DIR contents).  Persistent data is not touched.
     """
-    _remove_dir(os.path.join(temp_data_dir, "app_temp_data", app_name))
+    rmtree_with_sudo_fallback(os.path.join(temp_data_dir, "app_temp_data", app_name))
 
 
 def deprovision_data(app_name: str, data_dir: str, temp_data_dir: str) -> None:
     """Remove all data for an app from both permanent and temp disks."""
-    _remove_dir(os.path.join(data_dir, "app_data", app_name))
+    rmtree_with_sudo_fallback(os.path.join(data_dir, "app_data", app_name))
     deprovision_temp_data(app_name, temp_data_dir)

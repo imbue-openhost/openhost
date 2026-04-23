@@ -11,8 +11,9 @@ Security defaults: ``--cap-drop=ALL`` then re-add ``DEFAULT_CAPABILITIES``
 ``SAFE_CAPABILITIES``.  Devices restricted to ``SAFE_DEVICE_PATHS``.
 ``--security-opt=no-new-privileges=true``.
 
-``OPENHOST_ROUTER_URL`` points at ``host.docker.internal``; that alias
-and ``host.containers.internal`` are both registered via ``--add-host``.
+``OPENHOST_ROUTER_URL`` points at ``host.containers.internal`` (podman's
+native host-gateway alias); ``host.docker.internal`` is also registered
+via ``--add-host`` so existing Dockerfiles keep resolving.
 """
 
 from __future__ import annotations
@@ -86,7 +87,7 @@ CONTAINER_RUNTIME_MISSING_ERROR = (
 )
 
 
-def podman_available() -> bool:
+def container_runtime_available() -> bool:
     """Return True if ``podman --version`` succeeds.
 
     Unexpected failures (timeout, OSError other than FileNotFoundError)

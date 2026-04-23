@@ -4,7 +4,7 @@ Existing Docker-era instances that click the dashboard Update button
 end up running the new code against a host that has no podman
 installed.  The safety net has three pieces, covered here:
 
-- ``core.containers.podman_available()`` reports False on missing/
+- ``core.containers.container_runtime_available()`` reports False on missing/
   unusable podman without raising.
 - ``core.containers.is_container_running()`` returns ``False``
   on missing podman instead of propagating FileNotFoundError.
@@ -24,15 +24,15 @@ import pytest
 
 from compute_space.core import startup as startup_mod
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
+from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
-from compute_space.core.containers import podman_available
 from compute_space.db.connection import init_db as real_init_db
 
 from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 # ---------------------------------------------------------------------------
-# podman_available
+# container_runtime_available
 # ---------------------------------------------------------------------------
 
 
@@ -46,7 +46,7 @@ def test_podman_available_returns_true_on_successful_probe(monkeypatch: pytest.M
         return _R()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert podman_available() is True
+    assert container_runtime_available() is True
 
 
 def test_podman_available_returns_false_on_filenotfound(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,7 +56,7 @@ def test_podman_available_returns_false_on_filenotfound(monkeypatch: pytest.Monk
         raise FileNotFoundError(2, "No such file or directory: 'podman'")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert podman_available() is False
+    assert container_runtime_available() is False
 
 
 def test_podman_available_returns_false_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,7 +66,7 @@ def test_podman_available_returns_false_on_timeout(monkeypatch: pytest.MonkeyPat
         raise subprocess.TimeoutExpired(cmd, timeout)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert podman_available() is False
+    assert container_runtime_available() is False
 
 
 def test_podman_available_returns_false_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,12 +78,12 @@ def test_podman_available_returns_false_on_nonzero_exit(monkeypatch: pytest.Monk
         return _R()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert podman_available() is False
+    assert container_runtime_available() is False
 
 
 def test_podman_available_returns_false_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
     """EPERM / fd exhaustion / similar odd failure modes must not crash
-    the caller; podman_available must catch OSError and return False
+    the caller; container_runtime_available must catch OSError and return False
     rather than propagating, because the downstream caller in
     _check_app_status treats any exception as fatal.  (The WARNING
     log that accompanies this path is visible in journalctl but
@@ -95,7 +95,7 @@ def test_podman_available_returns_false_on_oserror(monkeypatch: pytest.MonkeyPat
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert podman_available() is False
+    assert container_runtime_available() is False
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def test_is_container_running_returns_false_on_timeout(monkeypatch: pytest.Monke
 
 
 def test_is_container_running_returns_false_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Symmetric to podman_available's OSError handling.  An unexpected
+    """Symmetric to container_runtime_available's OSError handling.  An unexpected
     OSError from subprocess.run must not propagate — the caller in
     _check_app_status would treat it as fatal.  (Loguru's log is
     emitted and visible in journalctl but not captured via caplog, so
@@ -184,7 +184,7 @@ def test_check_app_status_marks_running_apps_error_when_podman_missing(
 
     # Simulate podman missing.  Patch at the consumption site in startup_mod
     # because it imported the name directly into its namespace.
-    monkeypatch.setattr(startup_mod, "podman_available", lambda: False)
+    monkeypatch.setattr(startup_mod, "container_runtime_available", lambda: False)
 
     # Trap any call to start_app_process — the whole point is that we
     # must NOT try to rebuild when podman is unusable.
@@ -225,7 +225,7 @@ def test_check_app_status_podman_missing_no_running_apps_is_fine(
     config = _make_test_config(tmp_path, port=18501)
     _init_schema(config.db_path)
 
-    monkeypatch.setattr(startup_mod, "podman_available", lambda: False)
+    monkeypatch.setattr(startup_mod, "container_runtime_available", lambda: False)
 
     # Does not raise.  No apps to update so rowcount=0, but that's fine.
     startup_mod._check_app_status(config)

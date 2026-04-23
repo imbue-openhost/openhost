@@ -7,7 +7,7 @@ from quart.typing import ResponseReturnValue
 from compute_space.config import get_config
 from compute_space.core.apps import inject_github_token_in_url
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
-from compute_space.core.containers import podman_available
+from compute_space.core.containers import container_runtime_available
 from compute_space.core.git_ops import RemoteNotSetError
 from compute_space.core.git_ops import get_current_ref
 from compute_space.core.git_ops import get_remote_url
@@ -80,7 +80,7 @@ def _host_prep_payload() -> dict[str, object]:
     Combines a live container-runtime probe (currently ``podman --version``)
     with the ``/etc/openhost/runtime`` sentinel.  Never raises.
     """
-    runtime_ok = podman_available()
+    runtime_ok = container_runtime_available()
     prep = host_prep_status()
     payload: dict[str, object] = {
         "host_prep_ok": runtime_ok and prep.ok,

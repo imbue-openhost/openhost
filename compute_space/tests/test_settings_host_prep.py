@@ -52,7 +52,7 @@ async def test_check_for_updates_reports_podman_ok_and_sentinel_ok(
         return GitState.UP_TO_DATE
 
     monkeypatch.setattr(settings_mod, "check_git_state", fake_check_git_state)
-    monkeypatch.setattr(settings_mod, "podman_available", lambda: True)
+    monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: True)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
     app = _make_app_with_repo(tmp_path)
@@ -84,7 +84,7 @@ async def test_check_for_updates_reports_podman_missing_as_authoritative(
         return GitState.BEHIND_REMOTE
 
     monkeypatch.setattr(settings_mod, "check_git_state", fake_check_git_state)
-    monkeypatch.setattr(settings_mod, "podman_available", lambda: False)
+    monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: False)
     # Sentinel says "all good" but podman is actually missing — the
     # response must STILL surface the podman-missing reason.
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
@@ -115,7 +115,7 @@ async def test_check_for_updates_surfaces_sentinel_mismatch_when_podman_ok(
         return GitState.BEHIND_REMOTE
 
     monkeypatch.setattr(settings_mod, "check_git_state", fake_check_git_state)
-    monkeypatch.setattr(settings_mod, "podman_available", lambda: True)
+    monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: True)
     monkeypatch.setattr(
         settings_mod,
         "host_prep_status",
@@ -152,7 +152,7 @@ async def test_update_repo_state_refuses_with_409_when_podman_missing(
         raise AssertionError("hard_checkout_and_validate must not run when the gate fires")
 
     monkeypatch.setattr(settings_mod, "hard_checkout_and_validate", boom)
-    monkeypatch.setattr(settings_mod, "podman_available", lambda: False)
+    monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: False)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
     app = _make_app_with_repo(tmp_path)
@@ -180,7 +180,7 @@ async def test_update_repo_state_refuses_with_409_when_sentinel_mismatched(
         raise AssertionError("hard_checkout_and_validate must not run when the gate fires")
 
     monkeypatch.setattr(settings_mod, "hard_checkout_and_validate", boom)
-    monkeypatch.setattr(settings_mod, "podman_available", lambda: True)
+    monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: True)
     monkeypatch.setattr(
         settings_mod,
         "host_prep_status",
@@ -213,7 +213,7 @@ async def test_update_repo_state_proceeds_when_host_prepared(monkeypatch: pytest
 
     monkeypatch.setattr(settings_mod, "get_current_ref", fake_get_current_ref)
     monkeypatch.setattr(settings_mod, "hard_checkout_and_validate", fake_checkout)
-    monkeypatch.setattr(settings_mod, "podman_available", lambda: True)
+    monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: True)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
     app = _make_app_with_repo(tmp_path)

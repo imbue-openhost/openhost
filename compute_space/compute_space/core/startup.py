@@ -8,8 +8,8 @@ from compute_space.config import Config
 from compute_space.core import identity
 from compute_space.core.apps import start_app_process
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
+from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
-from compute_space.core.containers import podman_available
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
 from compute_space.db import init_db
@@ -42,7 +42,7 @@ def _check_app_status(config: Config) -> None:
     remediation message and no rebuild is attempted — the dashboard
     stays reachable so the operator can see what happened.
     """
-    if not podman_available():
+    if not container_runtime_available():
         affected = _mark_running_apps_container_runtime_missing(config)
         if affected:
             logger.error(

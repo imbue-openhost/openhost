@@ -47,16 +47,19 @@ SAFE_CAPABILITIES: frozenset[str] = frozenset(
     }
 )
 
-# Host devices safe to pass through to rootless containers.  Anything
-# outside this set (e.g. /dev/mem, /dev/kmem, raw block devices, /dev/kvm)
+# Host devices safe to pass through to rootless containers via the
+# ``[runtime.container].devices`` list (mapped to ``podman --device``).
+# Apps do NOT need to list ``/dev/null``, ``/dev/zero``, ``/dev/random``,
+# ``/dev/urandom``, ``/dev/full``, ``/dev/tty`` or ``/dev/console`` here;
+# podman (like Docker) mounts a default ``/dev`` with those character
+# devices inside every container via the OCI runtime spec.  The allowlist
+# below only exists to gate EXTRA host devices the app wants bound in on
+# top of that baseline (serial adapters, FUSE, TUN/TAP).  Anything outside
+# this set (e.g. ``/dev/mem``, ``/dev/kmem``, raw block devices, ``/dev/kvm``)
 # is rejected at parse time.
 SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
     {
         "/dev/net/tun",
-        "/dev/random",
-        "/dev/urandom",
-        "/dev/null",
-        "/dev/zero",
         "/dev/fuse",
         # First 8 slots of each serial/USB-TTY family; expand if needed.
         *(f"/dev/ttyS{i}" for i in range(8)),

@@ -7,7 +7,7 @@ when clicking Update would land on a host whose runtime_version doesn't
 match what the router code expects.
 
 Soft signal only — the authoritative runtime check is the live
-``podman_available()`` probe in ``core.containers``.  The sentinel's
+``container_runtime_available()`` probe in ``core.containers``.  The sentinel's
 value is detecting host-side prep changes that the binary probe can't
 (new sysctl, new sudoers rule, new kernel feature requirement, …).
 """
@@ -15,8 +15,9 @@ value is detecting host-side prep changes that the binary probe can't
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Final
+
+import attr
 
 SENTINEL_PATH: Final[str] = "/etc/openhost/runtime"
 
@@ -27,7 +28,7 @@ EXPECTED_RUNTIME: Final[str] = "podman"
 EXPECTED_RUNTIME_VERSION: Final[int] = 1
 
 
-@dataclass(frozen=True)
+@attr.s(auto_attribs=True, frozen=True)
 class HostPrepStatus:
     """Snapshot of sentinel state for the settings UI.
 

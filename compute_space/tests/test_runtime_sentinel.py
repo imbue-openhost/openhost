@@ -3,7 +3,7 @@
 The sentinel lets the dashboard warn the operator that clicking Update
 would land them on a router whose runtime prerequisites aren't met by
 the host.  It is deliberately NOT a hard startup gate — the runtime
-probe in core.containers.podman_available covers the initial Docker
+probe in core.containers.container_runtime_available covers the initial Docker
 → podman transition where pre-upgrade code has no sentinel knowledge.
 
 These tests exercise every branch of the parser and host_prep_status

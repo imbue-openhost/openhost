@@ -38,13 +38,13 @@ def pytest_addoption(parser):
 # ---------------------------------------------------------------------------
 
 
-def _podman_available():
+def _container_runtime_available():
     """Gate for --run-containers tests: is podman *usable* on this host?
 
     Runs ``podman info`` (not just ``--version``) because the
     ``requires_containers`` tests need a working rootless namespace, not
     just the binary on PATH.  This is intentionally a heavier probe
-    than the production ``compute_space.core.containers.podman_available``
+    than the production ``compute_space.core.containers.container_runtime_available``
     which only verifies binary presence — those two probes answer
     different questions (can I build/run containers? vs should I
     surface the 'runtime missing' banner?) and deliberately diverge.
@@ -76,7 +76,7 @@ def pytest_collection_modifyitems(config, items):
     run_containers = config.getoption("--run-containers")
     run_tls = config.getoption("--run-tls")
 
-    if run_containers and not _podman_available():
+    if run_containers and not _container_runtime_available():
         raise RuntimeError("--run-containers flag passed but podman does not seem to be available")
 
     if run_tls and not _pebble_available():

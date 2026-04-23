@@ -28,7 +28,7 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 
 Declares additional port mappings for the container. Each entry binds a container port to a host port (TCP+UDP on 0.0.0.0). Set `host_port = 0` for auto-assignment from the 9000-9999 range.
 
-Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejected at parse time. Use `host_port = 25` (SMTP) / `80` / `443` / any value from the auto-assign range, or route through the built-in router proxy.
+Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejected at parse time. Ports `80` and `443` are claimed by the built-in Caddy front-door and will fail to bind if an app requests them. For public HTTP/HTTPS, route through the router proxy (apps live under `https://{app_name}.{zone_domain}/`); for other protocols (e.g. SMTP on `25`), pick `host_port = 25` or any port in the 9000-9999 auto-assign range.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -81,7 +81,7 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
 - `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
-- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server. Points at `host.containers.internal` (podman's host-gateway alias); `host.docker.internal` is also registered as an alias and resolves to the same gateway, so existing Dockerfiles keep working.
+- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server, reachable from inside the container.
 
 ## Examples
 

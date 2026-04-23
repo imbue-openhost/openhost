@@ -21,7 +21,7 @@ A few things that work under classical Docker don't work here:
 
 - `[[ports]].host_port` values below 25 are rejected at manifest parse time — rootless podman cannot bind to privileged ports under 25 (the router lowers the unprivileged-port floor from 1024 to 25 so SMTP, HTTP, and HTTPS all work).
 - `[runtime.container].capabilities` is a tight allowlist.  Safe caps for rootless user namespaces (`NET_ADMIN`, `NET_RAW`, `NET_BIND_SERVICE`, `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID`, `KILL`, `MKNOD`, `SYS_CHROOT`, `IPC_LOCK`, a few others) are accepted; capabilities that require real host privilege (`SYS_ADMIN`, `SYS_MODULE`, `SYS_PTRACE`, ...) are rejected.  The exact list lives in `compute_space.core.manifest.SAFE_CAPABILITIES`.
-- `[runtime.container].devices` is a tight allowlist (`/dev/net/tun`, `/dev/fuse`, `/dev/random`, `/dev/urandom`, `/dev/null`, `/dev/zero`, `/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyACM*`). Requests for anything outside the list — `/dev/mem`, `/dev/kvm`, raw block devices, etc. — are rejected at manifest parse time.
+- `[runtime.container].devices` declares **extra** host devices to pass through on top of the OCI baseline.  The character devices `/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/full`, `/dev/tty` and `/dev/console` are mounted inside every container automatically and do **not** need to be listed.  Extras are restricted to a tight allowlist (`/dev/net/tun`, `/dev/fuse`, `/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyACM*`).  Requests for anything outside the list — `/dev/mem`, `/dev/kvm`, raw block devices, etc. — are rejected at manifest parse time.
 
 Here's an example of a simple app:
 
@@ -107,7 +107,7 @@ The router injects these environment variables into your app:
 |----------|---------|-----------------------------------------------------------------------------------------------------------------|
 | `OPENHOST_APP_NAME` | `my-app` | Your app's name, as registered with OpenHost. This will be the subdomain the app is routeable at.               |
 | `OPENHOST_APP_TOKEN` | `kF3xP_2qA-bN4...` (43-char url-safe token) | Random per-app token used to authenticate cross-app service calls                                               |
-| `OPENHOST_ROUTER_URL` | `http://host.containers.internal:8080` | internal URL of the router, used for constructing service requests. `host.containers.internal` is podman's host-gateway alias; `host.docker.internal` is also registered and resolves to the same gateway so existing Dockerfiles keep working. |
+| `OPENHOST_ROUTER_URL` | `http://host.containers.internal:8080` | internal URL of the router, used for constructing service requests. |
 | `OPENHOST_ZONE_DOMAIN` | `user.host.imbue.com` | The compute space's domain                                                                                      |
 | `OPENHOST_MY_REDIRECT_DOMAIN` | `my.selfhost.imbue.com` | The shared `my.*` OAuth redirect domain. This hosts a browser-local page that redirects the user to their zone. |
 | `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data`, `sqlite`, or `access_all_data` is requested   |
