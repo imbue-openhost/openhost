@@ -1,50 +1,41 @@
 import os
 import tomllib
-from dataclasses import dataclass
-from dataclasses import field
 from typing import Any
 
-import attrs
+import attr
 
 from compute_space.core.logging import logger
 
 
-@dataclass(frozen=True)
+@attr.s(auto_attribs=True, frozen=True)
 class PortMapping:
-    """A structured port mapping declared in [[ports]].
-
-    Defined as a dataclass (rather than an attrs class) so that the manifest,
-    which is itself a dataclass, serializes cleanly via ``dataclasses.asdict``.
-    Flask's default JSON encoder cannot serialize attrs instances, which
-    previously caused /api/clone_and_get_app_info to 500 whenever a manifest
-    declared any ``[[ports]]`` entries.
-    """
+    """A structured port mapping declared in [[ports]]."""
 
     label: str
     container_port: int
     host_port: int = 0  # 0 = auto-assign
 
 
-@dataclass(frozen=True)
+@attr.s(auto_attribs=True, frozen=True)
 class ServiceProvides:
     service: str
     version: str
     endpoint: str
 
 
-@attrs.frozen
+@attr.s(auto_attribs=True, frozen=True)
 class PermissionV2Request:
     service: str
     grants: list[dict[str, Any]]
 
 
-@dataclass
+@attr.s(auto_attribs=True, frozen=True)
 class AppManifest:
     # [app]
     name: str
     version: str
     description: str = ""
-    authors: list[str] = field(default_factory=list)
+    authors: list[str] = attr.Factory(list)
 
     # [runtime]
     runtime_type: str = "serverfull"
@@ -53,13 +44,13 @@ class AppManifest:
     container_image: str = ""
     container_port: int = 0
     container_command: str | None = None
-    port_mappings: list[PortMapping] = field(default_factory=list)
-    capabilities: list[str] = field(default_factory=list)
-    devices: list[str] = field(default_factory=list)
+    port_mappings: list[PortMapping] = attr.Factory(list)
+    capabilities: list[str] = attr.Factory(list)
+    devices: list[str] = attr.Factory(list)
 
     # [routing]
     health_check: str | None = None
-    public_paths: list[str] = field(default_factory=list)
+    public_paths: list[str] = attr.Factory(list)
 
     # [resources]
     memory_mb: int = 128
@@ -67,22 +58,22 @@ class AppManifest:
     gpu: bool = False
 
     # [data]
-    sqlite_dbs: list[str] = field(default_factory=list)
+    sqlite_dbs: list[str] = attr.Factory(list)
     app_data: bool = False
     app_temp_data: bool = False
     access_vm_data: bool = False
     access_all_data: bool = False
 
     # [services]
-    provides_services: list[str] = field(default_factory=list)
-    requires_services: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    provides_services: list[str] = attr.Factory(list)
+    requires_services: dict[str, list[dict[str, Any]]] = attr.Factory(dict)
     # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
 
     # [services_v2]
-    provides_services_v2: list[ServiceProvides] = field(default_factory=list)
+    provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
     # [[permissions_v2]]
-    permissions_v2: list[PermissionV2Request] = field(default_factory=list)
+    permissions_v2: list[PermissionV2Request] = attr.Factory(list)
 
     # [app] metadata
     hidden: bool = False
@@ -122,6 +113,47 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
     return result
 
 
+def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
+    result: list[ServiceProvides] = []
+    for entry in data.get("services_v2", {}).get("provides", []):
+        if not isinstance(entry, dict):
+            raise ValueError("Each [[services_v2.provides]] entry must be a table")
+        svc = entry.get("service")
+        ver = entry.get("version")
+        ep = entry.get("endpoint", "/_service/")
+        if not svc or not isinstance(svc, str):
+            raise ValueError("[[services_v2.provides]] requires a string 'service' field")
+        if not ver or not isinstance(ver, str):
+            raise ValueError("[[services_v2.provides]] requires a string 'version' field")
+        result.append(ServiceProvides(service=svc, version=ver, endpoint=ep))
+    return result
+
+
+def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
+    result: list[PermissionV2Request] = []
+    for entry in data.get("permissions_v2", []):
+        if not isinstance(entry, dict):
+            raise ValueError("Each [[permissions_v2]] entry must be a table")
+        svc = entry.get("service")
+        if not svc or not isinstance(svc, str):
+            raise ValueError("[[permissions_v2]] requires a string 'service' field")
+        grants = entry.get("grants", [])
+        if not isinstance(grants, list):
+            raise ValueError("[[permissions_v2]] 'grants' must be a list")
+        result.append(PermissionV2Request(service=svc, grants=grants))
+    return result
+
+
+def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for svc_name, svc_config in services.items():
+        if svc_name == "provides":
+            continue
+        if isinstance(svc_config, dict) and "keys" in svc_config:
+            result[svc_name] = svc_config["keys"]
+    return result
+
+
 def parse_manifest_from_string(raw_text: str) -> AppManifest:
     """Parse an openhost.toml manifest from its string content."""
     data = tomllib.loads(raw_text)
@@ -137,18 +169,39 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     if runtime_type not in ("serverless", "serverfull"):
         raise ValueError(f"Invalid runtime type: {runtime_type}")
 
-    routing = data.get("routing", {})
+    container = runtime.get("container", {})
+    if not container.get("image"):
+        raise ValueError("[runtime.container].image is required")
+    if not container.get("port"):
+        raise ValueError("[runtime.container].port is required")
 
+    routing = data.get("routing", {})
     resources = data.get("resources", {})
     data_section = data.get("data", {})
+    services = data.get("services", {})
 
-    manifest = AppManifest(
-        name=app_section["name"],
+    app_name = app_section["name"]
+
+    # Deprecated: extra_ports (raw Docker -p strings)
+    if container.get("extra_ports"):
+        logger.warning(
+            "App '%s' uses deprecated 'extra_ports' in [runtime.container]. Migrate to [[ports]] tables instead.",
+            app_name,
+        )
+
+    return AppManifest(
+        name=app_name,
         version=app_section["version"],
         description=app_section.get("description", ""),
         authors=app_section.get("authors", []),
         hidden=app_section.get("hidden", False),
         runtime_type=runtime_type,
+        container_image=container["image"],
+        container_port=container["port"],
+        container_command=container.get("command"),
+        port_mappings=_parse_ports(data.get("ports", [])),
+        capabilities=container.get("capabilities", []),
+        devices=container.get("devices", []),
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
         memory_mb=resources.get("memory_mb", 128),
@@ -159,68 +212,12 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_temp_data=data_section.get("app_temp_data", False),
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_data=data_section.get("access_all_data", False),
+        provides_services=services.get("provides", []),
+        requires_services=_parse_requires_services(services),
+        provides_services_v2=_parse_services_v2(data),
+        permissions_v2=_parse_permissions_v2(data),
         raw_toml=raw_text,
     )
-
-    # Parse [services] section
-    services = data.get("services", {})
-    manifest.provides_services = services.get("provides", [])
-
-    # Parse per-service requirements (e.g. [services.secrets] keys = [...])
-    for svc_name, svc_config in services.items():
-        if svc_name == "provides":
-            continue
-        if isinstance(svc_config, dict) and "keys" in svc_config:
-            manifest.requires_services[svc_name] = svc_config["keys"]
-
-    # Parse [services_v2] section
-    services_v2 = data.get("services_v2", {})
-    for entry in services_v2.get("provides", []):
-        if not isinstance(entry, dict):
-            raise ValueError("Each [[services_v2.provides]] entry must be a table")
-        svc = entry.get("service")
-        ver = entry.get("version")
-        ep = entry.get("endpoint", "/_service/")
-        if not svc or not isinstance(svc, str):
-            raise ValueError("[[services_v2.provides]] requires a string 'service' field")
-        if not ver or not isinstance(ver, str):
-            raise ValueError("[[services_v2.provides]] requires a string 'version' field")
-        manifest.provides_services_v2.append(ServiceProvides(service=svc, version=ver, endpoint=ep))
-
-    # Parse [[permissions_v2]] section
-    for entry in data.get("permissions_v2", []):
-        if not isinstance(entry, dict):
-            raise ValueError("Each [[permissions_v2]] entry must be a table")
-        svc = entry.get("service")
-        if not svc or not isinstance(svc, str):
-            raise ValueError("[[permissions_v2]] requires a string 'service' field")
-        grants = entry.get("grants", [])
-        if not isinstance(grants, list):
-            raise ValueError("[[permissions_v2]] 'grants' must be a list")
-        manifest.permissions_v2.append(PermissionV2Request(service=svc, grants=grants))
-
-    container = runtime.get("container", {})
-    if not container.get("image"):
-        raise ValueError("[runtime.container].image is required")
-    if not container.get("port"):
-        raise ValueError("[runtime.container].port is required")
-    manifest.container_image = container["image"]
-    manifest.container_port = container["port"]
-    manifest.container_command = container.get("command")
-    manifest.capabilities = container.get("capabilities", [])
-    manifest.devices = container.get("devices", [])
-
-    manifest.port_mappings = _parse_ports(data.get("ports", []))
-
-    # Deprecated: extra_ports (raw Docker -p strings)
-    extra_ports = container.get("extra_ports", [])
-    if extra_ports:
-        logger.warning(
-            "App '%s' uses deprecated 'extra_ports' in [runtime.container]. Migrate to [[ports]] tables instead.",
-            manifest.name,
-        )
-
-    return manifest
 
 
 def parse_manifest(repo_path: str) -> AppManifest:

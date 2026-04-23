@@ -1,10 +1,4 @@
-"""App lifecycle operations: clone, deploy, start, stop, reload, validate.
-
-Extracted from routes/apps.py — no HTTP/Quart dependencies.
-"""
-
 import asyncio
-import dataclasses
 import hashlib
 import json
 import os
@@ -17,6 +11,7 @@ import threading
 import time
 import urllib.parse
 
+import attr
 import httpx
 
 import compute_space.core.storage as storage
@@ -36,32 +31,7 @@ from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
-from compute_space.db.connection import make_atomic_with_savepoint
-
-
-def _register_v2_service_providers(
-    app_name: str,
-    manifest: AppManifest,
-    db: sqlite3.Connection,
-) -> None:
-    """Register V2 service providers from manifest. Sets default if none exists."""
-    with make_atomic_with_savepoint(db):
-        db.execute("DELETE FROM service_providers_v2 WHERE app_name = ?", (app_name,))
-        for svc in manifest.provides_services_v2:
-            db.execute(
-                "INSERT OR REPLACE INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
-                (svc.service, app_name, svc.version, svc.endpoint),
-            )
-            existing_default = db.execute(
-                "SELECT 1 FROM service_defaults WHERE service_url = ?",
-                (svc.service,),
-            ).fetchone()
-            if not existing_default:
-                db.execute(
-                    "INSERT INTO service_defaults (service_url, app_name) VALUES (?, ?)",
-                    (svc.service, app_name),
-                )
-
+from compute_space.core.services_v2 import register_v2_service_providers
 
 RESERVED_PATHS = {
     "/",
@@ -256,7 +226,7 @@ def insert_and_deploy(
 
     # Apply port overrides from caller (CLI --port flags, etc.)
     mappings = [
-        dataclasses.replace(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
+        attr.evolve(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
         for pm in manifest.port_mappings
     ]
 
@@ -326,7 +296,7 @@ def insert_and_deploy(
             (svc_name, app_name),
         )
 
-    _register_v2_service_providers(app_name, manifest, db)
+    register_v2_service_providers(app_name, manifest, db)
 
     db.commit()
 
@@ -510,7 +480,7 @@ def _sync_port_mappings(
     to_resolve: list[PortMapping] = []
     for pm in new_mappings:
         if pm.label in existing:
-            to_resolve.append(dataclasses.replace(pm, host_port=existing[pm.label]["host_port"]))
+            to_resolve.append(attr.evolve(pm, host_port=existing[pm.label]["host_port"]))
         else:
             to_resolve.append(pm)
 
@@ -563,7 +533,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
             (svc_name, app_name),
         )
 
-    _register_v2_service_providers(app_name, manifest, db)
+    register_v2_service_providers(app_name, manifest, db)
 
     # Load resolved port mappings from DB (preserves host_port assignments)
     port_mappings = _load_port_mappings_from_db(app_name, db)

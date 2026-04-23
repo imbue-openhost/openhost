@@ -1,5 +1,4 @@
 import asyncio
-import dataclasses
 import os
 import re
 import shutil
@@ -7,6 +6,7 @@ import stat
 import subprocess
 import threading
 
+import attr
 from quart import Blueprint
 from quart import jsonify
 from quart import redirect
@@ -84,7 +84,7 @@ async def clone_and_get_app_info() -> ResponseReturnValue:
         raise RuntimeError("manifest unexpectedly None after successful clone")
     db = get_db()
     validation_error = validate_manifest(manifest, db)
-    info = dataclasses.asdict(manifest)
+    info = attr.asdict(manifest)
     info.pop("raw_toml", None)
     return jsonify(
         {
