@@ -150,3 +150,53 @@ without writing if anything would change — handy for CI.  Adding a new
 yoyo migration (e.g. `0002_*.sql`) and re-running produces an
 `at_0002.sql` for every scenario with no builder edit required, because
 builders only know about *data*, not migration ids.
+
+## Snapshot harness v2
+
+The first-cut snapshot harness (above) kept per-scenario `builder.py`
+modules and walked migrations one at a time, calling a `seed_at` hook
+between each step.  That design muddled migration state with data
+loading: every snapshot test both applied migrations and re-ran the
+builder, so drift in either path looked like drift in the other, and
+adding a new migration required thinking about whether every scenario's
+builder was still reachable at the right checkpoint.
+
+v2 flips the model to **pure replay** from committed snapshots:
+
+- **Builders are gone.**  Each scenario's `at_<NNNN>.sql` is the full
+  source of truth for both schema and data at that migration point.
+  There is no more `builder.py`, no `seed_at`, no per-step hook.  The
+  first snapshot of each scenario is hand-bootstrapped (application data
+  + one `_yoyo_migration` row recording that 0001 is applied); every
+  subsequent snapshot is derived by replaying migrations from the
+  previous one.
+
+- **Snapshots embed yoyo tracking.**  `_yoyo_migration` and
+  `_yoyo_version` rows live in the dumps (with timestamps canonicalised
+  to `2025-01-01 00:00:00`).  When yoyo opens a loaded snapshot it sees
+  "0001 applied, version 2" and treats only the later migrations as
+  pending.  The DDL for `_yoyo_log` and `yoyo_lock` is emitted too, with
+  rows stripped: yoyo writes to both during apply and won't recreate
+  missing tables once `_yoyo_version` is already at max.
+
+- **`regenerate.py` is a pure-replay CLI.**
+  `regenerate.py [--scenario NAME] [--from FROM_ID] [--to TO_ID] [--check]`
+  loads `at_<FROM>.sql`, hands the DB to yoyo
+  (`backend.apply_migrations(backend.to_apply(...))`), dumps, writes
+  `at_<TO>.sql`.  `--from` defaults to the highest existing snapshot per
+  scenario; `--to` defaults to the latest migration; `--check` diffs
+  against the committed file for CI.
+
+- **Test harness is pair-only.**  `TestSnapshot` enumerates ordered
+  pairs `(from_id, to_id)` of existing `at_*.sql` files and verifies
+  that replay from `from` produces exactly `to`.  No virtual `empty`
+  starting state — fresh → 0001 schema parity is validated by
+  `TestYoyoDispatch.test_fresh_db_applies_all_migrations` instead
+  (snapshots include data the migration itself doesn't produce, so they
+  can't substitute for that schema check).
+
+- **`0002_dummy.py` lives in `compute_space/db/migrations/`** — a no-op
+  migration (`steps: list[step] = []`) whose sole purpose is to give
+  the harness a real migration pair to exercise.  When a real next
+  migration comes along it should take the next number (0003_…); leave
+  0002 alone so existing snapshots continue to chain unchanged.

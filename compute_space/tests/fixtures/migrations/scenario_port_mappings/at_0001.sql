@@ -83,6 +83,28 @@ CREATE TABLE service_providers (
 CREATE INDEX idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+CREATE TABLE "_yoyo_log" (
+            "id" VARCHAR(36),
+            "migration_hash" VARCHAR(64),
+            "migration_id" VARCHAR(255),
+            "operation" VARCHAR(10),
+            "username" VARCHAR(255),
+            "hostname" VARCHAR(255),
+            "comment" VARCHAR(255),
+            "created_at_utc" TIMESTAMP,
+            PRIMARY KEY ("id")
+        );
+CREATE TABLE "_yoyo_migration" (
+            "migration_hash" VARCHAR(64),
+            "migration_id" VARCHAR(255),
+            "applied_at_utc" TIMESTAMP,
+            PRIMARY KEY ("migration_hash")
+        );
+CREATE TABLE "_yoyo_version" (
+            "version" INT NOT NULL PRIMARY KEY,
+            "installed_at_utc" TIMESTAMP
+        );
+CREATE TABLE "yoyo_lock" ("locked" INT DEFAULT 1, "ctime" TIMESTAMP,"pid" INT NOT NULL,PRIMARY KEY ("locked"));
 INSERT INTO "app_port_mappings" (id, app_name, label, container_port, host_port) VALUES (1, 'app_a', 'http', 8080, 20001);
 INSERT INTO "app_port_mappings" (id, app_name, label, container_port, host_port) VALUES (2, 'app_a', 'metrics', 9100, 20002);
 INSERT INTO "app_port_mappings" (id, app_name, label, container_port, host_port) VALUES (3, 'app_a', 'admin', 8443, 20003);
@@ -92,4 +114,6 @@ INSERT INTO "app_port_mappings" (id, app_name, label, container_port, host_port)
 INSERT INTO "apps" (id, name, manifest_name, version, description, runtime_type, repo_path, repo_url, health_check, local_port, container_port, docker_container_id, status, error_message, memory_mb, cpu_millicores, gpu, public_paths, manifest_raw, created_at, updated_at) VALUES (1, 'app_a', 'app_a', '1.0', NULL, 'serverfull', '/repos/app_a', NULL, NULL, 9001, NULL, NULL, 'stopped', NULL, 128, 100, 0, '[]', NULL, '2025-01-01T00:00:00', '2025-01-01T00:00:00');
 INSERT INTO "apps" (id, name, manifest_name, version, description, runtime_type, repo_path, repo_url, health_check, local_port, container_port, docker_container_id, status, error_message, memory_mb, cpu_millicores, gpu, public_paths, manifest_raw, created_at, updated_at) VALUES (2, 'app_b', 'app_b', '1.0', NULL, 'serverfull', '/repos/app_b', NULL, NULL, 9002, NULL, NULL, 'stopped', NULL, 128, 100, 0, '[]', NULL, '2025-01-01T00:00:00', '2025-01-01T00:00:00');
 INSERT INTO "owner" (id, username, password_hash, password_needs_set, created_at) VALUES (1, 'admin', NULL, 1, '2025-01-01T00:00:00');
+INSERT INTO "_yoyo_migration" (migration_hash, migration_id, applied_at_utc) VALUES ('3ef54af11f5dd6ae30463e2a77ee651fb81022a58928acccdd9ff64181d79745', '0001_initial', '2025-01-01 00:00:00');
+INSERT INTO "_yoyo_version" (version, installed_at_utc) VALUES (2, '2025-01-01 00:00:00');
 COMMIT;

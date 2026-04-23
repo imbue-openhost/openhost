@@ -24,15 +24,14 @@ from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_sn
 from ._migration_helpers import OLDEST_ROUTER_SCHEMA
 from ._migration_helpers import fresh_db as _fresh_db
 from ._migration_helpers import run_init_db as _run_init_db
+from ._snapshot_harness import apply_pending
 from ._snapshot_harness import discover_scenario_dirs
 from ._snapshot_harness import dump_application_db
 from ._snapshot_harness import fixture_path
-from ._snapshot_harness import list_migration_ids
-from ._snapshot_harness import load_scenario_builder
 from ._snapshot_harness import load_snapshot
 from ._snapshot_harness import materialize_state
-from ._snapshot_harness import scenario_seed_fn
-from ._snapshot_harness import walk_migrations
+from ._snapshot_harness import present_snapshot_ids
+from ._snapshot_harness import snapshot_header
 
 
 def _fresh_bootstrap_snapshot(tmp_path):
@@ -57,7 +56,13 @@ def _applied_yoyo_migrations(db_path):
 
 
 class TestYoyoDispatch:
-    """Cover the three init_db startup paths: fresh / legacy / managed."""
+    """Cover the three init_db startup paths: fresh / legacy / managed.
+
+    Fresh -> 0001 schema parity is validated here, not in the snapshot
+    suite.  Snapshots additionally include scenario-specific data that
+    a migration alone does not produce, so snapshots can't substitute
+    for the fresh-DB schema check.
+    """
 
     def test_fresh_db_applies_all_migrations(self, tmp_path):
         """Empty file -> yoyo creates every table from 0001 and records it."""
@@ -164,74 +169,53 @@ class TestYoyoDispatch:
 # ---------------------------------------------------------------------------
 # Snapshot / golden-test harness
 #
-# For each scenario enumerate every ordered pair (from, to) over
-# [empty, at_0001, at_0002, …] with from < to.  For each pair:
-#   1. Materialize ``from`` (fresh file or load at_<from>.sql).
-#   2. Walk migrations (from, to] with the scenario's ``seed_at`` hook in
-#      between — same walk regenerate.py uses, so the final state must
-#      match the checked-in fixture.
+# For each scenario enumerate every ordered pair (from, to) of checked-in
+# ``at_<NNNN>.sql`` fixtures with from < to.  For each pair:
+#   1. Materialize the ``from`` snapshot (schema + data + yoyo tracking).
+#   2. Hand the DB to yoyo — the loaded tracking rows tell yoyo which
+#      migrations to skip; it applies everything up to ``to``.
 #   3. Dump and compare to ``at_<to>.sql``.
+#
+# Scenarios with a single snapshot contribute zero cases (no pairs).
+# There is no implicit "empty" starting state — snapshots encode both
+# schema and data, and the first snapshot of each scenario is hand-
+# bootstrapped because application data is not produced by migrations.
 # ---------------------------------------------------------------------------
 
 
 def _snapshot_cases():
-    """Yield (scenario_dir, from_id, to_id) triples.
-
-    ``from_id`` is ``None`` to represent the implicit empty state.  Each
-    ``at_<NNNN>.sql`` fixture in the scenario directory is treated as a
-    snapshot.  Pairs are ordered (from < to) and only include fixtures
-    that actually exist on disk.
-    """
-    migration_ids = list_migration_ids()
-    index = {mid: i for i, mid in enumerate(migration_ids)}
-
+    """Yield (scenario_dir, from_id, to_id) triples for every ordered pair."""
     cases = []
     for scenario_dir in discover_scenario_dirs():
-        present = [mid for mid in migration_ids if (scenario_dir / f"at_{mid.split('_', 1)[0]}.sql").exists()]
-        states: list[str | None] = [None] + list(present)
-        for i, from_id in enumerate(states):
-            for to_id in states[i + 1 :]:
-                if to_id is None:
-                    continue
-                if from_id is not None and index[from_id] >= index[to_id]:
-                    continue
+        present = present_snapshot_ids(scenario_dir)
+        for i, from_id in enumerate(present):
+            for to_id in present[i + 1 :]:
                 cases.append((scenario_dir, from_id, to_id))
     return cases
 
 
 def _case_id(case):
     scenario_dir, from_id, to_id = case
-    from_label = "empty" if from_id is None else from_id.split("_", 1)[0]
-    to_label = to_id.split("_", 1)[0]
-    return f"{scenario_dir.name}-{from_label}->{to_label}"
+    return f"{scenario_dir.name}-{from_id.split('_', 1)[0]}->{to_id.split('_', 1)[0]}"
 
 
 class TestSnapshot:
-    """Round-trip every (from, to) pair for every scenario."""
+    """Round-trip every (from, to) pair of committed snapshots."""
 
     @pytest.mark.parametrize("case", _snapshot_cases(), ids=_case_id)
     def test_migration_produces_expected_snapshot(self, case, tmp_path):
         scenario_dir, from_id, to_id = case
         db_path = str(tmp_path / "snapshot.db")
 
-        from_sql = None if from_id is None else load_snapshot(scenario_dir, from_id)
-        if from_id is not None:
-            assert from_sql is not None, f"missing fixture at_{from_id}.sql for {scenario_dir.name}"
+        from_sql = load_snapshot(scenario_dir, from_id)
+        assert from_sql is not None, f"missing fixture at_{from_id}.sql for {scenario_dir.name}"
         materialize_state(db_path, from_sql)
 
-        seed_fn = scenario_seed_fn(load_scenario_builder(scenario_dir))
-        walk_migrations(db_path, from_exclusive=from_id, to_inclusive=to_id, seed_fn=seed_fn)
+        apply_pending(db_path, up_to_inclusive=to_id)
 
         conn = sqlite3.connect(db_path)
         try:
-            actual = dump_application_db(
-                conn,
-                header_lines=[
-                    "Generated by regenerate.py — do not edit by hand.",
-                    f"Scenario: {scenario_dir.name}",
-                    f"After migration: {to_id}",
-                ],
-            )
+            actual = dump_application_db(conn, header_lines=snapshot_header(scenario_dir.name, to_id))
         finally:
             conn.close()
 
@@ -248,6 +232,6 @@ class TestSnapshot:
                 )
             )
             pytest.fail(
-                f"Snapshot drift for {scenario_dir.name} {from_id or 'empty'} -> {to_id}.\n"
+                f"Snapshot drift for {scenario_dir.name} {from_id} -> {to_id}.\n"
                 f"Re-run regenerate.py if the change is intentional.\n{diff}"
             )

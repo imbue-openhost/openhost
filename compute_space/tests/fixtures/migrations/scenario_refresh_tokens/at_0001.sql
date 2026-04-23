@@ -83,9 +83,33 @@ CREATE TABLE service_providers (
 CREATE INDEX idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+CREATE TABLE "_yoyo_log" (
+            "id" VARCHAR(36),
+            "migration_hash" VARCHAR(64),
+            "migration_id" VARCHAR(255),
+            "operation" VARCHAR(10),
+            "username" VARCHAR(255),
+            "hostname" VARCHAR(255),
+            "comment" VARCHAR(255),
+            "created_at_utc" TIMESTAMP,
+            PRIMARY KEY ("id")
+        );
+CREATE TABLE "_yoyo_migration" (
+            "migration_hash" VARCHAR(64),
+            "migration_id" VARCHAR(255),
+            "applied_at_utc" TIMESTAMP,
+            PRIMARY KEY ("migration_hash")
+        );
+CREATE TABLE "_yoyo_version" (
+            "version" INT NOT NULL PRIMARY KEY,
+            "installed_at_utc" TIMESTAMP
+        );
+CREATE TABLE "yoyo_lock" ("locked" INT DEFAULT 1, "ctime" TIMESTAMP,"pid" INT NOT NULL,PRIMARY KEY ("locked"));
 INSERT INTO "owner" (id, username, password_hash, password_needs_set, created_at) VALUES (1, 'admin', NULL, 1, '2025-01-01T00:00:00');
 INSERT INTO "refresh_tokens" (id, token_hash, expires_at, revoked) VALUES (1, '3981be392096cbf5a753cdda521da30a43ad920fe274e33d03b7f23419ae9cee', '2099-01-01T00:00:00', 0);
 INSERT INTO "refresh_tokens" (id, token_hash, expires_at, revoked) VALUES (2, 'f0623f29acd0708e6319726f14b3f7e5e4ae9860c4f6c14ec3e1115abc8dbc3b', '2099-01-01T00:00:00', 1);
 INSERT INTO "refresh_tokens" (id, token_hash, expires_at, revoked) VALUES (3, 'c26b7d992abc3171ca60f6816d5f3cd6bd12628514f894f3255a9fff4f4b96a3', '2000-01-01T00:00:00', 0);
 INSERT INTO "refresh_tokens" (id, token_hash, expires_at, revoked) VALUES (4, '50ab7e52783c1fe8e9d7866f9debe9fbae73697cdfe8de8748e55f4d2b375058', '2000-01-01T00:00:00', 1);
+INSERT INTO "_yoyo_migration" (migration_hash, migration_id, applied_at_utc) VALUES ('3ef54af11f5dd6ae30463e2a77ee651fb81022a58928acccdd9ff64181d79745', '0001_initial', '2025-01-01 00:00:00');
+INSERT INTO "_yoyo_version" (version, installed_at_utc) VALUES (2, '2025-01-01 00:00:00');
 COMMIT;
