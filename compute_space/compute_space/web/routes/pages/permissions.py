@@ -19,7 +19,7 @@ async def approve_permissions() -> str | Response:
         return Response("app and permissions query params are required", status=400)
 
     requested = permissions_arg.split(",")
-    granted = get_granted_permissions(app_name)
+    granted = await get_granted_permissions(app_name)
     permissions_needed = [k for k in requested if k not in granted]
     return await render_template(
         "approve_permissions.html",

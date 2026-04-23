@@ -139,7 +139,7 @@ async def service_proxy(service_name: str, service_endpoint: str) -> Response:
         return _json_error("forbidden", e.message, 403)
 
     if required_permissions:
-        permissions_granted = get_granted_permissions(consumer_app)
+        permissions_granted = await get_granted_permissions(consumer_app)
         permissions_needed = [k for k in required_permissions if k not in permissions_granted]
         if permissions_needed:
             # Read return_to from request body if present, for redirect after approval

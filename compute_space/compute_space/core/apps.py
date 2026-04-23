@@ -201,7 +201,7 @@ def validate_manifest(manifest: AppManifest, db: sqlite3.Connection, app_name: s
     return None
 
 
-def insert_and_deploy(
+async def insert_and_deploy(
     manifest: AppManifest,
     repo_path: str,
     config: Config,
@@ -309,7 +309,7 @@ def insert_and_deploy(
                 logger.warning("App %s deployed without required permission %s", app_name, perm_key)
         permission_keys = [k for k in (f"{svc_name}/{key_spec['key']}" for key_spec in keys) if k in grant_permissions]
         if permission_keys:
-            grant_permissions_fn(app_name, permission_keys)
+            await grant_permissions_fn(app_name, permission_keys)
 
     unknown = grant_permissions - all_manifest_keys
     if unknown:

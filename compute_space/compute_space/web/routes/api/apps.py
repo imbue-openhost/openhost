@@ -183,7 +183,7 @@ async def api_add_app() -> ResponseReturnValue:
                 return jsonify({"error": f"Invalid port override value for '{label}': {form[key]}"}), 400
 
     try:
-        app_name = insert_and_deploy(
+        app_name = await insert_and_deploy(
             manifest,
             final_dir,
             config,
