@@ -1,7 +1,9 @@
 """
-Tests that the router's hand-rolled SQLite migrations produce a schema
-identical to a fresh database created by schema.sql, and that data is
-preserved correctly through each migration path.
+Tests for the router database migration paths (fresh / legacy / managed).
+
+Verifies that legacy_migrate.migrate() combined with the yoyo 0001 baseline
+produces a schema equivalent to applying 0001 directly to a fresh DB, and
+that data is preserved across each migration path.
 """
 
 import hashlib
@@ -164,7 +166,8 @@ class TestRouterMigrations:
         old_db.executescript(_OLDEST_ROUTER_SCHEMA)
         old_db.close()
 
-        # Run init_db (which calls _migrate then schema.sql)
+        # Run init_db (legacy path: migrate() then apply yoyo migrations,
+        # with 0001 applied idempotently over the migrated state).
         _run_init_db(migrated_path)
 
         fresh_db = sqlite3.connect(fresh_path)
@@ -668,9 +671,11 @@ class TestYoyoDispatch:
         assert set(snap["tables"]) == _EXPECTED_TABLES
         assert "0001_initial" in _applied_yoyo_migrations(db_path)
 
-    def test_legacy_db_runs_migrate_and_marks_0001(self, tmp_path):
-        """Legacy DB with apps table -> migrate() runs, 0001 is marked applied
-        without being re-executed, data is preserved, final schema matches fresh.
+    def test_legacy_db_runs_migrate_and_applies_0001(self, tmp_path):
+        """Legacy DB with apps table -> migrate() runs, then yoyo applies all
+        migrations (0001's IF-NOT-EXISTS statements are no-ops for tables
+        migrate() already built, and fill in any it doesn't touch). Data is
+        preserved and the final schema matches a fresh DB.
         """
         db_path = str(tmp_path / "legacy.db")
         db = sqlite3.connect(db_path)

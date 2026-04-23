@@ -56,10 +56,12 @@ def init_db(app: Quart) -> None:
 
     Dispatches on three possible starting states:
       - fresh: apply all yoyo migrations (0001 contains the full baseline)
-      - legacy: run the frozen legacy migrate() once to reach the 0001
-        baseline, mark 0001 as applied in yoyo, then apply any newer
-        migrations
-      - managed: apply any pending yoyo migrations only
+      - legacy: run the frozen legacy migrate() once to cover the
+        imperative ALTER/recreate steps, then apply all yoyo migrations.
+        0001 is composed entirely of CREATE ... IF NOT EXISTS statements,
+        so re-applying it on a legacy DB is a no-op for tables migrate()
+        already built and fills in any tables it doesn't touch.
+      - managed: apply any pending yoyo migrations only.
 
     The legacy migrate() MUST NOT run on a managed database.
     """
@@ -76,8 +78,4 @@ def init_db(app: Quart) -> None:
     backend = get_backend(f"sqlite:///{db_path}")
     migrations = read_migrations(MIGRATIONS_DIR)
     with backend.lock():
-        if state == "legacy" and len(migrations) > 0:
-            # migrate() already brought the schema to the 0001 baseline;
-            # mark 0001 applied without re-running its SQL.
-            backend.mark_migrations(migrations[:1])
         backend.apply_migrations(backend.to_apply(migrations))
