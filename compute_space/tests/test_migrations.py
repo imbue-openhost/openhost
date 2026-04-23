@@ -7,6 +7,7 @@ preserved correctly through each migration path.
 import hashlib
 import sqlite3
 
+from compute_space.db.connection import _legacy_db_needs_cutover
 from compute_space.db.connection import init_db
 from compute_space.db.migrations import migrate
 from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
@@ -634,3 +635,86 @@ class TestAlembicBaselineParity:
         # take the alembic-only path.
         assert "alembic_version" in alembic_snap["tables"]
         assert "alembic_version" in legacy_snap["tables"]
+
+        # REQ-CUTOVER-5: parity must cover constraints, not just columns +
+        # named indexes. Sanity-check that the comparator actually saw FKs and
+        # CHECK clauses for representative tables — if the helper ever
+        # regresses to a column-only snapshot, this assertion fires first.
+        alembic_cons = alembic_snap["table_constraints"]
+        assert alembic_cons["app_databases"]["foreign_keys"], "expected FK on app_databases"
+        assert any("status" in chk for chk in alembic_cons["apps"]["checks"]), (
+            "expected CHECK(status IN (...)) on apps"
+        )
+        assert any(
+            "id = 1" in chk.replace(" ", "") or "id=1" in chk.replace(" ", "")
+            for chk in alembic_cons["owner"]["checks"]
+        ), "expected CHECK(id = 1) on owner"
+
+
+class TestLegacyCutoverDetection:
+    """REQ-CUTOVER-1: a DB is considered needing cutover if the alembic
+    version stamp is absent OR empty."""
+
+    def test_no_alembic_table_with_legacy_tables_needs_cutover(self, tmp_path):
+        db_path = str(tmp_path / "legacy.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.close()
+        assert _legacy_db_needs_cutover(db_path) is True
+
+    def test_empty_alembic_table_with_legacy_tables_needs_cutover(self, tmp_path):
+        """alembic_version table present but row-less must still trigger cutover."""
+        db_path = str(tmp_path / "empty_stamp.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        db.commit()
+        db.close()
+        assert _legacy_db_needs_cutover(db_path) is True
+
+    def test_stamped_alembic_table_does_not_need_cutover(self, tmp_path):
+        db_path = str(tmp_path / "stamped.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        db.execute("INSERT INTO alembic_version (version_num) VALUES ('baseline')")
+        db.commit()
+        db.close()
+        assert _legacy_db_needs_cutover(db_path) is False
+
+    def test_empty_db_does_not_need_cutover(self, tmp_path):
+        db_path = str(tmp_path / "empty.db")
+        sqlite3.connect(db_path).close()
+        assert _legacy_db_needs_cutover(db_path) is False
+
+    def test_empty_alembic_table_with_no_legacy_tables_does_not_need_cutover(self, tmp_path):
+        """Empty alembic_version alone (no legacy tables) is treated as a
+        fresh-ish DB; alembic upgrade head will populate the stamp."""
+        db_path = str(tmp_path / "empty_stamp_only.db")
+        db = sqlite3.connect(db_path)
+        db.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        db.commit()
+        db.close()
+        assert _legacy_db_needs_cutover(db_path) is False
+
+    def test_init_db_recovers_from_empty_alembic_table(self, tmp_path):
+        """End-to-end: a legacy DB with an empty alembic_version row must be
+        migrated, stamped, and left in the alembic-only steady state."""
+        db_path = str(tmp_path / "recover.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        try:
+            row = db.execute("SELECT version_num FROM alembic_version").fetchone()
+            assert row is not None, "alembic_version should be stamped after cutover"
+            cols = {r[1] for r in db.execute("PRAGMA table_info(apps)").fetchall()}
+            assert "manifest_name" in cols
+            assert "base_path" not in cols
+        finally:
+            db.close()

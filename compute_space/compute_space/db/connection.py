@@ -25,15 +25,23 @@ def _alembic_config(db_path: str) -> AlembicConfig:
 
 
 def _legacy_db_needs_cutover(db_path: str) -> bool:
-    """Return True iff the DB has legacy tables but no alembic stamp."""
+    """Return True iff the DB has legacy tables but no alembic version stamp.
+
+    Per REQ-CUTOVER-1, a DB needs cutover when the alembic version stamp is
+    "absent or empty": either ``alembic_version`` table is missing entirely, or
+    the table exists but has no ``version_num`` row. The latter can happen
+    after ``stamp base`` or a manual wipe.
+    """
     conn = sqlite3.connect(db_path)
     try:
-        has_alembic = (
+        has_alembic_table = (
             conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='alembic_version'").fetchone()
             is not None
         )
-        if has_alembic:
-            return False
+        if has_alembic_table:
+            stamped = conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone() is not None
+            if stamped:
+                return False
         has_legacy_tables = (
             conn.execute(
                 "SELECT 1 FROM sqlite_master "
