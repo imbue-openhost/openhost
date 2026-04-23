@@ -15,6 +15,71 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 _CACHE_CORRUPT_RE = re.compile(r"content digest sha256:[0-9a-f]+: not found")
 
 
+def compute_data_mounts(
+    manifest: AppManifest,
+    app_name: str,
+    data_dir: str,
+    temp_data_dir: str,
+) -> list[tuple[str, str, str | None]]:
+    """Return the list of data-volume mounts implied by a manifest.
+
+    Each tuple is ``(host_path, container_path, options)`` where
+    ``options`` is the Docker mount options string (``"ro"``) or ``None``
+    for a default read/write bind. The caller is expected to pass these
+    into ``docker run -v``.
+
+    Resolution rules (each category is independent — any combination of
+    the three ``access_all_apps_*`` / ``access_vm_data*`` fields can be
+    requested):
+
+    * For app_data and app_temp_data, a broad (parent-directory) mount
+      shadows the scoped (single-app) mount; only the broader mount is
+      emitted since the scoped path would be a subpath of it anyway.
+    * For vm_data, the manifest guarantees at most one of RO / RW is
+      active: parsing rejects ``access_vm_data`` (RO) together with
+      either ``access_vm_data_rw`` or the legacy ``access_all_data``
+      shorthand (both of which imply RW). This function just emits
+      whichever mount was requested.
+    """
+    app_data_dir = os.path.join(data_dir, "app_data", app_name)
+    app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
+    vm_data_dir = os.path.join(data_dir, "vm_data")
+    c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
+    c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
+    c_vm_data = f"{CONTAINER_ROOT}/vm_data"
+
+    mounts: list[tuple[str, str, str | None]] = []
+
+    if manifest.wants_all_apps_data:
+        mounts.append(
+            (
+                os.path.join(data_dir, "app_data"),
+                f"{CONTAINER_ROOT}/app_data",
+                None,
+            )
+        )
+    elif manifest.wants_own_app_data:
+        mounts.append((app_data_dir, c_app_data, None))
+
+    if manifest.wants_all_apps_temp_data:
+        mounts.append(
+            (
+                os.path.join(temp_data_dir, "app_temp_data"),
+                f"{CONTAINER_ROOT}/app_temp_data",
+                None,
+            )
+        )
+    elif manifest.wants_own_app_temp_data:
+        mounts.append((app_temp_dir, c_app_temp, None))
+
+    if manifest.wants_vm_data_rw:
+        mounts.append((vm_data_dir, c_vm_data, None))
+    elif manifest.wants_vm_data_ro:
+        mounts.append((vm_data_dir, c_vm_data, "ro"))
+
+    return mounts
+
+
 def _log_path(app_name: str, temp_data_dir: str) -> str:
     """Return the path to the build/deploy log file for an app (in temp data)."""
     return os.path.join(temp_data_dir, "app_temp_data", app_name, "docker.log")
@@ -105,19 +170,14 @@ def run_container(
 ) -> str:
     """Run a Docker container. Returns the container ID."""
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
-    app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
     vm_data_dir = os.path.join(data_dir, "vm_data")
     container_name = f"openhost-{app_name}"
 
-    # Check which data access the app has (sqlite implies app_data)
-    has_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
-    has_app_temp = manifest.app_temp_data or manifest.access_all_data
-    has_vm_data = manifest.access_vm_data or manifest.access_all_data
-
-    # Container paths follow the logical structure under CONTAINER_ROOT
+    # Container paths follow the logical structure under CONTAINER_ROOT.
+    # Only the ones used for env-var translation below are computed
+    # here; ``compute_data_mounts`` owns the mount-side path layout.
     c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
     c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
-    c_vm_data = f"{CONTAINER_ROOT}/vm_data"
 
     # Translate host paths to container paths in env vars
     container_env = {}
@@ -146,26 +206,21 @@ def run_container(
         "--add-host=host.docker.internal:host-gateway",
     ]
 
-    # Mount data volumes following the logical structure from docs/data.md
-    if manifest.access_all_data:
-        # Full access: mount parent dirs so the app sees all apps' data
-        cmd.extend(["-v", f"{os.path.join(data_dir, 'app_data')}:{CONTAINER_ROOT}/app_data"])
-        cmd.extend(
-            [
-                "-v",
-                f"{os.path.join(temp_data_dir, 'app_temp_data')}:{CONTAINER_ROOT}/app_temp_data",
-            ]
-        )
+    # Mount data volumes following the logical structure from docs/data.md.
+    # See ``compute_data_mounts`` for the permission-resolution rules.
+    # The vm_data dir is shared among apps and may not exist yet on a
+    # fresh install, so create it on demand if the manifest asks for it.
+    # Detecting that by host path is more robust than by container path,
+    # since the container-path scheme is defined inside
+    # ``compute_data_mounts`` and could drift.
+    mounts = compute_data_mounts(manifest, app_name, data_dir, temp_data_dir)
+    if any(host == vm_data_dir for host, _container, _opts in mounts):
         os.makedirs(vm_data_dir, exist_ok=True)
-        cmd.extend(["-v", f"{vm_data_dir}:{c_vm_data}"])
-    else:
-        if has_app_data:
-            cmd.extend(["-v", f"{app_data_dir}:{c_app_data}"])
-        if has_app_temp:
-            cmd.extend(["-v", f"{app_temp_dir}:{c_app_temp}"])
-        if has_vm_data:
-            os.makedirs(vm_data_dir, exist_ok=True)
-            cmd.extend(["-v", f"{vm_data_dir}:{c_vm_data}:ro"])
+    for host_path, container_path, options in mounts:
+        spec = f"{host_path}:{container_path}"
+        if options:
+            spec += f":{options}"
+        cmd.extend(["-v", spec])
 
     # Structured port mappings: bind TCP+UDP on 0.0.0.0
     if port_mappings:

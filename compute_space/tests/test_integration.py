@@ -74,6 +74,90 @@ def test_sqlite_provisioning():
         assert not os.path.exists(env_vars["OPENHOST_SQLITE_cache"])
 
 
+def _provision(tmp_path, **manifest_kwargs):
+    """Run provision_data against pytest-managed temp dirs and return
+    ``(env_vars, data_dir, temp_dir)`` for assertions.
+
+    ``tmp_path`` is pytest's per-test tempdir fixture, which pytest
+    cleans up automatically — that's the whole reason this helper takes
+    it as an argument rather than calling ``tempfile.mkdtemp`` itself.
+    """
+    data_dir = str(tmp_path / "data")
+    temp_dir = str(tmp_path / "temp")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    manifest = AppManifest(
+        name="testapp",
+        version="0.1.0",
+        container_image="alpine:latest",
+        container_port=8080,
+        **manifest_kwargs,
+    )
+    env_vars = provision_data(
+        "testapp",
+        manifest,
+        data_dir,
+        temp_dir,
+        my_openhost_redirect_domain="my.test.example.com",
+        zone_domain="test.example.com",
+        port=manifest.container_port,
+    )
+    return env_vars, data_dir, temp_dir
+
+
+def test_provision_data_scoped_app_data(tmp_path):
+    """``app_data = true`` provisions the scoped dir and sets the env var."""
+    env_vars, data_dir, _temp_dir = _provision(tmp_path, app_data=True)
+    scoped = os.path.join(data_dir, "app_data", "testapp")
+    assert os.path.isdir(scoped)
+    assert env_vars["OPENHOST_APP_DATA_DIR"] == scoped
+    assert "OPENHOST_APP_TEMP_DIR" not in env_vars
+
+
+def test_provision_data_scoped_app_temp_data(tmp_path):
+    env_vars, _data_dir, temp_dir = _provision(tmp_path, app_temp_data=True)
+    scoped = os.path.join(temp_dir, "app_temp_data", "testapp")
+    assert os.path.isdir(scoped)
+    assert env_vars["OPENHOST_APP_TEMP_DIR"] == scoped
+    assert "OPENHOST_APP_DATA_DIR" not in env_vars
+
+
+def test_provision_data_access_all_apps_data_creates_scoped_dir(tmp_path):
+    """Requesting broad access also creates the scoped dir + env var so
+    the app can write to its own namespace via the familiar path."""
+    env_vars, data_dir, _ = _provision(tmp_path, access_all_apps_data=True)
+    scoped = os.path.join(data_dir, "app_data", "testapp")
+    assert os.path.isdir(scoped)
+    assert env_vars["OPENHOST_APP_DATA_DIR"] == scoped
+
+
+def test_provision_data_access_all_apps_temp_data_creates_scoped_dir(tmp_path):
+    env_vars, _data_dir, temp_dir = _provision(
+        tmp_path, access_all_apps_temp_data=True
+    )
+    scoped = os.path.join(temp_dir, "app_temp_data", "testapp")
+    assert os.path.isdir(scoped)
+    assert env_vars["OPENHOST_APP_TEMP_DIR"] == scoped
+    # Symmetric to test_provision_data_scoped_app_temp_data: granting
+    # temp-only broad access must NOT implicitly grant permanent-data
+    # access.
+    assert "OPENHOST_APP_DATA_DIR" not in env_vars
+
+
+def test_provision_data_legacy_access_all_data_provisions_both(tmp_path):
+    env_vars, data_dir, temp_dir = _provision(tmp_path, access_all_data=True)
+    assert os.path.isdir(os.path.join(data_dir, "app_data", "testapp"))
+    assert os.path.isdir(os.path.join(temp_dir, "app_temp_data", "testapp"))
+    assert "OPENHOST_APP_DATA_DIR" in env_vars
+    assert "OPENHOST_APP_TEMP_DIR" in env_vars
+
+
+def test_provision_data_no_data_section_emits_no_data_env_vars(tmp_path):
+    env_vars, _data_dir, _temp_dir = _provision(tmp_path)
+    assert "OPENHOST_APP_DATA_DIR" not in env_vars
+    assert "OPENHOST_APP_TEMP_DIR" not in env_vars
+
+
 def test_pre_setup_security_audit(tmp_path):
     """Security audit via /health returns valid results before owner setup."""
     ROUTER_PORT = 18084

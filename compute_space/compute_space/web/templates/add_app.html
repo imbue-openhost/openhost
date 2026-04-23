@@ -179,16 +179,31 @@ function renderManifest(m, url) {
     row('SQLite databases', m.sqlite_dbs.map(esc).join(', '));
   }
 
-  const hasFs = m.app_data || m.app_temp_data || m.access_vm_data || m.access_all_data || m.sqlite_dbs.length;
+  const hasFs = m.app_data || m.app_temp_data || m.access_vm_data
+    || m.access_vm_data_rw || m.access_all_apps_data
+    || m.access_all_apps_temp_data || m.access_all_data
+    || m.sqlite_dbs.length;
   if (hasFs) {
     section('Filesystem Permissions', '#fff3cd');
+    // access_all_data is the legacy "full power" shorthand; surface it
+    // explicitly so the user sees the aggregate they're granting.
     if (m.access_all_data) {
-      row('Full data access', 'Read/write to all permanent data, temporary data, and VM data');
+      row('Full data access', "Read/write to every app's permanent data and temporary data, plus read/write to VM shared data");
     } else {
+      // Scoped access — this app's own directory only.
       if (m.app_data || m.sqlite_dbs.length)
-        row('Permanent data', "Read/write to app's own permanent data directory");
-      if (m.app_temp_data) row('Temporary data', "Read/write to app's own temporary data directory");
-      if (m.access_vm_data) row('VM data', 'Read-only access to VM shared data');
+        row('Permanent data', "Read/write to this app's own permanent data directory");
+      if (m.app_temp_data)
+        row('Temporary data', "Read/write to this app's own temporary data directory");
+      // Broad access — parent mounts exposing every app's data.
+      if (m.access_all_apps_data)
+        row('All apps\u2019 permanent data', "Read/write to every app's permanent data directory");
+      if (m.access_all_apps_temp_data)
+        row('All apps\u2019 temporary data', "Read/write to every app's temporary data directory");
+      // VM data — read-only and read/write are mutually exclusive at
+      // manifest parse time, so at most one of these is ever true.
+      if (m.access_vm_data) row('VM data (read-only)', 'Read-only access to VM shared data');
+      if (m.access_vm_data_rw) row('VM data (read/write)', 'Read/write access to VM shared data');
     }
   }
 

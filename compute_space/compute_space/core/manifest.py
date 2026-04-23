@@ -53,9 +53,20 @@ class AppManifest:
 
     # [data]
     sqlite_dbs: list[str] = field(default_factory=list)
+    # Scoped-to-this-app access:
     app_data: bool = False
     app_temp_data: bool = False
+    # Read-only access to the shared VM data directory:
     access_vm_data: bool = False
+    # Broad access to all apps' data. Each of these three fields can be
+    # requested independently — you can, for example, grant an app the
+    # ability to read every app's permanent data without also granting it
+    # access to temp data or to vm_data. ``access_all_data`` is kept as
+    # legacy shorthand that implies all three of the ``access_all_*``
+    # fields below plus a read/write mount of ``vm_data``.
+    access_all_apps_data: bool = False
+    access_all_apps_temp_data: bool = False
+    access_vm_data_rw: bool = False
     access_all_data: bool = False
 
     # [services]
@@ -67,6 +78,63 @@ class AppManifest:
     hidden: bool = False
 
     raw_toml: str = ""
+
+    # ------------------------------------------------------------------
+    # Effective-permission helpers
+    # ------------------------------------------------------------------
+    #
+    # ``access_all_data`` is legacy shorthand meaning "give me everything".
+    # Rather than have every caller re-implement the "a or b or
+    # access_all_data" expansion, these helpers return the resolved
+    # permission set once so callers can consume them uniformly.
+
+    @property
+    def wants_own_app_data(self) -> bool:
+        """True if the app should see its own ``/data/app_data/<app>`` dir.
+
+        Requesting any of ``app_data``, ``sqlite`` entries, or the broad
+        shorthands (``access_all_apps_data``, ``access_all_data``) all
+        imply the app wants access to its own scoped permanent-data
+        directory. This is independent of the app's other filesystem
+        permissions — for example, an app with only ``app_temp_data``
+        set has no permanent-data access but can still see its scoped
+        temp directory.
+        """
+        return bool(
+            self.app_data
+            or self.sqlite_dbs
+            or self.access_all_data
+            or self.access_all_apps_data
+        )
+
+    @property
+    def wants_own_app_temp_data(self) -> bool:
+        """App's own ``/data/app_temp_data/<app>`` dir."""
+        return bool(
+            self.app_temp_data
+            or self.access_all_data
+            or self.access_all_apps_temp_data
+        )
+
+    @property
+    def wants_all_apps_data(self) -> bool:
+        """Parent ``/data/app_data`` dir, exposing every app's permanent data."""
+        return bool(self.access_all_data or self.access_all_apps_data)
+
+    @property
+    def wants_all_apps_temp_data(self) -> bool:
+        """Parent ``/data/app_temp_data`` dir, exposing every app's temp data."""
+        return bool(self.access_all_data or self.access_all_apps_temp_data)
+
+    @property
+    def wants_vm_data_ro(self) -> bool:
+        """Read-only access to ``/data/vm_data``."""
+        return bool(self.access_vm_data and not self.wants_vm_data_rw)
+
+    @property
+    def wants_vm_data_rw(self) -> bool:
+        """Read/write access to ``/data/vm_data``."""
+        return bool(self.access_all_data or self.access_vm_data_rw)
 
 
 def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
@@ -137,9 +205,27 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_data=data_section.get("app_data", False),
         app_temp_data=data_section.get("app_temp_data", False),
         access_vm_data=data_section.get("access_vm_data", False),
+        access_all_apps_data=data_section.get("access_all_apps_data", False),
+        access_all_apps_temp_data=data_section.get(
+            "access_all_apps_temp_data", False
+        ),
+        access_vm_data_rw=data_section.get("access_vm_data_rw", False),
         access_all_data=data_section.get("access_all_data", False),
         raw_toml=raw_text,
     )
+
+    # Reject obviously-contradictory combinations so manifests fail
+    # fast at parse time instead of producing surprising mount layouts.
+    # ``access_all_data`` implies RW on vm_data, so it conflicts with
+    # the RO form just like ``access_vm_data_rw`` does.
+    if manifest.access_vm_data and (
+        manifest.access_vm_data_rw or manifest.access_all_data
+    ):
+        raise ValueError(
+            "[data] access_vm_data (read-only) is mutually exclusive "
+            "with access_vm_data_rw and access_all_data (which imply "
+            "read-write access). Use one or the other."
+        )
 
     # Parse [services] section
     services = data.get("services", {})

@@ -48,6 +48,9 @@ class TestDefaults:
         assert manifest.app_temp_data is False
         assert manifest.access_vm_data is False
         assert manifest.access_all_data is False
+        assert manifest.access_all_apps_data is False
+        assert manifest.access_all_apps_temp_data is False
+        assert manifest.access_vm_data_rw is False
 
     def test_sqlite_default_empty(self):
         manifest = parse_manifest_from_string(MINIMAL)
@@ -340,3 +343,128 @@ class TestValidation:
         toml = '[app]\nname = "x"\nversion = "1"\n[runtime.container]\nimage = "Dockerfile"\n'
         with pytest.raises(ValueError, match="port"):
             parse_manifest_from_string(toml)
+
+
+class TestFineGrainedDataAccess:
+    """Verify the independently-requestable data access flags."""
+
+    def _with_data(self, **flags):
+        """Build a minimal manifest with a [data] section."""
+        lines = ["[data]"]
+        for k, v in flags.items():
+            lines.append(f"{k} = {str(v).lower()}")
+        return MINIMAL + "\n" + "\n".join(lines) + "\n"
+
+    # ----- parsing -----
+
+    def test_access_all_apps_data_parsed(self):
+        m = parse_manifest_from_string(self._with_data(access_all_apps_data=True))
+        assert m.access_all_apps_data is True
+        assert m.access_all_apps_temp_data is False
+        assert m.access_vm_data_rw is False
+        assert m.access_all_data is False
+
+    def test_access_all_apps_temp_data_parsed(self):
+        m = parse_manifest_from_string(self._with_data(access_all_apps_temp_data=True))
+        assert m.access_all_apps_temp_data is True
+
+    def test_access_vm_data_rw_parsed(self):
+        m = parse_manifest_from_string(self._with_data(access_vm_data_rw=True))
+        assert m.access_vm_data_rw is True
+
+    def test_vm_data_ro_and_rw_mutually_exclusive(self):
+        toml = self._with_data(access_vm_data=True, access_vm_data_rw=True)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            parse_manifest_from_string(toml)
+
+    def test_vm_data_ro_and_access_all_data_mutually_exclusive(self):
+        # access_all_data implies RW on vm_data, so combining it with
+        # an explicit RO request is contradictory.
+        toml = self._with_data(access_vm_data=True, access_all_data=True)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            parse_manifest_from_string(toml)
+
+    def test_vm_data_rw_and_access_all_data_is_accepted_as_redundant(self):
+        # Documented in manifest_spec.md as "redundant but accepted":
+        # both flags imply RW on vm_data, so there's no contradiction,
+        # and the effective permissions are identical to either alone.
+        m = parse_manifest_from_string(
+            self._with_data(access_vm_data_rw=True, access_all_data=True)
+        )
+        assert m.wants_vm_data_rw is True
+        assert m.wants_vm_data_ro is False
+
+    # ----- effective-permission helpers -----
+
+    def test_wants_own_app_data_defaults_false(self):
+        m = parse_manifest_from_string(MINIMAL)
+        assert m.wants_own_app_data is False
+        assert m.wants_own_app_temp_data is False
+        assert m.wants_all_apps_data is False
+        assert m.wants_all_apps_temp_data is False
+        assert m.wants_vm_data_ro is False
+        assert m.wants_vm_data_rw is False
+
+    def test_app_data_enables_own_app_data(self):
+        m = parse_manifest_from_string(self._with_data(app_data=True))
+        assert m.wants_own_app_data is True
+        assert m.wants_all_apps_data is False
+
+    def test_app_temp_data_enables_own_app_temp_data(self):
+        m = parse_manifest_from_string(self._with_data(app_temp_data=True))
+        assert m.wants_own_app_temp_data is True
+        assert m.wants_own_app_data is False
+        assert m.wants_all_apps_temp_data is False
+
+    def test_sqlite_enables_own_app_data(self):
+        toml = MINIMAL + '\n[data]\nsqlite = ["main"]\n'
+        m = parse_manifest_from_string(toml)
+        assert m.wants_own_app_data is True
+
+    def test_access_all_apps_data_enables_both_own_and_parent(self):
+        # Parent-level access implicitly covers the app's own dir — but
+        # the mount layout in containers.py will shadow the scoped mount
+        # with the parent.
+        m = parse_manifest_from_string(self._with_data(access_all_apps_data=True))
+        assert m.wants_own_app_data is True
+        assert m.wants_all_apps_data is True
+
+    def test_access_all_data_is_shorthand_for_everything(self):
+        m = parse_manifest_from_string(self._with_data(access_all_data=True))
+        assert m.wants_own_app_data is True
+        assert m.wants_own_app_temp_data is True
+        assert m.wants_all_apps_data is True
+        assert m.wants_all_apps_temp_data is True
+        assert m.wants_vm_data_rw is True
+        # RO is suppressed because RW wins.
+        assert m.wants_vm_data_ro is False
+
+    def test_vm_data_ro_only(self):
+        m = parse_manifest_from_string(self._with_data(access_vm_data=True))
+        assert m.wants_vm_data_ro is True
+        assert m.wants_vm_data_rw is False
+
+    def test_vm_data_rw_suppresses_ro(self):
+        m = parse_manifest_from_string(self._with_data(access_vm_data_rw=True))
+        assert m.wants_vm_data_ro is False
+        assert m.wants_vm_data_rw is True
+
+    def test_independent_combination_all_apps_data_plus_vm_ro(self):
+        # "I want to inspect every app's permanent data + read vm_data.
+        # I do NOT want to touch temp data or modify vm_data."
+        m = parse_manifest_from_string(
+            self._with_data(access_all_apps_data=True, access_vm_data=True)
+        )
+        assert m.wants_all_apps_data is True
+        assert m.wants_all_apps_temp_data is False
+        assert m.wants_vm_data_ro is True
+        assert m.wants_vm_data_rw is False
+
+    def test_independent_combination_temp_data_plus_vm_rw(self):
+        # Another arbitrary combination — all three categories independent.
+        m = parse_manifest_from_string(
+            self._with_data(access_all_apps_temp_data=True, access_vm_data_rw=True)
+        )
+        assert m.wants_all_apps_data is False
+        assert m.wants_all_apps_temp_data is True
+        assert m.wants_vm_data_rw is True

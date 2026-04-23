@@ -21,19 +21,22 @@ def provision_data(
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
 
-    Apps only get filesystem access to directories they explicitly request
-    via app_data and app_temp_data flags in [data]. SQLite entries
-    implicitly enable app_data.
+    Apps only get filesystem access to directories they explicitly
+    request in the manifest ``[data]`` section. This covers the scoped
+    flags (``app_data``, ``app_temp_data``, ``sqlite`` entries) and the
+    broad flags (``access_all_apps_data``, ``access_all_apps_temp_data``,
+    legacy ``access_all_data``) — any of which imply the app also wants
+    its own scoped directory and the associated env-var injection. See
+    ``AppManifest`` for the helper properties (``wants_own_app_data``,
+    ``wants_own_app_temp_data``) that fold these together.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
     env_vars = {}
 
-    # Determine if permanent data dir is needed:
-    # explicitly requested, has sqlite entries, or access_all_data
-    needs_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
-
-    if needs_app_data:
+    # Permission expansion (including the legacy ``access_all_data``
+    # shorthand) happens on the manifest itself — see AppManifest.
+    if manifest.wants_own_app_data:
         os.makedirs(app_data_dir, exist_ok=True)
         os.chmod(app_data_dir, 0o777)
         env_vars["OPENHOST_APP_DATA_DIR"] = app_data_dir
@@ -48,7 +51,7 @@ def provision_data(
             env_key = f"OPENHOST_SQLITE_{db_name}"
             env_vars[env_key] = db_path
 
-    if manifest.app_temp_data or manifest.access_all_data:
+    if manifest.wants_own_app_temp_data:
         os.makedirs(app_temp_dir, exist_ok=True)
         env_vars["OPENHOST_APP_TEMP_DIR"] = app_temp_dir
 

@@ -51,33 +51,72 @@ Declares additional port mappings for the container. Each entry binds a containe
 
 ### `[data]` — optional
 
+Apps must explicitly request filesystem access. Each category (permanent
+data, temporary data, VM data) can be requested for this app alone
+(scoped) or for every app on the host (broad). Any combination is
+allowed.
+
+#### Scoped access — just this app
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `app_data` | boolean | no | false | Request access to permanent filesystem directory (backed up) |
-| `app_temp_data` | boolean | no | false | Request access to temporary filesystem directory (not backed up) |
-| `sqlite` | string[] | no | [] | SQLite database names to provision (implicitly enables `app_data`) |
-| `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory |
-| `access_all_data` | boolean | no | false | Full access to permanent data, temp data, and vm data |
+| `app_data` | boolean | no | false | Mount this app's permanent data directory at `/data/app_data/<app>` (backed up) |
+| `app_temp_data` | boolean | no | false | Mount this app's temporary directory at `/data/app_temp_data/<app>` (not backed up) |
+| `sqlite` | string[] | no | `[]` | SQLite database names to provision (implicitly enables `app_data`) |
+
+#### Broad access — every app's data / shared state
+
+Use these to write apps that manage or inspect state across the whole
+host (backup/restore, file browsers, debugging tools). All three can be
+requested independently.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `access_all_apps_data` | boolean | no | false | Read/write mount of `/data/app_data` (every app's permanent data) |
+| `access_all_apps_temp_data` | boolean | no | false | Read/write mount of `/data/app_temp_data` (every app's temporary data) |
+| `access_vm_data` | boolean | no | false | Read-only mount of `/data/vm_data` (router DB, shared state) |
+| `access_vm_data_rw` | boolean | no | false | Read/write mount of `/data/vm_data`. Mutually exclusive with `access_vm_data` (RO). Combining with `access_all_data` is redundant but accepted, since the legacy shorthand already grants RW. |
+
+#### Legacy shorthand
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `access_all_data` | boolean | no | false | Shorthand equivalent to `access_all_apps_data = true`, `access_all_apps_temp_data = true`, and `access_vm_data_rw = true`. |
 
 ## Data Directory Structure
 
-Apps have two storage areas on separate disks. **By default, apps have no filesystem access.** Each must be explicitly requested:
+Apps have two storage areas on separate disks. **By default, apps have
+no filesystem access.** Each must be explicitly requested:
 
-- **Permanent data** (`/data/app_data/{app_name}/`) — backed up, user-visible. Enabled by `app_data = true` or by requesting `sqlite` entries.
-- **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed up, recreatable. Enabled by `app_temp_data = true`.
-- **VM data** (`/data/vm_data/`) — router database and VM-level shared data. Only accessible if `access_vm_data = true`.
+- **Permanent data** (`/data/app_data/{app_name}/`) — backed up,
+  user-visible. Enabled by `app_data = true` or by requesting `sqlite`
+  entries.
+- **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed
+  up, recreatable. Enabled by `app_temp_data = true`.
+- **VM data** (`/data/vm_data/`) — router database and VM-level shared
+  data. Enabled by `access_vm_data = true` (RO) or
+  `access_vm_data_rw = true` (RW).
 
-The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, the storage guard stops running apps until space is freed.
+The broad-access flags mount the **parent** directory instead of the
+scoped subdir, so your container sees every app's data at
+`/data/app_data/<other-app>/`, `/data/app_temp_data/<other-app>/`, etc.
 
-All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_data`, the parent dirs are mounted instead (`/data/app_data/`, `/data/app_temp_data/`) so the app can see all apps' data.
+The host operator can optionally set `storage_min_free_mb` in the
+OpenHost config to require a minimum amount of free persistent storage.
+When free space drops below this threshold, the storage guard stops
+running apps until space is freed.
+
+All data dirs live under `/data/` in the container. All apps see the
+same path structure regardless of permissions — only the dirs they have
+access to are mounted.
 
 ## Environment Variable Injection
 
 The host provisions requested data services and injects connection info as environment variables:
 
 - `OPENHOST_SQLITE_<name>` — filesystem path to the named sqlite database (only if `sqlite` entries requested)
-- `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
-- `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
+- `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (set when any permission that implies scoped permanent-data access is granted: `app_data`, `sqlite`, `access_all_apps_data`, or `access_all_data`)
+- `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (set when `app_temp_data`, `access_all_apps_temp_data`, or `access_all_data` is granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
 - `OPENHOST_ROUTER_URL` — URL of the router's HTTP server (e.g., `http://host.docker.internal:<port>`)
 

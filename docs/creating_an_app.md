@@ -102,19 +102,27 @@ The router injects these environment variables into your app:
 | `OPENHOST_ROUTER_URL` | `http://host.docker.internal:8080` | internal URL of the router, used for constructing service requests                                              |
 | `OPENHOST_ZONE_DOMAIN` | `user.host.imbue.com` | The compute space's domain                                                                                      |
 | `OPENHOST_MY_REDIRECT_DOMAIN` | `my.selfhost.imbue.com` | The shared `my.*` OAuth redirect domain. This hosts a browser-local page that redirects the user to their zone. |
-| `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data`, `sqlite`, or `access_all_data` is requested   |
-| `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data` or `access_all_data` is requested          |
+| `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data`, `sqlite`, `access_all_apps_data`, or `access_all_data` is requested |
+| `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data`, `access_all_apps_temp_data`, or `access_all_data` is requested  |
 | `OPENHOST_SQLITE_<NAME>` | `/data/app_data/my-app/sqlite/main.db` (for `sqlite = ["main"]`) | Path to a provisioned SQLite database file. Set once per entry in `sqlite`                                      |
 
 ### Data storage
 
-Apps have no filesystem access by default. Request what you need in the `[data]` section of your manifest:
+Apps have no filesystem access by default. Request what you need in the `[data]` section of your manifest. Categories are independent — any combination is valid.
 
-- **`sqlite = ["db_name"]`** — Provisions a SQLite database. Access the file at `OPENHOST_SQLITE_<NAME>`.
-- **`app_data = true`** — mounts a persistent directory at `/data/app_data/{app_name}/`. Backed up.
-- **`app_temp_data = true`** — mounts a temporary directory at `/data/app_temp_data/{app_name}/`. Not backed up, can be recreated.
-- **`access_vm_data = true`** — read-only access to the VM's shared data at `/data/vm_data/`.
-- **`access_all_data = true`** — full access to all data directories (all apps' data + VM data).
+Scoped to just this app:
+
+- **`sqlite = ["db_name"]`** — provisions a SQLite database file. Implies `app_data`.
+- **`app_data = true`** — mounts `/data/app_data/{app_name}/` inside the container. Backed up.
+- **`app_temp_data = true`** — mounts `/data/app_temp_data/{app_name}/`. Not backed up.
+
+Broad access to all apps' data or the VM's shared state (use sparingly):
+
+- **`access_all_apps_data = true`** — read/write mount of `/data/app_data/` (every app's persistent data).
+- **`access_all_apps_temp_data = true`** — read/write mount of `/data/app_temp_data/` (every app's temp data).
+- **`access_vm_data = true`** — read-only mount of `/data/vm_data/`.
+- **`access_vm_data_rw = true`** — read/write mount of `/data/vm_data/`. Mutually exclusive with `access_vm_data`.
+- **`access_all_data = true`** — legacy shorthand for all three broad flags (`access_all_apps_data` + `access_all_apps_temp_data` + `access_vm_data_rw`).
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the dashboard to allow starting a file-browser app for cleanup.
 
