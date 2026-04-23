@@ -5,19 +5,20 @@ Flow:
   1. Acquire an exclusive file lock around the DB so concurrent startups
      serialize — only one process applies migrations, others wait and
      observe the already-current version.
-  2. Open the DB in autocommit mode so we can control transactions
-     explicitly (``BEGIN EXCLUSIVE`` / ``COMMIT``).
-  3. If the DB has no tables: apply ``schema.sql`` and stamp to the
-     highest registered version (no migrations replayed).
+  2. Open the DB in autocommit mode so :meth:`Migration.apply` can
+     manage transactions explicitly via ``BEGIN EXCLUSIVE`` / ``COMMIT``.
+  3. If the DB has no tables: apply ``schema.sql`` inside a wrapping
+     ``BEGIN EXCLUSIVE`` / ``COMMIT`` and stamp the highest registered
+     version (no migrations replayed).
   4. If the DB is at v0 (no ``schema_version`` row, or ``version = 0``):
-     run the legacy ``migrate()``, then idempotently apply ``schema.sql``
-     to cover tables added after the fixture's baseline, THEN stamp v1
-     — in that order, so a crash before the final stamp leaves the DB
-     at v0 and the whole bootstrap replays cleanly on next startup
-     (migrate() and schema.sql are both idempotent).
-  5. For each registered migration whose version is strictly greater
-     than the current version, apply it inside a single
-     ``BEGIN EXCLUSIVE`` transaction that also bumps the version row.
+     run the legacy ``migrate()``, idempotently apply ``schema.sql`` to
+     cover tables added after the fixture's baseline, THEN stamp v1.
+     Stamping last keeps the v0 -> v1 transition effectively atomic —
+     both migrate() and schema.sql are idempotent, so any crash before
+     the stamp leaves the DB at v0 and retries cleanly.
+  5. For each registered migration with version > current: call
+     ``migration.apply(db)``. The migration's ``apply`` owns its own
+     ``BEGIN EXCLUSIVE`` + ``COMMIT``; the runner just orders the calls.
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from compute_space.db.migrations import _schema_path
 from compute_space.db.migrations import migrate as legacy_migrate
 from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
 from compute_space.db.versioned.base import Migration
-from compute_space.db.versioned.base import execute_sql_script
 from compute_space.db.versioned.registry import REGISTRY
 
 
@@ -131,15 +131,8 @@ def _apply_under_lock(db_path: str, registry: list[Migration], highest: int) -> 
             source = current
             t0 = time.perf_counter()
             try:
-                db.execute("BEGIN EXCLUSIVE")
-                migration.up(db)
-                _set_version(db, migration.version)
-                db.execute("COMMIT")
+                migration.apply(db)
             except Exception:
-                try:
-                    db.execute("ROLLBACK")
-                except sqlite3.Error:
-                    pass
                 logger.error(f"Migration v{source} \u2192 v{migration.version} ({type(migration).__name__}) failed")
                 raise
             duration = time.perf_counter() - t0
@@ -165,7 +158,7 @@ def _legacy_bootstrap(db: sqlite3.Connection) -> int:
     logger.info("DB is at v0 (legacy); running one-shot migrate() bootstrap to v1")
     legacy_migrate(db)
     with open(_schema_path()) as f:
-        execute_sql_script(db, f.read())
+        db.executescript(f.read())
     _set_version(db, 1)
     current = read_version(db)
     if current != 1:
@@ -175,13 +168,22 @@ def _legacy_bootstrap(db: sqlite3.Connection) -> int:
 
 
 def _init_fresh(db: sqlite3.Connection, highest: int) -> None:
-    """Initialize a brand-new DB from schema.sql and stamp the version."""
-    db.execute("BEGIN EXCLUSIVE")
+    """Initialize a brand-new DB from schema.sql and stamp the version, atomically.
+
+    Wraps schema.sql in ``BEGIN EXCLUSIVE`` / ``COMMIT`` inside a single
+    :meth:`sqlite3.Connection.executescript` call so a mid-init crash
+    leaves no partial tables.
+    """
+    with open(_schema_path()) as f:
+        schema_sql = f.read()
+    wrapped = (
+        "BEGIN EXCLUSIVE;\n"
+        f"{schema_sql}\n"
+        f"INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, {int(highest)});\n"
+        "COMMIT;\n"
+    )
     try:
-        with open(_schema_path()) as f:
-            execute_sql_script(db, f.read())
-        _set_version(db, highest)
-        db.execute("COMMIT")
+        db.executescript(wrapped)
     except Exception:
         try:
             db.execute("ROLLBACK")

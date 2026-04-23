@@ -1,4 +1,25 @@
-"""Base classes for versioned migrations."""
+"""Base classes for versioned migrations.
+
+Transaction contract
+--------------------
+
+Each :class:`Migration` owns its own transaction. :meth:`Migration.apply`
+is the public entry point the runner calls; it wraps :meth:`up` in a
+single ``BEGIN EXCLUSIVE`` + version-bump + ``COMMIT`` so "migration
+applied" and "schema_version bumped" are atomic.
+
+Migration authors MUST NOT call ``db.commit()`` or issue ``BEGIN`` /
+``COMMIT`` / ``ROLLBACK`` inside :meth:`up` — doing so breaks the
+atomicity guarantee by ending the transaction that :meth:`apply` opened.
+This rule is documented and trusted rather than enforced; we don't try
+to police it.
+
+:class:`SqlFileMigration` runs a sibling ``.sql`` file. It overrides
+:meth:`apply` to wrap the file contents in ``BEGIN EXCLUSIVE`` + the
+file's SQL + version bump + ``COMMIT`` and then hands that script to
+:meth:`sqlite3.Connection.executescript`. The same "no BEGIN/COMMIT
+inside the file" rule applies to the .sql — the wrapper owns the tx.
+"""
 
 from __future__ import annotations
 
@@ -19,8 +40,11 @@ class Migration:
 
     Subclasses set ``version`` (the target version after the migration
     runs — strictly greater than the source version) and implement
-    :meth:`up`. :meth:`down` is optional and only needed for manual
+    :meth:`up`. :meth:`down` is optional and only useful for manual
     dev/test iteration.
+
+    Do NOT commit inside :meth:`up`. See the module docstring for the
+    transaction contract.
     """
 
     version: ClassVar[int] = 0
@@ -31,62 +55,66 @@ class Migration:
     def down(self, db: sqlite3.Connection) -> None:
         raise NotImplementedError(f"Migration v{self.version} does not define down()")
 
+    def apply(self, db: sqlite3.Connection) -> None:
+        """Atomically apply ``up(db)`` and bump schema_version in one tx.
+
+        The caller must already hold the process-level migration lock.
+        ``db`` must be in autocommit mode (``isolation_level=None``) so
+        that the explicit ``BEGIN EXCLUSIVE`` below is not short-circuited
+        by Python's implicit-transaction handling.
+        """
+        db.execute("BEGIN EXCLUSIVE")
+        try:
+            self.up(db)
+            db.execute(
+                "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
+                (self.version,),
+            )
+            db.execute("COMMIT")
+        except Exception:
+            try:
+                db.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
 
 class SqlFileMigration(Migration):
-    """Migration that runs a sibling ``.sql`` file as its ``up`` step.
+    """Migration whose body is a sibling ``.sql`` file.
 
     ``sql_file`` is resolved relative to the directory of the subclass's
-    source file, so the .sql lives next to the Python migration.
+    source file, so the ``.sql`` lives next to its Python wrapper.
+
+    :meth:`up` is unused on this subclass — :meth:`apply` reads the file
+    and drives everything via a single :meth:`sqlite3.Connection.executescript`
+    call. The .sql MUST NOT contain ``BEGIN``, ``COMMIT`` or ``ROLLBACK``;
+    :meth:`apply` wraps the file in its own ``BEGIN EXCLUSIVE`` ... ``COMMIT``.
     """
 
     sql_file: ClassVar[str] = ""
 
     def up(self, db: sqlite3.Connection) -> None:
+        # Not used — apply() handles everything via executescript.
+        raise NotImplementedError("SqlFileMigration drives execution through apply(), not up()")
+
+    def apply(self, db: sqlite3.Connection) -> None:
+        sql = self._load_sql()
+        wrapped = (
+            "BEGIN EXCLUSIVE;\n"
+            f"{sql}\n"
+            f"INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, {int(self.version)});\n"
+            "COMMIT;\n"
+        )
+        try:
+            db.executescript(wrapped)
+        except Exception:
+            try:
+                db.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+    def _load_sql(self) -> str:
         module_file = inspect.getfile(self.__class__)
         sql_path = Path(module_file).resolve().parent / self.sql_file
-        sql = sql_path.read_text()
-        execute_sql_script(db, sql)
-
-
-def execute_sql_script(db: sqlite3.Connection, sql: str) -> None:
-    """Execute multi-statement SQL without the implicit COMMIT of ``executescript``.
-
-    ``sqlite3.Connection.executescript`` commits the current transaction
-    before executing — which would release an outer ``BEGIN EXCLUSIVE`` lock
-    and break transactional atomicity for migrations. This helper splits
-    the script into statements and calls ``db.execute`` on each, so it
-    runs inside whatever transaction the caller has open.
-    """
-    for stmt in _iter_sql_statements(sql):
-        if _is_effectively_empty(stmt):
-            continue
-        db.execute(stmt)
-
-
-def _iter_sql_statements(sql: str) -> list[str]:
-    """Split a SQL script into complete statements.
-
-    Uses :func:`sqlite3.complete_statement` as the boundary oracle, which
-    correctly handles quoted strings and block comments inside DDL.
-    """
-    statements: list[str] = []
-    buffer = ""
-    for line in sql.splitlines(keepends=True):
-        buffer += line
-        if sqlite3.complete_statement(buffer):
-            statements.append(buffer)
-            buffer = ""
-    trailing = buffer.strip()
-    if trailing:
-        statements.append(buffer)
-    return statements
-
-
-def _is_effectively_empty(stmt: str) -> bool:
-    """True if a statement chunk is whitespace or pure ``--`` line comments."""
-    for line in stmt.splitlines():
-        s = line.strip()
-        if not s or s.startswith("--"):
-            continue
-        return False
-    return True
+        return sql_path.read_text()
