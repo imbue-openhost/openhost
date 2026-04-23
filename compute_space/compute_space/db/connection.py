@@ -4,7 +4,6 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from quart import Quart
-from quart import current_app
 from quart import g
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -144,24 +143,6 @@ async def close_session(exception: BaseException | None = None) -> None:
     session = g.pop("session", None)
     if session is not None:
         await session.close()
-
-
-# ─── Legacy sqlite3 connection (to be removed as call sites migrate) ───────
-
-
-def get_db() -> sqlite3.Connection:
-    if "db" not in g:
-        g.db = sqlite3.connect(current_app.config["DB_PATH"], check_same_thread=False)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
-        g.db.execute("PRAGMA foreign_keys=ON")
-    return g.db  # type: ignore[no-any-return]
-
-
-def close_db(exception: BaseException | None = None) -> None:
-    db = g.pop("db", None)
-    if db is not None:
-        db.close()
 
 
 def init_db(app: Quart) -> None:
