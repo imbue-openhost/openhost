@@ -10,6 +10,8 @@ from quart import Response
 from quart import jsonify
 from quart import request
 from quart.typing import ResponseReturnValue
+from sqlalchemy import delete
+from sqlalchemy import select
 
 from compute_space.config import get_config
 from compute_space.core.containers import drop_docker_build_cache
@@ -20,8 +22,8 @@ from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
-from compute_space.db import get_db
 from compute_space.db import get_session
+from compute_space.db.models import ApiToken
 from compute_space.web.middleware import login_required
 
 api_system_bp: Blueprint = Blueprint("api_system", __name__)
@@ -35,19 +37,25 @@ DEFAULT_TOKEN_EXPIRY_HOURS: int = 8
 @api_system_bp.route("/api/tokens", methods=["GET"])
 @login_required
 async def api_tokens_list() -> Response:
-    db = get_db()
-    rows = db.execute("SELECT id, name, expires_at, created_at FROM api_tokens ORDER BY created_at DESC").fetchall()
+    session = get_session()
+    rows = (
+        await session.execute(
+            select(ApiToken.id, ApiToken.name, ApiToken.expires_at, ApiToken.created_at).order_by(
+                ApiToken.created_at.desc()
+            )
+        )
+    ).all()
     now = datetime.now(UTC)
     tokens = []
     for r in rows:
-        has_expiry = bool(r["expires_at"])
-        expired = has_expiry and datetime.fromisoformat(r["expires_at"]) < now
+        has_expiry = bool(r.expires_at)
+        expired = has_expiry and datetime.fromisoformat(r.expires_at) < now
         tokens.append(
             {
-                "id": r["id"],
-                "name": r["name"],
-                "expires_at": r["expires_at"] or None,
-                "created_at": r["created_at"],
+                "id": r.id,
+                "name": r.name,
+                "expires_at": r.expires_at or None,
+                "created_at": r.created_at,
                 "expired": expired,
             }
         )
@@ -74,12 +82,9 @@ async def api_tokens_create() -> Response | tuple[Response, int]:
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
-    db = get_db()
-    db.execute(
-        "INSERT INTO api_tokens (name, token_hash, expires_at) VALUES (?, ?, ?)",
-        (name, token_hash, expires_at.isoformat() if expires_at else ""),
-    )
-    db.commit()
+    session = get_session()
+    session.add(ApiToken(name=name, token_hash=token_hash, expires_at=expires_at.isoformat() if expires_at else ""))
+    await session.commit()
 
     return jsonify(
         {
@@ -93,9 +98,9 @@ async def api_tokens_create() -> Response | tuple[Response, int]:
 @api_system_bp.route("/api/tokens/<int:token_id>", methods=["DELETE"])
 @login_required
 async def api_tokens_delete(token_id: int) -> Response:
-    db = get_db()
-    db.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
-    db.commit()
+    session = get_session()
+    await session.execute(delete(ApiToken).where(ApiToken.id == token_id))
+    await session.commit()
     return jsonify({"ok": True})
 
 
