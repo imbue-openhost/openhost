@@ -13,7 +13,7 @@ from quart import url_for
 from compute_space.config import get_config
 from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services_v2 import find_compatible_provider
+from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
 from compute_space.web.proxy import proxy_request
 from compute_space.web.routes.services import _add_cors_headers
@@ -85,9 +85,16 @@ async def service_v2_proxy(rest: str) -> Response:
     if not version_spec:
         return _json_error("bad_request", "Missing required 'version' query parameter", 400)
 
+    provider_app = request.args.get("provider_app")
+
     db = get_db()
     try:
-        app_name, provider_port, version, provider_endpoint = find_compatible_provider(service_url, version_spec, db)
+        app_name, provider_port, version, provider_endpoint = resolve_provider(
+            service_url,
+            version_spec,
+            db,
+            provider_app=provider_app,
+        )
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 

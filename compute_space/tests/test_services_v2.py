@@ -14,7 +14,7 @@ from compute_space.core.permissions_v2 import revoke_permission_v2
 from compute_space.core.service_access_rules import ServiceAccessDenied
 from compute_space.core.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services_v2 import find_compatible_provider
+from compute_space.core.services_v2 import resolve_provider
 from compute_space.web.routes.services_v2 import _parse_service_url_and_endpoint
 
 SVC_SECRETS = "github.com/org/repo/services/secrets"
@@ -57,7 +57,7 @@ def db():
     return conn
 
 
-def _add_provider(db, service_url, app_name, version, endpoint, port=9000, status="running"):
+def _add_provider(db, service_url, app_name, version, endpoint, port=9000, status="running", default=True):
     db.execute(
         "INSERT OR REPLACE INTO apps (name, local_port, status) VALUES (?, ?, ?)",
         (app_name, port, status),
@@ -66,6 +66,11 @@ def _add_provider(db, service_url, app_name, version, endpoint, port=9000, statu
         "INSERT INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
         (service_url, app_name, version, endpoint),
     )
+    if default:
+        db.execute(
+            "INSERT OR REPLACE INTO service_defaults (service_url, app_name) VALUES (?, ?)",
+            (service_url, app_name),
+        )
     db.commit()
 
 
@@ -77,51 +82,54 @@ def _add_provider(db, service_url, app_name, version, endpoint, port=9000, statu
 class TestVersionResolution:
     def test_compatible_version_resolves(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "0.2.0", "/_svc/")
-        app, port, ver, ep = find_compatible_provider(SVC_SECRETS, ">=0.1.0", db)
+        app, port, ver, ep = resolve_provider(SVC_SECRETS, ">=0.1.0", db)
         assert app == "secrets"
         assert ver == "0.2.0"
         assert ep == "/_svc/"
 
     def test_exact_version(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "1.0.0", "/_svc/")
-        app, _, ver, _ = find_compatible_provider(SVC_SECRETS, "==1.0.0", db)
+        app, _, ver, _ = resolve_provider(SVC_SECRETS, "==1.0.0", db)
         assert ver == "1.0.0"
 
     def test_no_provider_raises(self, db):
         with pytest.raises(ServiceNotAvailable, match="No provider"):
-            find_compatible_provider(SVC_SECRETS, ">=0.1.0", db)
+            resolve_provider(SVC_SECRETS, ">=0.1.0", db)
 
     def test_version_mismatch_raises(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
-        with pytest.raises(ServiceNotAvailable, match="matches version"):
-            find_compatible_provider(SVC_SECRETS, ">=99.0.0", db)
+        with pytest.raises(ServiceNotAvailable, match="does not match"):
+            resolve_provider(SVC_SECRETS, ">=99.0.0", db)
 
     def test_not_running_raises(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/", status="stopped")
-        with pytest.raises(ServiceNotAvailable, match="none are running"):
-            find_compatible_provider(SVC_SECRETS, ">=0.1.0", db)
+        with pytest.raises(ServiceNotAvailable, match="not running"):
+            resolve_provider(SVC_SECRETS, ">=0.1.0", db)
 
-    def test_default_provider_preferred(self, db):
+    def test_explicit_provider_app(self, db):
         _add_provider(db, SVC_SECRETS, "secrets-a", "0.1.0", "/_a/", port=9001)
-        _add_provider(db, SVC_SECRETS, "secrets-b", "0.2.0", "/_b/", port=9002)
-        db.execute(
-            "INSERT INTO service_defaults (service_url, app_name) VALUES (?, ?)",
-            (SVC_SECRETS, "secrets-a"),
-        )
-        db.commit()
+        _add_provider(db, SVC_SECRETS, "secrets-b", "0.2.0", "/_b/", port=9002, default=False)
 
-        app, _, ver, ep = find_compatible_provider(SVC_SECRETS, ">=0.1.0", db)
-        assert app == "secrets-a"
-        assert ep == "/_a/"
-
-    def test_highest_version_without_default(self, db):
-        _add_provider(db, SVC_SECRETS, "secrets-a", "0.1.0", "/_a/", port=9001)
-        _add_provider(db, SVC_SECRETS, "secrets-b", "0.3.0", "/_b/", port=9002)
-        _add_provider(db, SVC_SECRETS, "secrets-c", "0.2.0", "/_c/", port=9003)
-
-        app, _, ver, _ = find_compatible_provider(SVC_SECRETS, ">=0.1.0", db)
+        app, _, ver, ep = resolve_provider(SVC_SECRETS, ">=0.1.0", db, provider_app="secrets-b")
         assert app == "secrets-b"
-        assert ver == "0.3.0"
+        assert ep == "/_b/"
+
+    def test_explicit_provider_app_not_found(self, db):
+        _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
+        with pytest.raises(ServiceNotAvailable, match="not found"):
+            resolve_provider(SVC_SECRETS, ">=0.1.0", db, provider_app="nonexistent")
+
+    def test_explicit_provider_app_version_mismatch(self, db):
+        _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
+        with pytest.raises(ServiceNotAvailable, match="does not match"):
+            resolve_provider(SVC_SECRETS, ">=99.0.0", db, provider_app="secrets")
+
+    def test_uses_default_provider(self, db):
+        _add_provider(db, SVC_SECRETS, "secrets-a", "0.1.0", "/_a/", port=9001)
+        _add_provider(db, SVC_SECRETS, "secrets-b", "0.2.0", "/_b/", port=9002, default=False)
+
+        app, _, _, _ = resolve_provider(SVC_SECRETS, ">=0.1.0", db)
+        assert app == "secrets-a"
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +243,7 @@ class TestVersionResolutionEdgeCases:
     def test_invalid_specifier_raises(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
         with pytest.raises(ServiceNotAvailable, match="Invalid version specifier"):
-            find_compatible_provider(SVC_SECRETS, "not_a_version!!", db)
+            resolve_provider(SVC_SECRETS, "not_a_version!!", db)
 
 
 # ---------------------------------------------------------------------------

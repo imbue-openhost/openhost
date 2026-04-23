@@ -4,7 +4,7 @@ from quart import jsonify
 from quart import request
 
 from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services_v2 import find_compatible_provider
+from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
 
@@ -37,7 +37,7 @@ async def discover_providers() -> Response | tuple[Response, int]:
 
     if version_spec:
         try:
-            app_name, port, version, endpoint = find_compatible_provider(service_url, version_spec, db)
+            app_name, port, version, endpoint = resolve_provider(service_url, version_spec, db)
             return jsonify({"providers": [{"app_name": app_name, "version": version, "endpoint": endpoint}]})
         except ServiceNotAvailable as e:
             return jsonify({"providers": [], "message": e.message})
