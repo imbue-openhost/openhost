@@ -13,6 +13,7 @@ to deliberately update the fixtures.
 import difflib
 import hashlib
 import sqlite3
+from itertools import pairwise
 
 import pytest
 
@@ -191,7 +192,7 @@ def _snapshot_cases():
     cases = []
     for scenario_dir in discover_scenario_dirs():
         present = present_snapshot_ids(scenario_dir)
-        for from_id, to_id in zip(present, present[1:], strict=True):
+        for from_id, to_id in pairwise(present):
             cases.append((scenario_dir, from_id, to_id))
     return cases
 
