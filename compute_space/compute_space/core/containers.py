@@ -1,11 +1,19 @@
 import os
 import re
-import sqlite3
 import subprocess
+from typing import Protocol
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
+
+
+class _AppRowLike(Protocol):
+    """Anything with the `name` and `docker_container_id` attributes."""
+
+    name: str
+    docker_container_id: str | None
+
 
 # Container mount root — all data dirs live under this prefix so the
 # container filesystem stays clean (no data dirs mixed with /bin, /etc, etc).
@@ -215,13 +223,13 @@ def stop_container(container_id: str) -> None:
     subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, timeout=30)
 
 
-def stop_app_process(app_row: sqlite3.Row) -> None:
+def stop_app_process(app_row: _AppRowLike) -> None:
     """Stop the running process for an app. Does not update DB."""
     try:
-        if app_row["docker_container_id"]:
-            stop_container(app_row["docker_container_id"])
+        if app_row.docker_container_id:
+            stop_container(app_row.docker_container_id)
     except Exception as e:
-        logger.warning("Error stopping app %s: %s", app_row["name"], e)
+        logger.warning("Error stopping app %s: %s", app_row.name, e)
 
 
 def remove_image(app_name: str) -> None:
