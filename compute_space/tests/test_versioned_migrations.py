@@ -32,12 +32,10 @@ from typing import Any
 import pytest
 from loguru import logger
 
-from compute_space.db.migrations import _schema_path
 from compute_space.db.versioned import REGISTRY
 from compute_space.db.versioned import Migration
 from compute_space.db.versioned import SqlFileMigration
 from compute_space.db.versioned import apply_migrations
-from compute_space.db.versioned import execute_sql_script
 from compute_space.db.versioned import highest_registered_version
 from compute_space.db.versioned import read_version
 from compute_space.db.versioned import runner as runner_mod
@@ -424,19 +422,13 @@ class TestLegacyBootstrap:
         db_path = str(tmp_path / "crash.db")
         self._make_v0_fixture(db_path)
 
-        original_execute = runner_mod.execute_sql_script
-        call_count = {"n": 0}
+        # Force the schema.sql step of the legacy bootstrap to fail by
+        # pointing the runner at a temp file containing a syntax error.
+        bad_schema = tmp_path / "broken_schema.sql"
+        bad_schema.write_text("THIS IS NOT VALID SQL;\n")
+        monkeypatch.setattr(runner_mod, "_schema_path", lambda: str(bad_schema))
 
-        def flaky_execute(db, sql):
-            call_count["n"] += 1
-            # Only the first call (legacy bootstrap's schema.sql) should fail.
-            if call_count["n"] == 1:
-                raise RuntimeError("simulated schema.sql crash")
-            return original_execute(db, sql)
-
-        monkeypatch.setattr(runner_mod, "execute_sql_script", flaky_execute)
-
-        with pytest.raises(RuntimeError, match="simulated schema.sql crash"):
+        with pytest.raises(sqlite3.Error):
             apply_migrations(db_path)
 
         # migrate() may have created the schema_version table, but the row
@@ -448,7 +440,7 @@ class TestLegacyBootstrap:
             probe.close()
 
         # Retry under normal conditions: bootstrap replays cleanly.
-        monkeypatch.setattr(runner_mod, "execute_sql_script", original_execute)
+        monkeypatch.undo()
         apply_migrations(db_path)
 
         final = sqlite3.connect(db_path)
@@ -625,88 +617,66 @@ class TestSqlFileMigration:
         finally:
             db.close()
 
-    def test_multi_statement_sql_uses_caller_transaction(self, tmp_path):
-        """A SqlFileMigration that issues many statements must NOT auto-commit
-        mid-way — a later exception must still roll everything back.
+    def test_sqlfile_syntax_error_rolls_back(self, tmp_path):
+        """A ``.sql`` file with a syntax error must leave DB + version unchanged.
+
+        ``SqlFileMigration.apply`` wraps the file in ``BEGIN EXCLUSIVE`` ...
+        ``COMMIT`` and hands it to :meth:`sqlite3.Connection.executescript`;
+        if any statement fails, the wrapper rolls back so the migration is
+        all-or-nothing.
         """
-        pkg_dir = tmp_path / "multipkg"
+        pkg_dir = tmp_path / "sqlfail_pkg"
         pkg_dir.mkdir()
         (pkg_dir / "__init__.py").write_text("")
         (pkg_dir / "m.sql").write_text(
-            "-- Multiple statements to exercise the splitter.\n"
-            "CREATE TABLE multi_a (id INTEGER);\n"
-            "CREATE TABLE multi_b (id INTEGER);\n"
-            "INSERT INTO multi_a (id) VALUES (1);\n"
-            "INSERT INTO multi_b (id) VALUES (2);\n"
+            "CREATE TABLE ok_before (x INTEGER);\nTHIS IS NOT VALID SQL;\nCREATE TABLE ok_after (x INTEGER);\n"
         )
         (pkg_dir / "m.py").write_text(
             "from compute_space.db.versioned import SqlFileMigration\n"
-            "import sqlite3\n"
-            "class MSql(SqlFileMigration):\n"
+            "class Bad(SqlFileMigration):\n"
             "    version = 2\n"
             "    sql_file = 'm.sql'\n"
-            "class MBoom(MSql):\n"
-            "    def up(self, db):\n"
-            "        super().up(db)\n"
-            "        raise RuntimeError('nope')\n"
         )
         sys.path.insert(0, str(tmp_path))
         try:
-            mod = importlib.import_module("multipkg.m")
+            mod = importlib.import_module("sqlfail_pkg.m")
         finally:
             sys.path.pop(0)
-        MBoom = mod.MBoom
+        Bad = mod.Bad
 
-        db_path = str(tmp_path / "txsafe.db")
-        apply_migrations(db_path)
-        with pytest.raises(RuntimeError, match="nope"):
-            apply_migrations(db_path, registry=[MBoom()])
+        db_path = str(tmp_path / "sqlfail.db")
+        apply_migrations(db_path)  # v1
+        with pytest.raises(sqlite3.Error):
+            apply_migrations(db_path, registry=[Bad()])
 
         db = sqlite3.connect(db_path)
         try:
-            for tbl in ("multi_a", "multi_b"):
+            for tbl in ("ok_before", "ok_after"):
                 row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tbl,)).fetchone()
                 assert row is None, f"{tbl} must have been rolled back"
             assert read_version(db) == 1
         finally:
             db.close()
 
-
-# --------------------------------------------------------------------------- #
-# execute_sql_script helper
-# --------------------------------------------------------------------------- #
-
-
-class TestExecuteSqlScript:
-    def test_schema_sql_runs_cleanly(self, tmp_path):
-        db_path = str(tmp_path / "schema.db")
-        db = sqlite3.connect(db_path, isolation_level=None)
+        # Subsequent cleanly retryable run (swap in a valid migration at v2).
+        (pkg_dir / "good.sql").write_text("CREATE TABLE good (x INTEGER);\n")
+        (pkg_dir / "good.py").write_text(
+            "from compute_space.db.versioned import SqlFileMigration\n"
+            "class Good(SqlFileMigration):\n"
+            "    version = 2\n"
+            "    sql_file = 'good.sql'\n"
+        )
+        sys.path.insert(0, str(tmp_path))
         try:
-            with open(_schema_path()) as f:
-                execute_sql_script(db, f.read())
-            # Smoke: the canonical tables exist.
-            tables = {
-                row[0]
-                for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall()
-            }
-            for expected in ("apps", "owner", "refresh_tokens", "app_tokens", "schema_version"):
-                assert expected in tables
+            good_mod = importlib.import_module("sqlfail_pkg.good")
         finally:
-            db.close()
+            sys.path.pop(0)
+        apply_migrations(db_path, registry=[good_mod.Good()])
 
-    def test_empty_and_comment_only_inputs(self, tmp_path):
-        db_path = str(tmp_path / "empty.db")
-        db = sqlite3.connect(db_path, isolation_level=None)
+        db = sqlite3.connect(db_path)
         try:
-            execute_sql_script(db, "")
-            execute_sql_script(db, "-- just a comment\n\n-- another\n")
-            # Should not have created any tables or errored.
-            row = db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
-            ).fetchone()
-            assert row is None
+            assert read_version(db) == 2
+            assert db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='good'").fetchone() is not None
         finally:
             db.close()
 
