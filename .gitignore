@@ -40,3 +40,4 @@ specs/
 # Beads (local only — not shared via git)
 .beads/
 
+.claude/

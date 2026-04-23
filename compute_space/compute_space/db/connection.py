@@ -6,6 +6,11 @@ from alembic.config import Config as AlembicConfig
 from quart import Quart
 from quart import current_app
 from quart import g
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from compute_space.db.migrations import migrate
 
@@ -69,6 +74,75 @@ def _run_alembic_upgrade(db_path: str) -> None:
     command.upgrade(_alembic_config(db_path), "head")
 
 
+# ─── Async engine + session ────────────────────────────────────────────────
+
+_engine: AsyncEngine | None = None
+_session_maker: async_sessionmaker[AsyncSession] | None = None
+
+
+def _enable_sqlite_pragmas(dbapi_conn: sqlite3.Connection, _record: object) -> None:
+    """Enable WAL mode and foreign keys on every new SQLite connection."""
+    cursor = dbapi_conn.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
+def init_engine(db_path: str) -> AsyncEngine:
+    """Create (or return) the process-wide async SQLAlchemy engine."""
+    global _engine, _session_maker
+    if _engine is not None:
+        return _engine
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        future=True,
+    )
+    event.listen(engine.sync_engine, "connect", _enable_sqlite_pragmas)
+    _engine = engine
+    _session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    return engine
+
+
+def get_engine() -> AsyncEngine:
+    if _engine is None:
+        raise RuntimeError("DB engine not initialized — call init_engine() first")
+    return _engine
+
+
+def get_session_maker() -> async_sessionmaker[AsyncSession]:
+    if _session_maker is None:
+        raise RuntimeError("DB engine not initialized — call init_engine() first")
+    return _session_maker
+
+
+async def dispose_engine() -> None:
+    """Tear down the async engine (tests)."""
+    global _engine, _session_maker
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _session_maker = None
+
+
+def get_session() -> AsyncSession:
+    """Return the request-scoped ``AsyncSession`` (creates lazily)."""
+    if "session" not in g:
+        g.session = get_session_maker()()
+    return g.session  # type: ignore[no-any-return]
+
+
+async def close_session(exception: BaseException | None = None) -> None:
+    """Close the request-scoped session, if any."""
+    session = g.pop("session", None)
+    if session is not None:
+        await session.close()
+
+
+# ─── Legacy sqlite3 connection (to be removed as call sites migrate) ───────
+
+
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
         g.db = sqlite3.connect(current_app.config["DB_PATH"], check_same_thread=False)
@@ -104,3 +178,5 @@ def init_db(app: Quart) -> None:
     if _legacy_db_needs_cutover(db_path):
         _run_legacy_cutover(db_path)
     _run_alembic_upgrade(db_path)
+
+    init_engine(db_path)

@@ -17,6 +17,7 @@ from compute_space.core.logging import setup_file_logging
 from compute_space.core.startup import init_app
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
+from compute_space.db import close_session
 from compute_space.db import get_db
 
 # ─── App Factory ───
@@ -38,8 +39,10 @@ def create_app(config: Config | None = None) -> Quart:
     # Load auth keys
     auth.load_keys(config.keys_dir)
 
-    # Register teardown
+    # Register teardown. Both the legacy sqlite3 conn and the AsyncSession are
+    # closed on app-context teardown; `close_session` is async (aiosqlite).
     app.teardown_appcontext(close_db)
+    app.teardown_appcontext(close_session)
 
     # Register blueprints (imported here per Flask/Quart convention - blueprints have globals/side effects)
     from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
