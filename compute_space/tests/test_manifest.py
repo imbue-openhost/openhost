@@ -401,10 +401,10 @@ grants = [
 
     def test_permissions_v2_missing_service_raises(self):
         toml = MINIMAL + '\n[[permissions_v2]]\ngrants = [{key = "X"}]\n'
-        with pytest.raises(ValueError, match="service"):
+        with pytest.raises(ValueError, match="permissions_v2"):
             parse_manifest_from_string(toml)
 
     def test_services_v2_missing_version_raises(self):
         toml = MINIMAL + '\n[[services_v2.provides]]\nservice = "github.com/x"\nendpoint = "/"\n'
-        with pytest.raises(ValueError, match="version"):
+        with pytest.raises(ValueError, match="services_v2"):
             parse_manifest_from_string(toml)

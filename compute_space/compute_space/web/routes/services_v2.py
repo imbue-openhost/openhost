@@ -4,6 +4,7 @@ provider-side permission validation."""
 import json
 from urllib.parse import unquote
 
+import attr
 from quart import Blueprint
 from quart import Response
 from quart import request
@@ -12,7 +13,7 @@ from quart import url_for
 from compute_space.config import get_config
 from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.version_resolution import find_compatible_provider
+from compute_space.core.services_v2 import find_compatible_provider
 from compute_space.db import get_db
 from compute_space.web.proxy import proxy_request
 from compute_space.web.routes.services import _add_cors_headers
@@ -91,7 +92,7 @@ async def service_v2_proxy(rest: str) -> Response:
         return _json_error("service_not_available", e.message, 503)
 
     grants = get_granted_permissions_v2(consumer_app, service_url)
-    grants_json = json.dumps(grants)
+    grants_json = json.dumps([attr.asdict(g) for g in grants])
 
     target_path = provider_endpoint.rstrip("/") + "/" + endpoint if endpoint else provider_endpoint
 

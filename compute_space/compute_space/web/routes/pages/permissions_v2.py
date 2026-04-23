@@ -28,7 +28,7 @@ async def approve_permissions_v2() -> str | Response:
         return Response("Invalid grant JSON", status=400)
 
     existing = get_granted_permissions_v2(app_name, service_url)
-    already_granted = any(g["grant"] == grant and g["scope"] == "global" for g in existing)
+    already_granted = any(g.grant == grant and g.scope == "global" for g in existing)
 
     return await render_template(
         "approve_permissions_v2.html",

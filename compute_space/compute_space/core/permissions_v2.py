@@ -3,13 +3,33 @@
 import json
 from typing import Any
 
+import attr
+
 from compute_space.db import get_db
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class GrantedPermission:
+    grant: dict[str, Any]
+    scope: str
+    provider_app: str | None
+    expires_at: str | None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class PermissionRecord:
+    consumer_app: str
+    service_url: str
+    grant: dict[str, Any]
+    scope: str
+    provider_app: str | None
+    expires_at: str | None
 
 
 def get_granted_permissions_v2(
     consumer_app: str,
     service_url: str,
-) -> list[dict[str, Any]]:
+) -> list[GrantedPermission]:
     """Return all grant objects for a consumer+service pair."""
     db = get_db()
     rows = db.execute(
@@ -19,12 +39,12 @@ def get_granted_permissions_v2(
         (consumer_app, service_url),
     ).fetchall()
     return [
-        {
-            "grant": json.loads(row["grant_payload"]),
-            "scope": row["scope"],
-            "provider_app": row["provider_app"],
-            "expires_at": row["expires_at"],
-        }
+        GrantedPermission(
+            grant=json.loads(row["grant_payload"]),
+            scope=row["scope"],
+            provider_app=row["provider_app"],
+            expires_at=row["expires_at"],
+        )
         for row in rows
     ]
 
@@ -68,7 +88,7 @@ def revoke_permission_v2(
 
 def get_all_permissions_v2(
     consumer_app: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[PermissionRecord]:
     """Return all v2 permissions, optionally filtered by consumer app."""
     db = get_db()
     if consumer_app:
@@ -85,13 +105,13 @@ def get_all_permissions_v2(
                ORDER BY consumer_app, service_url"""
         ).fetchall()
     return [
-        {
-            "consumer_app": row["consumer_app"],
-            "service_url": row["service_url"],
-            "grant": json.loads(row["grant_payload"]),
-            "scope": row["scope"],
-            "provider_app": row["provider_app"],
-            "expires_at": row["expires_at"],
-        }
+        PermissionRecord(
+            consumer_app=row["consumer_app"],
+            service_url=row["service_url"],
+            grant=json.loads(row["grant_payload"]),
+            scope=row["scope"],
+            provider_app=row["provider_app"],
+            expires_at=row["expires_at"],
+        )
         for row in rows
     ]

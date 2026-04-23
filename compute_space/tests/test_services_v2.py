@@ -14,7 +14,7 @@ from compute_space.core.permissions_v2 import revoke_permission_v2
 from compute_space.core.service_access_rules import ServiceAccessDenied
 from compute_space.core.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.version_resolution import find_compatible_provider
+from compute_space.core.services_v2 import find_compatible_provider
 from compute_space.web.routes.services_v2 import _parse_service_url_and_endpoint
 
 SVC_SECRETS = "github.com/org/repo/services/secrets"
@@ -136,7 +136,7 @@ class TestPermissionsV2:
 
         grants = get_granted_permissions_v2("test-app", SVC_SECRETS)
         assert len(grants) == 1
-        assert grants[0]["grant"] == {"key": "DB_URL"}
+        assert grants[0].grant == {"key": "DB_URL"}
 
     def test_grant_is_idempotent(self, db, monkeypatch):
         monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
@@ -162,9 +162,9 @@ class TestPermissionsV2:
         secrets_grants = get_granted_permissions_v2("test-app", SVC_SECRETS)
         oauth_grants = get_granted_permissions_v2("test-app", SVC_OAUTH)
         assert len(secrets_grants) == 1
-        assert secrets_grants[0]["grant"] == {"key": "DB_URL"}
+        assert secrets_grants[0].grant == {"key": "DB_URL"}
         assert len(oauth_grants) == 1
-        assert oauth_grants[0]["grant"] == {"provider": "google", "scope": "email"}
+        assert oauth_grants[0].grant == {"provider": "google", "scope": "email"}
 
     def test_get_all_permissions(self, db, monkeypatch):
         monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
@@ -177,7 +177,7 @@ class TestPermissionsV2:
 
         app_a_perms = get_all_permissions_v2(consumer_app="app-a")
         assert len(app_a_perms) == 2
-        assert {p["service_url"] for p in app_a_perms} == {SVC_SECRETS, SVC_OAUTH}
+        assert {p.service_url for p in app_a_perms} == {SVC_SECRETS, SVC_OAUTH}
 
     def test_multiple_grants_same_service(self, db, monkeypatch):
         monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
@@ -186,13 +186,13 @@ class TestPermissionsV2:
 
         grants = get_granted_permissions_v2("test-app", SVC_SECRETS)
         assert len(grants) == 2
-        granted_keys = {g["grant"]["key"] for g in grants}
+        granted_keys = {g.grant["key"] for g in grants}
         assert granted_keys == {"SECRET_A", "SECRET_B"}
 
         revoke_permission_v2("test-app", SVC_SECRETS, {"key": "SECRET_A"})
         grants = get_granted_permissions_v2("test-app", SVC_SECRETS)
         assert len(grants) == 1
-        assert grants[0]["grant"]["key"] == "SECRET_B"
+        assert grants[0].grant["key"] == "SECRET_B"
 
 
 # ---------------------------------------------------------------------------

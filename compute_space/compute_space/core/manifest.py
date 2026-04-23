@@ -3,6 +3,7 @@ import tomllib
 from typing import Any
 
 import attr
+import cattrs
 
 from compute_space.core.logging import logger
 
@@ -26,7 +27,8 @@ class ServiceProvides:
 @attr.s(auto_attribs=True, frozen=True)
 class PermissionV2Request:
     service: str
-    grants: list[dict[str, Any]]
+    # TODO: unsure of correct format.
+    grants: list[dict[str, Any]] = attr.Factory(list)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -113,35 +115,20 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
     return result
 
 
+def _structure_list(data: list[Any], cls: type[Any], label: str) -> list[Any]:
+    try:
+        return [cattrs.structure(entry, cls) for entry in data]
+    except (cattrs.ClassValidationError, TypeError, KeyError) as exc:
+        raise ValueError(f"Invalid [[{label}]]: {exc}") from exc
+
+
 def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
-    result: list[ServiceProvides] = []
-    for entry in data.get("services_v2", {}).get("provides", []):
-        if not isinstance(entry, dict):
-            raise ValueError("Each [[services_v2.provides]] entry must be a table")
-        svc = entry.get("service")
-        ver = entry.get("version")
-        ep = entry.get("endpoint", "/_service/")
-        if not svc or not isinstance(svc, str):
-            raise ValueError("[[services_v2.provides]] requires a string 'service' field")
-        if not ver or not isinstance(ver, str):
-            raise ValueError("[[services_v2.provides]] requires a string 'version' field")
-        result.append(ServiceProvides(service=svc, version=ver, endpoint=ep))
-    return result
+    entries = data.get("services_v2", {}).get("provides", [])
+    return _structure_list(entries, ServiceProvides, "services_v2.provides")
 
 
 def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
-    result: list[PermissionV2Request] = []
-    for entry in data.get("permissions_v2", []):
-        if not isinstance(entry, dict):
-            raise ValueError("Each [[permissions_v2]] entry must be a table")
-        svc = entry.get("service")
-        if not svc or not isinstance(svc, str):
-            raise ValueError("[[permissions_v2]] requires a string 'service' field")
-        grants = entry.get("grants", [])
-        if not isinstance(grants, list):
-            raise ValueError("[[permissions_v2]] 'grants' must be a list")
-        result.append(PermissionV2Request(service=svc, grants=grants))
-    return result
+    return _structure_list(data.get("permissions_v2", []), PermissionV2Request, "permissions_v2")
 
 
 def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

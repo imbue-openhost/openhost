@@ -1,3 +1,4 @@
+import attr
 from quart import Blueprint
 from quart import Response
 from quart import jsonify
@@ -16,7 +17,7 @@ api_permissions_v2_bp = Blueprint("api_permissions_v2", __name__)
 async def list_permissions_v2() -> Response:
     """List all V2 permissions, optionally filtered by app."""
     app_name = request.args.get("app")
-    return jsonify(get_all_permissions_v2(app_name))
+    return jsonify([attr.asdict(p) for p in get_all_permissions_v2(app_name)])
 
 
 @api_permissions_v2_bp.route("/api/permissions_v2/grant", methods=["POST"])

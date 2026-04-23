@@ -4,7 +4,7 @@ from quart import jsonify
 from quart import request
 
 from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.version_resolution import find_compatible_provider
+from compute_space.core.services_v2 import find_compatible_provider
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
 
