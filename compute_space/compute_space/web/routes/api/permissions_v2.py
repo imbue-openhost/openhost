@@ -40,7 +40,6 @@ async def grant_v2() -> Response | tuple[Response, int]:
         grant_payload=grant_payload,
         scope=data.get("scope", "global"),
         provider_app=data.get("provider_app"),
-        expires_at=data.get("expires_at"),
     )
     return jsonify({"ok": True})
 

@@ -35,23 +35,21 @@ def db():
         CREATE TABLE service_providers_v2 (
             service_url TEXT NOT NULL,
             app_name TEXT NOT NULL,
-            version TEXT NOT NULL,
+            service_version TEXT NOT NULL,
             endpoint TEXT NOT NULL,
-            PRIMARY KEY (service_url, app_name)
+            PRIMARY KEY (service_url, app_name, service_version)
         );
         CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
             app_name TEXT NOT NULL
         );
         CREATE TABLE permissions_v2 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             consumer_app TEXT NOT NULL,
             service_url TEXT NOT NULL,
             grant_payload TEXT NOT NULL,
             scope TEXT NOT NULL DEFAULT 'global',
-            provider_app TEXT,
-            expires_at TEXT,
-            UNIQUE(consumer_app, service_url, grant_payload, scope)
+            provider_app TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app)
         );
     """)
     return conn
@@ -63,7 +61,7 @@ def _add_provider(db, service_url, app_name, version, endpoint, port=9000, statu
         (app_name, port, status),
     )
     db.execute(
-        "INSERT INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
+        "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) VALUES (?, ?, ?, ?)",
         (service_url, app_name, version, endpoint),
     )
     if default:

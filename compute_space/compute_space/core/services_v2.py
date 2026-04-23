@@ -20,7 +20,7 @@ def register_v2_service_providers(
         db.execute("DELETE FROM service_providers_v2 WHERE app_name = ?", (app_name,))
         for svc in manifest.provides_services_v2:
             db.execute(
-                "INSERT OR REPLACE INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO service_providers_v2 (service_url, app_name, service_version, endpoint) VALUES (?, ?, ?, ?)",
                 (svc.service, app_name, svc.version, svc.endpoint),
             )
             existing_default = db.execute(
@@ -64,7 +64,7 @@ def resolve_provider(
         target_app = default["app_name"]
 
     row = db.execute(
-        """SELECT sp.version, sp.endpoint, a.local_port, a.status
+        """SELECT sp.service_version, sp.endpoint, a.local_port, a.status
            FROM service_providers_v2 sp
            JOIN apps a ON a.name = sp.app_name
            WHERE sp.service_url = ? AND sp.app_name = ?""",
@@ -78,13 +78,13 @@ def resolve_provider(
         raise ServiceNotAvailable(f"Provider '{target_app}' for '{service_url}' is not running")
 
     try:
-        v = Version(row["version"])
+        v = Version(row["service_version"])
     except InvalidVersion as e:
-        raise ServiceNotAvailable(f"Provider '{target_app}' has invalid version '{row['version']}'") from e
+        raise ServiceNotAvailable(f"Provider '{target_app}' has invalid version '{row['service_version']}'") from e
 
     if v not in spec:
         raise ServiceNotAvailable(
-            f"Provider '{target_app}' version {row['version']} does not match '{version_specifier}'"
+            f"Provider '{target_app}' version {row['service_version']} does not match '{version_specifier}'"
         )
 
-    return target_app, row["local_port"], row["version"], row["endpoint"]
+    return target_app, row["local_port"], row["service_version"], row["endpoint"]

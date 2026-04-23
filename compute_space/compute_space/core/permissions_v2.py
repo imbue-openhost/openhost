@@ -13,7 +13,6 @@ class GrantedPermission:
     grant: dict[str, Any]
     scope: str
     provider_app: str | None
-    expires_at: str | None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -23,7 +22,6 @@ class PermissionRecord:
     grant: dict[str, Any]
     scope: str
     provider_app: str | None
-    expires_at: str | None
 
 
 def get_granted_permissions_v2(
@@ -33,7 +31,7 @@ def get_granted_permissions_v2(
     """Return all grant objects for a consumer+service pair."""
     db = get_db()
     rows = db.execute(
-        """SELECT grant_payload, scope, provider_app, expires_at
+        """SELECT grant_payload, scope, provider_app
            FROM permissions_v2
            WHERE consumer_app = ? AND service_url = ?""",
         (consumer_app, service_url),
@@ -42,8 +40,7 @@ def get_granted_permissions_v2(
         GrantedPermission(
             grant=json.loads(row["grant_payload"]),
             scope=row["scope"],
-            provider_app=row["provider_app"],
-            expires_at=row["expires_at"],
+            provider_app=row["provider_app"] or None,
         )
         for row in rows
     ]
@@ -55,16 +52,15 @@ def grant_permission_v2(
     grant_payload: dict[str, Any],
     scope: str = "global",
     provider_app: str | None = None,
-    expires_at: str | None = None,
 ) -> None:
     """Grant a permission. Idempotent."""
     db = get_db()
     payload_json = json.dumps(grant_payload, sort_keys=True)
     db.execute(
         """INSERT OR IGNORE INTO permissions_v2
-           (consumer_app, service_url, grant_payload, scope, provider_app, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (consumer_app, service_url, payload_json, scope, provider_app, expires_at),
+           (consumer_app, service_url, grant_payload, scope, provider_app)
+           VALUES (?, ?, ?, ?, ?)""",
+        (consumer_app, service_url, payload_json, scope, provider_app or ""),
     )
     db.commit()
 
@@ -93,14 +89,14 @@ def get_all_permissions_v2(
     db = get_db()
     if consumer_app:
         rows = db.execute(
-            """SELECT consumer_app, service_url, grant_payload, scope, provider_app, expires_at
+            """SELECT consumer_app, service_url, grant_payload, scope, provider_app
                FROM permissions_v2 WHERE consumer_app = ?
                ORDER BY service_url""",
             (consumer_app,),
         ).fetchall()
     else:
         rows = db.execute(
-            """SELECT consumer_app, service_url, grant_payload, scope, provider_app, expires_at
+            """SELECT consumer_app, service_url, grant_payload, scope, provider_app
                FROM permissions_v2
                ORDER BY consumer_app, service_url"""
         ).fetchall()
@@ -110,8 +106,7 @@ def get_all_permissions_v2(
             service_url=row["service_url"],
             grant=json.loads(row["grant_payload"]),
             scope=row["scope"],
-            provider_app=row["provider_app"],
-            expires_at=row["expires_at"],
+            provider_app=row["provider_app"] or None,
         )
         for row in rows
     ]

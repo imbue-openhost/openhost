@@ -17,7 +17,7 @@ async def list_services_v2() -> Response:
     """List all registered V2 service providers."""
     db = get_db()
     rows = db.execute(
-        """SELECT sp.service_url, sp.app_name, sp.version, sp.endpoint, a.status
+        """SELECT sp.service_url, sp.app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
            JOIN apps a ON a.name = sp.app_name"""
     ).fetchall()
@@ -37,13 +37,13 @@ async def discover_providers() -> Response | tuple[Response, int]:
 
     if version_spec:
         try:
-            app_name, port, version, endpoint = resolve_provider(service_url, version_spec, db)
-            return jsonify({"providers": [{"app_name": app_name, "version": version, "endpoint": endpoint}]})
+            app_name, port, svc_version, endpoint = resolve_provider(service_url, version_spec, db)
+            return jsonify({"providers": [{"app_name": app_name, "version": svc_version, "endpoint": endpoint}]})
         except ServiceNotAvailable as e:
             return jsonify({"providers": [], "message": e.message})
 
     rows = db.execute(
-        """SELECT sp.app_name, sp.version, sp.endpoint, a.status
+        """SELECT sp.app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
            JOIN apps a ON a.name = sp.app_name
            WHERE sp.service_url = ?""",
@@ -61,7 +61,7 @@ async def discover_providers() -> Response | tuple[Response, int]:
             "providers": [
                 {
                     "app_name": r["app_name"],
-                    "version": r["version"],
+                    "version": r["service_version"],
                     "endpoint": r["endpoint"],
                     "status": r["status"],
                     "is_default": r["app_name"] == default_app,

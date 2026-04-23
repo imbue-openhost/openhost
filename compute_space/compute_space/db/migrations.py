@@ -223,23 +223,21 @@ def migrate(db: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS service_providers_v2 (
             service_url TEXT NOT NULL,
             app_name TEXT NOT NULL,
-            version TEXT NOT NULL,
+            service_version TEXT NOT NULL,
             endpoint TEXT NOT NULL,
-            PRIMARY KEY (service_url, app_name),
+            PRIMARY KEY (service_url, app_name, service_version),
             FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
         )"""
     )
     db.execute(
         """CREATE TABLE IF NOT EXISTS permissions_v2 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             consumer_app TEXT NOT NULL,
             service_url TEXT NOT NULL,
             grant_payload TEXT NOT NULL,
             scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
-            provider_app TEXT,
-            expires_at TEXT,
-            FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE,
-            UNIQUE(consumer_app, service_url, grant_payload, scope)
+            provider_app TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app),
+            FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
         )"""
     )
     db.execute(
