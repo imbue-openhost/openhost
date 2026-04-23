@@ -169,8 +169,9 @@ class TestYoyoDispatch:
 # ---------------------------------------------------------------------------
 # Snapshot / golden-test harness
 #
-# For each scenario enumerate every ordered pair (from, to) of checked-in
-# ``at_<NNNN>.sql`` fixtures with from < to.  For each pair:
+# For each scenario enumerate adjacent pairs (from, to) of checked-in
+# ``at_<NNNN>.sql`` fixtures — skip-chains are transitively implied.
+# For each pair:
 #   1. Materialize the ``from`` snapshot (schema + data + yoyo tracking).
 #   2. Hand the DB to yoyo — the loaded tracking rows tell yoyo which
 #      migrations to skip; it applies everything up to ``to``.
@@ -184,13 +185,14 @@ class TestYoyoDispatch:
 
 
 def _snapshot_cases():
-    """Yield (scenario_dir, from_id, to_id) triples for every ordered pair."""
+    """Yield (scenario_dir, from_id, to_id) for each adjacent pair of
+    committed snapshots. Non-adjacent pairs are transitively implied:
+    if 1->2 and 2->3 each replay exactly, 1->3 must too."""
     cases = []
     for scenario_dir in discover_scenario_dirs():
         present = present_snapshot_ids(scenario_dir)
-        for i, from_id in enumerate(present):
-            for to_id in present[i + 1 :]:
-                cases.append((scenario_dir, from_id, to_id))
+        for from_id, to_id in zip(present, present[1:], strict=True):
+            cases.append((scenario_dir, from_id, to_id))
     return cases
 
 
