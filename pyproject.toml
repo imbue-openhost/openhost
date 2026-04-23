@@ -23,6 +23,7 @@ dependencies = [
     "tomli-w",
     "typed-settings>=25.3.0",
     "websockets",
+    "yoyo-migrations",
 ]
 
 [project.scripts]

@@ -9,7 +9,11 @@ def get_schema_snapshot(db):
     """Return a normalised dict describing every table, column, and index."""
     snapshot = {"tables": {}, "indexes": {}}
 
-    tables = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+    tables = db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_yoyo_%' "
+        "AND name NOT LIKE 'yoyo_%'"
+    ).fetchall()
 
     for (tbl_name,) in tables:
         cols = {}
@@ -24,7 +28,9 @@ def get_schema_snapshot(db):
         snapshot["tables"][tbl_name] = cols
 
     indexes = db.execute(
-        "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+        "SELECT name, tbl_name, sql FROM sqlite_master "
+        "WHERE type='index' AND sql IS NOT NULL "
+        "AND tbl_name NOT LIKE '_yoyo_%' AND tbl_name NOT LIKE 'yoyo_%'"
     ).fetchall()
     for name, tbl_name, sql in indexes:
         snapshot["indexes"][name] = {"table": tbl_name, "sql": sql}
