@@ -22,8 +22,8 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
-import threading
 import time
 import warnings as _warnings
 from pathlib import Path
@@ -414,6 +414,52 @@ class TestLegacyBootstrap:
             legacy_db.close()
             fresh_db.close()
 
+    def test_crash_mid_bootstrap_leaves_db_unstamped(self, tmp_path, monkeypatch):
+        """Crashing between migrate() and the v1 stamp must leave version == 0.
+
+        Both migrate() and schema.sql are idempotent, so the whole bootstrap
+        replays cleanly on the next startup. The stamp happens AFTER
+        schema.sql so a failure during either step keeps the DB at v0.
+        """
+        db_path = str(tmp_path / "crash.db")
+        self._make_v0_fixture(db_path)
+
+        original_execute = runner_mod.execute_sql_script
+        call_count = {"n": 0}
+
+        def flaky_execute(db, sql):
+            call_count["n"] += 1
+            # Only the first call (legacy bootstrap's schema.sql) should fail.
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated schema.sql crash")
+            return original_execute(db, sql)
+
+        monkeypatch.setattr(runner_mod, "execute_sql_script", flaky_execute)
+
+        with pytest.raises(RuntimeError, match="simulated schema.sql crash"):
+            apply_migrations(db_path)
+
+        # migrate() may have created the schema_version table, but the row
+        # must not have been stamped — version must read back as 0.
+        probe = sqlite3.connect(db_path)
+        try:
+            assert read_version(probe) == 0
+        finally:
+            probe.close()
+
+        # Retry under normal conditions: bootstrap replays cleanly.
+        monkeypatch.setattr(runner_mod, "execute_sql_script", original_execute)
+        apply_migrations(db_path)
+
+        final = sqlite3.connect(db_path)
+        try:
+            assert read_version(final) == highest_registered_version(REGISTRY)
+            # Data from the v0 fixture survived the retry.
+            row = final.execute("SELECT name FROM apps WHERE name = 'legacy_app'").fetchone()
+            assert row is not None
+        finally:
+            final.close()
+
 
 # --------------------------------------------------------------------------- #
 # Numbered migration plumbing (REQ-MF-*, REQ-RUN-*)
@@ -507,7 +553,7 @@ class TestNumberedMigrationRunner:
         finally:
             db.close()
 
-    def test_info_log_per_applied_migration(self, tmp_path, capsys):
+    def test_info_log_per_applied_migration(self, tmp_path):
         """REQ-RUN-4: one INFO line per applied migration with version + duration."""
         db_path = str(tmp_path / "log.db")
         self._v1_db(db_path)
@@ -671,53 +717,74 @@ class TestExecuteSqlScript:
 
 
 class TestConcurrency:
-    def test_two_concurrent_startups_serialize(self, tmp_path):
-        """Two threads call apply_migrations against the same DB at once.
+    def test_two_concurrent_processes_serialize(self, tmp_path):
+        """Two OS processes call apply_migrations against the same DB at once.
 
-        With the file lock, only one applies the migration; the other
-        observes the updated version and applies nothing.
+        fcntl.flock locks are per open-file-description, so this exercises
+        real cross-process serialization — stronger than a thread-level
+        test. Only one process applies the migration; the other waits
+        for the lock, observes the already-bumped version, and returns
+        a no-op.
         """
         db_path = str(tmp_path / "race.db")
-        # Start at v1.
+        # Bring DB to v1 before the race.
         apply_migrations(db_path)
 
-        gate = threading.Event()
-        calls: list[int] = []
-        errors: list[BaseException] = []
+        counter_path = tmp_path / "counter.txt"
+        counter_path.write_text("")
 
-        class SlowMig(Migration):
-            version = 2
+        worker_script = tmp_path / "worker.py"
+        worker_script.write_text(
+            "import sys, time\n"
+            "from compute_space.db.versioned import Migration, apply_migrations\n"
+            "\n"
+            "DB_PATH = sys.argv[1]\n"
+            "COUNTER = sys.argv[2]\n"
+            "\n"
+            "class CounterMig(Migration):\n"
+            "    version = 2\n"
+            "    def up(self, db):\n"
+            "        with open(COUNTER, 'a') as f:\n"
+            "            f.write('x')\n"
+            "        # Hold the exclusive lock long enough for the other\n"
+            "        # process to contend and queue behind us.\n"
+            "        time.sleep(0.5)\n"
+            "        db.execute('CREATE TABLE race_done (x INTEGER)')\n"
+            "\n"
+            "apply_migrations(DB_PATH, registry=[CounterMig()])\n"
+        )
 
-            def up(self, db):
-                calls.append(1)
-                # Hold the lock briefly so the second thread is forced to wait.
-                gate.wait(timeout=5)
-                db.execute("CREATE TABLE slow_done (x INTEGER)")
+        def spawn():
+            return subprocess.Popen(
+                [sys.executable, str(worker_script), db_path, str(counter_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
-        def worker():
-            try:
-                apply_migrations(db_path, registry=[SlowMig()])
-            except BaseException as exc:  # noqa: BLE001
-                errors.append(exc)
+        p1 = spawn()
+        # Small nudge so p1 almost certainly wins the flock race. The
+        # assertion below still holds either way — only one applies.
+        time.sleep(0.1)
+        p2 = spawn()
 
-        t1 = threading.Thread(target=worker)
-        t2 = threading.Thread(target=worker)
-        t1.start()
-        # Small nudge so t1 acquires the lock first in practice.
-        # (If t2 wins, the assertion still holds — only one applies.)
-        time.sleep(0.05)
-        t2.start()
-        # Release the first worker.
-        gate.set()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
+        out1, err1 = p1.communicate(timeout=30)
+        out2, err2 = p2.communicate(timeout=30)
 
-        assert not errors, errors
-        assert calls == [1], f"Exactly one worker must apply the migration; got {len(calls)} calls"
+        assert p1.returncode == 0, f"worker 1 crashed: {err1.decode()}"
+        assert p2.returncode == 0, f"worker 2 crashed: {err2.decode()}"
+
+        # Exactly one process ran CounterMig.up() — the other saw
+        # version==2 already and no-op'd.
+        assert counter_path.read_text() == "x", (
+            f"Exactly one worker must apply the migration; got counter={counter_path.read_text()!r}"
+        )
 
         db = sqlite3.connect(db_path)
         try:
             assert read_version(db) == 2
+            # The applied migration's table must exist.
+            row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='race_done'").fetchone()
+            assert row is not None
         finally:
             db.close()
 
@@ -737,7 +804,7 @@ def _build_snapshot_for_version(tmp_path: Path, target_version: int) -> dict[str
 @pytest.mark.parametrize(
     "migration",
     REGISTRY,
-    ids=[f"v{m.version}-{type(m).__name__}" for m in REGISTRY] or ["_empty_"],
+    ids=[f"v{m.version}-{type(m).__name__}" for m in REGISTRY],
 )
 def test_snapshot_per_version(tmp_path, migration):
     """REQ-TEST-1/2/3: snapshot of schema + data after applying migrations
@@ -757,19 +824,6 @@ def test_snapshot_per_version(tmp_path, migration):
     )
     expected = json.loads(snap_path.read_text())
     assert _normalise_snapshot_for_compare(expected) == _normalise_snapshot_for_compare(actual)
-
-
-# Keep pytest collection happy when REGISTRY is empty: parametrize needs at
-# least one id. The marker above uses "_empty_" as the fallback id; below
-# we skip that vacuous parameter.
-if not REGISTRY:
-
-    def test_snapshots_vacuous():
-        """Stub test that documents the snapshot-test behaviour when no
-        numbered migrations are registered yet. REQ-TEST-1 is vacuously
-        satisfied (no N >= 2 to cover).
-        """
-        assert REGISTRY == []
 
 
 # --------------------------------------------------------------------------- #
