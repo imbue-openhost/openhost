@@ -91,14 +91,20 @@ def _enable_sqlite_pragmas(dbapi_conn: sqlite3.Connection, _record: object) -> N
 
 
 def init_engine(db_path: str) -> AsyncEngine:
-    """Create (or return) the process-wide async SQLAlchemy engine."""
+    """Create (or return) the process-wide async SQLAlchemy engine.
+
+    If an engine already exists against a different database URL — which
+    only happens under tests that cycle temp DBs — the old engine is
+    disposed synchronously and replaced. Real boot calls this exactly
+    once per process.
+    """
     global _engine, _session_maker
+    target_url = f"sqlite+aiosqlite:///{db_path}"
     if _engine is not None:
-        return _engine
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{db_path}",
-        future=True,
-    )
+        if str(_engine.url) == target_url:
+            return _engine
+        _engine.sync_engine.dispose()
+    engine = create_async_engine(target_url, future=True)
     event.listen(engine.sync_engine, "connect", _enable_sqlite_pragmas)
     _engine = engine
     _session_maker = async_sessionmaker(engine, expire_on_commit=False)

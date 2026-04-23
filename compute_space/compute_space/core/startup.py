@@ -1,9 +1,10 @@
 import asyncio
 import os
-import sqlite3
 import threading
 
 from quart import Quart
+from sqlalchemy import select
+from sqlalchemy import update
 
 from compute_space.config import Config
 from compute_space.core import identity
@@ -13,6 +14,7 @@ from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
 from compute_space.db import get_session_maker
 from compute_space.db import init_db
+from compute_space.db.models import App
 
 
 def _check_app_status(config: Config) -> None:
@@ -22,43 +24,7 @@ def _check_app_status(config: Config) -> None:
     background thread to avoid concurrent Docker builds that can corrupt
     BuildKit's content store.
     """
-    db = sqlite3.connect(config.db_path)
-    db.row_factory = sqlite3.Row
-    apps_to_restart: list[str] = []
-    try:
-        rows = db.execute("SELECT * FROM apps WHERE status = 'running'").fetchall()
-        for row in rows:
-            alive = False
-            if row["docker_container_id"]:
-                status = get_container_status(row["docker_container_id"])
-                alive = status == "running"
-
-            if not alive:
-                if row["docker_container_id"]:
-                    repo_path = row["repo_path"]
-                    if not repo_path or not os.path.isdir(repo_path):
-                        db.execute(
-                            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                            (
-                                f"Cannot restart: repo path missing ({repo_path})",
-                                row["name"],
-                            ),
-                        )
-                        continue
-                    db.execute(
-                        "UPDATE apps SET status = 'starting' WHERE name = ?",
-                        (row["name"],),
-                    )
-                    apps_to_restart.append(row["name"])
-                else:
-                    db.execute(
-                        "UPDATE apps SET status = 'stopped' WHERE name = ?",
-                        (row["name"],),
-                    )
-        db.commit()
-    finally:
-        db.close()
-
+    apps_to_restart = asyncio.run(_check_app_status_async())
     if apps_to_restart:
         threading.Thread(
             target=_restart_apps_sequential,
@@ -67,16 +33,47 @@ def _check_app_status(config: Config) -> None:
         ).start()
 
 
+async def _check_app_status_async() -> list[str]:
+    apps_to_restart: list[str] = []
+    async with get_session_maker()() as session:
+        rows = (
+            await session.execute(
+                select(App.name, App.docker_container_id, App.repo_path).where(App.status == "running")
+            )
+        ).all()
+        for row in rows:
+            alive = False
+            if row.docker_container_id:
+                status = get_container_status(row.docker_container_id)
+                alive = status == "running"
+
+            if not alive:
+                if row.docker_container_id:
+                    repo_path = row.repo_path
+                    if not repo_path or not os.path.isdir(repo_path):
+                        await session.execute(
+                            update(App)
+                            .where(App.name == row.name)
+                            .values(
+                                status="error",
+                                error_message=f"Cannot restart: repo path missing ({repo_path})",
+                            )
+                        )
+                        continue
+                    await session.execute(update(App).where(App.name == row.name).values(status="starting"))
+                    apps_to_restart.append(row.name)
+                else:
+                    await session.execute(update(App).where(App.name == row.name).values(status="stopped"))
+        await session.commit()
+    return apps_to_restart
+
+
 def _restart_apps_sequential(app_names: list[str], config: Config) -> None:
     """Rebuild and restart apps one at a time in a background thread."""
     asyncio.run(_restart_apps_sequential_async(app_names, config))
 
 
 async def _restart_apps_sequential_async(app_names: list[str], config: Config) -> None:
-    from sqlalchemy import update  # noqa: PLC0415
-
-    from compute_space.db.models import App  # noqa: PLC0415
-
     async with get_session_maker()() as session:
         for app_name in app_names:
             try:

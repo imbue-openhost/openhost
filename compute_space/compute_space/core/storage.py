@@ -10,15 +10,32 @@ before re-enabling enforcement.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
-import sqlite3
 import threading
 import time
+from typing import Protocol
+
+from sqlalchemy import select
+from sqlalchemy import update
 
 from compute_space.config import Config
-from compute_space.core.containers import stop_app_process
+from compute_space.core.containers import stop_container
 from compute_space.core.logging import logger
+from compute_space.db import get_session_maker
+from compute_space.db.models import App
+
+
+class _AppRowLike(Protocol):
+    """Anything with the `name` and `docker_container_id` attributes.
+
+    SQLAlchemy `Row` and ORM `App` both satisfy this shape.
+    """
+
+    name: str
+    docker_container_id: str | None
+
 
 _MIB = 1024 * 1024
 
@@ -194,12 +211,13 @@ def storage_status(config: Config) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def _stop_app_process_safe(row: sqlite3.Row) -> None:
-    """Call stop_app_process, catching errors."""
+def _stop_app_process_safe(row: _AppRowLike) -> None:
+    """Stop the container for an app, catching errors."""
     try:
-        stop_app_process(row)
+        if row.docker_container_id:
+            stop_container(row.docker_container_id)
     except Exception:
-        logger.exception("Failed to stop app %s", row["name"])
+        logger.exception("Failed to stop app %s", row.name)
 
 
 def enforce_storage_guard(config: Config) -> None:
@@ -223,24 +241,29 @@ def enforce_storage_guard(config: Config) -> None:
         logger.info("Storage guard is paused; skipping app shutdown despite low storage")
         return
 
-    db = sqlite3.connect(config.db_path)
-    db.row_factory = sqlite3.Row
-    try:
-        rows = db.execute("SELECT * FROM apps WHERE status IN ('running', 'starting')").fetchall()
+    asyncio.run(_stop_running_apps())
+
+
+async def _stop_running_apps() -> None:
+    async with get_session_maker()() as session:
+        rows = (
+            await session.execute(
+                select(App.name, App.docker_container_id).where(App.status.in_(("running", "starting")))
+            )
+        ).all()
         if not rows:
             return
 
         for row in rows:
             detail = "Persistent storage too low. Free space by removing app data or resizing disks."
-            logger.warning("Stopping app %s due to low storage", row["name"])
+            logger.warning("Stopping app %s due to low storage", row.name)
             _stop_app_process_safe(row)
-            db.execute(
-                "UPDATE apps SET status = 'error', error_message = ?, docker_container_id = NULL WHERE name = ?",
-                (detail, row["name"]),
+            await session.execute(
+                update(App)
+                .where(App.name == row.name)
+                .values(status="error", error_message=detail, docker_container_id=None)
             )
-            db.commit()
-    finally:
-        db.close()
+            await session.commit()
 
 
 def _storage_guard_loop(config: Config) -> None:

@@ -9,9 +9,13 @@ on ssh_disabled — this is intentional (SSH is a temporary debug tool).
 Results are exposed via /health and /api/security-audit endpoints.
 """
 
-import sqlite3
 import subprocess
 from typing import TypedDict
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from compute_space.db.models import AppPortMapping
 
 
 class CheckResult(TypedDict):
@@ -45,7 +49,7 @@ def is_sshd_active() -> bool:
         return False
 
 
-def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
+async def run_audit(session: AsyncSession | None = None) -> AuditResult:
     """Run all security checks. Returns a dict with results.
 
     {
@@ -64,7 +68,7 @@ def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
     checks["ssh_disabled"] = _check_ssh_disabled()
     checks["ssh_password_disabled"] = _check_ssh_password_disabled()
     checks["tls_active"] = _check_tls_active()
-    checks["no_unexpected_ports"] = _check_no_unexpected_ports(db=db)
+    checks["no_unexpected_ports"] = await _check_no_unexpected_ports(session=session)
 
     secure = all(c["ok"] for c in checks.values())
     return {"secure": secure, "checks": checks}
@@ -116,7 +120,7 @@ def _check_tls_active() -> CheckResult:
         return {"ok": False, "detail": f"Could not check: {e}"}
 
 
-def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
+async def _check_no_unexpected_ports(session: AsyncSession | None = None) -> CheckResult:
     """Only expected ports are listening."""
     try:
         result = subprocess.run(
@@ -138,9 +142,8 @@ def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckRes
 
         # Build dynamic whitelist from DB port mappings
         allocated_ports: set[int] = set()
-        if db is not None:
-            rows = db.execute("SELECT host_port FROM app_port_mappings").fetchall()
-            allocated_ports = {row["host_port"] for row in rows}
+        if session is not None:
+            allocated_ports = set((await session.execute(select(AppPortMapping.host_port))).scalars().all())
 
         unexpected = set()
         for port in listening_ports:

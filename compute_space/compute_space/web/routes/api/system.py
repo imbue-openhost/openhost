@@ -21,6 +21,7 @@ from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
 from compute_space.db import get_db
+from compute_space.db import get_session
 from compute_space.web.middleware import login_required
 
 api_system_bp: Blueprint = Blueprint("api_system", __name__)
@@ -116,17 +117,17 @@ def compute_space_logs() -> Response:
 
 
 @api_system_bp.route("/health")
-def health() -> ResponseReturnValue:
+async def health() -> ResponseReturnValue:
     if is_shutdown_pending():
         return jsonify({"status": "restarting"}), 503
-    audit = run_audit(db=get_db())
+    audit = await run_audit(session=get_session())
     return jsonify({"status": "ok", "security": audit})
 
 
 @api_system_bp.route("/api/security-audit")
 @login_required
-def security_audit() -> Response:
-    return jsonify(run_audit(db=get_db()))
+async def security_audit() -> Response:
+    return jsonify(await run_audit(session=get_session()))
 
 
 @api_system_bp.route("/api/storage-status")

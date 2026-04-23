@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 import compute_space.core.storage as storage
+from compute_space.db import init_engine
 from tests.conftest import _make_test_config
 
 
@@ -154,6 +155,7 @@ def _init_apps_db(db_path: str) -> None:
 def test_enforce_guard_noop_without_threshold(tmp_path, monkeypatch):
     config = _make_test_config(tmp_path)
     _init_apps_db(config.db_path)
+    init_engine(config.db_path)
     # Should not do anything when no threshold is configured
     storage.enforce_storage_guard(config)
 
@@ -171,10 +173,12 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
     db.commit()
     db.close()
 
+    init_engine(config.db_path)
+
     stopped = []
     monkeypatch.setattr(storage, "storage_low", lambda _c: True)
     monkeypatch.setattr(storage, "persistent_free_bytes", lambda _c: 50 * 1024 * 1024)
-    monkeypatch.setattr(storage, "_stop_app_process_safe", lambda row: stopped.append(row["name"]))
+    monkeypatch.setattr(storage, "_stop_app_process_safe", lambda row: stopped.append(row.name))
 
     storage.enforce_storage_guard(config)
 
@@ -191,6 +195,7 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
 def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
     config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     _init_apps_db(config.db_path)
+    init_engine(config.db_path)
 
     db = sqlite3.connect(config.db_path)
     db.execute(
