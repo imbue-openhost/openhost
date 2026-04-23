@@ -1,9 +1,12 @@
 """Cross-app service operations: provider lookup, OAuth token fetching."""
 
 import httpx
+from sqlalchemy import select
 
 from compute_space.core.util import assert_str
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import App
+from compute_space.db.models import ServiceProvider
 
 
 class ServiceNotAvailable(Exception):
@@ -11,7 +14,7 @@ class ServiceNotAvailable(Exception):
         self.message = message
 
 
-def get_service_provider(service_name: str) -> tuple[str, int]:
+async def get_service_provider(service_name: str) -> tuple[str, int]:
     """Look up the provider app for a service, checking it's installed and running.
 
     Returns (app_name, local_port).
@@ -19,22 +22,21 @@ def get_service_provider(service_name: str) -> tuple[str, int]:
     Raises:
         ServiceNotAvailable: Service is not installed or not running.
     """
-    db = get_db()
-    row = db.execute(
-        """SELECT sp.app_name, a.local_port, a.status FROM service_providers sp
-           JOIN apps a ON a.name = sp.app_name
-           WHERE sp.service_name = ?""",
-        (service_name,),
-    ).fetchone()
-    if not row:
+    session = get_session()
+    stmt = (
+        select(ServiceProvider.app_name, App.local_port, App.status)
+        .join(App, App.name == ServiceProvider.app_name)
+        .where(ServiceProvider.service_name == service_name)
+    )
+    row = (await session.execute(stmt)).first()
+    if row is None:
         raise ServiceNotAvailable(f"No provider for service '{service_name}'. Is the '{service_name}' app installed?")
-    if row["status"] != "running":
+    app_name, local_port, status = row
+    if status != "running":
         raise ServiceNotAvailable(f"The '{service_name}' app is not running. Please start it from the dashboard.")
-    app_name = row["app_name"]
     assert isinstance(app_name, str)
-    app_port = row["local_port"]
-    assert isinstance(app_port, int)
-    return app_name, app_port
+    assert isinstance(local_port, int)
+    return app_name, local_port
 
 
 class OAuthAuthorizationRequired(Exception):
@@ -61,7 +63,7 @@ async def get_oauth_token(
         ServiceNotAvailable: The secrets service is not installed, not running, or not responding.
         OAuthAuthorizationRequired: User authorization is needed (has authorize_url).
     """
-    _, provider_port = get_service_provider("secrets")
+    _, provider_port = await get_service_provider("secrets")
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.post(

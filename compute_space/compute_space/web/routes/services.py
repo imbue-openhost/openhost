@@ -129,7 +129,7 @@ async def service_proxy(service_name: str, service_endpoint: str) -> Response:
         return Response("Missing or invalid authorization", status=401)
 
     try:
-        provider_app, provider_port = get_service_provider(service_name)
+        provider_app, provider_port = await get_service_provider(service_name)
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 
@@ -191,7 +191,7 @@ def _json_error(error: str, message: str, status: int) -> Response:
 @services_bp.route("/secrets/oauth/callback")
 async def oauth_callback_proxy() -> Response:
     try:
-        provider_app, provider_port = get_service_provider("secrets")
+        provider_app, provider_port = await get_service_provider("secrets")
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
     return await proxy_request(request, provider_port, "", override_path="/oauth/callback")
