@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import threading
@@ -10,6 +11,7 @@ from compute_space.core.apps import start_app_process
 from compute_space.core.containers import get_container_status
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
+from compute_space.db import get_session_maker
 from compute_space.db import init_db
 
 
@@ -67,23 +69,25 @@ def _check_app_status(config: Config) -> None:
 
 def _restart_apps_sequential(app_names: list[str], config: Config) -> None:
     """Rebuild and restart apps one at a time in a background thread."""
-    db = sqlite3.connect(config.db_path, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    try:
+    asyncio.run(_restart_apps_sequential_async(app_names, config))
+
+
+async def _restart_apps_sequential_async(app_names: list[str], config: Config) -> None:
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from compute_space.db.models import App  # noqa: PLC0415
+
+    async with get_session_maker()() as session:
         for app_name in app_names:
             try:
-                start_app_process(app_name, db, config)
+                await start_app_process(app_name, session, config)
                 logger.info("Rebuilt and restarted app %s", app_name)
             except Exception as e:
                 logger.exception("Failed to rebuild app %s", app_name)
-                db.execute(
-                    "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                    (str(e), app_name),
+                await session.execute(
+                    update(App).where(App.name == app_name).values(status="error", error_message=str(e))
                 )
-                db.commit()
-    finally:
-        db.close()
+                await session.commit()
 
 
 def init_app(app: Quart) -> None:

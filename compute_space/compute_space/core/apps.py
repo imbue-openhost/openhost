@@ -10,7 +10,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -21,6 +20,8 @@ import httpx
 from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy import update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
@@ -40,7 +41,11 @@ from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
 from compute_space.db import get_session
 from compute_space.db import get_session_maker
+from compute_space.db.models import App
+from compute_space.db.models import AppDatabase
 from compute_space.db.models import AppPortMapping
+from compute_space.db.models import AppToken
+from compute_space.db.models import ServiceProvider
 
 RESERVED_PATHS = {
     "/",
@@ -189,7 +194,7 @@ async def clone_with_github_fallback(
     return manifest, tmp_dir, error, None
 
 
-def validate_manifest(manifest: AppManifest, db: sqlite3.Connection, app_name: str | None = None) -> str | None:
+async def validate_manifest(manifest: AppManifest, session: AsyncSession, app_name: str | None = None) -> str | None:
     """Check reserved names and duplicates. Returns error string or None."""
     if app_name is None:
         app_name = manifest.name
@@ -200,9 +205,9 @@ def validate_manifest(manifest: AppManifest, db: sqlite3.Connection, app_name: s
     if f"/{app_name}" in RESERVED_PATHS:
         return f"App name '{app_name}' conflicts with a reserved path"
 
-    existing = db.execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
+    existing = (await session.execute(select(App.name).where(App.name == app_name))).scalar_one_or_none()
     if existing:
-        return f"App name already in use by '{existing['name']}'"
+        return f"App name already in use by '{existing}'"
 
     return None
 
@@ -211,7 +216,6 @@ async def insert_and_deploy(
     manifest: AppManifest,
     repo_path: str,
     config: Config,
-    db: sqlite3.Connection,
     grant_permissions: set[str],
     app_name: str | None = None,
     repo_url: str | None = None,
@@ -250,60 +254,55 @@ async def insert_and_deploy(
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
     )
 
-    db.execute(
-        """INSERT INTO apps
-           (name, manifest_name, version, description, runtime_type, repo_path, repo_url,
-            health_check, local_port, container_port, memory_mb, cpu_millicores,
-            gpu, public_paths, manifest_raw, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            app_name,
-            manifest.name,
-            manifest.version,
-            manifest.description,
-            manifest.runtime_type,
-            repo_path,
-            repo_url,
-            manifest.health_check,
-            local_port,
-            manifest.container_port,
-            manifest.memory_mb,
-            manifest.cpu_millicores,
-            int(manifest.gpu),
-            json.dumps(manifest.public_paths),
-            manifest.raw_toml,
-            "building",
-        ),
+    session.add(
+        App(
+            name=app_name,
+            manifest_name=manifest.name,
+            version=manifest.version,
+            description=manifest.description,
+            runtime_type=manifest.runtime_type,
+            repo_path=repo_path,
+            repo_url=repo_url,
+            health_check=manifest.health_check,
+            local_port=local_port,
+            container_port=manifest.container_port,
+            memory_mb=manifest.memory_mb,
+            cpu_millicores=manifest.cpu_millicores,
+            gpu=int(manifest.gpu),
+            public_paths=json.dumps(manifest.public_paths),
+            manifest_raw=manifest.raw_toml,
+            status="building",
+        )
     )
 
     # Store resolved port mappings
     for pm in resolved_mappings:
-        db.execute(
-            "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?, ?, ?, ?)",
-            (app_name, pm.label, pm.container_port, pm.host_port),
+        session.add(
+            AppPortMapping(
+                app_name=app_name,
+                label=pm.label,
+                container_port=pm.container_port,
+                host_port=pm.host_port,
+            )
         )
 
     for db_name in manifest.sqlite_dbs:
         db_path = env_vars.get(f"OPENHOST_SQLITE_{db_name.upper()}", "")
-        db.execute(
-            "INSERT INTO app_databases (app_name, db_name, db_path) VALUES (?, ?, ?)",
-            (app_name, db_name, db_path),
-        )
+        session.add(AppDatabase(app_name=app_name, db_name=db_name, db_path=db_path))
+
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
         app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
-        db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
-            (app_name, app_token_hash),
+        stmt = sqlite_insert(AppToken).values(app_name=app_name, token_hash=app_token_hash)
+        await session.execute(
+            stmt.on_conflict_do_update(index_elements=["app_name"], set_={"token_hash": app_token_hash})
         )
 
     for svc_name in manifest.provides_services:
-        db.execute(
-            "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
-            (svc_name, app_name),
-        )
+        svc_stmt = sqlite_insert(ServiceProvider).values(service_name=svc_name, app_name=app_name)
+        await session.execute(svc_stmt.on_conflict_do_nothing(index_elements=["service_name", "app_name"]))
 
-    db.commit()
+    await session.commit()
 
     # Grant only the service permissions the caller explicitly approved.
     # Done after commit so the app row exists for the FK constraint.
@@ -341,81 +340,91 @@ def deploy_app_background(
     app_name: str | None = None,
     port_mappings: list[PortMapping] | None = None,
 ) -> None:
-    """Build and start an app in a background thread."""
+    """Build and start an app in a background thread (sync entry point)."""
+    asyncio.run(
+        _deploy_app_background_async(
+            manifest, repo_path, local_port, env_vars, config, app_name=app_name, port_mappings=port_mappings
+        )
+    )
+
+
+_UNSET_ERR = "__unset_err__"
+
+
+async def _set_app_status(
+    session: AsyncSession, app_name: str, status: str, error_message: str | None | str = _UNSET_ERR
+) -> None:
+    values: dict[str, object] = {"status": status}
+    if error_message != _UNSET_ERR:
+        values["error_message"] = error_message
+    await session.execute(update(App).where(App.name == app_name).values(**values))
+    await session.commit()
+
+
+async def _deploy_app_background_async(
+    manifest: AppManifest,
+    repo_path: str,
+    local_port: int,
+    env_vars: dict[str, str],
+    config: Config,
+    app_name: str | None = None,
+    port_mappings: list[PortMapping] | None = None,
+) -> None:
     if app_name is None:
         app_name = manifest.name
 
-    db = sqlite3.connect(config.db_path, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    try:
-        storage.check_before_deploy(config)
+    async with get_session_maker()() as session:
+        try:
+            storage.check_before_deploy(config)
 
-        # Retry Docker builds for transient failures (daemon not ready yet,
-        # network blip during image pull, etc.).
-        max_build_attempts = 3
-        image_tag = ""
-        for attempt in range(1, max_build_attempts + 1):
-            try:
-                image_tag = build_image(
-                    app_name,
-                    repo_path,
-                    manifest.container_image,
-                    temp_data_dir=config.temporary_data_dir,
-                )
-                break
-            except RuntimeError:
-                if attempt == max_build_attempts:
-                    raise
-                logger.warning(
-                    "Docker build attempt %d/%d for %s failed, retrying in %ds",
-                    attempt,
-                    max_build_attempts,
-                    app_name,
-                    attempt * 5,
-                )
-                time.sleep(attempt * 5)
-        db.execute(
-            "UPDATE apps SET status = 'starting' WHERE name = ?",
-            (app_name,),
-        )
-        db.commit()
-        container_id = run_container(
-            app_name,
-            image_tag,
-            manifest,
-            local_port,
-            env_vars,
-            config.persistent_data_dir,
-            config.temporary_data_dir,
-            port_mappings=port_mappings,
-        )
-        db.execute(
-            "UPDATE apps SET docker_container_id = ? WHERE name = ?",
-            (container_id, app_name),
-        )
-        db.commit()
+            # Retry Docker builds for transient failures (daemon not ready yet,
+            # network blip during image pull, etc.).
+            max_build_attempts = 3
+            image_tag = ""
+            for attempt in range(1, max_build_attempts + 1):
+                try:
+                    image_tag = await asyncio.to_thread(
+                        build_image,
+                        app_name,
+                        repo_path,
+                        manifest.container_image,
+                        config.temporary_data_dir,
+                    )
+                    break
+                except RuntimeError:
+                    if attempt == max_build_attempts:
+                        raise
+                    logger.warning(
+                        "Docker build attempt %d/%d for %s failed, retrying in %ds",
+                        attempt,
+                        max_build_attempts,
+                        app_name,
+                        attempt * 5,
+                    )
+                    await asyncio.sleep(attempt * 5)
 
-        if wait_for_ready(local_port):
-            db.execute(
-                "UPDATE apps SET status = 'running' WHERE name = ?",
-                (app_name,),
+            await _set_app_status(session, app_name, "starting")
+            container_id = await asyncio.to_thread(
+                run_container,
+                app_name,
+                image_tag,
+                manifest,
+                local_port,
+                env_vars,
+                config.persistent_data_dir,
+                config.temporary_data_dir,
+                port_mappings,
             )
-        else:
-            db.execute(
-                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                ("App started but not responding to HTTP", app_name),
-            )
-        db.commit()
-    except Exception as e:
-        logger.exception("Failed to deploy %s", app_name)
-        db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            (str(e), app_name),
-        )
-        db.commit()
-    finally:
-        db.close()
+            await session.execute(update(App).where(App.name == app_name).values(docker_container_id=container_id))
+            await session.commit()
+
+            if await asyncio.to_thread(wait_for_ready, local_port):
+                await _set_app_status(session, app_name, "running")
+            else:
+                await _set_app_status(session, app_name, "error", "App started but not responding to HTTP")
+        except Exception as e:
+            logger.exception("Failed to deploy %s", app_name)
+            await _set_app_status(session, app_name, "error", str(e))
 
 
 def wait_for_ready(local_port: int, timeout: int = 60) -> bool:
@@ -438,13 +447,16 @@ def wait_for_ready(local_port: int, timeout: int = 60) -> bool:
     return False
 
 
-def _load_port_mappings_from_db(app_name: str, db: sqlite3.Connection) -> list[PortMapping]:
+async def _load_port_mappings_from_db(app_name: str, session: AsyncSession) -> list[PortMapping]:
     """Load resolved port mappings from the database."""
-    rows = db.execute(
-        "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_name = ?",
-        (app_name,),
-    ).fetchall()
-    return [PortMapping(label=r["label"], container_port=r["container_port"], host_port=r["host_port"]) for r in rows]
+    rows = (
+        await session.execute(
+            select(AppPortMapping.label, AppPortMapping.container_port, AppPortMapping.host_port).where(
+                AppPortMapping.app_name == app_name
+            )
+        )
+    ).all()
+    return [PortMapping(label=r.label, container_port=r.container_port, host_port=r.host_port) for r in rows]
 
 
 async def _sync_port_mappings(
@@ -503,14 +515,14 @@ async def _sync_port_mappings(
                 )
 
 
-def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> None:
+async def start_app_process(app_name: str, session: AsyncSession, config: Config) -> None:
     """Start the process for an app. Updates DB with status and container id."""
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+    app_row = (await session.execute(select(App).where(App.name == app_name))).scalar_one()
     storage.check_before_deploy(config)
 
-    manifest = parse_manifest(app_row["repo_path"])
+    manifest = parse_manifest(app_row.repo_path)
     env_vars = provision_data(
-        app_row["name"],
+        app_row.name,
         manifest,
         config.persistent_data_dir,
         config.temporary_data_dir,
@@ -522,60 +534,47 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
         app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
-        db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
-            (app_name, app_token_hash),
+        stmt = sqlite_insert(AppToken).values(app_name=app_name, token_hash=app_token_hash)
+        await session.execute(
+            stmt.on_conflict_do_update(index_elements=["app_name"], set_={"token_hash": app_token_hash})
         )
 
-    db.execute("DELETE FROM service_providers WHERE app_name = ?", (app_name,))
+    await session.execute(delete(ServiceProvider).where(ServiceProvider.app_name == app_name))
     for svc_name in manifest.provides_services:
-        db.execute(
-            "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
-            (svc_name, app_name),
-        )
+        svc_stmt = sqlite_insert(ServiceProvider).values(service_name=svc_name, app_name=app_name)
+        await session.execute(svc_stmt.on_conflict_do_nothing(index_elements=["service_name", "app_name"]))
 
     # Load resolved port mappings from DB (preserves host_port assignments)
-    port_mappings = _load_port_mappings_from_db(app_name, db)
+    port_mappings = await _load_port_mappings_from_db(app_name, session)
 
-    db.execute(
-        "UPDATE apps SET status = 'starting', error_message = NULL WHERE name = ?",
-        (app_name,),
-    )
-    db.commit()
+    await session.execute(update(App).where(App.name == app_name).values(status="starting", error_message=None))
+    await session.commit()
 
-    image_tag = build_image(
-        app_row["name"],
-        app_row["repo_path"],
+    image_tag = await asyncio.to_thread(
+        build_image,
+        app_row.name,
+        app_row.repo_path,
         manifest.container_image,
-        temp_data_dir=config.temporary_data_dir,
+        config.temporary_data_dir,
     )
-    container_id = run_container(
-        app_row["name"],
+    container_id = await asyncio.to_thread(
+        run_container,
+        app_row.name,
         image_tag,
         manifest,
-        app_row["local_port"],
+        app_row.local_port,
         env_vars,
         config.persistent_data_dir,
         config.temporary_data_dir,
-        port_mappings=port_mappings,
+        port_mappings,
     )
-    db.execute(
-        "UPDATE apps SET docker_container_id = ? WHERE name = ?",
-        (container_id, app_name),
-    )
-    db.commit()
+    await session.execute(update(App).where(App.name == app_name).values(docker_container_id=container_id))
+    await session.commit()
 
-    if wait_for_ready(app_row["local_port"]):
-        db.execute(
-            "UPDATE apps SET status = 'running' WHERE name = ?",
-            (app_name,),
-        )
+    if await asyncio.to_thread(wait_for_ready, app_row.local_port):
+        await _set_app_status(session, app_name, "running")
     else:
-        db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            ("App started but not responding to HTTP", app_name),
-        )
-    db.commit()
+        await _set_app_status(session, app_name, "error", "App started but not responding to HTTP")
 
 
 def app_log_path(app_name: str, config: Config) -> str:
@@ -664,60 +663,56 @@ def git_pull(
 
 
 def reload_app_background(app_name: str, repo_path: str, config: Config) -> None:
-    """Reload an app in a background thread: re-read manifest, rebuild, start."""
-    db = sqlite3.connect(config.db_path, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    try:
-        if repo_path and os.path.isdir(os.path.join(repo_path, ".git")):
-            pass  # git pull already done before background thread
-        else:
-            source_dir = os.path.join(config.apps_dir, app_name)
-            if not os.path.isdir(source_dir):
-                source_dir = None  # type: ignore[assignment]
-                for entry in os.listdir(config.apps_dir):
-                    candidate = os.path.join(config.apps_dir, entry)
-                    if os.path.isfile(os.path.join(candidate, "openhost.toml")):
-                        try:
-                            m = parse_manifest(candidate)
-                            if m.name == app_name:
-                                source_dir = candidate
-                                break
-                        except ValueError:
-                            pass
-            if source_dir and os.path.isdir(source_dir):
-                if os.path.exists(repo_path):
-                    shutil.rmtree(repo_path)
-                shutil.copytree(source_dir, repo_path)
-                logger.info("Re-copied %s from %s", app_name, source_dir)
+    """Reload an app in a background thread (sync entry point)."""
+    asyncio.run(_reload_app_background_async(app_name, repo_path, config))
 
-        if repo_path and os.path.isdir(repo_path):
-            try:
-                manifest = parse_manifest(repo_path)
-                db.execute(
-                    "UPDATE apps SET public_paths = ?, manifest_raw = ?, manifest_name = ? WHERE name = ?",
-                    (
-                        json.dumps(manifest.public_paths),
-                        manifest.raw_toml,
-                        manifest.name,
-                        app_name,
-                    ),
-                )
 
-                # Diff port mappings: preserve existing host_port for unchanged labels
-                asyncio.run(_sync_port_mappings(app_name, manifest.port_mappings, config))
+async def _reload_app_background_async(app_name: str, repo_path: str, config: Config) -> None:
+    async with get_session_maker()() as session:
+        try:
+            if repo_path and os.path.isdir(os.path.join(repo_path, ".git")):
+                pass  # git pull already done before background thread
+            else:
+                source_dir = os.path.join(config.apps_dir, app_name)
+                if not os.path.isdir(source_dir):
+                    source_dir = None  # type: ignore[assignment]
+                    for entry in os.listdir(config.apps_dir):
+                        candidate = os.path.join(config.apps_dir, entry)
+                        if os.path.isfile(os.path.join(candidate, "openhost.toml")):
+                            try:
+                                m = parse_manifest(candidate)
+                                if m.name == app_name:
+                                    source_dir = candidate
+                                    break
+                            except ValueError:
+                                pass
+                if source_dir and os.path.isdir(source_dir):
+                    if os.path.exists(repo_path):
+                        shutil.rmtree(repo_path)
+                    shutil.copytree(source_dir, repo_path)
+                    logger.info("Re-copied %s from %s", app_name, source_dir)
 
-                db.commit()
-            except ValueError:
-                pass
+            if repo_path and os.path.isdir(repo_path):
+                try:
+                    manifest = parse_manifest(repo_path)
+                    await session.execute(
+                        update(App)
+                        .where(App.name == app_name)
+                        .values(
+                            public_paths=json.dumps(manifest.public_paths),
+                            manifest_raw=manifest.raw_toml,
+                            manifest_name=manifest.name,
+                        )
+                    )
+                    await session.commit()
 
-        start_app_process(app_name, db, config)
-    except Exception as e:
-        logger.exception("Failed to reload %s", app_name)
-        db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            (str(e), app_name),
-        )
-        db.commit()
-    finally:
-        db.close()
+                    # Diff port mappings: preserve existing host_port for unchanged labels
+                    # (opens its own session internally)
+                    await _sync_port_mappings(app_name, manifest.port_mappings, config)
+                except ValueError:
+                    pass
+
+            await start_app_process(app_name, session, config)
+        except Exception as e:
+            logger.exception("Failed to reload %s", app_name)
+            await _set_app_status(session, app_name, "error", str(e))

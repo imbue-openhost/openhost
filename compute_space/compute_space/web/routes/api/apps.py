@@ -83,8 +83,8 @@ async def clone_and_get_app_info() -> ResponseReturnValue:
 
     if manifest is None:
         raise RuntimeError("manifest unexpectedly None after successful clone")
-    db = get_db()
-    validation_error = validate_manifest(manifest, db)
+    session = get_session()
+    validation_error = await validate_manifest(manifest, session)
     info = dataclasses.asdict(manifest)
     info.pop("raw_toml", None)
     return jsonify(
@@ -154,8 +154,8 @@ async def api_add_app() -> ResponseReturnValue:
     if app_name is None:
         app_name = manifest.name
 
-    db = get_db()
-    validation_error = validate_manifest(manifest, db, app_name=app_name)
+    session = get_session()
+    validation_error = await validate_manifest(manifest, session, app_name=app_name)
     if validation_error:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
@@ -188,7 +188,6 @@ async def api_add_app() -> ResponseReturnValue:
             manifest,
             final_dir,
             config,
-            db,
             grant_permissions=grant_permissions,
             app_name=app_name,
             repo_url=repo_url,
@@ -471,6 +470,6 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     db.execute("PRAGMA foreign_keys=ON")
 
     if was_running:
-        start_app_process(new_name, db, config)
+        await start_app_process(new_name, get_session(), config)
 
     return jsonify({"ok": True, "name": new_name})
