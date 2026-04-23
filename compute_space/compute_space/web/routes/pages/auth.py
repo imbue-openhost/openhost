@@ -140,7 +140,7 @@ async def setup() -> ResponseReturnValue:
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 async def login() -> ResponseReturnValue:
-    if auth.get_current_user_from_request(request):
+    if await auth.get_current_user_from_request(request):
         return redirect(url_for("apps.dashboard"))
 
     # If stale auth cookies are present (invalid JWT, e.g. after key rotation on

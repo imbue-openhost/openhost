@@ -6,6 +6,7 @@ from quart import Blueprint
 from quart import Response
 from quart import request
 from quart import url_for
+from sqlalchemy import select
 
 from compute_space.config import get_config
 from compute_space.core import auth as auth_module
@@ -14,7 +15,9 @@ from compute_space.core.service_access_rules import ServiceAccessDenied
 from compute_space.core.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_service_provider
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import App
+from compute_space.db.models import AppToken
 from compute_space.web.proxy import proxy_request
 
 services_bp = Blueprint("services", __name__)
@@ -47,7 +50,7 @@ def _app_subdomain_from_origin() -> tuple[str | None, str | None]:
     return app_name, raw_origin
 
 
-def _authenticate_and_resolve_consumer_app() -> str | None:
+async def _authenticate_and_resolve_consumer_app() -> str | None:
     """Resolve the calling app from the request.
 
     Accepts either:
@@ -56,17 +59,19 @@ def _authenticate_and_resolve_consumer_app() -> str | None:
 
     Returns the app name or None.
     """
-    db = get_db()
+    session = get_session()
 
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        token_row = db.execute("SELECT app_name FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
-        return token_row["app_name"] if token_row else None
+        app_name_for_token = (
+            await session.execute(select(AppToken.app_name).where(AppToken.token_hash == token_hash))
+        ).scalar_one_or_none()
+        return app_name_for_token
 
     # Browser auth: verify JWT cookie, derive app from Origin
-    claims = auth_module.get_current_user_from_request(request)
+    claims = await auth_module.get_current_user_from_request(request)
     if not claims:
         return None
 
@@ -74,8 +79,8 @@ def _authenticate_and_resolve_consumer_app() -> str | None:
     if not app_name:
         return None
 
-    app_row = db.execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
-    return app_row["name"] if app_row else None
+    resolved_app = (await session.execute(select(App.name).where(App.name == app_name))).scalar_one_or_none()
+    return resolved_app
 
 
 def _cors_origin() -> str | None:
@@ -124,7 +129,7 @@ async def service_proxy(service_name: str, service_endpoint: str) -> Response:
 
     The request goes to the provider app at `/_service/<service_endpoint>`
     """
-    consumer_app = _authenticate_and_resolve_consumer_app()
+    consumer_app = await _authenticate_and_resolve_consumer_app()
     if not consumer_app:
         return Response("Missing or invalid authorization", status=401)
 

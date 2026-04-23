@@ -17,10 +17,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from quart import Request
 from quart import Response
+from sqlalchemy import select
 
 from compute_space.config import get_config
 from compute_space.core.logging import logger
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import ApiToken
+from compute_space.db.models import Owner
 
 _private_key: str | None = None
 _public_key: str | None = None
@@ -204,28 +207,27 @@ def clear_auth_cookies(response: Response, request: Request | None = None) -> Re
     return response
 
 
-def _validate_api_token(token: str) -> dict[str, str] | None:
+async def _validate_api_token(token: str) -> dict[str, str] | None:
     """Validate a bearer token against the api_tokens table.
 
     Returns a claims dict (owner-level access) or None.
     """
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    db = get_db()
-    row = db.execute(
-        "SELECT name, expires_at FROM api_tokens WHERE token_hash = ?",
-        (token_hash,),
-    ).fetchone()
-    if not row:
+    session = get_session()
+    row = (
+        await session.execute(select(ApiToken.name, ApiToken.expires_at).where(ApiToken.token_hash == token_hash))
+    ).first()
+    if row is None:
         return None
-    if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+    if row.expires_at and datetime.fromisoformat(row.expires_at) < datetime.now(UTC):
         return None
-    owner = db.execute("SELECT username FROM owner WHERE id = 1").fetchone()
-    if not owner:
+    owner_username = (await session.execute(select(Owner.username).where(Owner.id == 1))).scalar_one_or_none()
+    if owner_username is None:
         return None
-    return {"sub": owner["username"], "username": owner["username"]}
+    return {"sub": owner_username, "username": owner_username}
 
 
-def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
+async def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
     """Extract and verify identity from request cookies or Authorization header.
 
     Checks JWT cookie first, then falls back to Authorization: Bearer token.
@@ -256,6 +258,6 @@ def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
     # Fall back to Authorization: Bearer (API tokens)
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        return _validate_api_token(auth_header.removeprefix("Bearer "))
+        return await _validate_api_token(auth_header.removeprefix("Bearer "))
 
     return None

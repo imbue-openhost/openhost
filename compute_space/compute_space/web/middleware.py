@@ -13,9 +13,12 @@ from quart import redirect
 from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
+from sqlalchemy import select
 
 from compute_space.core import auth
-from compute_space.db import get_db
+from compute_space.db import get_session
+from compute_space.db.models import Owner
+from compute_space.db.models import RefreshToken
 
 
 def _wants_json() -> bool:
@@ -38,7 +41,7 @@ async def _ensure_async(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Any
     return result
 
 
-def _try_refresh() -> dict[str, Any] | None:
+async def _try_refresh() -> dict[str, Any] | None:
     """Attempt to refresh an expired access token using the refresh cookie.
     Stores new access token on flask.g for after_request."""
     refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
@@ -54,15 +57,16 @@ def _try_refresh() -> dict[str, Any] | None:
         return None
 
     refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
-    db = get_db()
-    rt = db.execute(
-        "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
-        (refresh_tok_hash,),
-    ).fetchone()
+    session = get_session()
+    rt = (
+        await session.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == refresh_tok_hash, RefreshToken.revoked == 0)
+        )
+    ).scalar_one_or_none()
     if rt is None:
         return None
 
-    expires_at = datetime.fromisoformat(rt["expires_at"])
+    expires_at = datetime.fromisoformat(rt.expires_at)
     if expires_at < datetime.now(UTC):
         return None
 
@@ -77,12 +81,12 @@ def login_required(
 ) -> Callable[..., Awaitable[ResponseReturnValue]]:
     @wraps(f)
     async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
-        claims = auth.get_current_user_from_request(request)
+        claims = await auth.get_current_user_from_request(request)
         if claims is not None:
             return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
         # Try transparent refresh
-        claims = _try_refresh()
+        claims = await _try_refresh()
         if claims is not None:
             return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
@@ -91,8 +95,8 @@ def login_required(
         # clear them so they don't conflict with freshly issued cookies after login.
         has_stale_cookies = request.cookies.get(auth.COOKIE_ACCESS) is not None
 
-        db = get_db()
-        owner = db.execute("SELECT * FROM owner").fetchone()
+        session = get_session()
+        owner = (await session.execute(select(Owner).limit(1))).scalar_one_or_none()
         if owner is None:
             # Preserve claim token in redirect so /setup can validate it
             claim = request.args.get("claim", "")

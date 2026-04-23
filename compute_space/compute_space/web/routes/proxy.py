@@ -210,9 +210,9 @@ async def catch_all(path: str) -> ResponseReturnValue:
 async def _proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: str) -> Response:
     """Auth check + proxy request to an app."""
     new_access_token = None
-    claims = auth.get_current_user_from_request(request)
+    claims = await auth.get_current_user_from_request(request)
     if claims is None:
-        claims = _try_refresh()
+        claims = await _try_refresh()
         if claims:
             new_access_token = getattr(g, "new_access_token", None)
 
@@ -268,7 +268,7 @@ async def ws_catch_all(path: str) -> None:
 
 async def _ws_proxy_to_app(app_row: sqlite3.Row, request_path: str, base_path: str) -> None:
     """Auth check + proxy WebSocket to an app."""
-    claims = auth.get_current_user_from_request(websocket)  # type: ignore[arg-type]
+    claims = await auth.get_current_user_from_request(websocket)  # type: ignore[arg-type]
     if claims is None and not _is_public_path(app_row, request_path, base_path):
         return
 
