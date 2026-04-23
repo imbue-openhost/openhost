@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
-import attr
-
 from compute_space.core.logging import logger
 
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/podman.yml.
@@ -69,9 +67,16 @@ SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
 )
 
 
-@attr.s(auto_attribs=True, frozen=True)
+@dataclass(frozen=True)
 class PortMapping:
-    """A structured port mapping declared in [[ports]]."""
+    """A structured port mapping declared in [[ports]].
+
+    Defined as a dataclass (rather than an attrs class) so that the manifest,
+    which is itself a dataclass, serializes cleanly via ``dataclasses.asdict``.
+    Flask's default JSON encoder cannot serialize attrs instances, which
+    previously caused /api/clone_and_get_app_info to 500 whenever a manifest
+    declared any ``[[ports]]`` entries.
+    """
 
     label: str
     container_port: int

@@ -71,7 +71,8 @@ async def clone_and_get_app_info() -> ResponseReturnValue:
     if error:
         return jsonify({"error": error}), 400
 
-    assert manifest is not None
+    if manifest is None:
+        raise RuntimeError("manifest unexpectedly None after successful clone")
     db = get_db()
     validation_error = validate_manifest(manifest, db)
     info = dataclasses.asdict(manifest)
@@ -132,7 +133,8 @@ async def api_add_app() -> ResponseReturnValue:
         if error:
             return jsonify({"error": error}), 400
 
-    assert clone_dir is not None
+    if clone_dir is None:
+        raise RuntimeError("clone_dir unexpectedly None after successful clone")
     if manifest is None:
         try:
             manifest = parse_manifest(clone_dir)

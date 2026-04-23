@@ -4,6 +4,8 @@ Extracted from routes/apps.py — no HTTP/Quart dependencies.
 """
 
 import asyncio
+import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -15,7 +17,6 @@ import threading
 import time
 import urllib.parse
 
-import attr
 import httpx
 
 import compute_space.core.storage as storage
@@ -227,7 +228,7 @@ def insert_and_deploy(
 
     # Apply port overrides from caller (CLI --port flags, etc.)
     mappings = [
-        attr.evolve(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
+        dataclasses.replace(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
         for pm in manifest.port_mappings
     ]
 
@@ -285,9 +286,10 @@ def insert_and_deploy(
         )
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
+        app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token) VALUES (?, ?)",
-            (app_name, app_token),
+            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
+            (app_name, app_token_hash),
         )
 
     for svc_name in manifest.provides_services:
@@ -472,7 +474,7 @@ def _sync_port_mappings(
     to_resolve: list[PortMapping] = []
     for pm in new_mappings:
         if pm.label in existing:
-            to_resolve.append(attr.evolve(pm, host_port=existing[pm.label]["host_port"]))
+            to_resolve.append(dataclasses.replace(pm, host_port=existing[pm.label]["host_port"]))
         else:
             to_resolve.append(pm)
 
@@ -512,9 +514,10 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
+        app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token) VALUES (?, ?)",
-            (app_name, app_token),
+            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
+            (app_name, app_token_hash),
         )
 
     db.execute("DELETE FROM service_providers WHERE app_name = ?", (app_name,))

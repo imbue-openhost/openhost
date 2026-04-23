@@ -437,7 +437,7 @@ class TestSelfHost:
         assert r.status_code == 200
 
         # Logout
-        r = s.get(f"{router_url}/logout", allow_redirects=False, timeout=10)
+        r = s.post(f"{router_url}/logout", allow_redirects=False, timeout=10)
         assert r.status_code == 302
 
         # Dashboard should no longer be accessible

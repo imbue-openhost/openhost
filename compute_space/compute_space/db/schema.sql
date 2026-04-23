@@ -56,12 +56,12 @@ CREATE TABLE IF NOT EXISTS owner (
 -- Auth: refresh tokens for self-hosted JWT auth
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT UNIQUE NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
     expires_at TEXT NOT NULL,
     revoked INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
 
 -- API tokens: long-lived bearer tokens that grant owner-level access
 CREATE TABLE IF NOT EXISTS api_tokens (
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 -- Cross-app services: app authentication tokens
 CREATE TABLE IF NOT EXISTS app_tokens (
     app_name TEXT PRIMARY KEY,
-    token TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE,
     FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
 );
 

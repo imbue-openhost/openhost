@@ -1,3 +1,4 @@
+import hashlib
 import os
 import secrets
 from datetime import UTC
@@ -113,12 +114,13 @@ async def setup() -> ResponseReturnValue:
 
     access_token = auth.create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
+    refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(
         seconds=auth.REFRESH_TOKEN_EXPIRY,
     )
     db.execute(
-        "INSERT INTO refresh_tokens (token, expires_at) VALUES (?, ?)",
-        (refresh_token, expires_at.isoformat()),
+        "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
+        (refresh_token_hash, expires_at.isoformat()),
     )
     db.commit()
 
@@ -166,12 +168,13 @@ async def login() -> ResponseReturnValue:
 
     access_token = auth.create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
+    refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(
         seconds=auth.REFRESH_TOKEN_EXPIRY,
     )
     db.execute(
-        "INSERT INTO refresh_tokens (token, expires_at) VALUES (?, ?)",
-        (refresh_token, expires_at.isoformat()),
+        "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
+        (refresh_token_hash, expires_at.isoformat()),
     )
     db.commit()
 
@@ -180,14 +183,15 @@ async def login() -> ResponseReturnValue:
     return response
 
 
-@auth_bp.route("/logout", methods=["GET", "POST"])
+@auth_bp.route("/logout", methods=["POST"])
 def logout() -> ResponseReturnValue:
     refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
     if refresh_tok:
+        refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
         db = get_db()
         db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE token = ?",
-            (refresh_tok,),
+            "UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?",
+            (refresh_tok_hash,),
         )
         db.commit()
 
