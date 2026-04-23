@@ -80,7 +80,7 @@ def _is_build_cache_corrupt_line(line: str) -> bool:
     return bool(_MISSING_LAYER_RE.search(line))
 
 
-PODMAN_MISSING_ERROR = (
+CONTAINER_RUNTIME_MISSING_ERROR = (
     "podman runtime not available — run `ansible-playbook ansible/setup.yml` "
     "on this host to install and configure rootless podman."
 )
@@ -91,7 +91,7 @@ def podman_available() -> bool:
 
     Unexpected failures (timeout, OSError other than FileNotFoundError)
     are logged; FileNotFoundError is silent since the caller already
-    surfaces PODMAN_MISSING_ERROR.
+    surfaces CONTAINER_RUNTIME_MISSING_ERROR.
     """
     try:
         result = subprocess.run(
@@ -361,11 +361,11 @@ def drop_docker_build_cache() -> str:
     return output
 
 
-def get_container_status(container_id: str) -> str:
-    """Return podman's ``State.Status`` for a container, or ``"unknown"`` on any error.
+def is_container_running(container_id: str) -> bool:
+    """Return True iff podman reports the container's ``State.Status`` as ``running``.
 
-    Callers that care about "is it up?" should compare against ``"running"``.
-    Never raises; unexpected errors are logged at WARNING.
+    Any error (missing binary, timeout, nonzero exit, unknown container) maps
+    to False.  Never raises; unexpected errors are logged at WARNING.
     """
     try:
         result = subprocess.run(
@@ -375,16 +375,16 @@ def get_container_status(container_id: str) -> str:
             timeout=10,
         )
     except FileNotFoundError:
-        return "unknown"
+        return False
     except subprocess.TimeoutExpired:
         logger.warning("podman inspect timed out after 10s for %s", container_id)
-        return "unknown"
+        return False
     except OSError as e:
         logger.warning("podman inspect failed for %s with OSError: %s", container_id, e)
-        return "unknown"
+        return False
     if result.returncode != 0:
-        return "unknown"
-    return result.stdout.strip()
+        return False
+    return result.stdout.strip() == "running"
 
 
 def get_docker_logs(

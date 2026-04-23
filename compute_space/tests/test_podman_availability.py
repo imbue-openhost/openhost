@@ -6,11 +6,11 @@ installed.  The safety net has three pieces, covered here:
 
 - ``core.containers.podman_available()`` reports False on missing/
   unusable podman without raising.
-- ``core.containers.get_container_status()`` returns ``"unknown"``
+- ``core.containers.is_container_running()`` returns ``False``
   on missing podman instead of propagating FileNotFoundError.
 - ``core.startup._check_app_status()`` detects podman missing,
   marks every running/starting/building app as ``status='error'``
-  with the PODMAN_MISSING_ERROR remediation, and DOES NOT attempt
+  with the CONTAINER_RUNTIME_MISSING_ERROR remediation, and DOES NOT attempt
   a rebuild that would crash the router.
 """
 
@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 
 from compute_space.core import startup as startup_mod
-from compute_space.core.containers import PODMAN_MISSING_ERROR
-from compute_space.core.containers import get_container_status
+from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
+from compute_space.core.containers import is_container_running
 from compute_space.core.containers import podman_available
 from compute_space.db.connection import init_db as real_init_db
 
@@ -99,32 +99,32 @@ def test_podman_available_returns_false_on_oserror(monkeypatch: pytest.MonkeyPat
 
 
 # ---------------------------------------------------------------------------
-# get_container_status
+# is_container_running
 # ---------------------------------------------------------------------------
 
 
-def test_get_container_status_returns_unknown_on_filenotfound(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing podman binary must return ``"unknown"`` rather than
-    propagating FileNotFoundError, so ``_check_app_status`` can detect
-    the condition and mark apps with the proper remediation instead
-    of crashing the router."""
+def test_is_container_running_returns_false_on_filenotfound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing podman binary must return ``False`` rather than propagating
+    FileNotFoundError, so ``_check_app_status`` can detect the condition
+    and mark apps with the proper remediation instead of crashing the
+    router."""
 
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         raise FileNotFoundError(2, "No such file or directory: 'podman'")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert get_container_status("container-id") == "unknown"
+    assert is_container_running("container-id") is False
 
 
-def test_get_container_status_returns_unknown_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_container_running_returns_false_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         raise subprocess.TimeoutExpired(cmd, timeout)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert get_container_status("container-id") == "unknown"
+    assert is_container_running("container-id") is False
 
 
-def test_get_container_status_returns_unknown_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_container_running_returns_false_on_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
     """Symmetric to podman_available's OSError handling.  An unexpected
     OSError from subprocess.run must not propagate — the caller in
     _check_app_status would treat it as fatal.  (Loguru's log is
@@ -136,7 +136,7 @@ def test_get_container_status_returns_unknown_on_oserror(monkeypatch: pytest.Mon
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert get_container_status("container-id") == "unknown"
+    assert is_container_running("container-id") is False
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ def test_check_app_status_marks_running_apps_error_when_podman_missing(
     for name in ("notes", "wiki", "blog"):
         status, err, cid = rows[name][1:]
         assert status == "error", f"{name}: expected status=error, got {status}"
-        assert err == PODMAN_MISSING_ERROR, f"{name}: wrong error_message"
+        assert err == CONTAINER_RUNTIME_MISSING_ERROR, f"{name}: wrong error_message"
         assert cid is None, f"{name}: container_id should be cleared, got {cid}"
 
     # A stopped app stays stopped — its error_message stays whatever

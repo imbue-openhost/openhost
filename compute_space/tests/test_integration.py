@@ -31,13 +31,13 @@ from compute_space.core.manifest import AppManifest
 from compute_space.testing import wait_app_running
 
 from .conftest import _make_config_and_env
-from .conftest import _podman_cleanup
 from .conftest import _start_router_process
 from .conftest import _stop_router_process
+from .container import container_cleanup
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 
-requires_podman = pytest.mark.requires_podman
+requires_containers = pytest.mark.requires_containers
 
 
 def test_sqlite_provisioning():
@@ -499,7 +499,7 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
 
 
-@requires_podman
+@requires_containers
 class TestContainerGone:
     """Test that apps recover when their container is completely gone.
 
@@ -532,7 +532,7 @@ class TestContainerGone:
         db_path = config.db_path
         router = None
 
-        _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+        container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
         try:
             # ---- Phase 1: Deploy and verify the app is running ----
@@ -694,10 +694,10 @@ class TestContainerGone:
                 except Exception:
                     pass
                 _stop_router_process(router)
-            _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+            container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
 
-@requires_podman
+@requires_containers
 class TestContainerRestart:
     """Test that apps recover after the container engine restarts.
 
@@ -729,7 +729,7 @@ class TestContainerRestart:
         router = None
 
         # Clean up any leftover containers from previous runs
-        _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+        container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
         try:
             # ---- Phase 1: Deploy and verify the app is running ----
@@ -944,10 +944,10 @@ class TestContainerRestart:
                 except Exception:
                     pass
                 _stop_router_process(router)
-            _podman_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+            container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
 
-@requires_podman
+@requires_containers
 class TestContainerE2E:
     """
     End-to-end test of the container deployment path using a minimal test app.
@@ -1169,7 +1169,7 @@ class TestContainerE2E:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestRemoveKeepData:
     """
     Test that 'Remove App (Keep Data)' preserves persistent app data so the
@@ -1321,7 +1321,7 @@ def _create_bare_git_repo(source_dir, bare_repo_path):
     return bare_repo_path
 
 
-@requires_podman
+@requires_containers
 class TestGitUrlDeployE2E:
     """
     End-to-end test of deploying an app from a Git URL.

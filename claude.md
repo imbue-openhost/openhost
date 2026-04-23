@@ -28,8 +28,8 @@ openhost/
 ## running and testing
 
 - **all lightweight tests**: `uv run --group dev pytest` (from project root)
-- **+ podman integration tests**: `uv run --group dev pytest --run-podman`
-- **everything**: `uv run --group dev pytest --run-podman`
+- **+ container-runtime integration tests**: `uv run --group dev pytest --run-containers`
+- **everything**: `uv run --group dev pytest --run-containers`
 - **compute_space**: `cd compute_space && python -m compute_space`
 - **compute_space tests**: `uv run --group dev pytest compute_space/tests/ -v`
 

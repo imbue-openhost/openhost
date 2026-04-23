@@ -9,7 +9,7 @@ from argparse import Namespace
 
 import pytest
 
-from self_host_cli.doctor import _check_podman
+from self_host_cli.doctor import _check_container_runtime
 from self_host_cli.doctor import _check_port
 from self_host_cli.doctor import _check_python
 from self_host_cli.doctor import _check_router_code
@@ -114,8 +114,8 @@ class TestDoctorChecks:
         c = _check_port(59123)
         assert c.ok is True
 
-    def test_podman_check_returns_check(self):
-        c = _check_podman()
+    def test_container_runtime_check_returns_check(self):
+        c = _check_container_runtime()
         assert hasattr(c, "ok")
         assert hasattr(c, "name")
 

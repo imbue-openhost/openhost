@@ -35,14 +35,15 @@
   when: not _linger_sentinel.stat.exists
   changed_when: true
 
-# Rootless podman needs to publish ports >= 80 (the router's [[ports]]
-# binds on 0.0.0.0:<host_port>).  Must match
+# Rootless podman needs to publish ports >= 25 (the router's [[ports]]
+# binds on 0.0.0.0:<host_port>).  25 is chosen so SMTP-serving apps can
+# bind port 25 directly.  Must match
 # compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
 - name: Configure unprivileged port floor
   copy:
     content: |
       # Managed by OpenHost; do not edit by hand.
-      net.ipv4.ip_unprivileged_port_start = 80
+      net.ipv4.ip_unprivileged_port_start = 25
     dest: /etc/sysctl.d/90-openhost-podman.conf
     mode: "0644"
 

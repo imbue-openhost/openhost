@@ -10,7 +10,7 @@ from compute_space.core.logging import logger
 
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/podman.yml.
 # host_port values below this are rejected at parse time.
-UNPRIVILEGED_PORT_FLOOR = 80
+UNPRIVILEGED_PORT_FLOOR = 25
 
 # Linux capabilities that can be safely granted inside a rootless podman
 # user namespace.  Anything outside this set is rejected at parse time

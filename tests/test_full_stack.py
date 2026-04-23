@@ -10,7 +10,7 @@ Prerequisites:
     - *.localhost resolves to 127.0.0.1 (RFC 6761, default on most Linux systems)
 
 Run:
-    pytest tests/test_full_stack.py -v -s --run-podman --timeout=600
+    pytest tests/test_full_stack.py -v -s --run-containers --timeout=600
 """
 
 import asyncio
@@ -38,7 +38,7 @@ ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
 ZONE_DOMAIN = "testzone.localhost"
 
-requires_podman = pytest.mark.requires_podman
+requires_containers = pytest.mark.requires_containers
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def test_app_deployed(admin_session, router_url):
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestRouter:
     def test_router_health(self, router_process, router_url):
         r = requests.get(f"{router_url}/health")
@@ -167,7 +167,7 @@ class TestRouter:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestTestAppPathRouting:
     """Test test-app via path-based routing (/test-app/...)."""
 
@@ -241,7 +241,7 @@ class TestTestAppPathRouting:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestTestAppSubdomainRouting:
     """Test test-app via subdomain routing (test-app.testzone.localhost:port)."""
 
@@ -279,7 +279,7 @@ class TestTestAppSubdomainRouting:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestAppLifecycle:
     """Test app stop and reload through the router."""
 
@@ -316,7 +316,7 @@ class TestAppLifecycle:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestMultipleApps:
     """Test deploying multiple apps concurrently."""
 
@@ -382,7 +382,7 @@ class TestMultipleApps:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestAPITokens:
     """Test API token create, use, and delete."""
 
@@ -446,7 +446,7 @@ class TestAPITokens:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestLoginLogout:
     """Test login and logout flows."""
 
@@ -499,7 +499,7 @@ class TestLoginLogout:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestStorageAndSystem:
     def test_storage_status(self, admin_session, router_url):
         r = admin_session.get(f"{router_url}/api/storage-status", timeout=10)
@@ -529,7 +529,7 @@ class TestStorageAndSystem:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestSSHToggle:
     def test_ssh_status(self, admin_session, router_url):
         r = admin_session.get(f"{router_url}/api/ssh-status", timeout=10)
@@ -550,7 +550,7 @@ class TestSSHToggle:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestWebSocketProxy:
     def test_ws_echo_path_routing(self, test_app_deployed):
         """WebSocket echo via path-based routing (/test-app/ws)."""
@@ -600,7 +600,7 @@ class TestWebSocketProxy:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestAppRename:
     def test_rename_app(self, test_app_deployed):
         s = test_app_deployed["session"]
@@ -660,7 +660,7 @@ class TestAppRename:
 # ---------------------------------------------------------------------------
 
 
-@requires_podman
+@requires_containers
 class TestCleanup:
     """Final cleanup: remove the deployed test-app."""
 

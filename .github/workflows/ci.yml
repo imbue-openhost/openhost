@@ -25,7 +25,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
 
-  # Rootless podman unit suites.  The full-stack @requires_podman
+  # Rootless podman unit suites.  The full-stack @requires_containers
   # classes that rely on idmapped bind mounts run in the e2e workflow
   # on real VMs — GitHub runners don't reliably support :idmap on the
   # workspace mount.

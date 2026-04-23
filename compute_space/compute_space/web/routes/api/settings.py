@@ -6,7 +6,7 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core.apps import inject_github_token_in_url
-from compute_space.core.containers import PODMAN_MISSING_ERROR
+from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import podman_available
 from compute_space.core.git_ops import RemoteNotSetError
 from compute_space.core.git_ops import get_current_ref
@@ -77,18 +77,18 @@ async def set_remote() -> ResponseReturnValue:
 def _host_prep_payload() -> dict[str, object]:
     """Return whether the host is ready to run the installed router code.
 
-    Combines a live ``podman --version`` probe with the
-    ``/etc/openhost/runtime`` sentinel.  Never raises.
+    Combines a live container-runtime probe (currently ``podman --version``)
+    with the ``/etc/openhost/runtime`` sentinel.  Never raises.
     """
-    podman_ok = podman_available()
+    runtime_ok = podman_available()
     prep = host_prep_status()
     payload: dict[str, object] = {
-        "host_prep_ok": podman_ok and prep.ok,
-        "podman_available": podman_ok,
+        "host_prep_ok": runtime_ok and prep.ok,
+        "container_runtime_available": runtime_ok,
     }
-    if not podman_ok:
-        payload["host_prep_reason"] = "podman_missing"
-        payload["host_prep_message"] = PODMAN_MISSING_ERROR
+    if not runtime_ok:
+        payload["host_prep_reason"] = "container_runtime_missing"
+        payload["host_prep_message"] = CONTAINER_RUNTIME_MISSING_ERROR
     elif not prep.ok:
         payload["host_prep_reason"] = prep.reason
         payload["host_prep_message"] = prep.message

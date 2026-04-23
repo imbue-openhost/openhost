@@ -7,24 +7,24 @@ from quart import Quart
 from compute_space.config import Config
 from compute_space.core import identity
 from compute_space.core.apps import start_app_process
-from compute_space.core.containers import PODMAN_MISSING_ERROR
-from compute_space.core.containers import get_container_status
+from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
+from compute_space.core.containers import is_container_running
 from compute_space.core.containers import podman_available
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
 from compute_space.db import init_db
 
 
-def _mark_running_apps_podman_missing(config: Config) -> int:
+def _mark_running_apps_container_runtime_missing(config: Config) -> int:
     """Flip every running/starting/building app to ``status='error'`` with
-    ``PODMAN_MISSING_ERROR`` and clear ``container_id``.  Returns rowcount.
+    ``CONTAINER_RUNTIME_MISSING_ERROR`` and clear ``container_id``.  Returns rowcount.
     """
     db = sqlite3.connect(config.db_path)
     try:
         cursor = db.execute(
             "UPDATE apps SET status = 'error', error_message = ?, container_id = NULL "
             "WHERE status IN ('running', 'starting', 'building')",
-            (PODMAN_MISSING_ERROR,),
+            (CONTAINER_RUNTIME_MISSING_ERROR,),
         )
         db.commit()
         return cursor.rowcount
@@ -43,12 +43,12 @@ def _check_app_status(config: Config) -> None:
     stays reachable so the operator can see what happened.
     """
     if not podman_available():
-        affected = _mark_running_apps_podman_missing(config)
+        affected = _mark_running_apps_container_runtime_missing(config)
         if affected:
             logger.error(
                 "podman runtime missing; marked %d running/starting apps as error. %s",
                 affected,
-                PODMAN_MISSING_ERROR,
+                CONTAINER_RUNTIME_MISSING_ERROR,
             )
         else:
             logger.warning("podman runtime missing; no running apps to mark.")
@@ -62,8 +62,7 @@ def _check_app_status(config: Config) -> None:
         for row in rows:
             alive = False
             if row["container_id"]:
-                status = get_container_status(row["container_id"])
-                alive = status == "running"
+                alive = is_container_running(row["container_id"])
 
             if not alive:
                 if row["container_id"]:

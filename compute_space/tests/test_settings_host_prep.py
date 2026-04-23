@@ -20,7 +20,7 @@ import pytest
 from quart import Quart
 
 import compute_space.web.routes.api.settings as settings_mod
-from compute_space.core.containers import PODMAN_MISSING_ERROR
+from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.runtime_sentinel import HostPrepStatus
 from compute_space.core.updates import GitState
 
@@ -62,7 +62,7 @@ async def test_check_for_updates_reports_podman_ok_and_sentinel_ok(
 
     assert payload["ok"] is True
     assert payload["host_prep_ok"] is True
-    assert payload["podman_available"] is True
+    assert payload["container_runtime_available"] is True
     # When everything is OK the response must NOT include a
     # remediation message; that's the UI's signal to hide the banner.
     assert "host_prep_reason" not in payload
@@ -74,7 +74,7 @@ async def test_check_for_updates_reports_podman_missing_as_authoritative(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """When podman is missing, the response must say so with the
-    shared PODMAN_MISSING_ERROR text — even if the sentinel happened
+    shared CONTAINER_RUNTIME_MISSING_ERROR text — even if the sentinel happened
     to claim the host is prepared.  The live probe is the authoritative
     signal for the Docker → podman transition because pre-upgrade hosts
     never had sentinels."""
@@ -96,9 +96,9 @@ async def test_check_for_updates_reports_podman_missing_as_authoritative(
 
     assert payload["ok"] is True
     assert payload["host_prep_ok"] is False
-    assert payload["podman_available"] is False
-    assert payload["host_prep_reason"] == "podman_missing"
-    assert payload["host_prep_message"] == PODMAN_MISSING_ERROR
+    assert payload["container_runtime_available"] is False
+    assert payload["host_prep_reason"] == "container_runtime_missing"
+    assert payload["host_prep_message"] == CONTAINER_RUNTIME_MISSING_ERROR
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def test_check_for_updates_surfaces_sentinel_mismatch_when_podman_ok(
         payload = await response.get_json()
 
     assert payload["host_prep_ok"] is False
-    assert payload["podman_available"] is True
+    assert payload["container_runtime_available"] is True
     assert payload["host_prep_reason"] == "wrong_version"
     assert "ansible" in payload["host_prep_message"]
 
@@ -165,7 +165,7 @@ async def test_update_repo_state_refuses_with_409_when_podman_missing(
     assert status_code == 409
     payload = await response.get_json()
     assert payload["ok"] is False
-    assert payload["host_prep_reason"] == "podman_missing"
+    assert payload["host_prep_reason"] == "container_runtime_missing"
     assert payload["host_prep_ok"] is False
 
 

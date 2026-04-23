@@ -101,20 +101,6 @@ def _stop_router_process(proc: subprocess.Popen[Any]) -> None:
         proc.wait()
 
 
-def _podman_cleanup(container_name: str, app_name: str) -> None:
-    """Force-remove a test container and image."""
-    subprocess.run(
-        ["podman", "rm", "-f", container_name],
-        capture_output=True,
-        timeout=10,
-    )
-    subprocess.run(
-        ["podman", "rmi", "-f", f"openhost-{app_name}:latest"],
-        capture_output=True,
-        timeout=10,
-    )
-
-
 @pytest.fixture(scope="module")
 def config(tmp_path_factory: pytest.TempPathFactory) -> Config:
     """Create a test config with temp dirs, write to TOML, return the Config object."""

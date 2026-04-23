@@ -2,7 +2,7 @@
 
 These tests mock ``subprocess`` so they run without a live podman daemon —
 end-to-end tests that actually exercise podman live under the
-``@requires_podman`` marker.
+``@requires_containers`` marker.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from compute_space.core import containers
 from compute_space.core.containers import DEFAULT_CAPABILITIES
 from compute_space.core.containers import _bind_mount_arg
 from compute_space.core.containers import build_image
-from compute_space.core.containers import get_container_status
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.containers import is_container_running
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
 from compute_space.core.containers import stop_container
@@ -527,41 +527,39 @@ def test_remove_image_calls_podman_rmi(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [["podman", "rmi", "openhost-myapp:latest"]]
 
 
-def test_get_container_status_returns_unknown_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_container_running_returns_false_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
         return _FakeCompleted(1, stderr="no such container")
 
     _patch_subprocess_run(monkeypatch, fake_run)
-    assert get_container_status("bogus") == "unknown"
+    assert is_container_running("bogus") is False
 
 
-def test_get_container_status_returns_runtime_reported_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Baseline happy path: when ``podman inspect`` exits 0, the function
-    returns exactly what podman wrote to stdout (trimmed).  Guards against
-    a regression where the defensive try/except accidentally always
-    returned ``"unknown"``."""
+def test_is_container_running_returns_true_when_podman_reports_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: podman inspect exits 0 with ``running``."""
 
     def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
         return _FakeCompleted(0, stdout="running\n")
 
     _patch_subprocess_run(monkeypatch, fake_run)
-    assert get_container_status("real-container") == "running"
+    assert is_container_running("real-container") is True
 
 
-def test_get_container_status_passes_through_non_running_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The function's contract is "return whatever podman reports"; the
-    docstring mentions ``"created"``, ``"paused"``, etc. explicitly so
-    callers can branch on those strings.  Pin that pass-through so a
-    future caller that relies on e.g. ``status == "paused"`` isn't
-    broken by a regression that collapsed everything-non-running into
-    ``"unknown"``.
+def test_is_container_running_returns_false_for_non_running_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any podman state other than ``running`` (paused, created, exited)
+    collapses to False.  Callers only care about the running/not-running
+    distinction.
     """
 
     def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
         return _FakeCompleted(0, stdout="paused\n")
 
     _patch_subprocess_run(monkeypatch, fake_run)
-    assert get_container_status("paused-container") == "paused"
+    assert is_container_running("paused-container") is False
 
 
 # NOTE: build-cache drop is exercised in test_build_cache.py with the

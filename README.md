@@ -130,7 +130,7 @@ pre-commit install
 uv run --group dev pytest
 
 # run with podman integration tests enabled
-uv run --group dev pytest --run-podman
+uv run --group dev pytest --run-containers
 ```
 
 Server deployment prerequisites and test setup are documented in `ansible/readme.md`.
