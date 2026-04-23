@@ -18,6 +18,9 @@ import time
 import urllib.parse
 
 import httpx
+from sqlalchemy import delete
+from sqlalchemy import select
+from sqlalchemy import update
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
@@ -35,6 +38,9 @@ from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
+from compute_space.db import get_session
+from compute_space.db import get_session_maker
+from compute_space.db.models import AppPortMapping
 
 RESERVED_PATHS = {
     "/",
@@ -222,7 +228,8 @@ async def insert_and_deploy(
         app_name = manifest.name
 
     storage.check_before_deploy(config)
-    local_port = allocate_port(config.port_range_start, config.port_range_end)
+    session = get_session()
+    local_port = await allocate_port(session, config.port_range_start, config.port_range_end)
 
     # Apply port overrides from caller (CLI --port flags, etc.)
     mappings = [
@@ -231,7 +238,7 @@ async def insert_and_deploy(
     ]
 
     # Resolve auto-assigned ports (host_port=0)
-    resolved_mappings = resolve_port_mappings(mappings, db, config.port_range_start, config.port_range_end)
+    resolved_mappings = await resolve_port_mappings(mappings, session, config.port_range_start, config.port_range_end)
 
     env_vars = provision_data(
         app_name,
@@ -440,55 +447,60 @@ def _load_port_mappings_from_db(app_name: str, db: sqlite3.Connection) -> list[P
     return [PortMapping(label=r["label"], container_port=r["container_port"], host_port=r["host_port"]) for r in rows]
 
 
-def _sync_port_mappings(
+async def _sync_port_mappings(
     app_name: str,
     new_mappings: list[PortMapping],
-    db: sqlite3.Connection,
     config: Config,
 ) -> None:
     """Sync port mappings on reload: preserve existing host_port, handle adds/removes."""
-    existing = {
-        r["label"]: r
-        for r in db.execute(
-            "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_name = ?",
-            (app_name,),
-        ).fetchall()
-    }
+    async with get_session_maker()() as session, session.begin():
+        existing_rows = (
+            await session.execute(
+                select(AppPortMapping.label, AppPortMapping.container_port, AppPortMapping.host_port).where(
+                    AppPortMapping.app_name == app_name
+                )
+            )
+        ).all()
+        existing = {r.label: {"container_port": r.container_port, "host_port": r.host_port} for r in existing_rows}
 
-    new_labels = {pm.label for pm in new_mappings}
-    old_labels = set(existing.keys())
+        new_labels = {pm.label for pm in new_mappings}
+        old_labels = set(existing.keys())
 
-    # Remove labels no longer in manifest
-    for removed in old_labels - new_labels:
-        db.execute(
-            "DELETE FROM app_port_mappings WHERE app_name = ? AND label = ?",
-            (app_name, removed),
+        # Remove labels no longer in manifest
+        for removed in old_labels - new_labels:
+            await session.execute(
+                delete(AppPortMapping).where(AppPortMapping.app_name == app_name, AppPortMapping.label == removed)
+            )
+
+        # Build list for resolve: preserve existing host_port, new ones get 0 (auto)
+        to_resolve: list[PortMapping] = []
+        for pm in new_mappings:
+            if pm.label in existing:
+                to_resolve.append(dataclasses.replace(pm, host_port=existing[pm.label]["host_port"]))
+            else:
+                to_resolve.append(pm)
+
+        resolved = await resolve_port_mappings(
+            to_resolve, session, config.port_range_start, config.port_range_end, exclude_app=app_name
         )
 
-    # Build list for resolve: preserve existing host_port, new ones get 0 (auto)
-    to_resolve: list[PortMapping] = []
-    for pm in new_mappings:
-        if pm.label in existing:
-            to_resolve.append(dataclasses.replace(pm, host_port=existing[pm.label]["host_port"]))
-        else:
-            to_resolve.append(pm)
-
-    resolved = resolve_port_mappings(
-        to_resolve, db, config.port_range_start, config.port_range_end, exclude_app=app_name
-    )
-
-    # Upsert resolved mappings
-    for pm in resolved:
-        if pm.label in existing:
-            db.execute(
-                "UPDATE app_port_mappings SET container_port = ?, host_port = ? WHERE app_name = ? AND label = ?",
-                (pm.container_port, pm.host_port, app_name, pm.label),
-            )
-        else:
-            db.execute(
-                "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?, ?, ?, ?)",
-                (app_name, pm.label, pm.container_port, pm.host_port),
-            )
+        # Upsert resolved mappings
+        for pm in resolved:
+            if pm.label in existing:
+                await session.execute(
+                    update(AppPortMapping)
+                    .where(AppPortMapping.app_name == app_name, AppPortMapping.label == pm.label)
+                    .values(container_port=pm.container_port, host_port=pm.host_port)
+                )
+            else:
+                session.add(
+                    AppPortMapping(
+                        app_name=app_name,
+                        label=pm.label,
+                        container_port=pm.container_port,
+                        host_port=pm.host_port,
+                    )
+                )
 
 
 def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> None:
@@ -693,7 +705,7 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
                 )
 
                 # Diff port mappings: preserve existing host_port for unchanged labels
-                _sync_port_mappings(app_name, manifest.port_mappings, db, config)
+                asyncio.run(_sync_port_mappings(app_name, manifest.port_mappings, config))
 
                 db.commit()
             except ValueError:

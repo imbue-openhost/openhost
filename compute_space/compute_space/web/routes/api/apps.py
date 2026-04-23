@@ -36,6 +36,7 @@ from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
 from compute_space.db import get_db
+from compute_space.db import get_session
 from compute_space.web.middleware import login_required
 
 
@@ -98,7 +99,7 @@ async def clone_and_get_app_info() -> ResponseReturnValue:
 
 @api_apps_bp.route("/api/check_port")
 @login_required
-def check_port() -> ResponseReturnValue:
+async def check_port() -> ResponseReturnValue:
     """Check if a host port is available. Returns {port, available, used_by}."""
     port_str = request.args.get("port", "")
     try:
@@ -108,8 +109,8 @@ def check_port() -> ResponseReturnValue:
     if port < 1 or port > 65535:
         return jsonify({"error": "port must be 1-65535"}), 400
 
-    db = get_db()
-    available, used_by = check_port_available(port, db)
+    session = get_session()
+    available, used_by = await check_port_available(port, session)
     result: dict[str, object] = {"port": port, "available": available, "used_by": used_by}
     return jsonify(result)
 

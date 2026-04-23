@@ -1,16 +1,18 @@
 import dataclasses
 import random
 import socket
-import sqlite3
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from compute_space.core.manifest import PortMapping
-from compute_space.db import get_db
+from compute_space.db.models import App
+from compute_space.db.models import AppPortMapping
 
 
-def allocate_port(range_start: int = 9000, range_end: int = 9999) -> int:
-    db = get_db()
-    used_ports: set[int] = {row["local_port"] for row in db.execute("SELECT local_port FROM apps").fetchall()}
-    used_ports |= {row["host_port"] for row in db.execute("SELECT host_port FROM app_port_mappings").fetchall()}
+async def allocate_port(session: AsyncSession, range_start: int = 9000, range_end: int = 9999) -> int:
+    used_ports: set[int] = set((await session.execute(select(App.local_port))).scalars().all())
+    used_ports |= set((await session.execute(select(AppPortMapping.host_port))).scalars().all())
 
     for port in range(range_start, range_end + 1):
         if port in used_ports:
@@ -21,8 +23,8 @@ def allocate_port(range_start: int = 9000, range_end: int = 9999) -> int:
     raise RuntimeError(f"No free ports in range {range_start}-{range_end}")
 
 
-def check_port_available(
-    port: int, db: sqlite3.Connection, exclude_app: str | None = None
+async def check_port_available(
+    port: int, session: AsyncSession, exclude_app: str | None = None
 ) -> tuple[bool, dict[str, str] | None]:
     """Check if a host port is available for use.
 
@@ -32,24 +34,20 @@ def check_port_available(
     exclude_app: skip DB rows belonging to this app (used during reload/sync to
     avoid conflicting with the app's own existing mappings).
     """
-    # Check DB: main app ports
-    row = db.execute("SELECT name FROM apps WHERE local_port = ?", (port,)).fetchone()
-    if row and row["name"] != exclude_app:
-        return False, {"app_name": row["name"], "type": "main_port"}
+    main_stmt = select(App.name).where(App.local_port == port)
+    row = (await session.execute(main_stmt)).first()
+    if row is not None and row.name != exclude_app:
+        return False, {"app_name": row.name, "type": "main_port"}
 
-    # Check DB: port mappings
-    if exclude_app:
-        row = db.execute(
-            "SELECT app_name, label FROM app_port_mappings WHERE host_port = ? AND app_name != ?",
-            (port, exclude_app),
-        ).fetchone()
+    if exclude_app is not None:
+        mapping_stmt = select(AppPortMapping.app_name, AppPortMapping.label).where(
+            AppPortMapping.host_port == port, AppPortMapping.app_name != exclude_app
+        )
     else:
-        row = db.execute(
-            "SELECT app_name, label FROM app_port_mappings WHERE host_port = ?",
-            (port,),
-        ).fetchone()
-    if row:
-        return False, {"app_name": row["app_name"], "label": row["label"], "type": "port_mapping"}
+        mapping_stmt = select(AppPortMapping.app_name, AppPortMapping.label).where(AppPortMapping.host_port == port)
+    mapping = (await session.execute(mapping_stmt)).first()
+    if mapping is not None:
+        return False, {"app_name": mapping.app_name, "label": mapping.label, "type": "port_mapping"}
 
     if not _port_is_bindable(port):
         return False, {"type": "host_service"}
@@ -68,9 +66,9 @@ def _format_used_by(used_by: dict[str, str] | None) -> str:
     return "host-level service"
 
 
-def resolve_port_mappings(
+async def resolve_port_mappings(
     mappings: list[PortMapping],
-    db: sqlite3.Connection,
+    session: AsyncSession,
     range_start: int = 9000,
     range_end: int = 9999,
     exclude_app: str | None = None,
@@ -90,7 +88,7 @@ def resolve_port_mappings(
     # First pass: validate explicitly set ports
     for pm in mappings:
         if pm.host_port != 0:
-            available, used_by = check_port_available(pm.host_port, db, exclude_app=exclude_app)
+            available, used_by = await check_port_available(pm.host_port, session, exclude_app=exclude_app)
             if not available:
                 owner = _format_used_by(used_by)
                 raise RuntimeError(f"Port {pm.host_port} for '{pm.label}' is already in use by {owner}")
@@ -102,27 +100,27 @@ def resolve_port_mappings(
     # Second pass: auto-assign for host_port=0
     for pm in mappings:
         if pm.host_port == 0:
-            assigned = _find_free_host_port(range_start, range_end, db, claimed, exclude_app=exclude_app)
+            assigned = await _find_free_host_port(range_start, range_end, session, claimed, exclude_app=exclude_app)
             claimed.add(assigned)
             resolved.append(dataclasses.replace(pm, host_port=assigned))
 
     return resolved
 
 
-def _find_free_host_port(
-    range_start: int, range_end: int, db: sqlite3.Connection, exclude: set[int], exclude_app: str | None = None
+async def _find_free_host_port(
+    range_start: int,
+    range_end: int,
+    session: AsyncSession,
+    exclude: set[int],
+    exclude_app: str | None = None,
 ) -> int:
     """Find a free host port in the given range, excluding already-claimed ports."""
-    used_ports: set[int] = {row["local_port"] for row in db.execute("SELECT local_port FROM apps").fetchall()}
-    if exclude_app:
-        used_ports |= {
-            row["host_port"]
-            for row in db.execute(
-                "SELECT host_port FROM app_port_mappings WHERE app_name != ?", (exclude_app,)
-            ).fetchall()
-        }
+    used_ports: set[int] = set((await session.execute(select(App.local_port))).scalars().all())
+    if exclude_app is not None:
+        stmt = select(AppPortMapping.host_port).where(AppPortMapping.app_name != exclude_app)
+        used_ports |= set((await session.execute(stmt)).scalars().all())
     else:
-        used_ports |= {row["host_port"] for row in db.execute("SELECT host_port FROM app_port_mappings").fetchall()}
+        used_ports |= set((await session.execute(select(AppPortMapping.host_port))).scalars().all())
     used_ports |= exclude
 
     candidates = list(range(range_start, range_end + 1))
