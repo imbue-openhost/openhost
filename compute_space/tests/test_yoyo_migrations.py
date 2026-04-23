@@ -1,0 +1,145 @@
+"""
+Tests for the yoyo-managed migration path: the 3-state ``init_db`` dispatch.
+
+Covers the three startup branches (fresh / legacy / managed) and verifies
+that, in every case, the end-state schema matches one bootstrapped from
+``schema.sql`` rather than comparing against a hard-coded table list.
+"""
+
+import hashlib
+import sqlite3
+
+from compute_space.db import connection as _connection_module
+from compute_space.db.connection import _classify_db_state
+from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
+from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
+
+from ._migration_helpers import OLDEST_ROUTER_SCHEMA
+from ._migration_helpers import fresh_db as _fresh_db
+from ._migration_helpers import run_init_db as _run_init_db
+
+
+def _fresh_bootstrap_snapshot(tmp_path):
+    """Snapshot of a freshly-bootstrapped DB, built once per test invocation."""
+    fresh_path = str(tmp_path / "fresh_expected.db")
+    _fresh_db(fresh_path)
+    fresh_db = sqlite3.connect(fresh_path)
+    try:
+        return _get_schema_snapshot(fresh_db)
+    finally:
+        fresh_db.close()
+
+
+def _applied_yoyo_migrations(db_path):
+    """Return the set of migration ids yoyo has marked as applied."""
+    db = sqlite3.connect(db_path)
+    try:
+        rows = db.execute("SELECT migration_id FROM _yoyo_migration").fetchall()
+        return {row[0] for row in rows}
+    finally:
+        db.close()
+
+
+class TestYoyoDispatch:
+    """Cover the three init_db startup paths: fresh / legacy / managed."""
+
+    def test_fresh_db_applies_all_migrations(self, tmp_path):
+        """Empty file -> yoyo creates every table from 0001 and records it."""
+        db_path = str(tmp_path / "fresh.db")
+        sqlite3.connect(db_path).close()
+
+        db = sqlite3.connect(db_path)
+        assert _classify_db_state(db) == "fresh"
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        snap = _get_schema_snapshot(db)
+        has_yoyo = (
+            db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_yoyo_migration'").fetchone()
+            is not None
+        )
+        db.close()
+
+        assert has_yoyo, "yoyo tracking table must exist after init_db on fresh DB"
+        _assert_schemas_equal(_fresh_bootstrap_snapshot(tmp_path), snap)
+        assert "0001_initial" in _applied_yoyo_migrations(db_path)
+
+    def test_legacy_db_runs_migrate_and_applies_0001(self, tmp_path):
+        """Legacy DB with apps table -> migrate() runs, then yoyo applies all
+        migrations (0001's IF-NOT-EXISTS statements are no-ops for tables
+        migrate() already built, and fill in any it doesn't touch). Data is
+        preserved and the final schema matches a fresh DB.
+        """
+        db_path = str(tmp_path / "legacy.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
+        db.execute(
+            "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, repo_path, local_port) "
+            "VALUES ('legacyapp', '/legacyapp', 'legacyapp', '1.0', 'serverfull', '/repo', 9010)"
+        )
+        db.execute("INSERT INTO refresh_tokens (token, expires_at) VALUES ('legacy-token', '2099-01-01T00:00:00')")
+        db.commit()
+        assert _classify_db_state(db) == "legacy"
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        apps_row = db.execute("SELECT name FROM apps WHERE name='legacyapp'").fetchone()
+        token_row = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()
+        snap = _get_schema_snapshot(db)
+        db.close()
+
+        assert apps_row is not None
+        assert token_row["token_hash"] == hashlib.sha256(b"legacy-token").hexdigest()
+        assert "0001_initial" in _applied_yoyo_migrations(db_path)
+        _assert_schemas_equal(_fresh_bootstrap_snapshot(tmp_path), snap)
+
+    def test_managed_db_skips_legacy_migrate(self, tmp_path, monkeypatch):
+        """Once yoyo tracks the DB, the frozen legacy migrate() must never run again."""
+        db_path = str(tmp_path / "managed.db")
+        sqlite3.connect(db_path).close()
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        assert _classify_db_state(db) == "managed"
+        db.close()
+
+        calls: list = []
+
+        def _boom(connection):
+            calls.append(connection)
+            raise AssertionError("migrate() must not run on a managed DB")
+
+        monkeypatch.setattr(_connection_module, "migrate", _boom)
+
+        _run_init_db(db_path)
+        assert calls == []
+
+        db = sqlite3.connect(db_path)
+        snap = _get_schema_snapshot(db)
+        db.close()
+        _assert_schemas_equal(_fresh_bootstrap_snapshot(tmp_path), snap)
+
+    def test_managed_db_preserves_data_across_restart(self, tmp_path):
+        """Restarting on a managed DB must not clobber data inserted between runs."""
+        db_path = str(tmp_path / "restart.db")
+        sqlite3.connect(db_path).close()
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port) VALUES ('after-boot', '1.0', '/repo', 9100)"
+        )
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        row = db.execute("SELECT name FROM apps WHERE name='after-boot'").fetchone()
+        db.close()
+        assert row is not None

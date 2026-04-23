@@ -1,132 +1,22 @@
 """
-Tests for the router database migration paths (fresh / legacy / managed).
+Tests for the frozen legacy ``migrate()`` path.
 
-Verifies that legacy_migrate.migrate() combined with the yoyo 0001 baseline
-produces a schema equivalent to applying 0001 directly to a fresh DB, and
-that data is preserved across each migration path.
+Verifies that ``legacy_migrate.migrate()`` combined with the yoyo 0001
+baseline produces a schema equivalent to applying 0001 directly to a fresh
+DB, and that data is preserved through every imperative ALTER / table
+recreation step.
 """
 
 import hashlib
-import os
 import sqlite3
 
-from compute_space.db import connection as _connection_module
-from compute_space.db.connection import _classify_db_state
-from compute_space.db.connection import init_db
 from compute_space.db.legacy_migrate import migrate
 from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
 from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
-SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
-
-
-class _FakeApp:
-    """Minimal stand-in for a Quart app so init_db(app) can read app.config."""
-
-    def __init__(self, db_path):
-        self.config = {"DB_PATH": db_path}
-
-
-def _fresh_db(path):
-    """Create a DB using only schema.sql (the gold-standard fresh path)."""
-    # We can't easily call init_db because it imports from quart at module
-    # level.  Instead, replicate the fresh-DB path: _migrate is a no-op on
-    # an empty DB, then schema.sql runs.
-    db = sqlite3.connect(path)
-    with open(SCHEMA_SQL_PATH) as f:
-        db.executescript(f.read())
-    db.close()
-    return path
-
-
-def _run_init_db(db_path):
-    """Run the real init_db against an existing database file.
-
-    init_db imports from quart at module level, so we import db.py directly
-    using importlib to control the sys.path.  We save and restore sys.path
-    and sys.modules to avoid polluting state for other tests.
-    """
-
-    init_db(_FakeApp(db_path))
-
-
-# ---------------------------------------------------------------------------
-# Oldest-known schema: before public_paths, manifest_name were added, and
-# with base_path + subdomain columns still present, and owner table lacking
-# password_needs_set.
-# ---------------------------------------------------------------------------
-
-_OLDEST_ROUTER_SCHEMA = """\
-CREATE TABLE apps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    base_path TEXT NOT NULL UNIQUE,
-    subdomain TEXT NOT NULL UNIQUE,
-    version TEXT NOT NULL,
-    description TEXT,
-    runtime_type TEXT NOT NULL CHECK(runtime_type IN ('serverless', 'serverfull')),
-    repo_path TEXT NOT NULL,
-    health_check TEXT,
-    local_port INTEGER NOT NULL UNIQUE,
-    container_port INTEGER,
-    docker_container_id TEXT,
-    spin_pid INTEGER,
-    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
-    error_message TEXT,
-    memory_mb INTEGER NOT NULL DEFAULT 128,
-    cpu_millicores INTEGER NOT NULL DEFAULT 1000,
-    gpu INTEGER NOT NULL DEFAULT 0,
-    manifest_raw TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE app_databases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_name TEXT NOT NULL,
-    db_name TEXT NOT NULL,
-    db_path TEXT NOT NULL,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE,
-    UNIQUE(app_name, db_name)
-);
-
-CREATE TABLE app_object_stores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_name TEXT NOT NULL,
-    bucket_name TEXT NOT NULL,
-    bucket_path TEXT NOT NULL,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE,
-    UNIQUE(app_name, bucket_name)
-);
-
-CREATE INDEX idx_apps_status ON apps(status);
-
-CREATE TABLE owner (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE refresh_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT UNIQUE NOT NULL,
-    expires_at TEXT NOT NULL,
-    revoked INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
-"""
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+from ._migration_helpers import OLDEST_ROUTER_SCHEMA
+from ._migration_helpers import fresh_db as _fresh_db
+from ._migration_helpers import run_init_db as _run_init_db
 
 
 class TestRouterMigrations:
@@ -163,7 +53,7 @@ class TestRouterMigrations:
 
         # Create the old DB
         old_db = sqlite3.connect(migrated_path)
-        old_db.executescript(_OLDEST_ROUTER_SCHEMA)
+        old_db.executescript(OLDEST_ROUTER_SCHEMA)
         old_db.close()
 
         # Run init_db (legacy path: migrate() then apply yoyo migrations,
@@ -184,7 +74,7 @@ class TestRouterMigrations:
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         # Schema without public_paths
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         db.close()
 
         _run_init_db(db_path)
@@ -200,7 +90,7 @@ class TestRouterMigrations:
         """Migration adds manifest_name and backfills it from name."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         # Insert a row so we can verify the backfill
         db.execute(
             "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, repo_path, local_port) "
@@ -221,7 +111,7 @@ class TestRouterMigrations:
         """Migration removes base_path and subdomain columns."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         db.close()
 
         _run_init_db(db_path)
@@ -236,7 +126,7 @@ class TestRouterMigrations:
         """Data in the apps table survives the base_path/subdomain drop migration."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         db.execute(
             "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, "
             "repo_path, local_port, description, memory_mb, cpu_millicores, gpu) "
@@ -271,7 +161,7 @@ class TestRouterMigrations:
         """Migration adds password_needs_set to owner table."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         # Insert an owner so the owner table exists and has a row
         db.execute("INSERT INTO owner (id, username, password_hash) VALUES (1, 'admin', 'hash123')")
         db.commit()
@@ -412,7 +302,7 @@ class TestRouterMigrations:
         db = sqlite3.connect(db_path)
         # Use a variant of the oldest schema with nullable datetime columns
         # to simulate the real-world broken state
-        schema = _OLDEST_ROUTER_SCHEMA.replace(
+        schema = OLDEST_ROUTER_SCHEMA.replace(
             "created_at TEXT NOT NULL DEFAULT (datetime('now'))",
             "created_at TEXT DEFAULT (datetime('now'))",
         ).replace(
@@ -444,7 +334,7 @@ class TestRouterMigrations:
         """Migration renames token -> token_hash and hashes existing plaintext values."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         # Insert plaintext refresh tokens
         db.execute(
             "INSERT INTO refresh_tokens (token, expires_at) VALUES ('plaintext-refresh-1', '2099-01-01T00:00:00')"
@@ -477,7 +367,7 @@ class TestRouterMigrations:
         """Migration renames token -> token_hash and hashes existing plaintext values in app_tokens."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         # Need an app row for the FK
         db.execute(
             "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, repo_path, local_port) "
@@ -511,7 +401,7 @@ class TestRouterMigrations:
         """Running init_db twice doesn't double-hash tokens."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.executescript(OLDEST_ROUTER_SCHEMA)
         db.execute("INSERT INTO refresh_tokens (token, expires_at) VALUES ('my-token', '2099-01-01T00:00:00')")
         db.commit()
         db.close()
@@ -616,142 +506,3 @@ class TestCrashRecovery:
         fresh_snap = _get_schema_snapshot(fresh_db)
         fresh_db.close()
         _assert_schemas_equal(fresh_snap, snap)
-
-
-# ---------------------------------------------------------------------------
-# Three DB states handled by init_db: fresh, legacy, managed.
-# ---------------------------------------------------------------------------
-
-_EXPECTED_TABLES = {
-    "apps",
-    "app_databases",
-    "app_port_mappings",
-    "owner",
-    "refresh_tokens",
-    "api_tokens",
-    "app_tokens",
-    "service_providers",
-    "permissions",
-}
-
-
-def _applied_yoyo_migrations(db_path):
-    """Return the set of migration ids yoyo has marked as applied."""
-    db = sqlite3.connect(db_path)
-    try:
-        rows = db.execute("SELECT migration_id FROM _yoyo_migration").fetchall()
-        return {row[0] for row in rows}
-    finally:
-        db.close()
-
-
-class TestYoyoDispatch:
-    """Cover the three init_db startup paths: fresh / legacy / managed."""
-
-    def test_fresh_db_applies_all_migrations(self, tmp_path):
-        """Empty file -> yoyo creates every table from 0001 and records it."""
-        db_path = str(tmp_path / "fresh.db")
-        sqlite3.connect(db_path).close()
-
-        db = sqlite3.connect(db_path)
-        assert _classify_db_state(db) == "fresh"
-        db.close()
-
-        _run_init_db(db_path)
-
-        db = sqlite3.connect(db_path)
-        snap = _get_schema_snapshot(db)
-        has_yoyo = (
-            db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_yoyo_migration'").fetchone()
-            is not None
-        )
-        db.close()
-
-        assert has_yoyo, "yoyo tracking table must exist after init_db on fresh DB"
-        assert set(snap["tables"]) == _EXPECTED_TABLES
-        assert "0001_initial" in _applied_yoyo_migrations(db_path)
-
-    def test_legacy_db_runs_migrate_and_applies_0001(self, tmp_path):
-        """Legacy DB with apps table -> migrate() runs, then yoyo applies all
-        migrations (0001's IF-NOT-EXISTS statements are no-ops for tables
-        migrate() already built, and fill in any it doesn't touch). Data is
-        preserved and the final schema matches a fresh DB.
-        """
-        db_path = str(tmp_path / "legacy.db")
-        db = sqlite3.connect(db_path)
-        db.executescript(_OLDEST_ROUTER_SCHEMA)
-        db.execute(
-            "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, repo_path, local_port) "
-            "VALUES ('legacyapp', '/legacyapp', 'legacyapp', '1.0', 'serverfull', '/repo', 9010)"
-        )
-        db.execute("INSERT INTO refresh_tokens (token, expires_at) VALUES ('legacy-token', '2099-01-01T00:00:00')")
-        db.commit()
-        assert _classify_db_state(db) == "legacy"
-        db.close()
-
-        _run_init_db(db_path)
-
-        db = sqlite3.connect(db_path)
-        db.row_factory = sqlite3.Row
-        apps_row = db.execute("SELECT name FROM apps WHERE name='legacyapp'").fetchone()
-        token_row = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()
-        snap = _get_schema_snapshot(db)
-        db.close()
-
-        assert apps_row is not None
-        assert token_row["token_hash"] == hashlib.sha256(b"legacy-token").hexdigest()
-        assert set(snap["tables"]) == _EXPECTED_TABLES
-        assert "0001_initial" in _applied_yoyo_migrations(db_path)
-
-        fresh_path = str(tmp_path / "fresh.db")
-        _fresh_db(fresh_path)
-        fresh_db = sqlite3.connect(fresh_path)
-        fresh_snap = _get_schema_snapshot(fresh_db)
-        fresh_db.close()
-        _assert_schemas_equal(fresh_snap, snap)
-
-    def test_managed_db_skips_legacy_migrate(self, tmp_path, monkeypatch):
-        """Once yoyo tracks the DB, the frozen legacy migrate() must never run again."""
-        db_path = str(tmp_path / "managed.db")
-        sqlite3.connect(db_path).close()
-        _run_init_db(db_path)
-
-        db = sqlite3.connect(db_path)
-        assert _classify_db_state(db) == "managed"
-        db.close()
-
-        calls: list = []
-
-        def _boom(connection):
-            calls.append(connection)
-            raise AssertionError("migrate() must not run on a managed DB")
-
-        monkeypatch.setattr(_connection_module, "migrate", _boom)
-
-        _run_init_db(db_path)
-        assert calls == []
-
-        db = sqlite3.connect(db_path)
-        snap = _get_schema_snapshot(db)
-        db.close()
-        assert set(snap["tables"]) == _EXPECTED_TABLES
-
-    def test_managed_db_preserves_data_across_restart(self, tmp_path):
-        """Restarting on a managed DB must not clobber data inserted between runs."""
-        db_path = str(tmp_path / "restart.db")
-        sqlite3.connect(db_path).close()
-        _run_init_db(db_path)
-
-        db = sqlite3.connect(db_path)
-        db.execute(
-            "INSERT INTO apps (name, version, repo_path, local_port) VALUES ('after-boot', '1.0', '/repo', 9100)"
-        )
-        db.commit()
-        db.close()
-
-        _run_init_db(db_path)
-
-        db = sqlite3.connect(db_path)
-        row = db.execute("SELECT name FROM apps WHERE name='after-boot'").fetchone()
-        db.close()
-        assert row is not None
