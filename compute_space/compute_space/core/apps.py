@@ -36,29 +36,31 @@ from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
+from compute_space.db.connection import make_atomic_with_savepoint
 
 
-def _register_v2_providers(
+def _register_v2_service_providers(
     app_name: str,
     manifest: AppManifest,
     db: sqlite3.Connection,
 ) -> None:
     """Register V2 service providers from manifest. Sets default if none exists."""
-    db.execute("DELETE FROM service_providers_v2 WHERE app_name = ?", (app_name,))
-    for svc in manifest.provides_services_v2:
-        db.execute(
-            "INSERT OR REPLACE INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
-            (svc.service, app_name, svc.version, svc.endpoint),
-        )
-        existing_default = db.execute(
-            "SELECT 1 FROM service_defaults WHERE service_url = ?",
-            (svc.service,),
-        ).fetchone()
-        if not existing_default:
+    with make_atomic_with_savepoint(db):
+        db.execute("DELETE FROM service_providers_v2 WHERE app_name = ?", (app_name,))
+        for svc in manifest.provides_services_v2:
             db.execute(
-                "INSERT INTO service_defaults (service_url, app_name) VALUES (?, ?)",
-                (svc.service, app_name),
+                "INSERT OR REPLACE INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
+                (svc.service, app_name, svc.version, svc.endpoint),
             )
+            existing_default = db.execute(
+                "SELECT 1 FROM service_defaults WHERE service_url = ?",
+                (svc.service,),
+            ).fetchone()
+            if not existing_default:
+                db.execute(
+                    "INSERT INTO service_defaults (service_url, app_name) VALUES (?, ?)",
+                    (svc.service, app_name),
+                )
 
 
 RESERVED_PATHS = {
@@ -324,7 +326,7 @@ def insert_and_deploy(
             (svc_name, app_name),
         )
 
-    _register_v2_providers(app_name, manifest, db)
+    _register_v2_service_providers(app_name, manifest, db)
 
     db.commit()
 
@@ -561,7 +563,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
             (svc_name, app_name),
         )
 
-    _register_v2_providers(app_name, manifest, db)
+    _register_v2_service_providers(app_name, manifest, db)
 
     # Load resolved port mappings from DB (preserves host_port assignments)
     port_mappings = _load_port_mappings_from_db(app_name, db)
