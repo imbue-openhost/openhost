@@ -1,11 +1,10 @@
 """
-Tests that the router's hand-rolled SQLite migrations produce a schema
-identical to a fresh database created by schema.sql, and that data is
+Tests that the router's frozen legacy migration path produces a schema
+identical to a fresh database created by Alembic, and that data is
 preserved correctly through each migration path.
 """
 
 import hashlib
-import os
 import sqlite3
 
 from compute_space.db.connection import init_db
@@ -17,9 +16,6 @@ from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_sn
 # Helpers
 # ---------------------------------------------------------------------------
 
-PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
-SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
-
 
 class _FakeApp:
     """Minimal stand-in for a Quart app so init_db(app) can read app.config."""
@@ -29,14 +25,8 @@ class _FakeApp:
 
 
 def _fresh_db(path):
-    """Create a DB using only schema.sql (the gold-standard fresh path)."""
-    # We can't easily call init_db because it imports from quart at module
-    # level.  Instead, replicate the fresh-DB path: _migrate is a no-op on
-    # an empty DB, then schema.sql runs.
-    db = sqlite3.connect(path)
-    with open(SCHEMA_SQL_PATH) as f:
-        db.executescript(f.read())
-    db.close()
+    """Create a DB from scratch via ``init_db`` (alembic upgrade head)."""
+    init_db(_FakeApp(path))
     return path
 
 
@@ -611,3 +601,36 @@ class TestCrashRecovery:
         fresh_snap = _get_schema_snapshot(fresh_db)
         fresh_db.close()
         _assert_schemas_equal(fresh_snap, snap)
+
+
+class TestAlembicBaselineParity:
+    """REQ-TEST-2 / REQ-CUTOVER-5: the legacy cutover path (frozen migrate()
+    + baseline stamp) must produce a schema structurally equivalent to
+    ``alembic upgrade head`` on an empty database."""
+
+    def test_alembic_upgrade_head_matches_legacy_cutover(self, tmp_path):
+        """Compare the two canonical initialisation paths."""
+        # Path A: alembic upgrade head on a brand-new DB file.
+        alembic_path = str(tmp_path / "alembic.db")
+        _run_init_db(alembic_path)
+
+        # Path B: legacy oldest schema → init_db runs migrate() + stamp, then
+        # alembic upgrade head finds nothing to do.
+        legacy_path = str(tmp_path / "legacy.db")
+        legacy_db = sqlite3.connect(legacy_path)
+        legacy_db.executescript(_OLDEST_ROUTER_SCHEMA)
+        legacy_db.close()
+        _run_init_db(legacy_path)
+
+        alembic_conn = sqlite3.connect(alembic_path)
+        legacy_conn = sqlite3.connect(legacy_path)
+        alembic_snap = _get_schema_snapshot(alembic_conn)
+        legacy_snap = _get_schema_snapshot(legacy_conn)
+        alembic_conn.close()
+        legacy_conn.close()
+
+        _assert_schemas_equal(alembic_snap, legacy_snap)
+        # Both paths MUST leave a baseline alembic stamp so subsequent boots
+        # take the alembic-only path.
+        assert "alembic_version" in alembic_snap["tables"]
+        assert "alembic_version" in legacy_snap["tables"]
