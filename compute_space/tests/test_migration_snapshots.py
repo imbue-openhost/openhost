@@ -159,10 +159,31 @@ def _write_new_and_fail(expected_path: Path, actual: str, msg_prefix: str) -> No
 # --------------------------------------------------------------------------- #
 
 
+# Compute these once at import time. Calling ``_snapshot_sets()`` /
+# ``_snapshot_pairs()`` inside the parametrize decorator *and* in the
+# ``ids=`` kwarg would walk the filesystem twice for the same answer.
+_SNAPSHOT_SETS = _snapshot_sets()
+_SNAPSHOT_PAIRS = _snapshot_pairs()
+
+
+def test_snapshots_are_present():
+    """Fail loudly if the snapshot tree disappeared.
+
+    Parametrized tests over an empty list silently degrade to "0 tests
+    collected", which would hide accidental deletion of the snapshots
+    directory. This guard makes that failure mode obvious.
+    """
+    assert _SNAPSHOT_SETS, (
+        f"No snapshot sets found under {SNAPSHOTS_DIR}. "
+        "Expected at least one subfolder with vNNNN.sql files. "
+        "Regenerate with test_migration_snapshots._regenerate_snapshots()."
+    )
+
+
 @pytest.mark.parametrize(
     ("set_name", "va", "vb"),
-    _snapshot_pairs(),
-    ids=[f"{name}-v{_version_of(a)}-to-v{_version_of(b)}" for name, a, b in _snapshot_pairs()],
+    _SNAPSHOT_PAIRS,
+    ids=[f"{name}-v{_version_of(a)}-to-v{_version_of(b)}" for name, a, b in _SNAPSHOT_PAIRS],
 )
 def test_snapshot_pair(set_name, va, vb, tmp_path):
     """From ``<set>/vA.sql``, apply REGISTRY, must dump to ``<set>/vB.sql``."""
@@ -213,8 +234,8 @@ def test_snapshot_pair(set_name, va, vb, tmp_path):
 
 @pytest.mark.parametrize(
     ("set_name", "files"),
-    _snapshot_sets(),
-    ids=[name for name, _ in _snapshot_sets()],
+    _SNAPSHOT_SETS,
+    ids=[name for name, _ in _SNAPSHOT_SETS],
 )
 def test_latest_snapshot_schema_matches_schema_sql(set_name, files, tmp_path):
     """Latest snapshot's schema must match a fresh ``schema.sql`` init.
@@ -316,15 +337,19 @@ def _regenerate_snapshots(root: Path = SNAPSHOTS_DIR) -> None:  # pragma: no cov
                 seed(conn)
             (set_dir / "v0001.sql").write_text(_dump_for_snapshot(v1_db))
 
-            # Higher versions: start from the v1 dump, apply REGISTRY up to
-            # each registered version. This mirrors the pair-test flow.
+            # Higher versions: start from the v1 dump, apply REGISTRY *up
+            # to and including* the target version — not the full REGISTRY
+            # — so vNNNN.sql captures the state exactly at version NNNN.
+            # Passing the full registry would overshoot and every file
+            # below the highest registered version would be mis-stamped.
             for migration in REGISTRY:
                 target = migration.version
+                sub_registry = [m for m in REGISTRY if m.version <= target]
                 next_db = str(td_path / f"{set_name}_v{target}.db")
                 loader = sqlite3.connect(next_db)
                 try:
                     loader.executescript((set_dir / "v0001.sql").read_text())
                 finally:
                     loader.close()
-                apply_migrations(next_db, registry=REGISTRY)
+                apply_migrations(next_db, registry=sub_registry)
                 (set_dir / f"v{target:04d}.sql").write_text(_dump_for_snapshot(next_db))
