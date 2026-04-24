@@ -261,27 +261,23 @@ async def _poll_device_flow(flow_id: str):
 # ─── Identity ───
 
 
+USERINFO_URLS: dict[str, tuple[str, str]] = {
+    "google": ("https://www.googleapis.com/oauth2/v2/userinfo", "email"),
+    "github": ("https://api.github.com/user", "login"),
+}
+
+
 async def fetch_account_identity(provider_name: str, access_token: str) -> str | None:
     """Fetch the user's identity (e.g. email) from the provider using the access token."""
+    entry = USERINFO_URLS.get(provider_name)
+    if not entry:
+        return None
+    url, field = entry
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            if provider_name == "google":
-                resp = await client.get(
-                    "https://www.googleapis.com/oauth2/v2/userinfo",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("email")
-            elif provider_name == "github":
-                resp = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Accept": "application/vnd.github+json",
-                    },
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("login")
+            resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+            if resp.status_code == 200:
+                return resp.json().get(field)
     except Exception:
         log.warning("Failed to fetch identity for %s", provider_name, exc_info=True)
     return None

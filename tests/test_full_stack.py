@@ -16,8 +16,10 @@ Run:
 import asyncio
 import json
 import os
+import secrets as secrets_mod
 import threading
 import time
+from html import escape
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
 from urllib.parse import parse_qs
@@ -27,6 +29,7 @@ from urllib.parse import urlparse
 import pytest
 import requests
 import websockets
+from playwright.sync_api import sync_playwright
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import DefaultConfig
@@ -47,7 +50,7 @@ SECRETS_SERVICE_URL = "github.com/imbue-openhost/openhost/services/secrets"
 
 ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
-ZONE_DOMAIN = "testzone.localhost"
+ZONE_DOMAIN = f"testzone.localhost:{ROUTER_PORT}"
 
 requires_docker = pytest.mark.requires_docker
 
@@ -815,50 +818,137 @@ class TestServicesV2:
 
 
 class MockOAuthService(BaseHTTPRequestHandler):
-    """Mock implementation of the OAuth service API (token + accounts).
+    """Mock OAuth service AND mock OAuth provider (Google-like).
 
-    Simulates a Google-like provider with auth code flow and multiple accounts.
-    State is stored on the server instance's class-level dict.
+    Serves two roles:
+    1. **Service API** (used when oauth-demo bypasses the router via set-mock-url):
+       POST /token, POST /accounts, POST|GET /authorize-complete
+    2. **OAuth provider** (used for Playwright e2e tests through the real flow):
+       GET /authorize — HTML account picker page
+       POST /oauth/token — authorization code exchange
+       GET /userinfo — returns account identity
     """
 
-    # Class-level state shared across requests
-    tokens: dict[str, dict[str, str]] = {}  # (provider, scopes, account) key → token info
+    # ─── Shared state ───
+    tokens: dict[str, dict[str, str]] = {}
     authorize_base_url: str = ""
+    available_accounts: list[str] = ["alice@example.com", "bob@example.com"]
+    authorization_codes: dict[str, dict] = {}
+    token_to_account: dict[str, str] = {}
 
     @classmethod
     def reset(cls) -> None:
         cls.tokens.clear()
+        cls.authorization_codes.clear()
+        cls.token_to_account.clear()
 
     @classmethod
     def add_token(cls, provider: str, scopes: str, account: str, access_token: str) -> None:
         key = f"{provider}:{scopes}:{account}"
         cls.tokens[key] = {"access_token": access_token, "account": account}
+        cls.token_to_account[access_token] = account
+
+    # ─── HTTP dispatch ───
 
     def do_POST(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_length)) if content_length else {}
+        raw = self.rfile.read(content_length) if content_length else b""
 
-        if self.path.startswith("/token"):
-            self._handle_token(body)
-        elif self.path.startswith("/accounts"):
-            self._handle_accounts(body)
-        elif self.path.startswith("/authorize-complete"):
-            self._handle_authorize_complete(body)
+        parsed = urlparse(self.path)
+        if parsed.path == "/oauth/token":
+            self._handle_code_exchange(raw)
+        elif parsed.path.startswith("/token"):
+            self._handle_token(json.loads(raw) if raw else {})
+        elif parsed.path.startswith("/accounts"):
+            self._handle_accounts(json.loads(raw) if raw else {})
+        elif parsed.path.startswith("/authorize-complete"):
+            self._handle_authorize_complete(json.loads(raw) if raw else {})
         else:
             self._json_response(404, {"error": "not_found"})
 
     def do_GET(self) -> None:
-        if self.path.startswith("/authorize-complete"):
-            qs = parse_qs(urlparse(self.path).query)
-            body = {
-                "provider": qs.get("provider", [""])[0],
-                "scopes": qs.get("scopes", [""])[0],
-                "account": qs.get("account", [""])[0],
-                "access_token": qs.get("access_token", [""])[0],
-            }
+        parsed = urlparse(self.path)
+        if parsed.path == "/authorize":
+            self._handle_authorize_page(parsed.query)
+        elif parsed.path == "/userinfo":
+            self._handle_userinfo()
+        elif parsed.path.startswith("/authorize-complete"):
+            qs = parse_qs(parsed.query)
+            body = {k: v[0] for k, v in qs.items()}
             self._handle_authorize_complete(body)
         else:
             self._json_response(404, {"error": "not_found"})
+
+    # ─── OAuth provider endpoints (for Playwright tests) ───
+
+    def _handle_authorize_page(self, query_string: str) -> None:
+        """Render an account picker page, like Google's 'Choose an account'."""
+        params = parse_qs(query_string)
+        redirect_uri = params.get("redirect_uri", [""])[0]
+        scope = params.get("scope", [""])[0]
+        state = params.get("state", [""])[0]
+
+        links = []
+        for account in self.available_accounts:
+            code = secrets_mod.token_urlsafe(16)
+            self.authorization_codes[code] = {
+                "account": account,
+                "redirect_uri": redirect_uri,
+                "scope": scope,
+                "state": state,
+            }
+            callback = redirect_uri + "?" + urlencode({"code": code, "state": state, "scope": scope})
+            links.append(
+                f'<a href="{escape(callback)}" class="account" data-testid="account-{escape(account)}">'
+                f"{escape(account)}</a>"
+            )
+
+        html = (
+            "<!DOCTYPE html><html><body>"
+            "<h1>Choose an account</h1>"
+            '<div class="accounts">' + "<br>".join(links) + "</div>"
+            "</body></html>"
+        )
+        body = html.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_code_exchange(self, raw: bytes) -> None:
+        """Exchange authorization code for access token (form-encoded POST)."""
+        form = parse_qs(raw.decode())
+        code = form.get("code", [""])[0]
+
+        flow = self.authorization_codes.pop(code, None)
+        if not flow:
+            self._json_response(400, {"error": "invalid_grant"})
+            return
+
+        access_token = f"mock_token_{flow['account']}"
+        self.token_to_account[access_token] = flow["account"]
+
+        self._json_response(
+            200,
+            {
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+
+    def _handle_userinfo(self) -> None:
+        """Return account identity for an access token."""
+        auth = self.headers.get("Authorization", "")
+        token = auth.removeprefix("Bearer ").strip()
+        account = self.token_to_account.get(token)
+        if not account:
+            self._json_response(401, {"error": "invalid_token"})
+            return
+        self._json_response(200, {"email": account, "login": account})
+
+    # ─── Service API endpoints (for API-based tests) ───
 
     def _handle_token(self, body: dict) -> None:
         provider = body.get("provider", "")
@@ -870,8 +960,6 @@ class MockOAuthService(BaseHTTPRequestHandler):
         key = f"{provider}:{scopes_key}:{account}"
         token_info = self.tokens.get(key)
 
-        # Fall back: if requesting "default" and there's exactly one token for
-        # this provider+scopes, return it.
         if not token_info and account == "default":
             prefix = f"{provider}:{scopes_key}:"
             matches = {k: v for k, v in self.tokens.items() if k.startswith(prefix)}
@@ -919,7 +1007,10 @@ class MockOAuthService(BaseHTTPRequestHandler):
 
         key = f"{provider}:{scopes_key}:{account}"
         self.tokens[key] = {"access_token": access_token, "account": account}
+        self.token_to_account[access_token] = account
         self._json_response(200, {"ok": True, "account": account})
+
+    # ─── Helpers ───
 
     def _json_response(self, status: int, data: dict) -> None:
         body = json.dumps(data).encode()
@@ -1171,6 +1262,72 @@ class TestOAuthFlow:
         )
         assert r.status_code == 200
         assert r.json()["access_token"] == "redirected_token_123"
+
+    def test_browser_oauth_flow(self, secrets_app_deployed, oauth_demo_deployed, mock_oauth_server):
+        """Full browser OAuth flow: click connect, pick account on provider page, get redirected back.
+
+        Uses Playwright to drive a real browser through the complete OAuth flow:
+        oauth-demo → service proxy → secrets app → mock provider (account picker) →
+        callback → secrets app stores token → redirect back to oauth-demo.
+        """
+        MockOAuthService.reset()
+        s = oauth_demo_deployed["session"]
+        url = oauth_demo_deployed["router_url"]
+        mock_host_url = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
+        mock_local_url = f"http://127.0.0.1:{MOCK_OAUTH_PORT}"
+        callback_url = f"http://{ZONE_DOMAIN}/secrets/oauth/callback"
+
+        # Point the secrets app at the mock OAuth provider
+        r = s.post(
+            f"{url}/secrets/test/set-provider-config",
+            json={
+                "provider": "google",
+                "overrides": {
+                    "auth_url": f"{mock_local_url}/authorize",
+                    "token_url": f"{mock_host_url}/oauth/token",
+                    "userinfo_url": f"{mock_host_url}/userinfo",
+                },
+                "redirect_uri": callback_url,
+            },
+            timeout=10,
+        )
+        assert r.status_code == 200
+
+        # Set mock client credentials so the secrets app doesn't 503
+        for key, value in [("GOOGLE_OAUTH_CLIENT_ID", "mock_id"), ("GOOGLE_OAUTH_CLIENT_SECRET", "mock_secret")]:
+            r = s.post(f"{url}/secrets/api/secrets", json={"key": key, "value": value}, timeout=10)
+            assert r.status_code == 200
+
+        # Transfer auth cookies to Playwright
+        cookies = [{"name": c.name, "value": c.value, "domain": "127.0.0.1", "path": "/"} for c in s.cookies]
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            context = browser.new_context()
+            context.add_cookies(cookies)
+            page = context.new_page()
+
+            # Navigate to oauth-demo server page
+            page.goto(f"{url}/oauth-demo/server/", wait_until="networkidle")
+
+            # Click "Connect" for Google — this triggers the OAuth flow
+            page.click('a[href*="connect?provider=google"]')
+
+            # Should land on the mock provider's account picker
+            page.wait_for_selector("h1", timeout=15000)
+            assert "Choose an account" in page.content()
+
+            # Click alice@example.com
+            page.click('[data-testid="account-alice@example.com"]')
+
+            # Should redirect through the callback and back to oauth-demo
+            page.wait_for_url(f"**/{ZONE_DOMAIN}**/server/**", timeout=15000)
+
+            # Verify alice is now listed as a connected account
+            content = page.content()
+            assert "alice@example.com" in content
+
+            browser.close()
 
 
 # ---------------------------------------------------------------------------

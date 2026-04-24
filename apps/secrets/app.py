@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 import httpx
 from oauth import PROVIDERS
+from oauth import USERINFO_URLS
 from oauth import active_device_flows
 from oauth import build_auth_url
 from oauth import create_device_flow
@@ -866,4 +867,28 @@ async def delete_oauth_token(token_id):
         db.commit()
     token_to_revoke = row["refresh_token"] or row["access_token"]
     await revoke_token(row["provider"], token_to_revoke, client_id, client_secret)
+    return jsonify({"ok": True})
+
+
+# ─── Test Helpers ───
+
+
+@app.route("/test/set-provider-config", methods=["POST"])
+async def test_set_provider_config():
+    """Override OAuth provider URLs for testing."""
+    global OAUTH_REDIRECT_URI
+    data = await request.get_json()
+    provider = data.get("provider")
+    overrides = data.get("overrides", {})
+
+    if provider and provider in PROVIDERS:
+        for key in ("auth_url", "token_url"):
+            if key in overrides:
+                PROVIDERS[provider][key] = overrides[key]
+        if "userinfo_url" in overrides:
+            USERINFO_URLS[provider] = (overrides["userinfo_url"], USERINFO_URLS.get(provider, ("", "email"))[1])
+
+    if "redirect_uri" in data:
+        OAUTH_REDIRECT_URI = data["redirect_uri"]
+
     return jsonify({"ok": True})
