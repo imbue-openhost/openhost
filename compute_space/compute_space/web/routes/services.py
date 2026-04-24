@@ -31,14 +31,14 @@ def _app_subdomain_from_origin() -> tuple[str | None, str | None]:
         origin = referer
 
     parsed = urlparse(origin)
-    hostname = parsed.hostname or ""
-    raw_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else None
+    host = parsed.netloc or ""
+    raw_origin = f"{parsed.scheme}://{host}" if parsed.scheme else None
 
     config = get_config()
-    if not config.zone_domain or not hostname.endswith("." + config.zone_domain):
+    if not config.zone_domain or not host.endswith("." + config.zone_domain):
         return None, raw_origin
 
-    app_name = hostname[: -(len(config.zone_domain) + 1)]
+    app_name = host[: -(len(config.zone_domain) + 1)]
     if "." in app_name:
         return None, raw_origin
 

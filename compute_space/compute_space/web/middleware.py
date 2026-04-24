@@ -85,12 +85,12 @@ def _resolve_app_from_origin() -> str | None:
         return None
 
     parsed = urlparse(origin)
-    hostname = parsed.hostname or ""
+    host = parsed.netloc or ""
     config = get_config()
-    if not config.zone_domain or not hostname.endswith("." + config.zone_domain):
+    if not config.zone_domain or not host.endswith("." + config.zone_domain):
         return None
 
-    app_name = hostname[: -(len(config.zone_domain) + 1)]
+    app_name = host[: -(len(config.zone_domain) + 1)]
     if "." in app_name:
         return None
 
