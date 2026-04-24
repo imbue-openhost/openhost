@@ -11,11 +11,21 @@ OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
 SERVICE_REQUEST_URL = f"{ROUTER_URL}/_services_v2/service_request"
 
 _mock_base_url: str | None = None
+_mock_provider_api_url: str | None = None
 
 
 def set_mock_oauth_url(url: str | None) -> None:
     global _mock_base_url
     _mock_base_url = url.rstrip("/") if url else None
+
+
+def set_mock_provider_api_url(url: str | None) -> None:
+    global _mock_provider_api_url
+    _mock_provider_api_url = url.rstrip("/") if url else None
+
+
+def get_mock_provider_api_url() -> str | None:
+    return _mock_provider_api_url
 
 
 def _request_url() -> str:
@@ -27,9 +37,12 @@ GITHUB_SCOPE = "repo"
 
 AUTH_HEADERS = {"Authorization": f"Bearer {APP_TOKEN}"}
 
+MOCK_SCOPE = "mock.emails"
+
 SCOPE_MAP = {
     "google": [GMAIL_SCOPE],
     "github": [GITHUB_SCOPE],
+    "mock": [MOCK_SCOPE],
 }
 
 PROVIDERS = [
@@ -44,6 +57,12 @@ PROVIDERS = [
         "label": "GitHub",
         "action_path": "repos",
         "action_label": "Repos",
+    },
+    {
+        "name": "mock",
+        "label": "Mock",
+        "action_path": "emails",
+        "action_label": "Emails",
     },
 ]
 

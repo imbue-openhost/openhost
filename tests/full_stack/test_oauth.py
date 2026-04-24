@@ -113,7 +113,7 @@ class TestOAuthFlow:
 
         r = s.post(
             f"{url}/oauth-demo/test/set-mock-url",
-            json={"url": mock_url},
+            json={"url": mock_url, "provider_api_url": mock_url},
             timeout=10,
         )
         assert r.status_code == 200
@@ -291,7 +291,9 @@ class TestOAuthFlow:
         assert r.status_code == 200
         assert r.json()["access_token"] == "redirected_token_123"
 
-    def test_oauth_auth_code_server_side_flow(self, secrets_app_deployed, oauth_demo_deployed, mock_oauth_provider):
+    def test_oauth_auth_code_server_side_flow(
+        self, admin_session, secrets_app_deployed, oauth_demo_deployed, mock_oauth_provider
+    ):
         """Full browser OAuth flow using Playwright — no API shortcuts.
 
         Unlike the other tests in this class (which call /test/token endpoints and
@@ -323,11 +325,12 @@ class TestOAuthFlow:
           context so the router recognizes the user.
         """
 
-        s = oauth_demo_deployed["session"]
         url = oauth_demo_deployed["router_url"]
 
         # Transfer auth cookies to Playwright
-        cookies = [{"name": c.name, "value": c.value, "domain": "127.0.0.1", "path": "/"} for c in s.cookies]
+        cookies = [
+            {"name": c.name, "value": c.value, "domain": "127.0.0.1", "path": "/"} for c in admin_session.cookies
+        ]
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
@@ -354,5 +357,27 @@ class TestOAuthFlow:
             # Verify alice is now listed as a connected account
             content = page.content()
             assert "alice@example.com" in content
+
+            # Verify oauth-demo was granted the expected permission
+            r = admin_session.get(f"{url}/api/permissions_v2", params={"app": "oauth-demo"}, timeout=10)
+            assert r.status_code == 200
+            perms = r.json()
+            mock_perms = [p for p in perms if p["grant"].get("provider") == "mock"]
+            assert len(mock_perms) == 1
+            assert mock_perms[0]["grant"] == {
+                "provider": "mock",
+                "scopes": ["mock.emails"],
+                "account": "alice@example.com",
+            }
+            assert mock_perms[0]["scope"] == "app"
+            assert mock_perms[0]["consumer_app"] == "oauth-demo"
+
+            # Click "Emails" for alice — this uses the token to hit the mock API
+            page.click('a[href*="emails?account=alice"]')
+            page.wait_for_selector(".email", timeout=10000)
+
+            content = page.content()
+            assert "Welcome to the mock" in content
+            assert "Your invoice is ready" in content
 
             browser.close()

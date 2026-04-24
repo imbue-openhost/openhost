@@ -4,6 +4,7 @@ import httpx
 from oauth import APP_NAME
 from oauth import GITHUB_SCOPE
 from oauth import GMAIL_SCOPE
+from oauth import MOCK_SCOPE
 from oauth import PROVIDERS
 from oauth import SCOPE_MAP
 from oauth import ZONE_DOMAIN
@@ -11,6 +12,7 @@ from oauth import AuthRedirectRequired
 from oauth import OAuthError
 from oauth import OAuthServiceUnavailable
 from oauth import get_accounts
+from oauth import get_mock_provider_api_url
 from oauth import get_oauth_token
 from quart import Blueprint
 from quart import Response
@@ -52,7 +54,7 @@ async def index():
 async def connect():
     """Redirect through OAuth to connect a new account."""
     provider = request.args.get("provider")
-    account = request.args.get("account", "new")
+    account = request.args.get("account", "NEW")
 
     scopes = SCOPE_MAP.get(provider)
     if not scopes:
@@ -100,6 +102,36 @@ async def repos():
         return await render_template("server/repos.html", error=str(e), repos=None)
 
     return await render_template("server/repos.html", error=None, repos=repo_list)
+
+
+@server_bp.route("/emails")
+async def emails():
+    account = request.args.get("account", "default")
+
+    result = await get_token_or_redirect("mock", [MOCK_SCOPE], account)
+    if isinstance(result, Response):
+        return result
+
+    try:
+        email_list = await _fetch_mock_emails(result)
+    except Exception as e:
+        return await render_template("server/emails.html", error=str(e), emails=None, account=account)
+
+    return await render_template("server/emails.html", error=None, emails=email_list, account=account)
+
+
+async def _fetch_mock_emails(access_token: str) -> list[dict]:
+    api_url = get_mock_provider_api_url()
+    if not api_url:
+        raise RuntimeError("Mock provider API URL not configured")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{api_url}/api/emails",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Mock API error: {resp.text}")
+    return resp.json().get("emails", [])
 
 
 async def _fetch_unread(access_token: str) -> list[str]:

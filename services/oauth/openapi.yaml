@@ -13,8 +13,25 @@ info:
     consumer app's granted permissions. The service validates these
     provider-side before returning data.
 
-    **Permission grant format:** `{"provider": "<name>", "scope": "<oauth_scope>"}`.
-    Each provider+scope pair requires its own grant.
+    ## Permissions
+
+    Grants apply to a `(provider, account)` tuple. Each grant contains a
+    list of OAuth scopes. The `account` field is optional — a grant without
+    an account applies to all accounts for that provider.
+
+    Multiple grants may exist for the same consumer app. When validating a
+    request, the service collects the **union** of scopes across all
+    matching grants. If the union covers every requested scope, the request
+    is approved.
+
+    **Grant format:**
+    ```json
+    {
+      "provider": "google",
+      "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+      "account": "alice@example.com"   // optional
+    }
+    ```
   version: 0.1.0
 
 paths:
@@ -57,9 +74,17 @@ paths:
                   type: string
                   default: "default"
                   description: |
-                    Account label. Use `"default"` to auto-resolve when only
-                    one account exists, or `"new"` to force connecting a new
-                    account.
+                    Account label. Special values:
+                    - `"default"` — auto-resolve when exactly one account
+                      exists; returns 401 if multiple accounts exist so
+                      the caller can prompt the user to choose.
+                    - `"NEW"` — skip token lookup entirely and immediately
+                      return a 401 with an `authorize_url` to start a
+                      fresh OAuth consent flow for a new account. No
+                      permissions are required — the OAuth consent flow
+                      itself serves as authorization, and the
+                      corresponding permission grant is created when
+                      the flow completes.
                 return_to:
                   type: string
                   description: |
@@ -182,22 +207,56 @@ components:
 
     PermissionDenied:
       type: object
-      required: [error, required_grants]
+      required: [error, required_grant]
       properties:
         error:
           type: string
           enum: [permission_required]
-        required_grants:
+        required_grant:
+          type: object
+          required: [grant_payload, scope, grant_url]
+          properties:
+            grant_payload:
+              type: object
+              required: [provider, scopes]
+              properties:
+                provider:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: OAuth scopes the caller is missing.
+              description: The grant the caller needs to be approved for.
+            scope:
+              type: string
+              enum: [app, global]
+              description: Whether this is an app-scoped or global grant.
+            grant_url:
+              type: string
+              format: uri
+              description: URL to redirect the user to for granting the permission.
+
+    OAuthGrant:
+      type: object
+      required: [provider, scopes]
+      properties:
+        provider:
+          type: string
+          description: OAuth provider name.
+          example: google
+        scopes:
           type: array
           items:
-            type: object
-            required: [provider, scope]
-            properties:
-              provider:
-                type: string
-              scope:
-                type: string
-          description: Grant payloads the caller needs to be approved for.
+            type: string
+          description: OAuth scopes this grant covers.
+          example: ["https://www.googleapis.com/auth/gmail.readonly"]
+        account:
+          type: string
+          description: |
+            Account this grant applies to. If omitted, the grant
+            applies to all accounts for the provider.
+          example: alice@example.com
 
     Error:
       type: object

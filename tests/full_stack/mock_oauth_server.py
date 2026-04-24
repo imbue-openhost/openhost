@@ -25,6 +25,10 @@ app = Quart(__name__)
 tokens: dict[str, dict[str, str]] = {}
 authorize_base_url: str = ""
 available_accounts: list[str] = ["alice@example.com", "bob@example.com"]
+ACCOUNT_TOKENS: dict[str, str] = {
+    "alice@example.com": "mock_alice_token_abc123",
+    "bob@example.com": "mock_bob_token_def456",
+}
 authorization_codes: dict[str, dict] = {}
 token_to_account: dict[str, str] = {}
 
@@ -85,7 +89,7 @@ async def code_exchange():
     if not flow:
         return jsonify({"error": "invalid_grant"}), 400
 
-    access_token = f"mock_token_{flow['account']}"
+    access_token = ACCOUNT_TOKENS.get(flow["account"], f"mock_token_{flow['account']}")
     token_to_account[access_token] = flow["account"]
 
     return jsonify(
@@ -106,6 +110,24 @@ async def userinfo():
     if not account:
         return jsonify({"error": "invalid_token"}), 401
     return jsonify({"email": account, "login": account})
+
+
+MOCK_EMAILS = [
+    {"subject": "Welcome to the mock", "from": "noreply@mock.example.com"},
+    {"subject": "Your invoice is ready", "from": "billing@mock.example.com"},
+    {"subject": "New login from Chrome", "from": "security@mock.example.com"},
+]
+
+
+@app.route("/api/emails")
+async def api_emails():
+    """Protected resource: returns fake emails if the bearer token is valid."""
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip()
+    account = token_to_account.get(token)
+    if not account:
+        return jsonify({"error": "invalid_token"}), 401
+    return jsonify({"account": account, "emails": MOCK_EMAILS})
 
 
 # ─── Service API endpoints (for API-based tests) ───

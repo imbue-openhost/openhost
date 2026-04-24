@@ -110,6 +110,7 @@ async def service_v2_proxy(app_name: str) -> Response:
         override_path=target_path,
         extra_headers={
             "Authorization": None,
+            "Bearer": None,
             "X-OpenHost-Permissions": grants_json,
             "X-OpenHost-Consumer": consumer_app,
         },

@@ -120,7 +120,7 @@ class OAuthClient {
    * Connect a new account via popup. Must be called from a click handler.
    * Throws OAuthPermissionError if permissions need granting first.
    */
-  async connect(provider, account = "new") {
+  async connect(provider, account = "NEW") {
     var resp = await this._serviceFetch("token", {
       provider: provider,
       scopes: this._scopesFor(provider),

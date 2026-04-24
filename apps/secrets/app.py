@@ -279,8 +279,11 @@ async def service_v2_list():
 # ─── OAuth V2 Service API (permissions validated by provider) ───
 
 
-def _parse_oauth_v2_grants() -> list[tuple[str, str]]:
-    """Read X-OpenHost-Permissions header and return granted (provider, scope) pairs."""
+def _parse_oauth_v2_grants() -> list[dict]:
+    """Read X-OpenHost-Permissions header and return grant payloads.
+
+    Each grant is {"provider": str, "scopes": [str], "account": str (optional)}.
+    """
     perms_header = request.headers.get("X-OpenHost-Permissions", "[]")
     try:
         grants = json.loads(perms_header)
@@ -290,25 +293,31 @@ def _parse_oauth_v2_grants() -> list[tuple[str, str]]:
     result = []
     for g in grants:
         payload = g.get("grant", {})
-        if isinstance(payload, dict) and "provider" in payload and "scope" in payload:
-            result.append((payload["provider"], payload["scope"]))
+        if isinstance(payload, dict) and "provider" in payload:
+            result.append(payload)
     return result
 
 
-def _check_oauth_v2_permission(provider: str, scopes: list[str]) -> list[dict]:
-    """Check if the caller has grants for all requested provider+scope pairs.
+def _check_oauth_v2_permission(provider: str, scopes: list[str], account: str | None = None) -> list[str]:
+    """Check if the caller has grants covering all requested scopes.
 
-    Returns a list of missing grant payloads (empty if all granted).
+    Collects the union of scopes from all grants matching (provider, account).
+    A grant with no account field matches any account.
+    Returns the list of missing scopes (empty if all covered).
     """
-    granted = set(_parse_oauth_v2_grants())
-    missing = []
-    for scope in scopes:
-        if (provider, scope) not in granted:
-            missing.append({"provider": provider, "scope": scope})
-    return missing
+    grants = _parse_oauth_v2_grants()
+    granted_scopes: set[str] = set()
+    for g in grants:
+        if g["provider"] != provider:
+            continue
+        grant_account = g.get("account")
+        if grant_account is not None and account is not None and grant_account != account:
+            continue
+        granted_scopes.update(g.get("scopes", []))
+    return [s for s in scopes if s not in granted_scopes]
 
 
-def _oauth_permission_denied(provider: str, scopes: list[str], missing: list[dict], return_to: str = ""):
+def _oauth_permission_denied(provider: str, scopes: list[str], missing_scopes: list[str], return_to: str = ""):
     """Build a 403 response with an app-scoped grant_url for missing OAuth permissions."""
     consumer_app = request.headers.get("X-OpenHost-Consumer", "")
     params = urlencode(
@@ -319,12 +328,11 @@ def _oauth_permission_denied(provider: str, scopes: list[str], missing: list[dic
             "return_to": return_to,
         }
     )
-    first = missing[0]
     return jsonify(
         {
             "error": "permission_required",
             "required_grant": {
-                "grant_payload": {"provider": first["provider"], "scope": first["scope"]},
+                "grant_payload": {"provider": provider, "scopes": missing_scopes},
                 "scope": "app",
                 "grant_url": f"//{APP_NAME}.{ZONE_DOMAIN}/oauth/grant?{params}",
             },
@@ -341,11 +349,13 @@ async def oauth_v2_token():
 
     provider = data["provider"]
     scopes = data["scopes"]
+    account = data.get("account")
     return_to = data.get("return_to", "")
 
-    missing = _check_oauth_v2_permission(provider, scopes)
-    if missing:
-        return _oauth_permission_denied(provider, scopes, missing, return_to)
+    if account != "NEW":
+        missing = _check_oauth_v2_permission(provider, scopes, account)
+        if missing:
+            return _oauth_permission_denied(provider, scopes, missing, return_to)
 
     return await service_oauth_token()
 
@@ -408,6 +418,39 @@ def _credentials_required_response(provider_name: str):
     ), 503
 
 
+def _new_account_authorize_url(provider_name: str, scopes: list[str], return_to: str, account: str = "NEW"):
+    """Build a 401 response with an authorize_url to start a new OAuth flow."""
+    provider = PROVIDERS[provider_name]
+    flow_type = provider.get("flow", "auth_code")
+
+    if flow_type == "device":
+        if not ZONE_DOMAIN:
+            return jsonify({"error": "ZONE_DOMAIN not configured, cannot start device flow"}), 500
+        params = urlencode(
+            {
+                "provider": provider_name,
+                "scopes": ",".join(scopes),
+                "return_to": return_to,
+                "account": account,
+            }
+        )
+        authorize_url = f"//secrets.{ZONE_DOMAIN}/oauth/device?{params}"
+    else:
+        client_id, client_secret = _get_provider_creds(provider_name)
+        if provider_name in DYNAMIC_CRED_PROVIDERS and (not client_id or not client_secret):
+            return _credentials_required_response(provider_name)
+        authorize_url = build_auth_url(
+            provider_name, scopes, OAUTH_REDIRECT_URI, return_to, client_id, account=account
+        )
+
+    return jsonify(
+        {
+            "status": "authorization_required",
+            "authorize_url": authorize_url,
+        }
+    ), 401
+
+
 @app.route("/_service/oauth/token", methods=["POST"])
 async def service_oauth_token():
     """Return an OAuth access token, or a URL to authorize if none exists.
@@ -430,6 +473,10 @@ async def service_oauth_token():
 
     if provider_name not in PROVIDERS:
         return jsonify({"error": "unknown_provider", "provider": provider_name}), 400
+
+    # NEW — skip token lookup and go straight to authorization
+    if account == "NEW":
+        return _new_account_authorize_url(provider_name, scopes, return_to)
 
     scopes_key = normalize_scopes(scopes)
 
@@ -504,38 +551,7 @@ async def service_oauth_token():
                 )
 
     # No valid token — initiate the appropriate flow
-    provider = PROVIDERS[provider_name]
-    flow_type = provider.get("flow", "auth_code")
-
-    if flow_type == "device":
-        if not ZONE_DOMAIN:
-            return jsonify({"error": "ZONE_DOMAIN not configured, cannot start device flow"}), 500
-        # Device flow: return a URL to our local device authorization page
-        params = urlencode(
-            {
-                "provider": provider_name,
-                "scopes": ",".join(scopes),
-                "return_to": return_to,
-                "account": account,
-            }
-        )
-        # Use the secrets app's subdomain (secrets.<zone_domain>)
-        authorize_url = f"//secrets.{ZONE_DOMAIN}/oauth/device?{params}"
-    else:
-        client_id, client_secret = _get_provider_creds(provider_name)
-        if provider_name in DYNAMIC_CRED_PROVIDERS and (not client_id or not client_secret):
-            return _credentials_required_response(provider_name)
-        # Auth code flow: return the provider's consent page URL
-        authorize_url = build_auth_url(
-            provider_name, scopes, OAUTH_REDIRECT_URI, return_to, client_id, account=account
-        )
-
-    return jsonify(
-        {
-            "status": "authorization_required",
-            "authorize_url": authorize_url,
-        }
-    ), 401
+    return _new_account_authorize_url(provider_name, scopes, return_to, account)
 
 
 @app.route("/_service/oauth/accounts", methods=["POST"])
@@ -710,12 +726,11 @@ async def oauth_callback():
     # If this flow was initiated from /oauth/grant, grant the app-scoped permission
     consumer_app = flow.get("consumer_app")
     if consumer_app:
-        for scope in flow["scopes"]:
-            await _grant_app_scoped_permission(
-                consumer_app,
-                flow["service_url"],
-                {"provider": flow["provider"], "scope": scope, "account": account},
-            )
+        await _grant_app_scoped_permission(
+            consumer_app,
+            flow["service_url"],
+            {"provider": flow["provider"], "scopes": flow["scopes"], "account": account},
+        )
 
     # Allow relative paths and protocol-relative URLs to zone subdomains
     return_to = flow["return_to"]

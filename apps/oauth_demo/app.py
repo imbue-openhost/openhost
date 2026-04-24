@@ -6,6 +6,7 @@ from oauth import OAuthServiceUnavailable
 from oauth import get_accounts
 from oauth import get_oauth_token
 from oauth import set_mock_oauth_url
+from oauth import set_mock_provider_api_url
 from quart import Quart
 from quart import jsonify
 from quart import render_template
@@ -27,6 +28,9 @@ async def test_set_mock_url():
     data = await request.get_json()
     url = data.get("url") if data else None
     set_mock_oauth_url(url)
+    provider_api_url = data.get("provider_api_url") if data else None
+    if provider_api_url:
+        set_mock_provider_api_url(provider_api_url)
     return jsonify({"ok": True, "mock_url": url})
 
 
