@@ -19,9 +19,8 @@ Derived from `goals.md`. Scope: the openhost `compute_space` SQLite DB only. Ver
 ## Migration Framework
 
 - **REQ-MF-1**: A migration MUST be defined by subclassing a small base class with at minimum an `up(db)` method and an integer `version` attribute identifying the target version after the migration runs.
-- **REQ-MF-2**: The base class MUST accept an optional `down(db)` method. Migrations without `down` MUST still be applicable on the forward path.
 - **REQ-MF-3**: A ready-made subclass MUST be provided that runs a sibling `.sql` file as its `up` step, for pure-schema changes.
-- **REQ-MF-4**: Each migration's `up` (and `down`, if present) MUST be executed inside a single SQLite transaction. On any exception, the transaction MUST be rolled back and the recorded version MUST NOT be bumped.
+- **REQ-MF-4**: Each migration's `up` MUST be executed inside a single SQLite transaction. On any exception, the transaction MUST be rolled back and the recorded version MUST NOT be bumped.
 - **REQ-MF-5**: After successful `up`, the runner MUST update the recorded version in the same transaction as the migration's DB changes, so that "migration applied" and "version bumped" are atomic.
 - **REQ-MF-6**: Migration authors MAY perform non-transaction-safe operations when strictly necessary, but MUST document why in a comment; tests SHOULD flag such operations (see REQ-TEST-7).
 
@@ -68,6 +67,7 @@ Derived from `goals.md`. Scope: the openhost `compute_space` SQLite DB only. Ver
 - Automatic generation of `schema.sql` from migrations.
 - Branching / merging migration chains.
 - Non-SQLite backends.
+- Rollback / reverse migrations. The system is forward-only; there is no `down()` method on the base class.
 
 ## Acceptance Criteria Summary
 
