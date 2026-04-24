@@ -192,8 +192,7 @@ def test_ansible_podman_task_file_is_present() -> None:
     this test being updated — otherwise the two asserts below would
     silently skip."""
     assert _PODMAN_TASKS_PATH.is_file(), (
-        f"expected ansible task file at {_PODMAN_TASKS_PATH}; "
-        "if you moved it, update _PODMAN_TASKS_PATH in this test"
+        f"expected ansible task file at {_PODMAN_TASKS_PATH}; if you moved it, update _PODMAN_TASKS_PATH in this test"
     )
 
 
@@ -209,15 +208,12 @@ def test_ansible_writes_matching_runtime_version() -> None:
     text = _read_podman_task_text()
     matches = re.findall(r"runtime_version=(\d+)", text)
     assert matches, (
-        "no ``runtime_version=<N>`` literal found in "
-        f"{_PODMAN_TASKS_PATH}; did the sentinel-write task change?"
+        f"no ``runtime_version=<N>`` literal found in {_PODMAN_TASKS_PATH}; did the sentinel-write task change?"
     )
     # Every occurrence must match; if the task writes the value in
     # more than one place they must all agree.
     distinct = set(matches)
-    assert len(distinct) == 1, (
-        f"ansible task writes inconsistent runtime_version values: {distinct}"
-    )
+    assert len(distinct) == 1, f"ansible task writes inconsistent runtime_version values: {distinct}"
     written = int(next(iter(distinct)))
     assert written == EXPECTED_RUNTIME_VERSION, (
         f"ansible writes runtime_version={written} but Python expects "
@@ -232,16 +228,12 @@ def test_ansible_writes_matching_runtime_name() -> None:
     ansible."""
     text = _read_podman_task_text()
     matches = re.findall(r"(?m)^\s*runtime=(\w+)\s*$", text)
-    assert matches, (
-        "no ``runtime=<name>`` literal found in "
-        f"{_PODMAN_TASKS_PATH}; did the sentinel-write task change?"
-    )
+    assert matches, f"no ``runtime=<name>`` literal found in {_PODMAN_TASKS_PATH}; did the sentinel-write task change?"
     distinct = set(matches)
     assert len(distinct) == 1, f"ansible task writes inconsistent runtime values: {distinct}"
     written = next(iter(distinct))
     assert written == EXPECTED_RUNTIME, (
-        f"ansible writes runtime={written} but Python expects "
-        f"EXPECTED_RUNTIME={EXPECTED_RUNTIME!r}"
+        f"ansible writes runtime={written} but Python expects EXPECTED_RUNTIME={EXPECTED_RUNTIME!r}"
     )
 
 
@@ -262,9 +254,7 @@ def test_ansible_unprivileged_port_floor_matches_python_constant() -> None:
         f"found in {_PODMAN_TASKS_PATH}; did the sysctl-drop-in task change?"
     )
     distinct = set(matches)
-    assert len(distinct) == 1, (
-        f"ansible writes inconsistent port floor values: {distinct}"
-    )
+    assert len(distinct) == 1, f"ansible writes inconsistent port floor values: {distinct}"
     written = int(next(iter(distinct)))
     assert written == UNPRIVILEGED_PORT_FLOOR, (
         f"ansible writes net.ipv4.ip_unprivileged_port_start={written} "
