@@ -40,8 +40,7 @@ class Migration:
 
     Subclasses set ``version`` (the target version after the migration
     runs — strictly greater than the source version) and implement
-    :meth:`up`. :meth:`down` is optional and only useful for manual
-    dev/test iteration.
+    :meth:`up`.
 
     Do NOT commit inside :meth:`up`. See the module docstring for the
     transaction contract.
@@ -51,9 +50,6 @@ class Migration:
 
     def up(self, db: sqlite3.Connection) -> None:
         raise NotImplementedError
-
-    def down(self, db: sqlite3.Connection) -> None:
-        raise NotImplementedError(f"Migration v{self.version} does not define down()")
 
     def apply(self, db: sqlite3.Connection) -> None:
         """Atomically apply ``up(db)`` and bump schema_version in one tx.
