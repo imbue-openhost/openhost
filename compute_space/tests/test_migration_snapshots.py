@@ -19,9 +19,14 @@ Layout::
 
     compute_space/tests/snapshots/
       <set-name>/
-        v0001.sql    # state after legacy bootstrap + set-specific seed
-        v0002.sql    # after applying REGISTRY up to v2 on top of v0001
+        v0001.sql    # HAND-WRITTEN starting state: schema + any seed rows
+        v0002.sql    # dump after applying the v2 migration to v0001, etc.
         ...
+
+``v0001.sql`` per set is written by hand — it defines the realistic
+starting state the set is meant to exercise. Subsequent ``vNNNN.sql``
+files are produced by the harness (see the mismatch workflow below)
+and committed after review.
 
 Harness
 -------
@@ -40,11 +45,10 @@ Mismatch workflow
 On mismatch (or missing golden) the harness writes the actual dump
 to ``<name>.sql.new`` next to the expected file and fails with a
 unified diff. Review the ``.sql.new``; rename to ``.sql`` to accept.
-No ``--update-snapshots`` pytest flag.
-
-Bulk regeneration (initial bootstrap, wholesale resets) via
-``_regenerate_snapshots`` at the bottom of this file — not a test,
-invoked manually.
+No ``--update-snapshots`` pytest flag. This is also how you produce
+a ``vNNNN.sql`` for a newly-added migration: hand-write or edit
+``v0001.sql``, delete any now-stale higher-version files, run the
+suite, review the ``.sql.new`` outputs, rename to accept.
 """
 
 from __future__ import annotations
@@ -52,7 +56,6 @@ from __future__ import annotations
 import difflib
 import re
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -175,8 +178,8 @@ def test_snapshots_are_present():
     """
     assert _SNAPSHOT_SETS, (
         f"No snapshot sets found under {SNAPSHOTS_DIR}. "
-        "Expected at least one subfolder with vNNNN.sql files. "
-        "Regenerate with test_migration_snapshots._regenerate_snapshots()."
+        "Expected at least one subfolder with a hand-written v0001.sql. "
+        "Restore from git or hand-author a new starting snapshot."
     )
 
 
@@ -261,95 +264,3 @@ def test_latest_snapshot_schema_matches_schema_sql(set_name, files, tmp_path):
     finally:
         snap_db.close()
         fresh_db.close()
-
-
-# --------------------------------------------------------------------------- #
-# Snapshot generation (manual, not a test)
-# --------------------------------------------------------------------------- #
-
-
-def _seed_empty(_db: sqlite3.Connection) -> None:  # pragma: no cover - generator
-    pass
-
-
-def _seed_service_with_ports(db: sqlite3.Connection) -> None:  # pragma: no cover - generator
-    """Minimal realistic seed: one app, one port mapping, one service provider."""
-    db.execute(
-        "INSERT INTO apps (name, manifest_name, version, runtime_type, repo_path, "
-        "local_port, description, memory_mb, cpu_millicores, gpu, public_paths, "
-        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            "orders",
-            "orders",
-            "1.0.0",
-            "serverfull",
-            "/repo/orders",
-            19100,
-            "Order service",
-            256,
-            500,
-            0,
-            "[]",
-            "2024-01-01T00:00:00",
-            "2024-01-01T00:00:00",
-        ),
-    )
-    db.execute(
-        "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?,?,?,?)",
-        ("orders", "grpc", 8000, 19500),
-    )
-    db.execute(
-        "INSERT INTO service_providers (service_name, app_name) VALUES (?,?)",
-        ("payments", "orders"),
-    )
-
-
-_SEEDS = {
-    "empty": _seed_empty,
-    "service_with_ports": _seed_service_with_ports,
-}
-
-
-def _regenerate_snapshots(root: Path = SNAPSHOTS_DIR) -> None:  # pragma: no cover - generator
-    """Rebuild every ``<set>/vNNNN.sql`` from the live code + seed functions.
-
-    Not a test. Invoke as::
-
-        uv run --group dev python -c 'import sys; sys.path.insert(0, "compute_space/tests"); \\
-            from test_migration_snapshots import _regenerate_snapshots; _regenerate_snapshots()'
-
-    Writes the entire snapshot tree in place. Review diffs before committing.
-    The harness's normal .sql.new workflow is preferred for small updates;
-    this generator is for initial bootstrap and wholesale resets.
-    """
-    root.mkdir(parents=True, exist_ok=True)
-
-    for set_name, seed in _SEEDS.items():
-        set_dir = root / set_name
-        set_dir.mkdir(parents=True, exist_ok=True)
-
-        with tempfile.TemporaryDirectory() as td:
-            td_path = Path(td)
-            # v1: bootstrap to v1 + seed.
-            v1_db = str(td_path / f"{set_name}_v1.db")
-            apply_migrations(v1_db, registry=[])
-            with sqlite3.connect(v1_db, isolation_level=None) as conn:
-                seed(conn)
-            (set_dir / "v0001.sql").write_text(_dump_for_snapshot(v1_db))
-
-            # Higher versions: start from the v1 dump, apply REGISTRY *up
-            # to and including* the target version — not the full REGISTRY
-            # — so vNNNN.sql captures the state exactly at version NNNN.
-            # Passing the full registry would overshoot and every file
-            # below the highest registered version would be mis-stamped.
-            for migration in REGISTRY:
-                target = migration.version
-                sub_registry = [m for m in REGISTRY if m.version <= target]
-                next_db = str(td_path / f"{set_name}_v{target}.db")
-                loader = sqlite3.connect(next_db)
-                try:
-                    loader.executescript((set_dir / "v0001.sql").read_text())
-                finally:
-                    loader.close()
-                apply_migrations(next_db, registry=sub_registry)
-                (set_dir / f"v{target:04d}.sql").write_text(_dump_for_snapshot(next_db))
