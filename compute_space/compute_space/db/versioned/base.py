@@ -14,11 +14,43 @@ atomicity guarantee by ending the transaction that :meth:`apply` opened.
 This rule is documented and trusted rather than enforced; we don't try
 to police it.
 
-:class:`SqlFileMigration` runs a sibling ``.sql`` file. It overrides
-:meth:`apply` to wrap the file contents in ``BEGIN EXCLUSIVE`` + the
-file's SQL + version bump + ``COMMIT`` and then hands that script to
-:meth:`sqlite3.Connection.executescript`. The same "no BEGIN/COMMIT
-inside the file" rule applies to the .sql — the wrapper owns the tx.
+Why ``apply`` and ``up`` are separate methods
+---------------------------------------------
+
+There are two kinds of migrations and they need transactions opened
+differently:
+
+* A Python migration runs one ``db.execute(...)`` at a time. The runner
+  can safely bracket the whole sequence with an explicit
+  ``db.execute("BEGIN EXCLUSIVE")`` ... ``db.execute("COMMIT")`` pair,
+  and ``up()`` just emits the per-statement calls in between. That is
+  what :meth:`Migration.apply` does.
+
+* A SQL-file migration is opaque — the file may contain any number of
+  statements and we do not parse it. The only built-in way to run a
+  multi-statement SQL string is :meth:`sqlite3.Connection.executescript`,
+  and *executescript issues an implicit* ``COMMIT`` *before running
+  the script*. That implicit commit would close out a ``BEGIN EXCLUSIVE``
+  the runner had opened, defeating the atomicity guarantee.
+
+So SQL-file migrations have to embed their own ``BEGIN EXCLUSIVE`` /
+``COMMIT`` *inside the string passed to executescript*. The executescript
+call's implicit pre-commit hits nothing (we are in autocommit mode);
+then the script itself opens, runs, and closes a transaction in one
+call. That is what :meth:`SqlFileMigration.apply` does.
+
+We used to have a hand-rolled SQL statement splitter to keep SQL files
+on the Python-execute path, but custom parsers have custom bugs;
+deleting it and trusting executescript is the simpler contract.
+
+Both paths share the same outward behaviour (atomic apply + stamp), so
+the runner just calls ``migration.apply(db)`` without caring which
+subclass it is.
+
+The caller of :meth:`apply` MUST open the DB in autocommit mode
+(``sqlite3.connect(..., isolation_level=None)``). Python's default
+isolation level wraps DML statements in implicit transactions, which
+would race with our explicit ``BEGIN EXCLUSIVE``.
 """
 
 from __future__ import annotations
@@ -94,6 +126,19 @@ class SqlFileMigration(Migration):
         raise NotImplementedError("SqlFileMigration drives execution through apply(), not up()")
 
     def apply(self, db: sqlite3.Connection) -> None:
+        # Why BEGIN EXCLUSIVE lives inside the script (not wrapping an
+        # outer db.execute("BEGIN EXCLUSIVE") around db.executescript):
+        # sqlite3.Connection.executescript() issues an implicit COMMIT
+        # of any open transaction *before* running its script. Opening
+        # the tx from Python then calling executescript would close
+        # that tx immediately and we'd lose atomicity. Putting the
+        # BEGIN/COMMIT inside the script text is the only way to give
+        # executescript a multi-statement body that runs under our own
+        # transaction.
+        #
+        # ``version`` is a trusted int (ClassVar on a registered
+        # subclass), not user input, so interpolating it into the SQL
+        # string is safe. executescript does not accept bound params.
         sql = self._load_sql()
         wrapped = (
             "BEGIN EXCLUSIVE;\n"

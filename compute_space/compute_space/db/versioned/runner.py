@@ -170,9 +170,13 @@ def _legacy_bootstrap(db: sqlite3.Connection) -> int:
 def _init_fresh(db: sqlite3.Connection, highest: int) -> None:
     """Initialize a brand-new DB from schema.sql and stamp the version, atomically.
 
-    Wraps schema.sql in ``BEGIN EXCLUSIVE`` / ``COMMIT`` inside a single
-    :meth:`sqlite3.Connection.executescript` call so a mid-init crash
-    leaves no partial tables.
+    The BEGIN/COMMIT lives inside the script passed to
+    :meth:`sqlite3.Connection.executescript` for the same reason as in
+    :meth:`SqlFileMigration.apply`: executescript issues an implicit
+    COMMIT of any open transaction before running, so wrapping the call
+    from the outside does not give us a single tx. Putting the BEGIN
+    EXCLUSIVE / COMMIT inside the script makes the fresh-init pass one
+    atomic unit — a mid-init crash leaves no partial tables.
     """
     with open(_schema_path()) as f:
         schema_sql = f.read()
