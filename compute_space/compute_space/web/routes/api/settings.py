@@ -6,12 +6,15 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core.apps import inject_github_token_in_url
+from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
+from compute_space.core.containers import container_runtime_available
 from compute_space.core.git_ops import RemoteNotSetError
 from compute_space.core.git_ops import get_current_ref
 from compute_space.core.git_ops import get_remote_url
 from compute_space.core.git_ops import init_repo_if_nonexistent
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.git_ops import set_remote_url
+from compute_space.core.runtime_sentinel import host_prep_status
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
@@ -71,6 +74,27 @@ async def set_remote() -> ResponseReturnValue:
     return jsonify({"ok": True, "token_applied": token_applied})
 
 
+def _host_prep_payload() -> dict[str, object]:
+    """Return whether the host is ready to run the installed router code.
+
+    Combines a live container-runtime probe (currently ``podman --version``)
+    with the ``/etc/openhost/runtime`` sentinel.  Never raises.
+    """
+    runtime_ok = container_runtime_available()
+    prep = host_prep_status()
+    payload: dict[str, object] = {
+        "host_prep_ok": runtime_ok and prep.ok,
+        "container_runtime_available": runtime_ok,
+    }
+    if not runtime_ok:
+        payload["host_prep_reason"] = "container_runtime_missing"
+        payload["host_prep_message"] = CONTAINER_RUNTIME_MISSING_ERROR
+    elif not prep.ok:
+        payload["host_prep_reason"] = prep.reason
+        payload["host_prep_message"] = prep.message
+    return payload
+
+
 @api_settings_bp.route("/api/settings/check_for_updates", methods=["POST"])
 @login_required
 async def check_for_updates() -> ResponseReturnValue:
@@ -79,14 +103,28 @@ async def check_for_updates() -> ResponseReturnValue:
         state = await check_git_state(config.openhost_repo_path)
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
-    return jsonify({"ok": True, "state": str(state)})
+
+    payload: dict[str, object] = {"ok": True, "state": str(state)}
+    payload.update(_host_prep_payload())
+    return jsonify(payload)
 
 
 @api_settings_bp.route("/api/settings/update_repo_state", methods=["POST"])
 @login_required
 async def update_repo_state() -> ResponseReturnValue:
-    """git reset to local origin/[branch] + check that pixi install works."""
+    """git reset to local origin/[branch] + pixi install.
+
+    Returns HTTP 409 when the host isn't prepared for the installed
+    runtime (the dashboard banner is the UI layer on top).
+    """
     config = get_config()
+
+    prep = _host_prep_payload()
+    if not prep["host_prep_ok"]:
+        payload: dict[str, object] = {"ok": False, "error": prep["host_prep_message"]}
+        payload.update(prep)
+        return jsonify(payload), 409
+
     ref = await get_current_ref(config.openhost_repo_path)
     try:
         await hard_checkout_and_validate(config.openhost_repo_path, ref)

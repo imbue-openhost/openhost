@@ -3,9 +3,9 @@ End-to-end integration tests for the OpenHost router.
 
 The full production flow is: build outer VM -> boot VM -> start router inside
 VM -> deploy apps.  The VM step requires Linux with KVM and diskimage-builder,
-so these tests run the router directly on the host and exercise the Docker
-runtime natively.  This covers all the same code paths the router would
-use inside the VM.
+so these tests run the router directly on the host and exercise the rootless
+podman runtime natively.  This covers all the same code paths the router
+would use inside the VM.
 """
 
 import os
@@ -30,14 +30,14 @@ from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
 from compute_space.testing import wait_app_running
 
-from .conftest import _docker_cleanup
 from .conftest import _make_config_and_env
 from .conftest import _start_router_process
 from .conftest import _stop_router_process
+from .container import container_cleanup
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 
-requires_docker = pytest.mark.requires_docker
+requires_containers = pytest.mark.requires_containers
 
 
 def test_sqlite_provisioning():
@@ -147,7 +147,7 @@ def _deploy_app(session, base_url, app_path, app_name=None, timeout=120):
 
 
 # ---------------------------------------------------------------------------
-# Router-only tests (no Docker needed)
+# Router-only tests (no container runtime needed)
 # ---------------------------------------------------------------------------
 
 
@@ -432,7 +432,7 @@ class TestRouterCore:
 
 
 # ---------------------------------------------------------------------------
-# Claim token setup tests (isolated router, no Docker needed)
+# Claim token setup tests (isolated router, no container runtime needed)
 # ---------------------------------------------------------------------------
 
 
@@ -477,7 +477,7 @@ def test_claim_token_deleted_after_setup(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Full lifecycle: deploy app (Docker), proxy, interact, remove
+# Full lifecycle: deploy app (podman), proxy, interact, remove
 # ---------------------------------------------------------------------------
 
 _FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -499,15 +499,14 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
 
 
-@requires_docker
+@requires_containers
 class TestContainerGone:
-    """Test that apps recover when their Docker container is completely gone.
+    """Test that apps recover when their container is completely gone.
 
-    Simulates the real VM-reboot scenario: Docker's data-root lives on a
-    disk that isn't mounted when Docker first starts, so old containers
-    don't exist at all.  check_app_status() should detect this and do a
-    full rebuild (image + container) instead of failing with
-    "No such container".
+    Simulates a real VM-reboot scenario where the container engine's local
+    storage has been wiped (e.g. the data-root disk didn't remount at boot).
+    check_app_status() should detect this and do a full rebuild
+    (image + container) instead of failing with "No such container".
     """
 
     APP_PATH = os.path.join(_FIXTURES_DIR, "test_app")
@@ -522,7 +521,7 @@ class TestContainerGone:
         Exercises the real VM-reboot scenario:
         1. Deploy a app — running and healthy.
         2. Stop the router process.
-        3. Remove the Docker container AND image (simulates Docker state
+        3. Remove the container AND image (simulates the engine's state
            being lost because data-root wasn't mounted at boot).
         4. Start the router — check_app_status() detects the dead container,
            does a full rebuild via _start_app_process().
@@ -533,7 +532,7 @@ class TestContainerGone:
         db_path = config.db_path
         router = None
 
-        _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+        container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
         try:
             # ---- Phase 1: Deploy and verify the app is running ----
@@ -553,9 +552,9 @@ class TestContainerGone:
             _deploy_app(session, self.BASE_URL, self.APP_PATH)
 
             # Wait for running status in DB.
-            # The first deploy builds a Docker image from scratch (no cache),
+            # The first deploy builds the image from scratch (no cache),
             # which can take well over 15 s in CI.  Use the same generous
-            # timeout that TestDockerE2E.test_app_detail uses (120 s).
+            # timeout that TestContainerE2E.test_app_detail uses (120 s).
             deadline = time.time() + 120
             db_status = None
             while time.time() < deadline:
@@ -585,10 +584,10 @@ class TestContainerGone:
             try:
                 db.row_factory = sqlite3.Row
                 row = db.execute(
-                    "SELECT docker_container_id FROM apps WHERE name = ?",
+                    "SELECT container_id FROM apps WHERE name = ?",
                     (self.APP_NAME,),
                 ).fetchone()
-                old_container_id = row["docker_container_id"]
+                old_container_id = row["container_id"]
             finally:
                 db.close()
             assert old_container_id, "Should have a container ID after deploy"
@@ -597,28 +596,28 @@ class TestContainerGone:
             _stop_router_process(router)
             router = None
 
-            # Remove container AND image — simulates Docker state loss
+            # Remove container AND image — simulates engine state loss
             subprocess.run(
-                ["docker", "rm", "-f", self.CONTAINER_NAME],
+                ["podman", "rm", "-f", self.CONTAINER_NAME],
                 capture_output=True,
                 timeout=30,
             )
             subprocess.run(
-                ["docker", "rmi", "-f", f"openhost-{self.APP_NAME}:latest"],
+                ["podman", "rmi", "-f", f"openhost-{self.APP_NAME}:latest"],
                 capture_output=True,
                 timeout=30,
             )
 
             # Verify container is truly gone
             result = subprocess.run(
-                ["docker", "inspect", self.CONTAINER_NAME],
+                ["podman", "inspect", self.CONTAINER_NAME],
                 capture_output=True,
                 timeout=10,
             )
             assert result.returncode != 0, "Container should not exist"
 
             # ---- Phase 3: Restart router (triggers check_app_status) ----
-            # check_app_status() does a synchronous Docker rebuild during
+            # check_app_status() does a synchronous image rebuild during
             # startup, so /health won't respond until the rebuild finishes.
             # Give it enough time for the full image build + container start.
             router = _start_router_process(self.BASE_URL, env, startup_timeout=180)
@@ -635,12 +634,12 @@ class TestContainerGone:
                     try:
                         poll_db.row_factory = sqlite3.Row
                         poll_row = poll_db.execute(
-                            "SELECT status, docker_container_id FROM apps WHERE name = ?",
+                            "SELECT status, container_id FROM apps WHERE name = ?",
                             (self.APP_NAME,),
                         ).fetchone()
                         if poll_row:
                             db_status = poll_row["status"]
-                            new_container_id = poll_row["docker_container_id"]
+                            new_container_id = poll_row["container_id"]
                     finally:
                         poll_db.close()
                 except Exception:
@@ -695,14 +694,14 @@ class TestContainerGone:
                 except Exception:
                     pass
                 _stop_router_process(router)
-            _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+            container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
 
-@requires_docker
-class TestDockerRestart:
-    """Test that apps recover after a Docker daemon restart.
+@requires_containers
+class TestContainerRestart:
+    """Test that apps recover after the container engine restarts.
 
-    Simulates a Docker daemon restart: stop the container, then restart the
+    Simulates the VM reboot path: stop the container, then restart the
     router.  check_app_status() detects the dead container and does a full
     rebuild (image + new container) via _start_app_process().
     """
@@ -713,13 +712,13 @@ class TestDockerRestart:
     ROUTER_PORT = 18081
     BASE_URL = "http://127.0.0.1:18081"
 
-    def test_app_status_after_docker_restart(self, tmp_path):
-        """After Docker daemon restart, router should rebuild and show app as 'running'.
+    def test_app_status_after_container_restart(self, tmp_path):
+        """After the engine restarts, router should rebuild and show app as 'running'.
 
-        Exercises the Docker-restart scenario:
+        Exercises the engine-restart scenario:
         1. Deploy an app — running and healthy.
         2. Stop the router process.
-        3. Stop the Docker container (simulates daemon restart).
+        3. Stop the container (simulates engine shutdown).
         4. Start the router — check_app_status() detects the dead
            container and does a full rebuild via _start_app_process().
         5. Verify a container is running and serving traffic.
@@ -730,7 +729,7 @@ class TestDockerRestart:
         router = None
 
         # Clean up any leftover containers from previous runs
-        _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+        container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
         try:
             # ---- Phase 1: Deploy and verify the app is running ----
@@ -752,7 +751,7 @@ class TestDockerRestart:
 
             # Wait for app status='running' in the DB (not just the HTML).
             # The initial image build can be slow in CI without cache, so
-            # use a generous timeout consistent with TestDockerE2E (120 s).
+            # use a generous timeout consistent with TestContainerE2E (120 s).
             deadline = time.time() + 120
             db_status = None
             while time.time() < deadline:
@@ -782,9 +781,9 @@ class TestDockerRestart:
                 timeout=30,
             )
 
-            # ---- Phase 2: Simulate Docker daemon restart ----
+            # ---- Phase 2: Simulate container engine restart ----
             #
-            # In a real VM reboot the Docker daemon stops (killing all
+            # In a real VM reboot the container engine stops (killing all
             # containers), then restarts.  We simulate this by stopping
             # the router and the container, then restarting the router
             # so that check_app_status() sees the exited container.
@@ -792,19 +791,19 @@ class TestDockerRestart:
             _stop_router_process(router)
             router = None
 
-            # Stop the Docker container (simulates Docker daemon shutdown)
+            # Stop the container (simulates the container engine shutting it down)
             result = subprocess.run(
-                ["docker", "stop", self.CONTAINER_NAME],
+                ["podman", "stop", self.CONTAINER_NAME],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
-            assert result.returncode == 0, f"docker stop failed: {result.stderr}"
+            assert result.returncode == 0, f"podman stop failed: {result.stderr}"
 
             # Verify container is stopped
             result = subprocess.run(
                 [
-                    "docker",
+                    "podman",
                     "inspect",
                     "--format",
                     "{{.State.Status}}",
@@ -814,7 +813,7 @@ class TestDockerRestart:
                 text=True,
                 timeout=10,
             )
-            assert result.stdout.strip() == "exited", "Container should be exited after docker stop"
+            assert result.stdout.strip() == "exited", "Container should be exited after podman stop"
 
             # ---- Phase 3: Restart router (triggers check_app_status) ----
             #
@@ -827,14 +826,14 @@ class TestDockerRestart:
             #
             # check_app_status() should have already started the container
             # during Phase 3.  Verify it is running *before* any additional
-            # docker start call -- this ensures the router's init logic
+            # podman start call -- this ensures the router's init logic
             # (not a later manual start) is what brought the container back.
             deadline = time.time() + 15
             container_running = False
             while time.time() < deadline:
                 result = subprocess.run(
                     [
-                        "docker",
+                        "podman",
                         "inspect",
                         "--format",
                         "{{.State.Status}}",
@@ -848,7 +847,7 @@ class TestDockerRestart:
                     container_running = True
                     break
                 time.sleep(1)
-            assert container_running, "check_app_status() should have restarted the Docker container"
+            assert container_running, "check_app_status() should have restarted the container"
 
             # Verify the container is actually serving traffic
             deadline = time.time() + 15
@@ -883,7 +882,7 @@ class TestDockerRestart:
 
             # ---- Phase 5: Assert router status matches reality ----
             #
-            # The Docker container IS running and healthy.  The router's
+            # The container IS running and healthy.  The router's
             # background thread (_restart_apps_sequential) may still be
             # finishing _wait_for_ready() before it commits
             # status='running' to the DB, so poll instead of reading once.
@@ -921,7 +920,7 @@ class TestDockerRestart:
                 time.sleep(2)
 
             assert db_status == "running", (
-                f"App status in DB is '{db_status}' but Docker container "
+                f"App status in DB is '{db_status}' but the container "
                 f"is running and healthy.  check_app_status() should have "
                 f"restarted the container and set status to 'running'."
             )
@@ -945,13 +944,13 @@ class TestDockerRestart:
                 except Exception:
                     pass
                 _stop_router_process(router)
-            _docker_cleanup(self.CONTAINER_NAME, self.APP_NAME)
+            container_cleanup(self.CONTAINER_NAME, self.APP_NAME)
 
 
-@requires_docker
-class TestDockerE2E:
+@requires_containers
+class TestContainerE2E:
     """
-    End-to-end test of the Docker deployment path using a minimal test app.
+    End-to-end test of the container deployment path using a minimal test app.
 
     Tests run in definition order within the class.  Each test builds on the
     state left by the previous one (deploy -> interact -> remove).
@@ -1089,7 +1088,7 @@ class TestDockerE2E:
         )
         assert r.status_code == 200
 
-        # Wait for it to come back (Docker rebuild may take a while under load)
+        # Wait for it to come back (the rebuild may take a while under load)
         # Also poll the API for status to detect errors early.
         url = f"{base_url}/test-app/health"
         status_url = f"{base_url}/api/app_status/test-app"
@@ -1145,11 +1144,11 @@ class TestDockerE2E:
         assert not os.path.exists(app_data)
         assert not os.path.exists(app_temp)
 
-    def test_docker_cleaned_up(self):
-        """Docker container should be removed after app removal."""
+    def test_container_cleaned_up(self):
+        """Container should be removed after app removal."""
         r = subprocess.run(
             [
-                "docker",
+                "podman",
                 "ps",
                 "-a",
                 "--filter",
@@ -1170,7 +1169,7 @@ class TestDockerE2E:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestRemoveKeepData:
     """
     Test that 'Remove App (Keep Data)' preserves persistent app data so the
@@ -1322,7 +1321,7 @@ def _create_bare_git_repo(source_dir, bare_repo_path):
     return bare_repo_path
 
 
-@requires_docker
+@requires_containers
 class TestGitUrlDeployE2E:
     """
     End-to-end test of deploying an app from a Git URL.
@@ -1485,11 +1484,11 @@ class TestGitUrlDeployE2E:
         assert not os.path.exists(app_data)
         assert not os.path.exists(app_temp)
 
-    def test_docker_cleaned_up(self):
-        """Docker container should be removed after app removal."""
+    def test_container_cleaned_up(self):
+        """Container should be removed after app removal."""
         r = subprocess.run(
             [
-                "docker",
+                "podman",
                 "ps",
                 "-a",
                 "--filter",

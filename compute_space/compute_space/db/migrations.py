@@ -81,13 +81,27 @@ def _recover_temp_tables(db: sqlite3.Connection) -> None:
                 db.commit()
 
 
+def _apps_columns(db: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+
+
 def migrate(db: sqlite3.Connection) -> None:
     """Migrate older databases: add missing columns, drop obsolete ones, and recreate tables when constraints change."""
     _recover_temp_tables(db)
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
     if not columns:
         return  # Fresh DB — table doesn't exist yet, schema.sql will create it
+
+    # Bring the container-id column name in line with the current schema
+    # BEFORE any other migration step.  _recreate_table (used by later
+    # steps) rebuilds the table from schema.sql, which only knows about
+    # container_id; a lingering docker_container_id column would be
+    # silently dropped by the common-column filter and its data lost.
+    if "docker_container_id" in columns and "container_id" not in columns:
+        db.execute("ALTER TABLE apps RENAME COLUMN docker_container_id TO container_id")
+        db.commit()
+        columns = _apps_columns(db)
+
     if "public_paths" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN public_paths TEXT NOT NULL DEFAULT '[]'")
         db.commit()
@@ -99,8 +113,7 @@ def migrate(db: sqlite3.Connection) -> None:
 
     # Re-read columns after potential ALTER TABLEs above so the drop-column
     # migration copies all current columns (including just-added ones).
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     # Drop base_path and subdomain columns (no longer used).
     # base_path has a UNIQUE constraint so ALTER TABLE DROP won't work;
@@ -114,17 +127,13 @@ def migrate(db: sqlite3.Connection) -> None:
         finally:
             db.execute("PRAGMA foreign_keys=ON")
 
-    # Re-read columns after potential table recreation
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     if "repo_url" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN repo_url TEXT")
         db.commit()
 
-    # Re-read columns after potential ALTER TABLE
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     # Drop spin_pid column (serverless runtime removed) and update
     # runtime_type CHECK constraint.  Requires table recreation since

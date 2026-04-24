@@ -2,9 +2,9 @@
 
 Test cases for the OpenHost platform. Automated tests are in:
 - `test_e2e.py` — cloud E2E (ephemeral GCE instance, real TLS)
-- `test_full_stack.py` — local full-stack (router on host + Docker, no VM needed)
+- `test_full_stack.py` — local full-stack (router on host + rootless podman, no VM needed)
 - `test_tls.py` — TLS cert acquisition (Pebble ACME + CoreDNS, no VM needed)
-- `compute_space/tests/test_integration.py` — Docker integration (router on host)
+- `compute_space/tests/test_integration.py` — podman integration (router on host)
 
 Legend: [x] = automated, [ ] = manual/not yet automated
 
@@ -88,15 +88,15 @@ Legend: [x] = automated, [ ] = manual/not yet automated
 - [x] Deploy app from Git URL — `test_integration.py::TestGitUrlDeployE2E`
 - [ ] Deploy app from private GitHub repo (with token)
 - [ ] Serverless app (Spin WASM) builds and starts
-- [x] Docker container app builds and starts — `test_e2e.py::test_05`, `test_full_stack.py::TestTestAppPathRouting`
+- [x] Container app builds and starts — `test_e2e.py::test_05`, `test_full_stack.py::TestTestAppPathRouting`
 - [x] App reaches "running" status — `test_e2e.py::test_05`, `test_full_stack.py`
-- [x] App removal stops process and cleans up — `test_e2e.py::test_14`, `test_integration.py::TestDockerE2E`
+- [x] App removal stops process and cleans up — `test_e2e.py::test_14`, `test_integration.py::TestContainerE2E`
 
 ### App Lifecycle
 - [x] Stop app — `test_e2e.py::test_08`, `test_full_stack.py::TestAppLifecycle`
 - [x] Reload app (rebuild + restart) — `test_e2e.py::test_08b`, `test_full_stack.py::TestAppLifecycle`
 - [x] Rename app, routing updates — `test_full_stack.py::TestAppRename`
-- [x] Docker restart recovery — `test_integration.py::TestDockerRestart`
+- [x] Container engine restart recovery — `test_integration.py::TestContainerRestart`
 - [x] Container gone recovery — `test_integration.py::TestContainerGone`
 - [x] Remove with keep_data preserves persistent data — `test_integration.py::TestRemoveKeepData`
 - [x] Git-deployed app: reload does git pull — `test_integration.py::TestGitUrlDeployE2E`
@@ -136,7 +136,7 @@ Legend: [x] = automated, [ ] = manual/not yet automated
 
 ### App Data
 - [x] App data persists across remove+redeploy (keep_data) — `test_integration.py::TestRemoveKeepData`
-- [x] App data cleaned up on full remove — `test_integration.py::TestDockerE2E`
+- [x] App data cleaned up on full remove — `test_integration.py::TestContainerE2E`
 - [x] SQLite databases are provisioned and accessible — `test_integration.py::test_sqlite_provisioning`
 
 ## DNS

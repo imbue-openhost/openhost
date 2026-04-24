@@ -20,13 +20,15 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 | `image` | string | yes | — | Path to Dockerfile relative to repo root |
 | `port` | integer | yes | — | Port the container listens on |
 | `command` | string | no | — | Override container CMD |
-| `extra_ports` | string[] | no | `[]` | **Deprecated.** Use `[[ports]]` instead. Raw Docker `-p` format strings. |
-| `capabilities` | string[] | no | `[]` | Linux capabilities to add (e.g., `"NET_ADMIN"`) |
-| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/tun"`) |
+| `extra_ports` | string[] | no | `[]` | **Deprecated.** Present entries emit a WARNING log at parse time but do not produce any port mappings.  Use `[[ports]]` instead. |
+| `capabilities` | string[] | no | `[]` | **Additional** Linux capabilities to grant inside the container, on top of the Docker-default baseline (CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID, SYS_CHROOT, NET_RAW, MKNOD, AUDIT_WRITE) that every container receives automatically. Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_CAPABILITIES`); entries like `"SYS_ADMIN"` are rejected at parse time. Accepts names with or without the `CAP_` prefix. |
+| `devices` | string[] | no | `[]` | Host devices to pass through (e.g., `"/dev/net/tun"`). Restricted to a rootless-safe allowlist (see `compute_space.core.manifest.SAFE_DEVICE_PATHS`); paths like `/dev/mem`, `/dev/kvm`, or raw block devices are rejected at parse time. |
 
 ### `[[ports]]` — optional, repeatable
 
 Declares additional port mappings for the container. Each entry binds a container port to a host port (TCP+UDP on 0.0.0.0). Set `host_port = 0` for auto-assignment from the 9000-9999 range.
+
+Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejected at parse time. Ports `80` and `443` are claimed by the built-in Caddy front-door and will fail to bind if an app requests them. For public HTTP/HTTPS, route through the router proxy (apps live under `https://{app_name}.{zone_domain}/`); for other protocols (e.g. SMTP on `25`), pick `host_port = 25` or any port in the 9000-9999 auto-assign range.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -79,7 +81,7 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
 - `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
-- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server (e.g., `http://host.docker.internal:<port>`)
+- `OPENHOST_ROUTER_URL` — URL of the router's HTTP server, reachable from inside the container.
 
 ## Examples
 

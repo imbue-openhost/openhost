@@ -3,10 +3,64 @@ from __future__ import annotations
 import os
 import secrets as secrets_mod
 import shutil
+import stat
 import subprocess
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
+
+
+def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> None:
+    """Remove a directory tree, falling back to ``sudo -n rm -rf``.
+
+    The fast path is ``shutil.rmtree`` with an onexc hook that chmods
+    read-only entries (git-clone artefacts) and retries.  The sudo
+    fallback relies on the NOPASSWD sudoers rule installed by ansible.
+
+    With ``raise_on_failure=False`` both stages log and swallow errors
+    so cleanup failures can't block the deprovision flow.  With
+    ``raise_on_failure=True`` the error re-raises.
+    """
+    if not os.path.exists(path):
+        return
+
+    def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
+        os.chmod(err_path, stat.S_IRWXU)
+        func(err_path)
+
+    try:
+        shutil.rmtree(path, onexc=_make_writable_and_retry)
+        return
+    except OSError as rmtree_err:
+        logger.warning(
+            "rmtree failed on %s (%s), falling back to sudo rm -rf",
+            path,
+            rmtree_err,
+        )
+
+    try:
+        subprocess.run(
+            ["sudo", "-n", "rm", "-rf", path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as sudo_err:
+        # Surface captured stderr so the operator sees 'sudo: a password
+        # is required' etc. without re-running the command by hand.
+        stderr = (sudo_err.stderr or b"").decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "Failed to clean data dir %s via sudo (exit %d): %s",
+            path,
+            sudo_err.returncode,
+            stderr or "<no stderr>",
+        )
+        if raise_on_failure:
+            raise
+    except (subprocess.TimeoutExpired, OSError) as sudo_err:
+        logger.warning("Failed to clean data dir %s via sudo: %s", path, sudo_err)
+        if raise_on_failure:
+            raise
 
 
 def provision_data(
@@ -35,7 +89,6 @@ def provision_data(
 
     if needs_app_data:
         os.makedirs(app_data_dir, exist_ok=True)
-        os.chmod(app_data_dir, 0o777)
         env_vars["OPENHOST_APP_DATA_DIR"] = app_data_dir
 
         sqlite_dir = os.path.join(app_data_dir, "sqlite")
@@ -61,9 +114,11 @@ def provision_data(
     # Generate app token for cross-app service calls
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)
 
-    # Apps run in Docker bridge-mode containers where 127.0.0.1 is the
-    # container itself, not the host. Use host.docker.internal instead.
-    env_vars["OPENHOST_ROUTER_URL"] = f"http://host.docker.internal:{port}"
+    # Apps run in bridge-mode containers where 127.0.0.1 is the container
+    # itself, not the host.  host.containers.internal (podman's host-gateway
+    # alias) and the host.docker.internal back-compat alias are both
+    # registered by run_container; we advertise the podman-native one.
+    env_vars["OPENHOST_ROUTER_URL"] = f"http://host.containers.internal:{port}"
 
     # Zone identity info so apps can build federated auth flows
     env_vars["OPENHOST_ZONE_DOMAIN"] = zone_domain
@@ -73,52 +128,14 @@ def provision_data(
     return env_vars
 
 
-def _remove_dir(dir_path: str) -> None:
-    """Remove a directory, falling back to docker for root-owned files.
-
-    Docker containers run as root and may create root-owned files in
-    the mounted data volume.  Try a normal rmtree first; if that fails
-    due to permissions, fall back to ``docker run --rm`` to delete as root.
-    """
-    if not os.path.exists(dir_path):
-        return
-    try:
-        shutil.rmtree(dir_path)
-    except PermissionError:
-        logger.info("Permission denied on rmtree, using docker to clean %s", dir_path)
-        try:
-            subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "-v",
-                    f"{dir_path}:/cleanup",
-                    "alpine",
-                    "rm",
-                    "-rf",
-                    "/cleanup",
-                ],
-                capture_output=True,
-                timeout=30,
-            )
-            if os.path.exists(dir_path):
-                shutil.rmtree(dir_path, ignore_errors=True)
-        except Exception as e:
-            logger.warning("Failed to clean data dir %s: %s", dir_path, e)
-
-
 def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:
-    """Remove the app's temporary data directory (app_temp_data/{name}).
-
-    This includes the repo clone, build artifacts, runtime logs, and any
-    files the app stored under OPENHOST_APP_TEMP_DIR.  Persistent data
-    in app_data/{name} (SQLite databases) is not touched.
+    """Remove the app's temp dir (repo clone, build artefacts, logs,
+    OPENHOST_APP_TEMP_DIR contents).  Persistent data is not touched.
     """
-    _remove_dir(os.path.join(temp_data_dir, "app_temp_data", app_name))
+    rmtree_with_sudo_fallback(os.path.join(temp_data_dir, "app_temp_data", app_name))
 
 
 def deprovision_data(app_name: str, data_dir: str, temp_data_dir: str) -> None:
     """Remove all data for an app from both permanent and temp disks."""
-    _remove_dir(os.path.join(data_dir, "app_data", app_name))
+    rmtree_with_sudo_fallback(os.path.join(data_dir, "app_data", app_name))
     deprovision_temp_data(app_name, temp_data_dir)

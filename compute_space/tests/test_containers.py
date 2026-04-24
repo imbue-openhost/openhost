@@ -1,0 +1,674 @@
+"""Unit tests for compute_space.core.containers.
+
+These tests mock ``subprocess`` so they run without a live podman daemon —
+end-to-end tests that actually exercise podman live under the
+``@requires_containers`` marker.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+
+import pytest
+
+from compute_space.core import containers
+from compute_space.core.containers import DEFAULT_CAPABILITIES
+from compute_space.core.containers import _bind_mount_arg
+from compute_space.core.containers import build_image
+from compute_space.core.containers import get_docker_logs
+from compute_space.core.containers import is_container_running
+from compute_space.core.containers import remove_image
+from compute_space.core.containers import run_container
+from compute_space.core.containers import stop_container
+from compute_space.core.manifest import AppManifest
+from compute_space.core.manifest import PortMapping
+
+
+class _FakeCompleted:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _patch_subprocess_run(monkeypatch: pytest.MonkeyPatch, handler):
+    """Replace subprocess.run globally with a callable that records + returns."""
+    monkeypatch.setattr(subprocess, "run", handler)
+
+
+# ---------------------------------------------------------------------------
+# build_image
+# ---------------------------------------------------------------------------
+
+
+def test_build_image_uses_podman_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        calls.append(cmd)
+        return _FakeCompleted(0, stdout="")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    tag = build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    assert tag == "openhost-myapp:latest"
+    assert calls[0] == [
+        "podman",
+        "build",
+        "-t",
+        "openhost-myapp:latest",
+        "-f",
+        "/tmp/repo/Dockerfile",
+        "/tmp/repo",
+    ]
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "error: content digest sha256:deadbeef: not found",
+        "Error: storage-driver errored: something happened",
+        "Error: layer not known: sha256:whatever",
+    ],
+)
+def test_build_image_detects_every_known_cache_corrupt_fragment(
+    monkeypatch: pytest.MonkeyPatch, fragment: str
+) -> None:
+    """Every substring in _BUILD_CACHE_CORRUPT_FRAGMENTS must trigger the
+    BUILD_CACHE_CORRUPT marker via the non-streaming build code path
+    (no temp_data_dir) so the dashboard's 'drop cache' toast offers a
+    remediation, not a blind retry."""
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(1, stderr=fragment)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "error: content digest sha256:deadbeef: not found",
+        "Error: storage-driver errored: something happened",
+        "Error: layer not known: sha256:whatever",
+    ],
+)
+def test_build_image_streaming_path_detects_cache_corrupt(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fragment: str
+) -> None:
+    """The streaming build path (temp_data_dir set) assembles build_output
+    incrementally from Popen.stdout and then runs the same substring check.
+    It needs its own regression coverage because the non-streaming code
+    path uses a different subprocess API.
+    """
+
+    class _FakePopen:
+        def __init__(self, *a, **_kw):  # type: ignore[no-untyped-def]
+            # Every line of the "build" ends with a newline; the code under
+            # test iterates over proc.stdout and appends to build_output.
+            self.stdout = iter([fragment + "\n"])
+            self.returncode = 1
+            self.pid = 12345
+
+        def wait(self, timeout: int | None = None) -> int:
+            return self.returncode
+
+        def kill(self) -> None:
+            pass
+
+        # Popen is used as a context manager in build_image's streaming
+        # path so child processes are reaped and pipes closed even if
+        # the body raises.  Mirror that here so the test fake behaves
+        # like the real thing.
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_exc):  # type: ignore[no-untyped-def]
+            return False
+
+    monkeypatch.setattr("compute_space.core.containers.subprocess.Popen", _FakePopen)
+
+    temp_data_dir = str(tmp_path / "temp")
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", "myapp"), exist_ok=True)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=temp_data_dir)
+    assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
+
+
+def test_build_image_generic_failure_does_not_use_cache_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(1, stderr="Dockerfile not found")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    msg = str(exc_info.value)
+    assert containers.BUILD_CACHE_CORRUPT_MARKER not in msg
+    assert "Dockerfile not found" in msg
+
+
+def test_build_image_non_streaming_path_inspects_stdout_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The non-streaming build path (temp_data_dir=None) concatenates
+    stdout and stderr before running the cache-corrupt check so it
+    catches corruption indicators regardless of which channel podman
+    emits them on.  Pin this by putting the corruption marker in
+    stdout only — a regression that inspected only stderr would miss
+    it and produce a generic build-failure error instead of the
+    'Drop Cache' remediation marker.
+    """
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(
+            1,
+            stdout="error: content digest sha256:deadbeef: not found\n",
+            stderr="",
+        )
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
+
+
+def test_build_image_streaming_path_reaps_child_on_timeout(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard for the zombie-safety fix: when proc.wait(timeout=
+    300) raises TimeoutExpired in the streaming path, build_image must
+    call proc.kill() followed by a bounded proc.wait().  A kill without
+    a subsequent wait leaves a zombie child hanging off the long-running
+    router process.
+    """
+
+    kill_calls: list[int] = []
+    wait_calls: list[int] = []
+
+    class _HangingPopen:
+        """Fakes a podman-build that hangs: iterating stdout finishes
+        cleanly but proc.wait() raises TimeoutExpired."""
+
+        def __init__(self, *_a, **_kw) -> None:
+            self.stdout = iter(["building...\n"])
+            self.returncode = -9
+            self.pid = 99999
+
+        def wait(self, timeout: int | None = None) -> int:
+            wait_calls.append(timeout or 0)
+            if timeout == 5:
+                # The bounded wait inside the except block: simulate a
+                # well-behaved kill that does reap.
+                return self.returncode
+            # The first wait (the 300s build wait) is the one that times out.
+            raise subprocess.TimeoutExpired(cmd=["podman", "build"], timeout=timeout or 0)
+
+        def kill(self) -> None:
+            kill_calls.append(self.pid)
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_exc):  # type: ignore[no-untyped-def]
+            return False
+
+    monkeypatch.setattr("compute_space.core.containers.subprocess.Popen", _HangingPopen)
+
+    temp_data_dir = str(tmp_path / "temp")
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", "myapp"), exist_ok=True)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=temp_data_dir)
+
+    # Must have invoked kill and then a bounded wait with timeout=5.
+    assert kill_calls == [99999], f"expected one kill, got {kill_calls}"
+    assert 5 in wait_calls, f"expected bounded wait(timeout=5) after kill, got {wait_calls}"
+
+
+@pytest.mark.parametrize(
+    "innocuous_output",
+    [
+        # Normal build progress mentioning a layer digest — must NOT
+        # be classified as cache corruption.
+        "Copying blob sha256:abcdef1234567890 done",
+        "STEP 1/3: FROM sha256:deadbeef",
+        # File-not-found error unrelated to any digest — must NOT be
+        # classified as cache corruption just because it contains
+        # ": not found".
+        "error: /app/build.sh: not found",
+        "COPY failed: file /src/missing.txt: not found in build context",
+        # Registry pull failure: mentions a sha256 digest AND ": not
+        # found" but the failure mode is "base image not published to
+        # the registry", not "local cache corrupt".  Retrying the pull
+        # would help; dropping the local cache would not.
+        "Error: initializing source docker://registry.example.com/unknown@sha256:abc: image not found",
+        "Error: pulling image sha256:abc123: manifest not found in registry",
+    ],
+)
+def test_build_image_does_not_misclassify_innocuous_output_as_cache_corrupt(
+    monkeypatch: pytest.MonkeyPatch, innocuous_output: str
+) -> None:
+    """Regression guard: the cache-corruption matcher must require BOTH
+    a sha256 digest AND a ": not found" suffix on the same line.  A
+    naive substring match would trigger on normal layer status output
+    (which mentions sha256 digests) or on unrelated file-not-found
+    errors, causing the dashboard to prompt a misleading "Drop Cache
+    & Rebuild" and masking the actual build error."""
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(1, stderr=innocuous_output)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
+    msg = str(exc_info.value)
+    assert containers.BUILD_CACHE_CORRUPT_MARKER not in msg, (
+        f"Expected generic build failure, got cache-corrupt marker for output: {innocuous_output!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# run_container
+# ---------------------------------------------------------------------------
+
+
+def _basic_manifest(**overrides) -> AppManifest:  # type: ignore[no-untyped-def]
+    kwargs = dict(
+        name="myapp",
+        version="0.1.0",
+        container_image="Dockerfile",
+        container_port=8080,
+        memory_mb=256,
+        cpu_millicores=500,
+    )
+    kwargs.update(overrides)
+    return AppManifest(**kwargs)  # type: ignore[arg-type]
+
+
+def _run_and_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    manifest: AppManifest,
+    tmp_path,
+    port_mappings: list[PortMapping] | None = None,
+    env_vars: dict[str, str] | None = None,
+) -> list[str]:
+    """Invoke run_container with mocked subprocess and return the built argv."""
+    runs: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=60, **_):  # type: ignore[no-untyped-def]
+        runs.append(list(cmd))
+        # First call is the pre-run "podman rm -f" — no output needed.
+        # Second call is the actual "podman run" — return a fake container id.
+        if cmd[:2] == ["podman", "run"]:
+            return _FakeCompleted(0, stdout="container-id-xyz\n")
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    data_dir = str(tmp_path / "persistent")
+    temp_data_dir = str(tmp_path / "temp")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
+
+    run_container(
+        manifest.name,
+        "openhost-myapp:latest",
+        manifest,
+        local_port=9001,
+        env_vars=env_vars or {},
+        data_dir=data_dir,
+        temp_data_dir=temp_data_dir,
+        port_mappings=port_mappings,
+    )
+    # The "run" call is the one after the pre-cleanup "rm".
+    run_cmds = [c for c in runs if c[:2] == ["podman", "run"]]
+    assert len(run_cmds) == 1
+    return run_cmds[0]
+
+
+def test_run_container_has_hardening_flags(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = _basic_manifest()
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+    assert "--cap-drop=ALL" in argv
+    assert "--security-opt=no-new-privileges=true" in argv
+    assert "--add-host=host.docker.internal:host-gateway" in argv
+    assert "--add-host=host.containers.internal:host-gateway" in argv
+
+
+def test_run_container_mounts_use_idmap_option(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = _basic_manifest(app_data=True, app_temp_data=True, access_vm_data=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+    # Every -v argument value should have :idmap (or :ro,idmap) as its
+    # options suffix so container-root writes land on disk under the host
+    # user, not under the mapped subuid.
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    assert volume_args  # The test manifest requested three mounts.
+    for v in volume_args:
+        assert v.endswith(":idmap") or v.endswith(":ro,idmap"), v
+
+
+def test_run_container_adds_manifest_capabilities(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = _basic_manifest(capabilities=["NET_ADMIN", "NET_RAW"])
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+    # --cap-drop=ALL must come before the --cap-add entries.
+    drop_idx = argv.index("--cap-drop=ALL")
+    for cap in ("NET_ADMIN", "NET_RAW"):
+        pair_idx = argv.index(cap)
+        assert argv[pair_idx - 1] == "--cap-add"
+        assert pair_idx > drop_idx, "cap-drop must come before cap-add"
+
+
+def test_run_container_grants_docker_default_capabilities_by_default(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Apps with no manifest capabilities still get Docker's default set
+    (CHOWN, DAC_OVERRIDE, SETUID, etc.) so debian-packaged daemons that
+    assume container-root can override DAC on image-layer files — tor,
+    postgres, redis, nginx, rabbitmq — keep working under podman without
+    the manifest needing to enumerate every capability Docker grants
+    implicitly."""
+    manifest = _basic_manifest()  # no explicit capabilities
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    drop_idx = argv.index("--cap-drop=ALL")
+    for cap in sorted(DEFAULT_CAPABILITIES):
+        pair_idx = argv.index(cap)
+        assert argv[pair_idx - 1] == "--cap-add", f"{cap}: expected --cap-add, got {argv[pair_idx - 1]!r}"
+        assert pair_idx > drop_idx, f"{cap}: --cap-drop=ALL must precede --cap-add"
+
+
+def test_run_container_does_not_duplicate_baseline_caps_from_manifest(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest that redundantly lists a baseline capability (e.g.
+    CHOWN) must not produce a second --cap-add entry for it — the
+    operator-visible argv should stay clean and match what podman
+    sees."""
+    # Pick a capability that's in both the baseline and the allowlist.
+    redundant = next(iter(DEFAULT_CAPABILITIES))
+    manifest = _basic_manifest(capabilities=[redundant, "NET_ADMIN"])
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    # The redundant cap appears exactly once (from the baseline loop);
+    # NET_ADMIN appears exactly once (from the manifest loop).
+    assert argv.count(redundant) == 1, f"expected one {redundant}, got {argv.count(redundant)}"
+    assert argv.count("NET_ADMIN") == 1
+
+
+def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``manifest.devices`` entries must be passed to podman as
+    ``--device <entry>`` pairs.  Symmetric to the capabilities test:
+    the manifest validator restricts devices to SAFE_DEVICE_PATHS at
+    parse time, and run_container then forwards every entry unchanged.
+    A regression that silently dropped device passthrough would break
+    VPN-style apps (/dev/net/tun) and FUSE filesystems silently, so
+    pin the exact argv wiring."""
+    manifest = _basic_manifest(devices=["/dev/net/tun", "/dev/fuse"])
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    for device in ("/dev/net/tun", "/dev/fuse"):
+        pair_idx = argv.index(device)
+        assert argv[pair_idx - 1] == "--device", (
+            f"device {device!r} must appear as the value of a --device flag, "
+            f"got argv[{pair_idx - 1}]={argv[pair_idx - 1]!r}"
+        )
+
+
+def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With access_all_data, the app sees /data/app_data/ and
+    /data/app_temp_data/ as whole-namespace parent mounts, not just its
+    own subdir.  This is security-sensitive because a typo here would
+    expose every app's data to every app; pin the exact mount layout."""
+    manifest = _basic_manifest(access_all_data=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    # Every mount must be idmap (rw or ro).
+    for v in volume_args:
+        assert v.endswith(":idmap") or v.endswith(":ro,idmap"), v
+
+    # Specifically, the app_data/app_temp_data parent mounts must be the
+    # *parent* directories, not the per-app subdirectories.
+    targets = [v.rsplit(":", 2)[1] for v in volume_args]
+    assert "/data/app_data" in targets
+    assert "/data/app_temp_data" in targets
+    # With access_all_data, vm_data is explicitly mounted rw.  Pin this —
+    # silently swapping it to ro would break every app that relies on
+    # /data/vm_data as shared scratch space.
+    vm_mount = next(v for v in volume_args if v.endswith(":/data/vm_data:idmap"))
+    assert "ro" not in vm_mount.rsplit(":", 1)[1], f"vm_data should be rw under access_all_data, got {vm_mount}"
+
+
+def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """access_vm_data (without access_all_data) grants only a read-only
+    view of /data/vm_data.  The distinction matters: this is what lets
+    apps read shared state without being able to corrupt it, and a
+    regression swapping in rw here would turn a security-critical mount
+    into a write-through channel.
+    """
+    manifest = _basic_manifest(access_vm_data=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    vm_mounts = [v for v in volume_args if "/data/vm_data" in v]
+    assert len(vm_mounts) == 1, vm_mounts
+    assert vm_mounts[0].endswith(":ro,idmap"), vm_mounts[0]
+
+
+def test_run_container_port_mappings_bind_tcp_and_udp_on_all_interfaces(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manifests with [[ports]] should publish TCP and UDP on 0.0.0.0 for
+    every entry.  Port mappings are user-visible and binding to the wrong
+    interface or protocol would silently break apps."""
+    manifest = _basic_manifest()
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        port_mappings=[
+            PortMapping(label="wg", container_port=51820, host_port=51820),
+            PortMapping(label="dns", container_port=5300, host_port=5300),
+        ],
+    )
+
+    # Collect every -p value.
+    p_values = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-p"]
+    # The main loopback-only HTTP mapping must always be present, and the
+    # two [[ports]] entries must each expand to a tcp + udp publish on
+    # 0.0.0.0.
+    assert "127.0.0.1:9001:8080" in p_values
+    assert "0.0.0.0:51820:51820/tcp" in p_values
+    assert "0.0.0.0:51820:51820/udp" in p_values
+    assert "0.0.0.0:5300:5300/tcp" in p_values
+    assert "0.0.0.0:5300:5300/udp" in p_values
+
+
+# ---------------------------------------------------------------------------
+# stop, remove, status, cache drop
+# ---------------------------------------------------------------------------
+
+
+def test_stop_container_calls_podman(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        calls.append(list(cmd))
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    stop_container("abc123")
+    assert calls == [
+        ["podman", "stop", "abc123"],
+        ["podman", "rm", "-f", "abc123"],
+    ]
+
+
+def test_remove_image_calls_podman_rmi(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        calls.append(list(cmd))
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    remove_image("myapp")
+    assert calls == [["podman", "rmi", "openhost-myapp:latest"]]
+
+
+def test_is_container_running_returns_false_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(1, stderr="no such container")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+    assert is_container_running("bogus") is False
+
+
+def test_is_container_running_returns_true_when_podman_reports_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: podman inspect exits 0 with ``running``."""
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(0, stdout="running\n")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+    assert is_container_running("real-container") is True
+
+
+def test_is_container_running_returns_false_for_non_running_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any podman state other than ``running`` (paused, created, exited)
+    collapses to False.  Callers only care about the running/not-running
+    distinction.
+    """
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(0, stdout="paused\n")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+    assert is_container_running("paused-container") is False
+
+
+# NOTE: build-cache drop is exercised in test_build_cache.py with the
+# same subprocess mock plus kwarg assertions.  Not duplicated here.
+
+
+# ---------------------------------------------------------------------------
+# get_docker_logs
+# ---------------------------------------------------------------------------
+
+
+def _make_build_log(tmp_path, app_name: str, contents: str) -> str:
+    """Write a build log file at the canonical path for an app and return it."""
+    log_dir = os.path.join(str(tmp_path), "app_temp_data", app_name)
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "docker.log")
+    with open(log_file, "w") as f:
+        f.write(contents)
+    return log_file
+
+
+def test_get_docker_logs_returns_build_log_when_no_container(tmp_path) -> None:
+    """When the app has no running container, get_docker_logs should still
+    return the build log contents (and skip the podman logs call)."""
+    _make_build_log(tmp_path, "notes", "build-line-1\nbuild-line-2\n")
+
+    output = get_docker_logs("notes", str(tmp_path), container_id=None)
+    assert "build-line-1" in output
+    assert "build-line-2" in output
+    # No "Container logs" header should appear since no container id.
+    assert "=== Container logs ===" not in output
+
+
+def test_get_docker_logs_returns_empty_when_no_build_log_and_no_container(tmp_path) -> None:
+    """Fresh app that failed before any _append_log call has neither
+    a build log file nor a container id.  The function's os.path.exists
+    guard must short-circuit both branches and return "" rather than
+    trying to read a missing file or call podman inspect."""
+    # No _make_build_log call — the build log file does not exist.
+    output = get_docker_logs("brand-new", str(tmp_path), container_id=None)
+    assert output == ""
+
+
+def test_get_docker_logs_appends_podman_logs_when_container_id_set(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a container id, get_docker_logs should also run ``podman logs
+    --tail <N>`` and concatenate the output under a 'Container logs' header."""
+    _make_build_log(tmp_path, "notes", "=== Build complete ===\n")
+
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=10, **_):  # type: ignore[no-untyped-def]
+        captured.append(list(cmd))
+        return _FakeCompleted(0, stdout="app stdout line\n")
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    output = get_docker_logs("notes", str(tmp_path), container_id="abc123", tail=500)
+
+    assert captured == [["podman", "logs", "--tail", "500", "abc123"]]
+    assert "=== Build complete ===" in output
+    assert "=== Container logs ===" in output
+    assert "app stdout line" in output
+
+
+def test_get_docker_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Color codes and carriage returns from podman logs should be
+    stripped before we hand the text back to the dashboard (which
+    otherwise renders them as garbage text)."""
+    _make_build_log(tmp_path, "notes", "")
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=10, **_):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(
+            0,
+            stdout="\x1b[31mred text\x1b[0m plain\r\n",
+        )
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    output = get_docker_logs("notes", str(tmp_path), container_id="abc123")
+    assert "\x1b[" not in output
+    assert "\r" not in output
+    assert "red text plain" in output
+
+
+# ---------------------------------------------------------------------------
+# _bind_mount_arg
+# ---------------------------------------------------------------------------
+
+
+def test_bind_mount_arg_rw_appends_idmap() -> None:
+    """Read-write mounts must carry the bare ``:idmap`` option so
+    container-root writes land on disk under the unprivileged host
+    user rather than the mapped subuid."""
+    assert _bind_mount_arg("/srv/data", "/data") == "/srv/data:/data:idmap"
+
+
+def test_bind_mount_arg_ro_emits_ro_idmap() -> None:
+    """Read-only mounts must combine ``ro`` with ``idmap``.  The
+    ordering (``ro,idmap``) matters for operator readability of
+    ``podman ps`` output; pin the canonical rendering here even though
+    podman parses the options order-independently."""
+    assert _bind_mount_arg("/srv/data", "/data", read_only=True) == "/srv/data:/data:ro,idmap"
+
+
+def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
+    """Host and container paths pass through unchanged — no
+    normalisation, no trailing-slash stripping.  Callers already
+    join paths to their canonical form; this function shouldn't
+    re-touch them because any mutation could change the mount
+    target vs. what the app's env var points at."""
+    arg = _bind_mount_arg("/a/b/c/", "/data/app_data/myapp/")
+    assert arg == "/a/b/c/:/data/app_data/myapp/:idmap"

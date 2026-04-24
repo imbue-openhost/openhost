@@ -3,11 +3,12 @@
 Checks:
   - Python >= 3.12
   - uv available
-  - Docker daemon accessible
+  - Rootless container runtime accessible (currently podman)
   - Required ports not in use
   - Router code present
 """
 
+import json
 import shutil
 import socket
 import subprocess
@@ -41,20 +42,45 @@ def _check_uv() -> _Check:
     return _Check("uv installed", False, "uv not found on PATH")
 
 
-def _check_docker() -> _Check:
+def _check_container_runtime() -> _Check:
+    """Verify a usable, rootless container runtime is available.
+
+    Currently only podman is supported; the check label is "Container
+    runtime" so a future Docker/containerd/etc. backend can share the
+    same probe contract without rewording user-facing output.  The
+    router relies on rootless mode for its security model (idmapped
+    bind mounts, per-container user namespaces), so reporting
+    "available" for a rootful-only installation would be misleading.
+    We parse ``podman info`` JSON and explicitly assert the rootless
+    flag.
+    """
+    name = "Container runtime available"
     try:
         r = subprocess.run(
-            ["docker", "info"],
+            ["podman", "info", "--format", "json"],
             capture_output=True,
+            text=True,
             timeout=10,
         )
-        if r.returncode == 0:
-            return _Check("Docker daemon", True, "running")
-        return _Check("Docker daemon", False, "docker info failed")
     except FileNotFoundError:
-        return _Check("Docker daemon", False, "docker not found on PATH")
+        return _Check(name, False, "podman not found on PATH")
     except subprocess.TimeoutExpired:
-        return _Check("Docker daemon", False, "docker info timed out")
+        return _Check(name, False, "podman info timed out")
+
+    if r.returncode != 0:
+        return _Check(name, False, "podman info failed")
+
+    try:
+        info = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return _Check(name, False, "podman info returned non-JSON output")
+
+    rootless = info.get("host", {}).get("security", {}).get("rootless")
+    if rootless is True:
+        return _Check(name, True, "podman, rootless mode")
+    if rootless is False:
+        return _Check(name, False, "podman is running rootful; rootless required")
+    return _Check(name, False, "could not determine rootless status from podman info")
 
 
 def _check_port(port: int) -> _Check:
@@ -95,7 +121,7 @@ def run_doctor() -> bool:
     checks: list[_Check] = [
         _check_python(),
         _check_uv(),
-        _check_docker(),
+        _check_container_runtime(),
         _check_port(8080),
         _check_router_code(),
     ]

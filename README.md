@@ -13,7 +13,7 @@ FOSS apps on your own compute and data. users bring their own hosting (cloud ser
 ### local development
 
 ```bash
-# run the router directly on your machine (needs Docker)
+# run the router directly on your machine (needs rootless podman)
 openhost up --dev
 
 # optional: test app subdomains locally with lvh.me
@@ -49,7 +49,7 @@ see `ansible/readme.md` for prerequisites and full details.
 
 ## how it works
 
-the router is a Python app (Quart/Hypercorn) that provides a web dashboard for deploying and managing apps. it reads `openhost.toml` manifests from app repos, builds Docker images, runs containers, and reverse-proxies HTTP requests to the right app by subdomain or path prefix.
+the router is a Python app (Quart/Hypercorn) that provides a web dashboard for deploying and managing apps. it reads `openhost.toml` manifests from app repos, builds container images from each app's `Dockerfile` using rootless podman, runs each app in its own user namespace, and reverse-proxies HTTP requests to the right app by subdomain or path prefix.
 
 ### server mode
 
@@ -62,7 +62,7 @@ when deployed to a server (via ansible), the router runs as a systemd service al
   │  CoreDNS (:53)  -- ACME DNS-01 challenges   │
   │  Caddy (:443)   -- TLS termination          │
   │  Router (:8080) -- app mgmt + reverse proxy │
-  │  Docker          -- app containers           │
+  │  rootless Podman -- app containers           │
   └─────────────────────────────────────────────┘
 ```
 
@@ -72,7 +72,7 @@ all persistent data (database, TLS certs, app data) lives under the configured `
 
 ### dev mode
 
-`openhost up --dev` runs the router directly on your machine. HTTP only on port 8080, no TLS, no CoreDNS, no Caddy. requires Docker for running app containers.
+`openhost up --dev` runs the router directly on your machine. HTTP only on port 8080, no TLS, no CoreDNS, no Caddy. requires rootless podman for running app containers.
 
 ## cloudflare tunnel setup (no port forwarding)
 
@@ -103,7 +103,7 @@ Notes:
 
 | mode | command | what it does |
 |------|---------|-------------|
-| dev | `openhost up --dev` | runs router directly on host, HTTP only (needs Docker) |
+| dev | `openhost up --dev` | runs router directly on host, HTTP only (needs rootless podman) |
 | server | `ansible-playbook ansible/setup.yml` | deploy to any VPS or bare metal with automatic HTTPS (see `ansible/readme.md`) |
 
 ## components
@@ -129,8 +129,8 @@ pre-commit install
 # run all lightweight tests (from project root)
 uv run --group dev pytest
 
-# run with Docker tests enabled
-uv run --group dev pytest --run-docker
+# run with podman integration tests enabled
+uv run --group dev pytest --run-containers
 ```
 
 Server deployment prerequisites and test setup are documented in `ansible/readme.md`.

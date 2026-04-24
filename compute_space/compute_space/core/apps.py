@@ -21,9 +21,11 @@ import httpx
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
+from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
 from compute_space.core.containers import run_container
 from compute_space.core.data import provision_data
+from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -119,10 +121,10 @@ async def clone_and_read_manifest(
                 manifest = parse_manifest(clone_dir)
                 return manifest, clone_dir, None
             except ValueError as e:
-                shutil.rmtree(tmp_parent, ignore_errors=True)
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
                 return None, None, str(e)
             except Exception as e:
-                shutil.rmtree(tmp_parent, ignore_errors=True)
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
                 return None, None, f"Copy failed: {e}"
 
     if github_token:
@@ -137,7 +139,7 @@ async def clone_and_read_manifest(
         clone_cmd.extend([clone_url, clone_dir])
         result = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
             return None, None, f"Git clone failed: {result.stderr.strip()}"
         # If we cloned with a token, reset the remote URL so the token isn't persisted
         if github_token and clone_url != base_url:
@@ -151,14 +153,14 @@ async def clone_and_read_manifest(
         try:
             manifest = parse_manifest(clone_dir)
         except ValueError as e:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
             return None, None, str(e)
         return manifest, clone_dir, None
     except subprocess.TimeoutExpired:
-        shutil.rmtree(tmp_parent, ignore_errors=True)
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
         return None, None, "Git clone timed out"
     except Exception as e:
-        shutil.rmtree(tmp_parent, ignore_errors=True)
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
         return None, None, f"Clone failed: {e}"
 
 
@@ -344,8 +346,9 @@ def deploy_app_background(
     try:
         storage.check_before_deploy(config)
 
-        # Retry Docker builds for transient failures (daemon not ready yet,
-        # network blip during image pull, etc.).
+        # Retry container builds for transient failures.  Cache-corrupt
+        # failures re-raise immediately — retrying can't fix them and
+        # the dashboard needs the marker to surface the remediation.
         max_build_attempts = 3
         image_tag = ""
         for attempt in range(1, max_build_attempts + 1):
@@ -357,11 +360,13 @@ def deploy_app_background(
                     temp_data_dir=config.temporary_data_dir,
                 )
                 break
-            except RuntimeError:
+            except RuntimeError as e:
+                if BUILD_CACHE_CORRUPT_MARKER in str(e):
+                    raise
                 if attempt == max_build_attempts:
                     raise
                 logger.warning(
-                    "Docker build attempt %d/%d for %s failed, retrying in %ds",
+                    "Container build attempt %d/%d for %s failed, retrying in %ds",
                     attempt,
                     max_build_attempts,
                     app_name,
@@ -384,7 +389,7 @@ def deploy_app_background(
             port_mappings=port_mappings,
         )
         db.execute(
-            "UPDATE apps SET docker_container_id = ? WHERE name = ?",
+            "UPDATE apps SET container_id = ? WHERE name = ?",
             (container_id, app_name),
         )
         db.commit()
@@ -548,7 +553,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         port_mappings=port_mappings,
     )
     db.execute(
-        "UPDATE apps SET docker_container_id = ? WHERE name = ?",
+        "UPDATE apps SET container_id = ? WHERE name = ?",
         (container_id, app_name),
     )
     db.commit()
@@ -675,7 +680,9 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
                             pass
             if source_dir and os.path.isdir(source_dir):
                 if os.path.exists(repo_path):
-                    shutil.rmtree(repo_path)
+                    # Git clones can leave read-only objects that plain
+                    # shutil.rmtree refuses; fall back to sudo rm -rf.
+                    rmtree_with_sudo_fallback(repo_path, raise_on_failure=True)
                 shutil.copytree(source_dir, repo_path)
                 logger.info("Re-copied %s from %s", app_name, source_dir)
 

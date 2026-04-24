@@ -6,6 +6,66 @@ from typing import Any
 
 from compute_space.core.logging import logger
 
+# Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/podman.yml.
+# host_port values below this are rejected at parse time.
+UNPRIVILEGED_PORT_FLOOR = 25
+
+# Linux capabilities that can be safely granted inside a rootless podman
+# user namespace.  Anything outside this set is rejected at parse time
+# because it either requires real host privilege (SYS_ADMIN, SYS_MODULE,
+# SYS_PTRACE, SYS_RAWIO, SYS_TIME, SYS_BOOT, MAC_ADMIN, MAC_OVERRIDE) or
+# effectively requires CAP_SYS_ADMIN to do anything.  Allowlist (not
+# denylist) so future kernel caps are denied by default.
+SAFE_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        # Networking (VPN-style apps: tailscale, wireguard).
+        "NET_ADMIN",
+        "NET_RAW",
+        "NET_BIND_SERVICE",
+        "NET_BROADCAST",
+        # File ownership / permissions within the userns.
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "DAC_READ_SEARCH",
+        "FOWNER",
+        "FSETID",
+        "SETFCAP",
+        # Process control within the userns.
+        "KILL",
+        "SETUID",
+        "SETGID",
+        "SETPCAP",
+        # Device node creation (restricted by rootless anyway).
+        "MKNOD",
+        "AUDIT_WRITE",
+        # mlock (some DBs) + chroot (some init systems).
+        "IPC_LOCK",
+        "IPC_OWNER",
+        "SYS_CHROOT",
+    }
+)
+
+# Host devices safe to pass through to rootless containers via the
+# ``[runtime.container].devices`` list (mapped to ``podman --device``).
+# Apps do NOT need to list ``/dev/null``, ``/dev/zero``, ``/dev/random``,
+# ``/dev/urandom``, ``/dev/full``, ``/dev/tty`` or ``/dev/console`` here;
+# podman (like Docker) mounts a default ``/dev`` with those character
+# devices inside every container via the OCI runtime spec.  The allowlist
+# below only exists to gate EXTRA host devices the app wants bound in on
+# top of that baseline (serial adapters, FUSE, TUN/TAP).  Anything outside
+# this set (e.g. ``/dev/mem``, ``/dev/kmem``, raw block devices, ``/dev/kvm``)
+# is rejected at parse time.
+SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
+    {
+        "/dev/net/tun",
+        "/dev/fuse",
+        # First 8 slots of each serial/USB-TTY family; expand if needed.
+        *(f"/dev/ttyS{i}" for i in range(8)),
+        *(f"/dev/ttyUSB{i}" for i in range(8)),
+        *(f"/dev/ttyACM{i}" for i in range(8)),
+    }
+)
+
 
 @dataclass(frozen=True)
 class PortMapping:
@@ -69,6 +129,53 @@ class AppManifest:
     raw_toml: str = ""
 
 
+def _validate_devices(devices: list[Any]) -> list[str]:
+    """Normalise and validate ``[runtime.container].devices`` entries.
+
+    Accepts the ``<host>[:<container>][:rwm]`` form and validates only
+    the host path against ``SAFE_DEVICE_PATHS``.
+    """
+    if not isinstance(devices, list):
+        raise ValueError("[runtime.container].devices must be a list of strings")
+    validated: list[str] = []
+    for entry in devices:
+        if not isinstance(entry, str):
+            raise ValueError(f"[runtime.container].devices must contain strings, got {type(entry).__name__}")
+        host_path = entry.split(":", 1)[0].strip()
+        if host_path not in SAFE_DEVICE_PATHS:
+            allowed = ", ".join(sorted(SAFE_DEVICE_PATHS))
+            raise ValueError(
+                f"[runtime.container].devices entry {entry!r} is not in the allowlist.  Allowed host paths: {allowed}."
+            )
+        validated.append(entry)
+    return validated
+
+
+def _validate_capabilities(caps: list[Any]) -> list[str]:
+    """Normalise and validate ``[runtime.container].capabilities``.
+
+    Accepts ``CAP_`` prefix or bare names (podman uses bare).  Rejects
+    anything not in ``SAFE_CAPABILITIES``.
+    """
+    if not isinstance(caps, list):
+        raise ValueError("[runtime.container].capabilities must be a list of strings")
+    normalised: list[str] = []
+    for entry in caps:
+        if not isinstance(entry, str):
+            raise ValueError(f"[runtime.container].capabilities must contain strings, got {type(entry).__name__}")
+        name = entry.strip().upper()
+        if name.startswith("CAP_"):
+            name = name[len("CAP_") :]
+        if name not in SAFE_CAPABILITIES:
+            allowed = ", ".join(sorted(SAFE_CAPABILITIES))
+            raise ValueError(
+                f"[runtime.container].capabilities entry {entry!r} is not safe to grant under "
+                f"rootless podman.  Allowed: {allowed}."
+            )
+        normalised.append(name)
+    return normalised
+
+
 def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
     """Parse and validate [[ports]] entries from manifest data."""
     seen_labels: set[str] = set()
@@ -93,6 +200,12 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
         hport = entry.get("host_port", 0)
         if not isinstance(hport, int) or hport < 0:
             raise ValueError(f"[[ports]] '{label}' host_port must be a non-negative integer")
+        if hport != 0 and hport < UNPRIVILEGED_PORT_FLOOR:
+            raise ValueError(
+                f"[[ports]] '{label}' host_port {hport} is below the unprivileged port floor "
+                f"({UNPRIVILEGED_PORT_FLOOR}); rootless podman cannot bind to it. "
+                f"Use a port >= {UNPRIVILEGED_PORT_FLOOR} or route through the openhost proxy."
+            )
         if hport != 0 and hport in seen_host_ports:
             raise ValueError(f"Duplicate host_port {hport} in [[ports]]")
         if hport != 0:
@@ -160,8 +273,8 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     manifest.container_image = container["image"]
     manifest.container_port = container["port"]
     manifest.container_command = container.get("command")
-    manifest.capabilities = container.get("capabilities", [])
-    manifest.devices = container.get("devices", [])
+    manifest.capabilities = _validate_capabilities(container.get("capabilities", []))
+    manifest.devices = _validate_devices(container.get("devices", []))
 
     manifest.port_mappings = _parse_ports(data.get("ports", []))
 
