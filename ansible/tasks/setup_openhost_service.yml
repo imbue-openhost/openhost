@@ -16,11 +16,23 @@
     group: host
   register: config_file
 
+# Look up the host user's UID so the service template can reference
+# the right /run/user/<uid> path and user@<uid>.service unit. The
+# host user is created without a fixed UID so the value varies by
+# cloud provider (typically 1000 on GCP, 1001 on EC2 / Hetzner).
+- name: Resolve host user UID
+  getent:
+    database: passwd
+    key: host
+    split: ":"
+
 - name: Install openhost systemd service
   become: yes
   template:
     src: templates/openhost.service.j2
     dest: /etc/systemd/system/openhost.service
+  vars:
+    host_uid: "{{ getent_passwd.host[1] }}"
   register: service_file
 
 - name: Reload systemd
