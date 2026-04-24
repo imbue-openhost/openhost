@@ -407,7 +407,6 @@ class TestRouterCore:
         now = datetime.now(UTC)
         expired_payload = {
             "sub": "owner",
-            "username": "owner",
             "iat": now - timedelta(hours=2),
             "exp": now - timedelta(hours=1),
         }
