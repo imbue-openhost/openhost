@@ -672,3 +672,242 @@ def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
     target vs. what the app's env var points at."""
     arg = _bind_mount_arg("/a/b/c/", "/data/app_data/myapp/")
     assert arg == "/a/b/c/:/data/app_data/myapp/:idmap"
+
+
+# ---------------------------------------------------------------------------
+# run_container: env var host→container path rewriting
+#
+# Apps that request ``sqlite`` or ``app_data`` see env vars whose values
+# are host filesystem paths at provisioning time.  ``run_container`` must
+# rewrite them to the in-container ``/data/...`` view before emitting
+# ``-e`` flags; a regression that stops rewriting (or starts rewriting
+# unrelated env vars) silently breaks persistence — apps open a brand new
+# DB at a path inside the userns that disappears on restart, with no
+# visible error.
+# ---------------------------------------------------------------------------
+
+
+def test_run_container_rewrites_openhost_app_data_dir_env_var(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``OPENHOST_APP_DATA_DIR`` is always the host path when provisioned,
+    but the app sees it from inside the container.  The -e value must
+    be the container-side ``/data/app_data/<name>`` path."""
+    manifest = _basic_manifest(app_data=True)
+    host_app_data = str(tmp_path / "persistent" / "app_data" / manifest.name)
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        env_vars={"OPENHOST_APP_DATA_DIR": host_app_data},
+    )
+    env_flags = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
+    ]
+    assert f"OPENHOST_APP_DATA_DIR=/data/app_data/{manifest.name}" in env_flags
+    # The host path must not leak through.
+    assert not any(host_app_data in flag for flag in env_flags), env_flags
+
+
+def test_run_container_rewrites_openhost_sqlite_env_var_to_container_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sqlite db provisioned at ``<host-app-data>/sqlite/main.db`` must
+    appear to the container as ``/data/app_data/<name>/sqlite/main.db``.
+
+    Silently forwarding the host path would make the app open a brand
+    new DB inside the userns that vanishes on restart — a data-loss
+    bug with no log line."""
+    manifest = _basic_manifest(app_data=True, sqlite_dbs=["main"])
+    host_app_data = str(tmp_path / "persistent" / "app_data" / manifest.name)
+    host_db = os.path.join(host_app_data, "sqlite", "main.db")
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        env_vars={
+            "OPENHOST_APP_DATA_DIR": host_app_data,
+            "OPENHOST_SQLITE_main": host_db,
+        },
+    )
+    env_flags = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
+    ]
+    expected = f"OPENHOST_SQLITE_main=/data/app_data/{manifest.name}/sqlite/main.db"
+    assert expected in env_flags, env_flags
+    # Host path must not leak.
+    assert not any(host_db in flag for flag in env_flags), env_flags
+
+
+def test_run_container_rewrites_openhost_app_temp_dir_env_var(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``OPENHOST_APP_TEMP_DIR`` has the same rewriting contract as the
+    permanent-data var.  Parameters differ (temp dirs live under a
+    separate root on the host) so this is a distinct code path."""
+    manifest = _basic_manifest(app_temp_data=True)
+    host_temp = str(tmp_path / "temp" / "app_temp_data" / manifest.name)
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        env_vars={"OPENHOST_APP_TEMP_DIR": host_temp},
+    )
+    env_flags = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
+    ]
+    assert f"OPENHOST_APP_TEMP_DIR=/data/app_temp_data/{manifest.name}" in env_flags
+    assert not any(host_temp in flag for flag in env_flags), env_flags
+
+
+def test_run_container_does_not_rewrite_unrelated_env_vars(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the three OpenHost-managed env var names are rewritten;
+    everything else passes through byte-for-byte.
+
+    Regression target: a well-meaning refactor that matches on value
+    substrings (``if host_app_data in value``) rather than on key
+    names would mangle unrelated vars that happen to share a prefix
+    with a data path — e.g. a ``BACKUP_PATH`` pointing into app_data."""
+    manifest = _basic_manifest(app_data=True)
+    host_app_data = str(tmp_path / "persistent" / "app_data" / manifest.name)
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        env_vars={
+            "OPENHOST_APP_DATA_DIR": host_app_data,
+            # Unrelated var whose value contains a colon (URL-ish) and
+            # whose name doesn't match any rewriting rule.
+            "DATABASE_URL": "postgres://host.containers.internal:5432/foo",
+            # Unrelated var whose value happens to contain the host
+            # data path — rewriting would corrupt it.
+            "BACKUP_TARGET": f"{host_app_data}/backups",
+            # Generic var with no special meaning.
+            "LOG_LEVEL": "info",
+        },
+    )
+    env_flags = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
+    ]
+    assert "DATABASE_URL=postgres://host.containers.internal:5432/foo" in env_flags
+    assert f"BACKUP_TARGET={host_app_data}/backups" in env_flags
+    assert "LOG_LEVEL=info" in env_flags
+
+
+def test_run_container_rewrites_only_exact_openhost_app_data_dir_name(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``OPENHOST_APP_DATA_DIR`` is matched on equality, not prefix.
+    A variable whose name merely *starts with* ``OPENHOST_APP_DATA_DIR``
+    (e.g. a custom ``OPENHOST_APP_DATA_DIR_BACKUP``) must NOT be
+    rewritten, because the rewrite logic doesn't know what the custom
+    var semantically is."""
+    manifest = _basic_manifest(app_data=True)
+    host_app_data = str(tmp_path / "persistent" / "app_data" / manifest.name)
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        env_vars={
+            "OPENHOST_APP_DATA_DIR": host_app_data,
+            "OPENHOST_APP_DATA_DIR_BACKUP": f"{host_app_data}-backup",
+        },
+    )
+    env_flags = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
+    ]
+    # The exact-name var is rewritten.
+    assert f"OPENHOST_APP_DATA_DIR=/data/app_data/{manifest.name}" in env_flags
+    # The prefix-match var is NOT rewritten.
+    assert f"OPENHOST_APP_DATA_DIR_BACKUP={host_app_data}-backup" in env_flags
+
+
+# ---------------------------------------------------------------------------
+# run_container: stale-container pre-cleanup
+#
+# ``run_container`` runs ``podman rm -f <name>`` before ``podman run`` so
+# a container left over from a crashed previous attempt doesn't make the
+# new run fail with a name conflict that the operator would have to clear
+# manually.  If the pre-cleanup ever gets dropped, apps that crashed
+# during a previous ``run_container`` invocation become un-deployable
+# until an operator SSHs in.
+# ---------------------------------------------------------------------------
+
+
+def _run_and_capture_all_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    manifest: AppManifest,
+    tmp_path,
+    env_vars: dict[str, str] | None = None,
+) -> list[list[str]]:
+    """Same harness as ``_run_and_capture`` but returns every subprocess
+    call in order, unfiltered, so tests can assert on the pre-cleanup
+    call as well as the run call."""
+    runs: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=60, **_):  # type: ignore[no-untyped-def]
+        runs.append(list(cmd))
+        if cmd[:2] == ["podman", "run"]:
+            return _FakeCompleted(0, stdout="container-id-xyz\n")
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    data_dir = str(tmp_path / "persistent")
+    temp_data_dir = str(tmp_path / "temp")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
+
+    run_container(
+        manifest.name,
+        "openhost-myapp:latest",
+        manifest,
+        local_port=9001,
+        env_vars=env_vars or {},
+        data_dir=data_dir,
+        temp_data_dir=temp_data_dir,
+    )
+    return runs
+
+
+def test_run_container_removes_stale_container_before_running(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stale-cleanup ``podman rm -f openhost-<name>`` call must
+    happen strictly before ``podman run`` so name conflicts from a
+    previous crashed run don't block the fresh start."""
+    manifest = _basic_manifest()
+    calls = _run_and_capture_all_calls(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    # Find both calls.
+    rm_indexes = [i for i, c in enumerate(calls) if c[:3] == ["podman", "rm", "-f"]]
+    run_indexes = [i for i, c in enumerate(calls) if c[:2] == ["podman", "run"]]
+    assert rm_indexes, f"no 'podman rm -f' call was issued: {calls}"
+    assert run_indexes, f"no 'podman run' call was issued: {calls}"
+    # Every rm must precede every run.
+    assert max(rm_indexes) < min(run_indexes), (
+        f"'podman rm -f' must precede 'podman run'; got order {calls}"
+    )
+
+
+def test_run_container_removes_the_correct_stale_container_name(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-cleanup target name must be ``openhost-<app_name>`` —
+    the same name the subsequent ``podman run`` passes to ``--name``.
+    A mismatch (e.g. removing ``openhost-<manifest_name>`` while
+    running as ``openhost-<rename_target>`` during an in-place rename)
+    would defeat the whole point of the cleanup."""
+    manifest = _basic_manifest(name="notes")
+    calls = _run_and_capture_all_calls(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    rm_calls = [c for c in calls if c[:3] == ["podman", "rm", "-f"]]
+    assert rm_calls == [["podman", "rm", "-f", "openhost-notes"]], rm_calls
+
+    run_cmd = next(c for c in calls if c[:2] == ["podman", "run"])
+    name_idx = run_cmd.index("--name")
+    assert run_cmd[name_idx + 1] == "openhost-notes"

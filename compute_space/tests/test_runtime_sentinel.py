@@ -13,11 +13,14 @@ against a sentinel written to tmp_path rather than the real /etc.
 from __future__ import annotations
 
 import builtins
+import re
 from pathlib import Path
 
 import pytest
 
+from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.core import runtime_sentinel
+from compute_space.core.manifest import UNPRIVILEGED_PORT_FLOOR
 from compute_space.core.runtime_sentinel import EXPECTED_RUNTIME
 from compute_space.core.runtime_sentinel import EXPECTED_RUNTIME_VERSION
 from compute_space.core.runtime_sentinel import host_prep_status
@@ -156,3 +159,115 @@ def test_module_level_expected_values_match_ansible() -> None:
     """
     assert runtime_sentinel.EXPECTED_RUNTIME == "podman"
     assert runtime_sentinel.EXPECTED_RUNTIME_VERSION == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-check Python constants against the ansible tasks that set them.
+#
+# The existing `test_module_level_expected_values_match_ansible` only
+# asserts the Python side: bumping EXPECTED_RUNTIME_VERSION in Python
+# without updating ansible/tasks/podman.yml (or vice versa) passes that
+# test but ships a silently-broken host-prep — every freshly provisioned
+# host sees a "host not prepped" banner forever because the sentinel
+# value written by ansible no longer matches what the router expects.
+#
+# Same story for UNPRIVILEGED_PORT_FLOOR vs the sysctl value the task
+# writes to /etc/sysctl.d/90-openhost-podman.conf.
+# ---------------------------------------------------------------------------
+
+
+_PODMAN_TASKS_PATH = OPENHOST_PROJECT_DIR / "ansible" / "tasks" / "podman.yml"
+
+
+def _read_podman_task_text() -> str:
+    """Read the ansible task file verbatim.  We parse with regex rather
+    than a YAML loader because the values we care about are inline
+    literals inside ``content: |`` blocks — structural YAML awareness
+    doesn't help and just couples the test to PyYAML."""
+    return _PODMAN_TASKS_PATH.read_text()
+
+
+def test_ansible_podman_task_file_is_present() -> None:
+    """Guard against the tasks file being moved or renamed without
+    this test being updated — otherwise the two asserts below would
+    silently skip."""
+    assert _PODMAN_TASKS_PATH.is_file(), (
+        f"expected ansible task file at {_PODMAN_TASKS_PATH}; "
+        "if you moved it, update _PODMAN_TASKS_PATH in this test"
+    )
+
+
+def test_ansible_writes_matching_runtime_version() -> None:
+    """The ansible task writes ``runtime_version=<N>`` to the sentinel
+    file.  That N must match ``EXPECTED_RUNTIME_VERSION`` or the
+    dashboard nags the operator on every update check even after a
+    fresh playbook run.
+
+    Parses the file as text so we aren't depending on YAML semantics —
+    the literal is what ends up on disk regardless of how the
+    surrounding YAML is structured."""
+    text = _read_podman_task_text()
+    matches = re.findall(r"runtime_version=(\d+)", text)
+    assert matches, (
+        "no ``runtime_version=<N>`` literal found in "
+        f"{_PODMAN_TASKS_PATH}; did the sentinel-write task change?"
+    )
+    # Every occurrence must match; if the task writes the value in
+    # more than one place they must all agree.
+    distinct = set(matches)
+    assert len(distinct) == 1, (
+        f"ansible task writes inconsistent runtime_version values: {distinct}"
+    )
+    written = int(next(iter(distinct)))
+    assert written == EXPECTED_RUNTIME_VERSION, (
+        f"ansible writes runtime_version={written} but Python expects "
+        f"EXPECTED_RUNTIME_VERSION={EXPECTED_RUNTIME_VERSION}; bump both "
+        "or hosts will see a stale-sentinel banner after re-provisioning"
+    )
+
+
+def test_ansible_writes_matching_runtime_name() -> None:
+    """Symmetric check for the ``runtime=`` literal — catches a hypothetical
+    future rename from podman to something else that forgets to update
+    ansible."""
+    text = _read_podman_task_text()
+    matches = re.findall(r"(?m)^\s*runtime=(\w+)\s*$", text)
+    assert matches, (
+        "no ``runtime=<name>`` literal found in "
+        f"{_PODMAN_TASKS_PATH}; did the sentinel-write task change?"
+    )
+    distinct = set(matches)
+    assert len(distinct) == 1, f"ansible task writes inconsistent runtime values: {distinct}"
+    written = next(iter(distinct))
+    assert written == EXPECTED_RUNTIME, (
+        f"ansible writes runtime={written} but Python expects "
+        f"EXPECTED_RUNTIME={EXPECTED_RUNTIME!r}"
+    )
+
+
+def test_ansible_unprivileged_port_floor_matches_python_constant() -> None:
+    """``ansible/tasks/podman.yml`` writes a sysctl
+    ``net.ipv4.ip_unprivileged_port_start = <N>`` drop-in.  That N
+    must equal ``UNPRIVILEGED_PORT_FLOOR`` (the manifest-parse
+    boundary) or apps get rejected at parse time for perfectly valid
+    ports the host kernel would otherwise accept — or worse, rejected
+    at bind time for ports the manifest layer wrongly accepted."""
+    text = _read_podman_task_text()
+    matches = re.findall(
+        r"net\.ipv4\.ip_unprivileged_port_start\s*=\s*(\d+)",
+        text,
+    )
+    assert matches, (
+        "no ``net.ipv4.ip_unprivileged_port_start`` sysctl literal "
+        f"found in {_PODMAN_TASKS_PATH}; did the sysctl-drop-in task change?"
+    )
+    distinct = set(matches)
+    assert len(distinct) == 1, (
+        f"ansible writes inconsistent port floor values: {distinct}"
+    )
+    written = int(next(iter(distinct)))
+    assert written == UNPRIVILEGED_PORT_FLOOR, (
+        f"ansible writes net.ipv4.ip_unprivileged_port_start={written} "
+        f"but Python's UNPRIVILEGED_PORT_FLOOR is {UNPRIVILEGED_PORT_FLOOR}; "
+        "bump both or manifests will silently disagree with the kernel"
+    )
