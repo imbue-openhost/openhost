@@ -1,12 +1,15 @@
 [Unit]
 Description=OpenHost Compute Space
-# The user-session bus from ``user@1001.service`` must be up before we
-# start, otherwise rootless podman's systemd cgroup manager can't talk
-# to it and builds fail with "Interactive authentication required".
-# Lingering (set in ansible/tasks/podman.yml) ensures that unit exists;
-# this After= makes sure systemd orders us after it's actually running.
-After=network-online.target user@1001.service
-Wants=network-online.target user@1001.service
+# The user-session bus from ``user@{{ host_uid }}.service`` must be up
+# before we start, otherwise rootless podman's systemd cgroup manager
+# can't talk to it and builds fail with "Interactive authentication
+# required". Lingering (set in ansible/tasks/podman.yml) ensures that
+# unit exists; this After= makes sure systemd orders us after it's
+# actually running. ``host_uid`` is resolved dynamically by ansible
+# from the host user's actual UID, since the user is created without
+# a hardcoded UID and the value differs across cloud providers.
+After=network-online.target user@{{ host_uid }}.service
+Wants=network-online.target user@{{ host_uid }}.service
 
 [Service]
 Type=simple
@@ -21,8 +24,8 @@ Environment=OPENHOST_ROUTER_CONFIG=/home/host/.openhost/local_compute_space/conf
 # "Interactive authentication required" when creating the scope.
 # Both paths must be set; the bus address alone isn't enough (the
 # runtime-dir search path anchors on XDG_RUNTIME_DIR too).
-Environment=XDG_RUNTIME_DIR=/run/user/1001
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus
+Environment=XDG_RUNTIME_DIR=/run/user/{{ host_uid }}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ host_uid }}/bus
 ExecStart=/home/host/.pixi/bin/pixi run python -m compute_space
 # Don't auto-restart on crash (can blow through certbot rate limits).
 # RestartForceExitStatus=42 overrides Restart=no for exit code 42 only,
