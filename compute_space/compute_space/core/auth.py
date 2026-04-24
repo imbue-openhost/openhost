@@ -91,7 +91,6 @@ def create_access_token(username: str) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": username,
-        "username": username,
         "iat": now,
         "exp": now + timedelta(seconds=ACCESS_TOKEN_EXPIRY),
     }
@@ -223,7 +222,7 @@ def _validate_api_token(token: str) -> dict[str, str] | None:
     owner = db.execute("SELECT username FROM owner WHERE id = 1").fetchone()
     if not owner:
         return None
-    return {"sub": owner["username"], "username": owner["username"]}
+    return {"sub": owner["username"]}
 
 
 def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
