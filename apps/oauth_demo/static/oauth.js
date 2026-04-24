@@ -1,9 +1,8 @@
 /**
  * Client-side OAuth helper library.
  *
- * Talks to the router's V2 service endpoints via cross-origin fetch:
- *   POST /_services_v2/<encoded-oauth-url>/accounts  — list connected accounts
- *   POST /_services_v2/<encoded-oauth-url>/token     — get access token
+ * Talks to the router's V2 service proxy via cross-origin fetch:
+ *   POST /_services_v2/service_request (with X-OpenHost-* headers)
  *
  * Usage:
  *   const oauth = new OAuthClient({
@@ -17,7 +16,6 @@
  */
 
 var OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth";
-var ENCODED_OAUTH_URL = encodeURIComponent(OAUTH_SERVICE_URL);
 
 class OAuthClient {
   constructor({ scopes, appName, zoneDomain }) {
@@ -37,13 +35,17 @@ class OAuthClient {
     return "//" + this.appName + "." + this.zoneDomain + "/client/oauth-complete";
   }
 
-  /** POST to a V2 service endpoint with credentials. */
+  /** POST to the V2 service proxy with credentials. */
   _serviceFetch(endpoint, body) {
-    var url = "//" + this.zoneDomain + "/_services_v2/" + ENCODED_OAUTH_URL +
-      "/" + endpoint + "?version=>=0.1.0";
+    var url = "//" + this.zoneDomain + "/_services_v2/service_request";
     return fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
+        "X-OpenHost-Service-Version": ">=0.1.0",
+        "X-OpenHost-Service-Endpoint": endpoint,
+      },
       credentials: "include",
       body: typeof body === "string" ? body : JSON.stringify(body),
     });
@@ -51,7 +53,7 @@ class OAuthClient {
 
   /**
    * Parse an error response. Returns:
-   *   { type: "permission", url } for 403 permission_required (grant_url or approve_url)
+   *   { type: "permission", url } for 403 permission_required (grant_url)
    *   { type: "oauth", authorize_url } for 401 authorization_required
    *   { type: "error", message } for other errors
    *   null if response is ok
@@ -62,12 +64,10 @@ class OAuthClient {
     try { data = await resp.clone().json(); } catch (e) {
       return { type: "error", message: "Request failed: " + resp.status };
     }
-    if (data.error === "permission_required" && data.grants_needed) {
-      var grant = data.grants_needed[0] || {};
-      var url = grant.grant_url || grant.approve_url || "";
-      return { type: "permission", url: url };
+    if (data.error === "permission_required" && data.required_grant) {
+      return { type: "permission", url: data.required_grant.grant_url || "" };
     }
-    if (data.approve_url) return { type: "permission", url: data.approve_url };
+    if (data.grant_url) return { type: "permission", url: data.grant_url };
     if (data.authorize_url) return { type: "oauth", authorize_url: data.authorize_url };
     return { type: "error", message: data.message || "Request failed: " + resp.status };
   }

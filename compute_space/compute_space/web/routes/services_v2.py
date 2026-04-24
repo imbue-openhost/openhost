@@ -66,8 +66,13 @@ async def service_v2_proxy(app_name: str) -> Response:
     Optional headers:
         X-OpenHost-Provider-App:     Pin to a specific provider app (default: use service_defaults).
 
-    Returns 403 with grant/approve URLs if the provider rejects the request
-    for missing permissions.
+    If a permissions is needed, provider apps should instead return a 403 with body
+    Global:  {"error": "permission_required", "required_grant": { "grant_payload": ..., "scope": "global" }}
+    App:     {"error": "permission_required", "required_grant": { "grant_payload": ...,
+                 "scope": "app", "grant_url": "https://..." }}
+    For app-scoped grants, grant_url must be provided
+    and should be a link through the service proxy to an approval page for the required grant.
+    We will add a grant_url for global grants that points to a compute space-provided approval page.
     """
     consumer_app = app_name
 
@@ -111,52 +116,56 @@ async def service_v2_proxy(app_name: str) -> Response:
     )
 
     if response.status_code == 403:
-        return await _maybe_reform_403(response, service_url, consumer_app)
+        return await _add_grant_url_if_global_grant_needed(response, service_url, consumer_app)
 
     return response
 
 
-async def _maybe_reform_403(
+async def _add_grant_url_if_global_grant_needed(
     response: Response,
     service_url: str,
     consumer_app: str,
 ) -> Response:
-    """If the provider returned a 403 with required_grants, reform the response
-    with approve/grant URLs. Otherwise pass through as-is."""
+    """Add grant_url to service provider 403 responses that indicate a missing globally-scoped permission grant.
+
+    Providers return 403 when the consumer lacks a required permission. Expected format:
+        Global:  {"error": "permission_required", "required_grant": { "grant_payload": ..., "scope": "global" }}
+        App:     {"error": "permission_required", "required_grant": { "grant_payload": ...,
+                     "scope": "app", "grant_url": "https://..." }}
+
+    For global grants, this fn adds a grant_url that points to the owner-facing approval page for the required grant.
+    For app-scoped grants, the provider is expected to include a grant_url in its response.
+
+    If the 403 body doesn't contain `required_grant`, the response is passed through unchanged.
+    """
     try:
         body = json.loads(await response.get_data())
     except (json.JSONDecodeError, Exception):
         return response
 
-    required_grants = body.get("required_grants")
-    if not isinstance(required_grants, list):
+    required_grant = body.get("required_grant")
+    if not isinstance(required_grant, dict):
+        return response
+
+    if required_grant.get("scope", "global") != "global":
+        return response
+
+    grant_payload = required_grant.get("grant_payload")
+    if not isinstance(grant_payload, dict):
+        # we can't make a grant URL without a valid grant payload, so just return the original response even if it's malformed
         return response
 
     config = get_config()
-    grants_needed = []
-    for grant in required_grants:
-        scope = grant.get("scope", "global")
-        entry: dict[str, str] = {"key": grant.get("key", ""), "scope": scope}
-        if scope == "app" and "grant_url" in grant:
-            entry["grant_url"] = grant["grant_url"]
-        else:
-            approve_path = url_for(
-                "pages_permissions_v2.approve_permissions_v2",
-                app=consumer_app,
-                service=service_url,
-                grant=json.dumps(grant, sort_keys=True),
-            )
-            entry["approve_url"] = f"https://{config.zone_domain}{approve_path}"
-        grants_needed.append(entry)
+    approve_path = url_for(
+        "pages_permissions_v2.approve_permissions_v2",
+        app=consumer_app,
+        service=service_url,
+        grant=json.dumps(grant_payload, sort_keys=True),
+    )
+    required_grant["grant_url"] = f"https://{config.zone_domain}{approve_path}"
 
     return Response(
-        json.dumps(
-            {
-                "error": "permission_required",
-                "grants_needed": grants_needed,
-                "service": service_url,
-            }
-        ),
+        json.dumps(body),
         status=403,
         content_type="application/json",
     )

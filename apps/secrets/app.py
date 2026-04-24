@@ -247,7 +247,9 @@ async def service_v2_get():
             return jsonify(
                 {
                     "error": "permission_required",
-                    "required_grants": [{"key": k} for k in missing_perms],
+                    "required_grant": {
+                        "grant_payload": {"key": missing_perms[0]},
+                    },
                 }
             ), 403
 
@@ -306,29 +308,25 @@ def _check_oauth_v2_permission(provider: str, scopes: list[str]) -> list[dict]:
 
 
 def _oauth_permission_denied(provider: str, scopes: list[str], missing: list[dict], return_to: str = ""):
-    """Build a 403 response with app-scoped grant_urls for missing OAuth permissions."""
+    """Build a 403 response with an app-scoped grant_url for missing OAuth permissions."""
     consumer_app = request.headers.get("X-OpenHost-Consumer", "")
-    required_grants = []
-    for grant in missing:
-        params = urlencode(
-            {
-                "provider": provider,
-                "scopes": ",".join(scopes),
-                "consumer": consumer_app,
-                "return_to": return_to,
-            }
-        )
-        required_grants.append(
-            {
-                "key": f"oauth:{grant['provider']}:{grant['scope']}",
-                "scope": "app",
-                "grant_url": f"//{APP_NAME}.{ZONE_DOMAIN}/oauth/grant?{params}",
-            }
-        )
+    params = urlencode(
+        {
+            "provider": provider,
+            "scopes": ",".join(scopes),
+            "consumer": consumer_app,
+            "return_to": return_to,
+        }
+    )
+    first = missing[0]
     return jsonify(
         {
             "error": "permission_required",
-            "required_grants": required_grants,
+            "required_grant": {
+                "grant_payload": {"provider": first["provider"], "scope": first["scope"]},
+                "scope": "app",
+                "grant_url": f"//{APP_NAME}.{ZONE_DOMAIN}/oauth/grant?{params}",
+            },
         }
     ), 403
 

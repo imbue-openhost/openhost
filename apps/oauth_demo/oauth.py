@@ -1,5 +1,4 @@
 import os
-from urllib.parse import quote
 
 import httpx
 
@@ -9,8 +8,7 @@ APP_NAME = os.environ.get("OPENHOST_APP_NAME")
 ZONE_DOMAIN = os.environ.get("OPENHOST_ZONE_DOMAIN")
 
 OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
-_ENCODED_SVC = quote(OAUTH_SERVICE_URL, safe="")
-OAUTH_V2_BASE = f"{ROUTER_URL}/_services_v2/{_ENCODED_SVC}"
+SERVICE_REQUEST_URL = f"{ROUTER_URL}/_services_v2/service_request"
 
 _mock_base_url: str | None = None
 
@@ -20,8 +18,8 @@ def set_mock_oauth_url(url: str | None) -> None:
     _mock_base_url = url.rstrip("/") if url else None
 
 
-def _base_url() -> str:
-    return _mock_base_url or OAUTH_V2_BASE
+def _request_url() -> str:
+    return _mock_base_url or SERVICE_REQUEST_URL
 
 
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -66,8 +64,8 @@ class OAuthServiceUnavailable(Exception):
 
 
 class _PermissionDenied(Exception):
-    def __init__(self, approve_url: str):
-        self.approve_url = approve_url
+    def __init__(self, grant_url: str):
+        self.grant_url = grant_url
 
 
 class _OAuthConsentRequired(Exception):
@@ -88,14 +86,11 @@ def _check_error_response(resp: httpx.Response) -> None:
         raise OAuthServiceUnavailable(data.get("message", "OAuth service unavailable"))
     # V2 permission_required (from provider via router)
     if error == "permission_required":
-        grants = data.get("grants_needed", [])
-        url = ""
-        if grants:
-            url = grants[0].get("grant_url") or grants[0].get("approve_url", "")
-        raise _PermissionDenied(approve_url=url)
+        grant = data.get("required_grant", {})
+        raise _PermissionDenied(grant_url=grant.get("grant_url", ""))
     # V1 permission_denied
     if error == "permission_denied":
-        raise _PermissionDenied(approve_url=data.get("approve_url", ""))
+        raise _PermissionDenied(grant_url=data.get("grant_url", ""))
     if resp.status_code == 401 and data.get("authorize_url"):
         raise _OAuthConsentRequired(data["authorize_url"])
     raise OAuthError(data.get("message", f"Request failed: {resp.status_code}"))
@@ -111,9 +106,14 @@ async def get_accounts(provider: str) -> list[str]:
         raise ValueError(f"Unknown provider: {provider}")
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            f"{_base_url()}/accounts?version=>=0.1.0",
+            _request_url(),
             json={"provider": provider, "scopes": scopes},
-            headers=AUTH_HEADERS,
+            headers={
+                **AUTH_HEADERS,
+                "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
+                "X-OpenHost-Service-Version": ">=0.1.0",
+                "X-OpenHost-Service-Endpoint": "accounts",
+            },
         )
         try:
             _check_error_response(resp)
@@ -141,14 +141,19 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                f"{_base_url()}/token?version=>=0.1.0",
+                _request_url(),
                 json={
                     "provider": provider,
                     "scopes": scopes,
                     "return_to": return_to,
                     "account": account,
                 },
-                headers=AUTH_HEADERS,
+                headers={
+                    **AUTH_HEADERS,
+                    "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
+                    "X-OpenHost-Service-Version": ">=0.1.0",
+                    "X-OpenHost-Service-Endpoint": "token",
+                },
             )
     except httpx.HTTPError as e:
         raise OAuthError(f"Token request failed: {e}") from e
@@ -156,7 +161,7 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
     try:
         _check_error_response(resp)
     except _PermissionDenied as e:
-        raise AuthRedirectRequired(e.approve_url) from e
+        raise AuthRedirectRequired(e.grant_url) from e
     except _OAuthConsentRequired as e:
         raise AuthRedirectRequired(e.authorize_url) from e
 

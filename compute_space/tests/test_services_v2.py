@@ -23,7 +23,7 @@ from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services_v2 import resolve_provider
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_bp
 from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp
-from compute_space.web.routes.services_v2 import _maybe_reform_403
+from compute_space.web.routes.services_v2 import _add_grant_url_if_global_grant_needed
 
 SVC_SECRETS = "github.com/org/repo/services/secrets"
 SVC_OAUTH = "github.com/org/repo/services/oauth"
@@ -407,48 +407,36 @@ class TestOAuthPermissionFlow:
             }
         ]
 
-    def test_reform_403_passes_through_grant_url_for_app_scope(self, monkeypatch):
-        """When provider returns 403 with scope=app and grant_url,
-        router passes it through instead of generating an approve_url."""
-        grant_url = "https://secrets.example.com/oauth/connect?provider=google&consumer=my-app"
+    def test_reform_403_app_scoped_passes_through_unchanged(self, monkeypatch):
+        """App-scoped 403s are passed through unchanged — the provider owns the grant_url."""
+        expected_url = "https://secrets.example.com/oauth/connect?provider=google&consumer=my-app"
+        original_body = {
+            "error": "permission_required",
+            "required_grant": {
+                "grant_payload": {"provider": "google", "scope": "email"},
+                "scope": "app",
+                "grant_url": expected_url,
+            },
+        }
 
         async def _run():
             app = Quart(__name__)
-            # get_config() is called before the loop — mock it
-            mock_config = MagicMock()
-            mock_config.zone_domain = "test.example.com"
-            monkeypatch.setattr("compute_space.web.routes.services_v2.get_config", lambda: mock_config)
             async with app.app_context():
                 provider_response = Response(
-                    json.dumps(
-                        {
-                            "required_grants": [
-                                {
-                                    "key": "oauth:google:email",
-                                    "scope": "app",
-                                    "grant_url": grant_url,
-                                }
-                            ]
-                        }
-                    ),
+                    json.dumps(original_body),
                     status=403,
                     content_type="application/json",
                 )
-                result = await _maybe_reform_403(provider_response, SVC_OAUTH, "my-app")
+                result = await _add_grant_url_if_global_grant_needed(provider_response, SVC_OAUTH, "my-app")
                 body = json.loads(await result.get_data())
 
             assert result.status_code == 403
-            assert body["error"] == "permission_required"
-            assert len(body["grants_needed"]) == 1
-            entry = body["grants_needed"][0]
-            assert entry["scope"] == "app"
-            assert entry["grant_url"] == grant_url
-            assert "approve_url" not in entry
+            assert body == original_body
 
         asyncio.run(_run())
 
-    def test_reform_403_generates_approve_url_for_global_scope(self, monkeypatch):
-        """When provider returns 403 without app scope, router generates an approve_url."""
+    def test_reform_403_global_scoped_generates_grant_url(self, monkeypatch):
+        """Global-scoped grants get a router-generated grant_url."""
 
         async def _run():
             app = Quart(__name__)
@@ -462,24 +450,21 @@ class TestOAuthPermissionFlow:
                 provider_response = Response(
                     json.dumps(
                         {
-                            "required_grants": [
-                                {"key": "DATABASE_URL"},
-                            ]
+                            "error": "permission_required",
+                            "required_grant": {
+                                "grant_payload": {"key": "DATABASE_URL"},
+                            },
                         }
                     ),
                     status=403,
                     content_type="application/json",
                 )
-                result = await _maybe_reform_403(provider_response, SVC_SECRETS, "my-app")
+                result = await _add_grant_url_if_global_grant_needed(provider_response, SVC_SECRETS, "my-app")
                 body = json.loads(await result.get_data())
 
             assert result.status_code == 403
-            assert body["error"] == "permission_required"
-            entry = body["grants_needed"][0]
-            assert entry["scope"] == "global"
-            assert "approve_url" in entry
-            assert "test.example.com" in entry["approve_url"]
-            assert "grant_url" not in entry
+            assert "grant_url" in body["required_grant"]
+            assert "test.example.com" in body["required_grant"]["grant_url"]
 
         asyncio.run(_run())
 
@@ -585,7 +570,7 @@ class TestOAuthPermissionFlow:
         grants = get_granted_permissions_v2("my-app", SVC_OAUTH)
         assert len(grants) == 0
 
-        # Step 2: Provider would return 403 with required_grants including grant_url.
+        # Step 2: Provider would return 403 with required_grant including grant_url.
         # (The provider determines what permissions are needed and provides a URL
         # to walk the user through authorization.)
         # The consumer sees the grant_url and redirects the user there.
@@ -637,23 +622,21 @@ class TestOAuthPermissionFlow:
                 provider_response = Response(
                     json.dumps(
                         {
-                            "required_grants": [
-                                {
-                                    "key": "oauth:google:email",
-                                    "scope": "app",
-                                    "grant_url": grant_url,
-                                }
-                            ]
+                            "error": "permission_required",
+                            "required_grant": {
+                                "grant_payload": {"provider": "google", "scope": "email"},
+                                "scope": "app",
+                                "grant_url": grant_url,
+                            },
                         }
                     ),
                     status=403,
                     content_type="application/json",
                 )
-                result = await _maybe_reform_403(provider_response, SVC_OAUTH, "my-app")
+                result = await _add_grant_url_if_global_grant_needed(provider_response, SVC_OAUTH, "my-app")
                 body = json.loads(await result.get_data())
 
-            entry = body["grants_needed"][0]
-            assert "return_to" in entry["grant_url"]
-            assert "my-app.test.example.com/dashboard" in entry["grant_url"]
+            assert "return_to" in body["required_grant"]["grant_url"]
+            assert "my-app.test.example.com/dashboard" in body["required_grant"]["grant_url"]
 
         asyncio.run(_run())

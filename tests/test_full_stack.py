@@ -735,8 +735,8 @@ class TestServicesV2:
         data = r.json()
         assert data["secrets"]["TEST_SECRET"] == "s3cret_value_42"
 
-    def test_revoke_then_denied(self, secrets_app_deployed, test_app_deployed):
-        """After revoking the permission, fetching the secret returns 403."""
+    def test_revoke_then_denied_with_grant_url(self, secrets_app_deployed, test_app_deployed):
+        """After revoking, 403 response includes a valid grant_url that loads the approval page."""
         s = test_app_deployed["session"]
         url = test_app_deployed["router_url"]
 
@@ -755,18 +755,31 @@ class TestServicesV2:
         assert r.status_code == 403
         data = r.json()
         assert data["error"] == "permission_required"
+        assert "required_grant" in data
+        grant_url = data["required_grant"].get("grant_url")
+        assert grant_url, "403 response should include a grant_url"
 
-    def test_regrant_then_works(self, secrets_app_deployed, test_app_deployed):
-        """Re-granting the permission restores access."""
+        r = s.get(grant_url, timeout=10)
+        assert r.status_code == 200, f"grant_url returned {r.status_code}"
+
+    def test_regrant_via_grant_url(self, secrets_app_deployed, test_app_deployed):
+        """The grant_url from a 403 leads to a working grant flow."""
         s = test_app_deployed["session"]
         url = test_app_deployed["router_url"]
+
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 403
+        data = r.json()
+        grant = data["required_grant"]
+        grant_url = grant.get("grant_url")
+        assert grant_url
 
         r = s.post(
             f"{url}/api/permissions_v2/grant-global-scoped",
             json={
                 "app": "test-app",
                 "service_url": SECRETS_SERVICE_URL,
-                "grant": {"key": "TEST_SECRET"},
+                "grant": grant["grant_payload"],
             },
             timeout=10,
         )

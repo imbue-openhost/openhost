@@ -15,7 +15,6 @@ Routes:
 
 import json
 import os
-from urllib.parse import quote
 
 import aiohttp
 import aiohttp.web
@@ -70,14 +69,18 @@ async def handle_fetch_secret(request: aiohttp.web.Request) -> aiohttp.web.Respo
     if not router_url or not app_token:
         return _json_response({"error": "OPENHOST_ROUTER_URL or OPENHOST_APP_TOKEN not set"}, status=500)
 
-    encoded_svc = quote(SECRETS_SERVICE_URL, safe="")
-    url = f"{router_url}/_services_v2/{encoded_svc}/get?version={quote(version, safe='')}"
+    url = f"{router_url}/_services_v2/service_request"
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
             url,
             json={"keys": [key]},
-            headers={"Authorization": f"Bearer {app_token}"},
+            headers={
+                "Authorization": f"Bearer {app_token}",
+                "X-OpenHost-Service-URL": SECRETS_SERVICE_URL,
+                "X-OpenHost-Service-Version": version,
+                "X-OpenHost-Service-Endpoint": "get",
+            },
         ) as resp:
             body = await resp.json()
             return _json_response(body, status=resp.status)
