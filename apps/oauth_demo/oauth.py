@@ -82,15 +82,11 @@ def _check_error_response(resp: httpx.Response) -> None:
     except Exception as e:
         raise OAuthError(f"Request failed: {resp.status_code} {resp.text}") from e
     error = data.get("error")
-    if error in ("service_not_found", "service_not_running", "service_not_available"):
+    if error == "service_not_available":
         raise OAuthServiceUnavailable(data.get("message", "OAuth service unavailable"))
-    # V2 permission_required (from provider via router)
     if error == "permission_required":
         grant = data.get("required_grant", {})
         raise _PermissionDenied(grant_url=grant.get("grant_url", ""))
-    # V1 permission_denied
-    if error == "permission_denied":
-        raise _PermissionDenied(grant_url=data.get("grant_url", ""))
     if resp.status_code == 401 and data.get("authorize_url"):
         raise _OAuthConsentRequired(data["authorize_url"])
     raise OAuthError(data.get("message", f"Request failed: {resp.status_code}"))

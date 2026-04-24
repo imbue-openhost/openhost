@@ -43,6 +43,22 @@ PROVIDERS = {
         "revoke_auth": "basic",  # use client_id:client_secret as basic auth
         "revoke_body": "json",  # send token in JSON body as {"access_token": token}
     },
+    "mock": {
+        "flow": "auth_code",
+        "client_id": "dummy",
+        "client_secret": "dummy",
+        "auth_url": "dynamic",
+        "token_url": "dynamic",
+        "revoke_url": "dynamic",
+    },
+    "mock_device": {
+        "flow": "device",
+        "client_id": "dummy",
+        "client_secret": "none",
+        "device_code_url": "dummy",
+        "token_url": "dynamic",
+        "revoke_url": "dynamic",
+    },
 }
 
 # Pending auth code flows, keyed by state parameter.

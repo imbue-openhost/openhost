@@ -873,20 +873,27 @@ async def delete_oauth_token(token_id):
 # ─── Test Helpers ───
 
 
-@app.route("/test/set-provider-config", methods=["POST"])
-async def test_set_provider_config():
-    """Override OAuth provider URLs for testing."""
+@app.route("/test/set-mock-provider-url", methods=["POST"])
+async def test_set_mock_provider_url():
+    """Override OAuth provider URLs to point at a test mock server.
+
+    Accepts browser_url (for the authorize page, visited by the browser) and
+    server_url (for token exchange and userinfo, called server-to-server from
+    inside Docker). These differ because the browser is on the host while the
+    secrets app runs inside a Docker container.
+
+    Also sets the OAuth redirect URI so callbacks reach the test router.
+    """
     global OAUTH_REDIRECT_URI
     data = await request.get_json()
-    provider = data.get("provider")
-    overrides = data.get("overrides", {})
+    browser_url = data["browser_url"]
+    server_url = data["server_url"]
+    provider = data.get("provider", "google")
 
-    if provider and provider in PROVIDERS:
-        for key in ("auth_url", "token_url"):
-            if key in overrides:
-                PROVIDERS[provider][key] = overrides[key]
-        if "userinfo_url" in overrides:
-            USERINFO_URLS[provider] = (overrides["userinfo_url"], USERINFO_URLS.get(provider, ("", "email"))[1])
+    if provider in PROVIDERS:
+        PROVIDERS[provider]["auth_url"] = f"{browser_url}/authorize"
+        PROVIDERS[provider]["token_url"] = f"{server_url}/oauth/token"
+    USERINFO_URLS[provider] = (f"{server_url}/userinfo", "email")
 
     if "redirect_uri" in data:
         OAUTH_REDIRECT_URI = data["redirect_uri"]

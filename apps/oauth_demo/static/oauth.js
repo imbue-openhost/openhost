@@ -67,7 +67,6 @@ class OAuthClient {
     if (data.error === "permission_required" && data.required_grant) {
       return { type: "permission", url: data.required_grant.grant_url || "" };
     }
-    if (data.grant_url) return { type: "permission", url: data.grant_url };
     if (data.authorize_url) return { type: "oauth", authorize_url: data.authorize_url };
     return { type: "error", message: data.message || "Request failed: " + resp.status };
   }
