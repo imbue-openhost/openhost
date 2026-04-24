@@ -4,9 +4,7 @@ These are module-scoped: each test file that uses them gets its own router
 process, admin session, and deployed apps.
 """
 
-import asyncio
 import os
-import threading
 
 import pytest
 import requests
@@ -17,11 +15,8 @@ from compute_space.testing import managed_router
 from compute_space.testing import poll
 from compute_space.testing import wait_app_running
 
-from . import mock_oauth_server as mock_oauth
-
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 _SECRETS_DIR = os.path.join(_APPS_DIR, "secrets")
-_OAUTH_DEMO_DIR = os.path.join(_APPS_DIR, "oauth_demo")
 
 ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
@@ -100,46 +95,3 @@ def secrets_app_deployed(admin_session, router_url):
 
     yield {"session": admin_session, "router_url": router_url}
     admin_session.post(f"{router_url}/remove_app/secrets", timeout=30)
-
-
-@pytest.fixture(scope="module")
-def oauth_demo_deployed(admin_session, router_url):
-    r = admin_session.post(
-        f"{router_url}/api/add_app",
-        data={"repo_url": f"file://{_OAUTH_DEMO_DIR}"},
-        timeout=120,
-    )
-    assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
-    assert r.json().get("app_name") == "oauth-demo"
-    wait_app_running(admin_session, router_url, "oauth-demo")
-
-    yield {"session": admin_session, "router_url": router_url}
-    admin_session.post(f"{router_url}/remove_app/oauth-demo", timeout=30)
-
-
-@pytest.fixture(scope="module")
-def mock_oauth_server():
-    """Run the mock OAuth Quart app on the host, reachable from Docker containers
-    at http://host.docker.internal:MOCK_OAUTH_PORT."""
-
-    mock_oauth.reset()
-    mock_oauth.authorize_base_url = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
-
-    loop = asyncio.new_event_loop()
-
-    async def _run():
-        await mock_oauth.app.run_task(host="0.0.0.0", port=MOCK_OAUTH_PORT)
-
-    thread = threading.Thread(target=loop.run_until_complete, args=(_run(),), daemon=True)
-    thread.start()
-
-    poll(
-        lambda: requests.get(f"http://127.0.0.1:{MOCK_OAUTH_PORT}/authorize", timeout=1).status_code == 200,
-        timeout=5,
-        interval=0.2,
-        fail_msg="Mock OAuth server did not start",
-    )
-
-    yield mock_oauth
-
-    loop.call_soon_threadsafe(loop.stop)

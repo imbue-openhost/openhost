@@ -886,16 +886,17 @@ async def test_set_mock_provider_url():
     """
     global OAUTH_REDIRECT_URI
     data = await request.get_json()
-    browser_url = data["browser_url"]
-    server_url = data["server_url"]
-    provider = data.get("provider", "google")
 
-    if provider in PROVIDERS:
-        PROVIDERS[provider]["auth_url"] = f"{browser_url}/authorize"
-        PROVIDERS[provider]["token_url"] = f"{server_url}/oauth/token"
-    USERINFO_URLS[provider] = (f"{server_url}/userinfo", "email")
+    provider = data["provider"]
+    assert provider in ("mock", "mock_device")
 
-    if "redirect_uri" in data:
-        OAUTH_REDIRECT_URI = data["redirect_uri"]
+    for url_type in ["authorize_url", "device_url", "token_url", "revoke_url"]:
+        if url_type in data:
+            PROVIDERS[provider][url_type] = data[url_type]
+
+    if "userinfo_url" in data:
+        USERINFO_URLS[provider] = (data["userinfo_url"], data["userinfo_field"])
+
+    OAUTH_REDIRECT_URI = data["redirect_uri"]
 
     return jsonify({"ok": True})

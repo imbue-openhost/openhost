@@ -4,13 +4,24 @@ a full Playwright browser test through the mock OAuth provider.
 Requires Docker (--run-docker) and Playwright (chromium browser).
 """
 
+import asyncio
+import os
+import threading
+
 import pytest
 import requests
 from playwright.sync_api import sync_playwright
 
+from compute_space.testing import poll
+from compute_space.testing import wait_app_running
+
+from . import mock_oauth_server as mock_oauth_server_module
 from .conftest import MOCK_OAUTH_PORT
 from .conftest import ZONE_DOMAIN
+from .conftest import _APPS_DIR
 from .conftest import requires_docker
+
+_OAUTH_DEMO_DIR = os.path.join(_APPS_DIR, "oauth_demo")
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -18,28 +29,67 @@ from .conftest import requires_docker
 
 
 @pytest.fixture(scope="module")
-def mock_oauth_provider(secrets_app_deployed, mock_oauth_server):
-    """Configure the secrets app to use the mock OAuth server as Google's provider.
+def mock_oauth_server(secrets_app_deployed):
+    """Configure the secrets app to use the mock OAuth server as the 'mock' provider.
 
-    Overrides Google's auth/token/userinfo URLs and sets dummy client credentials
-    so the full OAuth redirect flow goes through the mock instead of real Google.
+    Overrides the mock provider's auth/token/userinfo/revoke URLs so the full
+    OAuth redirect flow goes through the mock server instead of a real provider.
     """
+    mock_oauth_server_module.reset()
+    mock_oauth_server_module.authorize_base_url = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
+
+    loop = asyncio.new_event_loop()
+
+    async def _run():
+        await mock_oauth_server_module.app.run_task(host="0.0.0.0", port=MOCK_OAUTH_PORT)
+
+    thread = threading.Thread(target=loop.run_until_complete, args=(_run(),), daemon=True)
+    thread.start()
+
+    poll(
+        lambda: requests.get(f"http://127.0.0.1:{MOCK_OAUTH_PORT}/authorize", timeout=1).status_code == 200,
+        timeout=5,
+        interval=0.2,
+        fail_msg="Mock OAuth server did not start",
+    )
+
     s = secrets_app_deployed["session"]
     url = secrets_app_deployed["router_url"]
+    mock_oauth_domain = f"http://127.0.0.1:{MOCK_OAUTH_PORT}"
 
     r = s.post(
         f"{url}/secrets/test/set-mock-provider-url",
         json={
-            "browser_url": f"http://127.0.0.1:{MOCK_OAUTH_PORT}",
-            "server_url": f"http://host.docker.internal:{MOCK_OAUTH_PORT}",
+            "provider": "mock",
+            "authorize_url": f"{mock_oauth_domain}/authorize",
+            "token_url": f"{mock_oauth_domain}/oauth/token",
+            "revoke_url": f"{mock_oauth_domain}/oauth/revoke",
+            "userinfo_url": f"{mock_oauth_domain}/userinfo",
+            "userinfo_field": "email",
             "redirect_uri": f"http://{ZONE_DOMAIN}/secrets/oauth/callback",
         },
         timeout=10,
     )
     assert r.status_code == 200
 
-    for key, value in [("GOOGLE_OAUTH_CLIENT_ID", "mock_id"), ("GOOGLE_OAUTH_CLIENT_SECRET", "mock_secret")]:
-        s.post(f"{url}/secrets/api/secrets", json={"key": key, "value": value}, timeout=10)
+    yield mock_oauth_server_module
+
+    loop.call_soon_threadsafe(loop.stop)
+
+
+@pytest.fixture(scope="module")
+def oauth_demo_deployed(admin_session, router_url):
+    r = admin_session.post(
+        f"{router_url}/api/add_app",
+        data={"repo_url": f"file://{_OAUTH_DEMO_DIR}"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
+    assert r.json().get("app_name") == "oauth-demo"
+    wait_app_running(admin_session, router_url, "oauth-demo")
+
+    yield {"session": admin_session, "router_url": router_url}
+    admin_session.post(f"{router_url}/remove_app/oauth-demo", timeout=30)
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +339,7 @@ class TestOAuthFlow:
             page.goto(f"{url}/oauth-demo/server/", wait_until="networkidle")
 
             # Click "Connect" for Google — this triggers the OAuth flow
-            page.click('a[href*="connect?provider=google"]')
+            page.click('a[href*="connect?provider=mock"]')
 
             # Should land on the mock provider's account picker
             page.wait_for_selector("h1", timeout=15000)
