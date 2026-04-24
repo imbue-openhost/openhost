@@ -7,27 +7,33 @@ Covers:
   - Registry validation: contiguous, starts at 2 (REQ-REG-*)
   - Runner behavior: lock, apply, atomic version bump, rollback (REQ-RUN-*)
   - Fresh-DB init via schema.sql, stamps to highest (REQ-INIT-*)
-  - Snapshot tests per registered migration + sanity vs schema.sql
+  - Pair-based snapshot tests over tests/snapshots/<set>/v*.sql
     (REQ-TEST-1, REQ-TEST-2, REQ-TEST-3, REQ-TEST-4)
   - Legacy bootstrap fixture test (REQ-TEST-5)
   - Concurrency: two concurrent startups (REQ-TEST-6)
   - PRAGMA foreign_keys heuristic warning (REQ-TEST-7)
+
+Snapshot format: each ``snapshots/<set>/vNNNN.sql`` is the output of
+``sqlite3.Connection.iterdump()``, with ``sqlite_sequence`` lines
+filtered out (environment-dependent autoincrement state). On mismatch
+the harness writes the actual dump to ``<name>.sql.new`` next to the
+expected file and fails with a unified diff. Rename the ``.new`` to
+``.sql`` to accept.
 """
 
 from __future__ import annotations
 
+import difflib
 import importlib
 import inspect
-import json
-import os
 import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import warnings as _warnings
 from pathlib import Path
-from typing import Any
 
 import pytest
 from loguru import logger
@@ -44,7 +50,7 @@ from testing_helpers.schema_helpers import assert_schemas_equal
 from testing_helpers.schema_helpers import get_schema_snapshot
 
 # --------------------------------------------------------------------------- #
-# Fixtures and helpers
+# Fixtures
 # --------------------------------------------------------------------------- #
 
 
@@ -95,141 +101,6 @@ CREATE TABLE refresh_tokens (
 );
 CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
 """
-
-
-def _seed_dataset(db: sqlite3.Connection) -> None:
-    """Insert representative rows into every table present at v1.
-
-    Shared across all snapshot tests (REQ-TEST-3) so each snapshot covers
-    both structure and data transforms through the migration chain.
-    """
-    db.execute(
-        "INSERT INTO apps (name, manifest_name, version, runtime_type, repo_path, "
-        "local_port, description, memory_mb, cpu_millicores, gpu, public_paths, "
-        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            "seedapp",
-            "seedapp",
-            "1.2.3",
-            "serverfull",
-            "/repo/seedapp",
-            19001,
-            "Seed app",
-            256,
-            500,
-            0,
-            '["/public"]',
-            "2024-01-01T00:00:00",
-            "2024-01-01T00:00:00",
-        ),
-    )
-    db.execute(
-        "INSERT INTO app_databases (app_name, db_name, db_path) VALUES (?,?,?)",
-        ("seedapp", "seed_db", "/data/seed.db"),
-    )
-    db.execute(
-        "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?,?,?,?)",
-        ("seedapp", "http", 8080, 19501),
-    )
-    db.execute(
-        "INSERT INTO owner (id, username, password_hash, password_needs_set, created_at) VALUES (?,?,?,?,?)",
-        (1, "alice", "argon2-stub", 0, "2024-01-01T00:00:00"),
-    )
-    db.execute(
-        "INSERT INTO refresh_tokens (token_hash, expires_at, revoked) VALUES (?,?,?)",
-        ("rt-hash-1", "2099-01-01T00:00:00", 0),
-    )
-    db.execute(
-        "INSERT INTO api_tokens (name, token_hash, expires_at, created_at) VALUES (?,?,?,?)",
-        ("ci-key", "api-hash-1", "2099-01-01T00:00:00", "2024-01-01T00:00:00"),
-    )
-    db.execute(
-        "INSERT INTO app_tokens (app_name, token_hash) VALUES (?,?)",
-        ("seedapp", "app-hash-1"),
-    )
-    db.execute(
-        "INSERT INTO service_providers (service_name, app_name) VALUES (?,?)",
-        ("mailer", "seedapp"),
-    )
-    db.execute(
-        "INSERT INTO permissions (consumer_app, permission_key) VALUES (?,?)",
-        ("seedapp", "net.egress"),
-    )
-
-
-def _dump_data(db: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """Ordered dump of every user table's rows (excluding schema_version).
-
-    schema_version is excluded so the dump is stable across version bumps;
-    the version is checked separately.
-    """
-    data: dict[str, list[dict[str, Any]]] = {}
-    tables = [
-        row[0]
-        for row in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%' AND name != 'schema_version' "
-            "ORDER BY name"
-        ).fetchall()
-    ]
-    for tbl in tables:
-        col_names = [row[1] for row in db.execute(f"PRAGMA table_info({tbl})").fetchall()]
-        order_by = ", ".join(f'"{c}"' for c in col_names)
-        rows = db.execute(f'SELECT {order_by} FROM "{tbl}" ORDER BY {order_by}').fetchall()
-        data[tbl] = [dict(zip(col_names, r, strict=False)) for r in rows]
-    return data
-
-
-def _snapshot(db: sqlite3.Connection) -> dict[str, Any]:
-    return {
-        "schema": get_schema_snapshot(db),
-        "data": _dump_data(db),
-    }
-
-
-def _apply_and_snapshot(db_path: str, registry: list[Migration], seed: bool) -> dict[str, Any]:
-    """Build a snapshot by bootstrapping to v1, seeding, and applying numbered migrations.
-
-    Matches the flow described in REQ-TEST-3: shared seed is inserted at
-    the earliest version the snapshots cover (v1), then every numbered
-    migration in ``registry`` runs against the seeded data.
-    """
-    # Start the DB at v0 by writing the oldest legacy schema directly.
-    init = sqlite3.connect(db_path)
-    init.executescript(_OLDEST_LEGACY_SCHEMA)
-    init.close()
-
-    # Bootstrap v0 -> v1 via the legacy path (empty registry here).
-    apply_migrations(db_path, registry=[])
-
-    # Seed at v1 so numbered migrations see representative rows.
-    if seed:
-        db = sqlite3.connect(db_path, isolation_level=None)
-        try:
-            _seed_dataset(db)
-        finally:
-            db.close()
-
-    # Apply the caller's numbered migrations.
-    apply_migrations(db_path, registry=registry)
-
-    db = sqlite3.connect(db_path)
-    try:
-        snap = _snapshot(db)
-    finally:
-        db.close()
-    return snap
-
-
-SNAPSHOTS_DIR = Path(__file__).resolve().parent / "snapshots"
-
-
-def _snapshot_path(version: int) -> Path:
-    return SNAPSHOTS_DIR / f"v{version:04d}.json"
-
-
-def _normalise_snapshot_for_compare(snap: dict[str, Any]) -> str:
-    return json.dumps(snap, sort_keys=True, indent=2, default=str)
 
 
 # --------------------------------------------------------------------------- #
@@ -369,7 +240,6 @@ class TestLegacyBootstrap:
 
         db = sqlite3.connect(db_path)
         try:
-            # Ends at v1 (since no v2+ registered in the real REGISTRY).
             assert read_version(db) == highest_registered_version(REGISTRY)
             # Data preserved through legacy path.
             row = db.execute("SELECT name FROM apps WHERE name = 'legacy_app'").fetchone()
@@ -384,7 +254,7 @@ class TestLegacyBootstrap:
         db_path = str(tmp_path / "legacy.db")
         self._make_v0_fixture(db_path)
 
-        # First startup: v0 → v1.
+        # First startup: v0 → v1 (and on up to highest).
         apply_migrations(db_path)
 
         # Monkey-patch legacy_migrate to explode if called again.
@@ -395,8 +265,8 @@ class TestLegacyBootstrap:
         apply_migrations(db_path)  # must not raise
 
     def test_legacy_matches_fresh_schema(self, tmp_path):
-        """REQ-TEST-5 / REQ-TEST-4: legacy-bootstrapped DB has the same
-        schema as a fresh DB initialized from schema.sql alone."""
+        """REQ-TEST-5: legacy-bootstrapped DB has the same schema as a fresh
+        DB initialized from schema.sql alone."""
         legacy_path = str(tmp_path / "legacy.db")
         fresh_path = str(tmp_path / "fresh.db")
 
@@ -460,7 +330,12 @@ class TestLegacyBootstrap:
 
 class TestNumberedMigrationRunner:
     def _v1_db(self, path: str) -> None:
-        apply_migrations(path)  # fresh init stamps v1 (empty registry case)
+        """Stamp the DB to v1 precisely, regardless of the live REGISTRY.
+
+        Tests in this class register their own v2+ migrations; they need
+        the DB to start at v1 so their migrations have room to run.
+        """
+        apply_migrations(path, registry=[])
 
     def test_migration_applied_atomically(self, tmp_path):
         db_path = str(tmp_path / "mig.db")
@@ -606,7 +481,7 @@ class TestSqlFileMigration:
         M0002 = mod.M0002
 
         db_path = str(tmp_path / "sqlfile.db")
-        apply_migrations(db_path)  # fresh init
+        apply_migrations(db_path, registry=[])  # v1 baseline
         apply_migrations(db_path, registry=[M0002()])
 
         db = sqlite3.connect(db_path)
@@ -645,7 +520,7 @@ class TestSqlFileMigration:
         Bad = mod.Bad
 
         db_path = str(tmp_path / "sqlfail.db")
-        apply_migrations(db_path)  # v1
+        apply_migrations(db_path, registry=[])  # v1 baseline
         with pytest.raises(sqlite3.Error):
             apply_migrations(db_path, registry=[Bad()])
 
@@ -697,8 +572,8 @@ class TestConcurrency:
         a no-op.
         """
         db_path = str(tmp_path / "race.db")
-        # Bring DB to v1 before the race.
-        apply_migrations(db_path)
+        # Bring DB to v1 precisely so the workers' CounterMig(v=2) has room to run.
+        apply_migrations(db_path, registry=[])
 
         counter_path = tmp_path / "counter.txt"
         counter_path.write_text("")
@@ -760,68 +635,268 @@ class TestConcurrency:
 
 
 # --------------------------------------------------------------------------- #
-# Snapshot tests (REQ-TEST-1..4)
+# Snapshot harness (REQ-TEST-1..4)
 # --------------------------------------------------------------------------- #
 
 
-def _build_snapshot_for_version(tmp_path: Path, target_version: int) -> dict[str, Any]:
-    """Apply REGISTRY truncated at target_version, seed, dump."""
-    sub_registry = [m for m in REGISTRY if m.version <= target_version]
-    db_path = str(tmp_path / f"snap_v{target_version}.db")
-    return _apply_and_snapshot(db_path, sub_registry, seed=True)
+SNAPSHOTS_DIR = Path(__file__).resolve().parent / "snapshots"
+_VERSION_FILE_RE = re.compile(r"^v(\d+)\.sql$")
+
+
+def _snapshot_sets() -> list[tuple[str, list[Path]]]:
+    """Discover ``snapshots/<set>/v*.sql`` groupings.
+
+    Returns a list of ``(set_name, sorted_files)`` for every subfolder
+    with at least one ``vNNNN.sql`` file.
+    """
+    if not SNAPSHOTS_DIR.exists():
+        return []
+    sets: list[tuple[str, list[Path]]] = []
+    for set_dir in sorted(SNAPSHOTS_DIR.iterdir()):
+        if not set_dir.is_dir():
+            continue
+        versioned: list[tuple[int, Path]] = []
+        for f in set_dir.iterdir():
+            m = _VERSION_FILE_RE.match(f.name)
+            if m:
+                versioned.append((int(m.group(1)), f))
+        versioned.sort()
+        if versioned:
+            sets.append((set_dir.name, [p for _, p in versioned]))
+    return sets
+
+
+def _version_of(path: Path) -> int:
+    m = _VERSION_FILE_RE.match(path.name)
+    assert m, f"not a vNNNN.sql snapshot: {path.name}"
+    return int(m.group(1))
+
+
+def _snapshot_pairs() -> list[tuple[str, Path, Path]]:
+    """Pairs of consecutive vN files *present* in each set (not consecutive
+    integers — if a set has v1 and v15 only, there is one pair (1, 15)).
+    """
+    out: list[tuple[str, Path, Path]] = []
+    for set_name, files in _snapshot_sets():
+        for a, b in zip(files, files[1:], strict=False):
+            out.append((set_name, a, b))
+    return out
+
+
+def _dump_for_snapshot(db_path: str) -> str:
+    """Render a DB to its canonical .sql snapshot form.
+
+    Uses :meth:`sqlite3.Connection.iterdump`, joined with newlines. The
+    only whitelisted exclusion is ``sqlite_sequence`` — its state is a
+    function of prior AUTOINCREMENT allocations and is environment-noise
+    for schema/data correctness checks.
+    """
+    db = sqlite3.connect(db_path)
+    try:
+        lines = [line for line in db.iterdump() if "sqlite_sequence" not in line]
+    finally:
+        db.close()
+    return "\n".join(lines) + "\n"
+
+
+def _write_new_and_fail(expected_path: Path, actual: str, msg_prefix: str) -> None:
+    """Write ``<name>.sql.new`` next to the expected file and fail with a diff.
+
+    Developer workflow: inspect the ``.sql.new``, rename to ``.sql`` once
+    the change is intentional. No --update-snapshots flag.
+    """
+    new_path = expected_path.with_suffix(expected_path.suffix + ".new")
+    new_path.write_text(actual)
+    rel_expected = expected_path.relative_to(SNAPSHOTS_DIR.parent)
+    rel_new = new_path.relative_to(SNAPSHOTS_DIR.parent)
+    if expected_path.exists():
+        expected = expected_path.read_text()
+        diff = "".join(
+            difflib.unified_diff(
+                expected.splitlines(keepends=True),
+                actual.splitlines(keepends=True),
+                fromfile=str(rel_expected),
+                tofile=str(rel_new),
+            )
+        )
+        pytest.fail(f"{msg_prefix}\nWrote actual dump to {rel_new}. Diff:\n{diff}")
+    else:
+        pytest.fail(
+            f"{msg_prefix}\nMissing golden {rel_expected}. Wrote generated dump to {rel_new}; "
+            "review and rename to accept."
+        )
 
 
 @pytest.mark.parametrize(
-    "migration",
-    REGISTRY,
-    ids=[f"v{m.version}-{type(m).__name__}" for m in REGISTRY],
+    ("set_name", "va", "vb"),
+    _snapshot_pairs(),
+    ids=[f"{name}-v{_version_of(a)}-to-v{_version_of(b)}" for name, a, b in _snapshot_pairs()],
 )
-def test_snapshot_per_version(tmp_path, migration):
-    """REQ-TEST-1/2/3: snapshot of schema + data after applying migrations
-    up to and including ``migration.version`` matches the checked-in file.
-    """
-    target = migration.version
-    snap_path = _snapshot_path(target)
-    actual = _build_snapshot_for_version(tmp_path, target)
+def test_snapshot_pair(set_name, va, vb, tmp_path):
+    """REQ-TEST-1/2/3: from ``<set>/vA.sql``, apply REGISTRY, must dump to ``<set>/vB.sql``."""
+    a_version = _version_of(va)
+    b_version = _version_of(vb)
 
-    if os.environ.get("UPDATE_MIGRATION_SNAPSHOTS") == "1":
-        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-        snap_path.write_text(_normalise_snapshot_for_compare(actual))
-        pytest.skip(f"Updated snapshot v{target}")
+    db_path = str(tmp_path / f"{set_name}_v{a_version}_to_v{b_version}.db")
+    # Load the starting snapshot verbatim.
+    loader = sqlite3.connect(db_path)
+    try:
+        loader.executescript(va.read_text())
+    finally:
+        loader.close()
 
-    assert snap_path.exists(), (
-        f"Missing snapshot file {snap_path}. Re-run with UPDATE_MIGRATION_SNAPSHOTS=1 to create."
+    probe = sqlite3.connect(db_path)
+    try:
+        assert read_version(probe) == a_version, (
+            f"{va.relative_to(SNAPSHOTS_DIR.parent)} claims v{a_version} but loads as v{read_version(probe)}"
+        )
+    finally:
+        probe.close()
+
+    apply_migrations(db_path, registry=REGISTRY)
+
+    probe = sqlite3.connect(db_path)
+    try:
+        final_version = read_version(probe)
+    finally:
+        probe.close()
+    assert final_version == b_version, (
+        f"After applying REGISTRY starting at v{a_version}, expected v{b_version} but DB is at v{final_version}"
     )
-    expected = json.loads(snap_path.read_text())
-    assert _normalise_snapshot_for_compare(expected) == _normalise_snapshot_for_compare(actual)
+
+    actual = _dump_for_snapshot(db_path)
+    expected = vb.read_text()
+    if actual != expected:
+        _write_new_and_fail(
+            vb,
+            actual,
+            f"Snapshot mismatch for set={set_name} pair=v{a_version}->v{b_version}",
+        )
 
 
 # --------------------------------------------------------------------------- #
-# Migrations-from-empty equivalence with schema.sql (REQ-TEST-4)
+# Snapshot vs schema.sql sanity (REQ-TEST-4)
 # --------------------------------------------------------------------------- #
 
 
-class TestSchemaSqlEquivalence:
-    def test_chain_from_v0_matches_schema_sql(self, tmp_path):
-        legacy_path = str(tmp_path / "legacy.db")
-        fresh_path = str(tmp_path / "fresh.db")
+@pytest.mark.parametrize(
+    ("set_name", "files"),
+    _snapshot_sets(),
+    ids=[name for name, _ in _snapshot_sets()],
+)
+def test_latest_snapshot_schema_matches_schema_sql(set_name, files, tmp_path):
+    """The latest snapshot in each set must have a schema equivalent to a
+    fresh ``schema.sql`` initialization.
 
-        init = sqlite3.connect(legacy_path)
-        init.executescript(_OLDEST_LEGACY_SCHEMA)
-        init.close()
+    Only the schema is compared — snapshots carry seed data whereas a
+    fresh init is empty; ``assert_schemas_equal`` ignores row contents.
+    """
+    latest = files[-1]
+    snap_path = str(tmp_path / f"{set_name}_latest.db")
+    loader = sqlite3.connect(snap_path)
+    try:
+        loader.executescript(latest.read_text())
+    finally:
+        loader.close()
 
-        apply_migrations(legacy_path)
-        apply_migrations(fresh_path)
+    fresh_path = str(tmp_path / f"{set_name}_fresh.db")
+    apply_migrations(fresh_path, registry=REGISTRY)
 
-        l_db = sqlite3.connect(legacy_path)
-        f_db = sqlite3.connect(fresh_path)
-        try:
-            assert_schemas_equal(get_schema_snapshot(f_db), get_schema_snapshot(l_db))
-            # Version stamped to the same highest on both paths.
-            assert read_version(l_db) == read_version(f_db)
-        finally:
-            l_db.close()
-            f_db.close()
+    snap_db = sqlite3.connect(snap_path)
+    fresh_db = sqlite3.connect(fresh_path)
+    try:
+        assert_schemas_equal(get_schema_snapshot(fresh_db), get_schema_snapshot(snap_db))
+    finally:
+        snap_db.close()
+        fresh_db.close()
+
+
+# --------------------------------------------------------------------------- #
+# Snapshot generation
+# --------------------------------------------------------------------------- #
+
+
+def _seed_empty(_db: sqlite3.Connection) -> None:  # pragma: no cover - generator
+    pass
+
+
+def _seed_service_with_ports(db: sqlite3.Connection) -> None:  # pragma: no cover - generator
+    """Minimal realistic seed: one app, one port mapping, one service provider."""
+    db.execute(
+        "INSERT INTO apps (name, manifest_name, version, runtime_type, repo_path, "
+        "local_port, description, memory_mb, cpu_millicores, gpu, public_paths, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "orders",
+            "orders",
+            "1.0.0",
+            "serverfull",
+            "/repo/orders",
+            19100,
+            "Order service",
+            256,
+            500,
+            0,
+            "[]",
+            "2024-01-01T00:00:00",
+            "2024-01-01T00:00:00",
+        ),
+    )
+    db.execute(
+        "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?,?,?,?)",
+        ("orders", "grpc", 8000, 19500),
+    )
+    db.execute(
+        "INSERT INTO service_providers (service_name, app_name) VALUES (?,?)",
+        ("payments", "orders"),
+    )
+
+
+_SEEDS = {
+    "empty": _seed_empty,
+    "service_with_ports": _seed_service_with_ports,
+}
+
+
+def _regenerate_snapshots(root: Path = SNAPSHOTS_DIR) -> None:  # pragma: no cover - generator
+    """Rebuild every ``<set>/vNNNN.sql`` from the live code + seed functions.
+
+    Not a test. Invoke as::
+
+        python -c 'from compute_space.tests.test_versioned_migrations \\
+            import _regenerate_snapshots; _regenerate_snapshots()'
+
+    Writes the entire snapshot tree in place. Review diffs before committing.
+    The harness's normal .sql.new workflow is preferred for small updates;
+    this generator is for initial bootstrap and wholesale resets.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+
+    for set_name, seed in _SEEDS.items():
+        set_dir = root / set_name
+        set_dir.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            # v1: bootstrap to v1 + seed.
+            v1_db = str(td_path / f"{set_name}_v1.db")
+            apply_migrations(v1_db, registry=[])
+            with sqlite3.connect(v1_db, isolation_level=None) as conn:
+                seed(conn)
+            (set_dir / "v0001.sql").write_text(_dump_for_snapshot(v1_db))
+
+            # Higher versions: start from the v1 dump, apply REGISTRY up to
+            # each registered version. This mirrors the pair-test flow.
+            for migration in REGISTRY:
+                target = migration.version
+                next_db = str(td_path / f"{set_name}_v{target}.db")
+                loader = sqlite3.connect(next_db)
+                try:
+                    loader.executescript((set_dir / "v0001.sql").read_text())
+                finally:
+                    loader.close()
+                apply_migrations(next_db, registry=REGISTRY)
+                (set_dir / f"v{target:04d}.sql").write_text(_dump_for_snapshot(next_db))
 
 
 # --------------------------------------------------------------------------- #
