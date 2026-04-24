@@ -47,14 +47,30 @@ Derived from `goals.md`. Scope: the openhost `compute_space` SQLite DB only. Ver
 
 ## Testing
 
-- **REQ-TEST-1**: For each registered migration version N (N ≥ 2), there MUST be a snapshot test that: starts from an empty DB, applies all registered migrations up to and including version N, and asserts the resulting schema and data match a checked-in snapshot file.
-- **REQ-TEST-2**: The snapshot MUST cover both schema (e.g. normalized `sqlite_master` SQL and `PRAGMA table_info` output for every table) and data (canonical ordered dump of every row in every seeded table).
-- **REQ-TEST-3**: A single shared seed dataset MUST be inserted into the empty DB before migrations run, exercising every table that existed at the earliest version covered by snapshots. The same seed is used for all snapshot tests.
-- **REQ-TEST-4**: A sanity test MUST verify that applying all registered migrations against an empty DB produces a DB equivalent (same normalized schema) to one initialized from `schema.sql` alone.
-- **REQ-TEST-5**: A legacy-bootstrap test MUST verify that running `migrate()` against a representative pre-v0 fixture, followed by the runner's normal startup, yields a DB at the highest registered version whose schema and data match the corresponding snapshot.
-- **REQ-TEST-6**: A concurrency test SHOULD verify that two simulated startups against the same DB do not both apply migrations (one waits, observes the new version, applies nothing).
+- **REQ-TEST-1**: Snapshot tests MUST be pair-based over the files present in each `compute_space/tests/snapshots/<set>/vNNNN.sql` subfolder. For each consecutive pair `(vA, vB)` in a set's sorted file list (not consecutive integers — if a set has `v0001.sql` and `v0015.sql` only, that is one pair covering migrations 2..15), the harness MUST: load `vA.sql` into a fresh tmp DB via `executescript`, assert `schema_version = A`, run `apply_migrations(db_path, registry=REGISTRY)`, assert `schema_version = B`, compute the canonical dump, and compare it to the contents of `vB.sql`.
+- **REQ-TEST-2**: Snapshot files MUST be the output of `sqlite3.Connection.iterdump()` joined with newlines. The `schema_version` row MUST be included. User tables MUST NOT be stripped. The single whitelisted exclusion is any line referencing `sqlite_sequence` (its state is a function of environment-specific AUTOINCREMENT allocations).
+- **REQ-TEST-3**: Each snapshot subfolder represents one realistic starting state. The seed data lives *inside* the committed `vNNNN.sql` files — the harness does not re-seed at test time. Multiple subfolders (e.g. `empty/`, `service_with_ports/`) MAY exist to exercise different starting-state shapes.
+- **REQ-TEST-4**: A sanity test MUST verify, for each snapshot set, that the *schema* of the latest snapshot is equivalent to a fresh `schema.sql` initialization. (Data is allowed to differ — snapshots carry seed rows, fresh init is empty; only schema is compared.)
+- **REQ-TEST-5**: A legacy-bootstrap test MUST verify that running `migrate()` against a representative pre-v0 fixture, followed by the runner's normal startup, yields a DB at the highest registered version whose schema matches a fresh `schema.sql` init.
+- **REQ-TEST-6**: A concurrency test SHOULD verify that two OS processes calling `apply_migrations` against the same DB do not both apply migrations (one waits on the file lock, observes the new version, applies nothing).
 - **REQ-TEST-7**: Migration tests SHOULD detect and warn on operations known to break SQLite transactional rollback (e.g. `PRAGMA foreign_keys` toggles inside a tx). Best-effort: a simple heuristic scan is acceptable; full static analysis is not required.
 - **REQ-TEST-8**: All migration tests MUST run in the lightweight `pytest` suite (i.e. without `--run-docker`). `sqlite3` is the only system dependency required.
+
+### Snapshot format
+
+Layout:
+
+```
+compute_space/tests/snapshots/
+  <set-name>/
+    v0001.sql         # state after legacy bootstrap + set-specific seed
+    v0002.sql         # after applying REGISTRY up to v2 on top of v0001.sql
+    ...
+```
+
+- Each `vNNNN.sql` is the full `iterdump()` output (with `sqlite_sequence` filtered), valid as input to `sqlite3.Connection.executescript`.
+- A dedicated one-shot generator (invoked manually, not a test) can rebuild every file in place; review diffs before committing.
+- On mismatch or missing golden during a test run, the harness writes the actual dump to `<name>.sql.new` next to the expected file and fails with a unified diff. Reviewing the `.sql.new` and renaming it to `.sql` is how a developer accepts an intentional schema/data change. There is no `--update-snapshots` pytest flag.
 
 ## Out of Scope
 
@@ -85,7 +101,7 @@ Derived from `goals.md`. Scope: the openhost `compute_space` SQLite DB only. Ver
 | REQ-RUN-4 | Log output from a successful upgrade shows one INFO line per applied migration with version and duration. |
 | REQ-INIT-1 | Initializing an empty file from `schema.sql` yields a DB stamped at the latest registered version with no migrations run. |
 | REQ-INIT-2 | After fresh init, no migration entries execute on the next startup. |
-| REQ-TEST-1 | For every registered migration, a checked-in snapshot file exists and its test passes. |
-| REQ-TEST-4 | Sanity test comparing migrations-from-empty vs `schema.sql` passes. |
-| REQ-TEST-5 | Legacy-bootstrap fixture test ends in a DB byte-equivalent (per snapshot normalization) to the latest-version snapshot. |
+| REQ-TEST-1 | Each pair `(vA, vB)` in every `snapshots/<set>/` folder: load `vA.sql`, run `apply_migrations`, dump, match `vB.sql`. Mismatches write `<name>.sql.new` + fail. |
+| REQ-TEST-4 | For each snapshot set, the latest file's schema matches a fresh `schema.sql` init. |
+| REQ-TEST-5 | Legacy-bootstrap fixture test ends in a DB whose schema matches a fresh `schema.sql` init at the highest registered version. |
 | REQ-TEST-8 | `uv run --group dev pytest` (no `--run-docker`) runs all migration tests. |
