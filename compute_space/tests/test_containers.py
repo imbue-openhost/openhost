@@ -687,9 +687,7 @@ def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_container_rewrites_openhost_app_data_dir_env_var(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_rewrites_openhost_app_data_dir_env_var(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``OPENHOST_APP_DATA_DIR`` is always the host path when provisioned,
     but the app sees it from inside the container.  The -e value must
     be the container-side ``/data/app_data/<name>`` path."""
@@ -701,9 +699,7 @@ def test_run_container_rewrites_openhost_app_data_dir_env_var(
         tmp_path=tmp_path,
         env_vars={"OPENHOST_APP_DATA_DIR": host_app_data},
     )
-    env_flags = [
-        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
-    ]
+    env_flags = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"]
     assert f"OPENHOST_APP_DATA_DIR=/data/app_data/{manifest.name}" in env_flags
     # The host path must not leak through.
     assert not any(host_app_data in flag for flag in env_flags), env_flags
@@ -730,18 +726,14 @@ def test_run_container_rewrites_openhost_sqlite_env_var_to_container_path(
             "OPENHOST_SQLITE_main": host_db,
         },
     )
-    env_flags = [
-        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
-    ]
+    env_flags = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"]
     expected = f"OPENHOST_SQLITE_main=/data/app_data/{manifest.name}/sqlite/main.db"
     assert expected in env_flags, env_flags
     # Host path must not leak.
     assert not any(host_db in flag for flag in env_flags), env_flags
 
 
-def test_run_container_rewrites_openhost_app_temp_dir_env_var(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_rewrites_openhost_app_temp_dir_env_var(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``OPENHOST_APP_TEMP_DIR`` has the same rewriting contract as the
     permanent-data var.  Parameters differ (temp dirs live under a
     separate root on the host) so this is a distinct code path."""
@@ -753,16 +745,12 @@ def test_run_container_rewrites_openhost_app_temp_dir_env_var(
         tmp_path=tmp_path,
         env_vars={"OPENHOST_APP_TEMP_DIR": host_temp},
     )
-    env_flags = [
-        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
-    ]
+    env_flags = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"]
     assert f"OPENHOST_APP_TEMP_DIR=/data/app_temp_data/{manifest.name}" in env_flags
     assert not any(host_temp in flag for flag in env_flags), env_flags
 
 
-def test_run_container_does_not_rewrite_unrelated_env_vars(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_does_not_rewrite_unrelated_env_vars(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Only the three OpenHost-managed env var names are rewritten;
     everything else passes through byte-for-byte.
 
@@ -788,9 +776,7 @@ def test_run_container_does_not_rewrite_unrelated_env_vars(
             "LOG_LEVEL": "info",
         },
     )
-    env_flags = [
-        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
-    ]
+    env_flags = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"]
     assert "DATABASE_URL=postgres://host.containers.internal:5432/foo" in env_flags
     assert f"BACKUP_TARGET={host_app_data}/backups" in env_flags
     assert "LOG_LEVEL=info" in env_flags
@@ -815,9 +801,7 @@ def test_run_container_rewrites_only_exact_openhost_app_data_dir_name(
             "OPENHOST_APP_DATA_DIR_BACKUP": f"{host_app_data}-backup",
         },
     )
-    env_flags = [
-        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"
-    ]
+    env_flags = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"]
     # The exact-name var is rewritten.
     assert f"OPENHOST_APP_DATA_DIR=/data/app_data/{manifest.name}" in env_flags
     # The prefix-match var is NOT rewritten.
@@ -874,9 +858,7 @@ def _run_and_capture_all_calls(
     return runs
 
 
-def test_run_container_removes_stale_container_before_running(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_removes_stale_container_before_running(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The stale-cleanup ``podman rm -f openhost-<name>`` call must
     happen strictly before ``podman run`` so name conflicts from a
     previous crashed run don't block the fresh start."""
@@ -889,14 +871,10 @@ def test_run_container_removes_stale_container_before_running(
     assert rm_indexes, f"no 'podman rm -f' call was issued: {calls}"
     assert run_indexes, f"no 'podman run' call was issued: {calls}"
     # Every rm must precede every run.
-    assert max(rm_indexes) < min(run_indexes), (
-        f"'podman rm -f' must precede 'podman run'; got order {calls}"
-    )
+    assert max(rm_indexes) < min(run_indexes), f"'podman rm -f' must precede 'podman run'; got order {calls}"
 
 
-def test_run_container_removes_the_correct_stale_container_name(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_removes_the_correct_stale_container_name(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The pre-cleanup target name must be ``openhost-<app_name>`` —
     the same name the subsequent ``podman run`` passes to ``--name``.
     A mismatch (e.g. removing ``openhost-<manifest_name>`` while

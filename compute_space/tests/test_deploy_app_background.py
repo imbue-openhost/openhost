@@ -36,7 +36,6 @@ from compute_space.core.manifest import AppManifest
 
 from .conftest import _make_test_config
 
-
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
@@ -235,9 +234,7 @@ def test_cache_corrupt_marker_short_circuits_retry_loop(
 
     def _cache_corrupt(*args: Any, **kwargs: Any) -> str:
         attempts["n"] += 1
-        raise RuntimeError(
-            f"{BUILD_CACHE_CORRUPT_MARKER} content digest sha256:deadbeef: not found"
-        )
+        raise RuntimeError(f"{BUILD_CACHE_CORRUPT_MARKER} content digest sha256:deadbeef: not found")
 
     monkeypatch.setattr(apps_module, "build_image", _cache_corrupt)
 
