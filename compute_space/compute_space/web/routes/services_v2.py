@@ -111,6 +111,7 @@ async def service_v2_proxy(rest: str) -> Response:
         extra_headers={
             "Authorization": None,
             "X-OpenHost-Permissions": grants_json,
+            "X-OpenHost-Consumer": consumer_app,
         },
     )
 

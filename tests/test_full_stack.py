@@ -762,7 +762,7 @@ class TestServicesV2:
         url = test_app_deployed["router_url"]
 
         r = s.post(
-            f"{url}/api/permissions_v2/grant",
+            f"{url}/api/permissions_v2/grant-global-scoped",
             json={
                 "app": "test-app",
                 "service_url": SECRETS_SERVICE_URL,

@@ -10,12 +10,35 @@
 {% else %}
 <p>Grant: <code>{{ grant | tojson }}</code></p>
 
-<form method="POST" action="/approve-permissions-v2">
-  <input type="hidden" name="app" value="{{ app_name }}">
-  <input type="hidden" name="service" value="{{ service_url }}">
-  <input type="hidden" name="grant" value="{{ grant_json }}">
-  <input type="hidden" name="return_to" value="{{ redirect_url or '' }}">
-  <button type="submit" class="btn btn-primary">Grant</button>
-</form>
+<button type="button" class="btn btn-primary" id="grant-btn">Grant</button>
+<script>
+document.getElementById("grant-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("grant-btn");
+  btn.disabled = true;
+  btn.textContent = "Granting…";
+  try {
+    const resp = await fetch("/api/permissions_v2/grant-global-scoped", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        app: {{ app_name | tojson }},
+        service_url: {{ service_url | tojson }},
+        grant: {{ grant | tojson }},
+      }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const returnTo = {{ (redirect_url or '') | tojson }};
+    if (returnTo) {
+      window.location.href = returnTo;
+    } else {
+      btn.textContent = "Granted ✓";
+    }
+  } catch (e) {
+    btn.textContent = "Error";
+    btn.disabled = false;
+    alert("Failed to grant permission: " + e.message);
+  }
+});
+</script>
 {% endif %}
 {% endblock %}

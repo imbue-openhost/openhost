@@ -89,8 +89,10 @@ def _check_error_response(resp: httpx.Response) -> None:
     # V2 permission_required (from provider via router)
     if error == "permission_required":
         grants = data.get("grants_needed", [])
-        approve_url = grants[0].get("approve_url", "") if grants else ""
-        raise _PermissionDenied(approve_url=approve_url)
+        url = ""
+        if grants:
+            url = grants[0].get("grant_url") or grants[0].get("approve_url", "")
+        raise _PermissionDenied(approve_url=url)
     # V1 permission_denied
     if error == "permission_denied":
         raise _PermissionDenied(approve_url=data.get("approve_url", ""))

@@ -70,16 +70,18 @@ def revoke_permission_v2(
     service_url: str,
     grant_payload: dict[str, Any],
     scope: str = "global",
-) -> None:
-    """Revoke a permission. Silently succeeds if not granted."""
+    provider_app: str | None = None,
+) -> bool:
+    """Revoke a permission. Returns True if a row was deleted, False if not found."""
     db = get_db()
     payload_json = json.dumps(grant_payload, sort_keys=True)
-    db.execute(
+    cursor = db.execute(
         """DELETE FROM permissions_v2
-           WHERE consumer_app = ? AND service_url = ? AND grant_payload = ? AND scope = ?""",
-        (consumer_app, service_url, payload_json, scope),
+           WHERE consumer_app = ? AND service_url = ? AND grant_payload = ? AND scope = ? AND provider_app = ?""",
+        (consumer_app, service_url, payload_json, scope, provider_app or ""),
     )
     db.commit()
+    return cursor.rowcount > 0
 
 
 def get_all_permissions_v2(

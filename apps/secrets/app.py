@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import timedelta
 from urllib.parse import urlencode
 
+import httpx
 from oauth import PROVIDERS
 from oauth import active_device_flows
 from oauth import build_auth_url
@@ -197,6 +198,17 @@ async def service_list():
     return jsonify({"keys": [{"key": r["key"], "description": r["description"]} for r in rows]})
 
 
+APP_NAME = os.environ["OPENHOST_APP_NAME"]
+ZONE_DOMAIN = os.environ["OPENHOST_ZONE_DOMAIN"]
+MY_REDIRECT_DOMAIN = os.environ["OPENHOST_MY_REDIRECT_DOMAIN"]
+APP_TOKEN = os.environ.get("OPENHOST_APP_TOKEN", "")
+ROUTER_URL = os.environ.get("OPENHOST_ROUTER_URL", "")
+
+DYNAMIC_CRED_PROVIDERS = {"google"}
+
+OAUTH_REDIRECT_URI = f"https://{MY_REDIRECT_DOMAIN}/{APP_NAME}/oauth/callback"
+
+
 # ─── V2 Service API (permissions validated by provider) ───
 
 
@@ -293,6 +305,34 @@ def _check_oauth_v2_permission(provider: str, scopes: list[str]) -> list[dict]:
     return missing
 
 
+def _oauth_permission_denied(provider: str, scopes: list[str], missing: list[dict], return_to: str = ""):
+    """Build a 403 response with app-scoped grant_urls for missing OAuth permissions."""
+    consumer_app = request.headers.get("X-OpenHost-Consumer", "")
+    required_grants = []
+    for grant in missing:
+        params = urlencode(
+            {
+                "provider": provider,
+                "scopes": ",".join(scopes),
+                "consumer": consumer_app,
+                "return_to": return_to,
+            }
+        )
+        required_grants.append(
+            {
+                "key": f"oauth:{grant['provider']}:{grant['scope']}",
+                "scope": "app",
+                "grant_url": f"//{APP_NAME}.{ZONE_DOMAIN}/oauth/grant?{params}",
+            }
+        )
+    return jsonify(
+        {
+            "error": "permission_required",
+            "required_grants": required_grants,
+        }
+    ), 403
+
+
 @app.route("/_oauth_v2/token", methods=["POST"])
 async def oauth_v2_token():
     """V2 OAuth token endpoint — provider-side permission check."""
@@ -302,15 +342,11 @@ async def oauth_v2_token():
 
     provider = data["provider"]
     scopes = data["scopes"]
+    return_to = data.get("return_to", "")
 
     missing = _check_oauth_v2_permission(provider, scopes)
     if missing:
-        return jsonify(
-            {
-                "error": "permission_required",
-                "required_grants": missing,
-            }
-        ), 403
+        return _oauth_permission_denied(provider, scopes, missing, return_to)
 
     return await service_oauth_token()
 
@@ -327,32 +363,12 @@ async def oauth_v2_accounts():
 
     missing = _check_oauth_v2_permission(provider, scopes)
     if missing:
-        return jsonify(
-            {
-                "error": "permission_required",
-                "required_grants": missing,
-            }
-        ), 403
+        return _oauth_permission_denied(provider, scopes, missing)
 
     return await service_oauth_accounts()
 
 
 # ─── OAuth Service API (shared handlers) ───
-
-
-APP_NAME = os.environ["OPENHOST_APP_NAME"]
-ZONE_DOMAIN = os.environ["OPENHOST_ZONE_DOMAIN"]
-MY_REDIRECT_DOMAIN = os.environ["OPENHOST_MY_REDIRECT_DOMAIN"]
-
-# Providers whose credentials are owner-supplied via the secrets dashboard.
-DYNAMIC_CRED_PROVIDERS = {"google"}
-
-
-# OAuth callback URL — uses the shared my.* redirect domain so the user only
-# registers a single redirect URI with their OAuth provider regardless of which
-# deployment they're hitting. The central instance at MY_REDIRECT_DOMAIN forwards
-# the callback back to the originating deployment.
-OAUTH_REDIRECT_URI = f"https://{MY_REDIRECT_DOMAIN}/{APP_NAME}/oauth/callback"
 
 
 def _provider_cred_keys(provider_name: str) -> tuple[str, str]:
@@ -546,6 +562,76 @@ async def service_oauth_accounts():
     return jsonify({"accounts": [r["account"] for r in rows]})
 
 
+# ─── OAuth Grant Flow (app-scoped permission) ───
+
+
+OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
+
+
+@app.route("/oauth/grant")
+async def oauth_grant():
+    """Start an OAuth consent flow on behalf of a consumer app.
+
+    After the user authorizes, the callback will store the token, determine the
+    account identity, grant an app-scoped permission via the router API, and
+    redirect back to the consumer's return_to URL.
+    """
+    provider_name = request.args.get("provider", "")
+    scopes_str = request.args.get("scopes", "")
+    consumer = request.args.get("consumer", "")
+    return_to = request.args.get("return_to", "")
+
+    if not provider_name or provider_name not in PROVIDERS:
+        return Response(f"Unknown provider: {provider_name}", status=400)
+    if not scopes_str:
+        return Response("No scopes specified", status=400)
+    if not consumer:
+        return Response("No consumer app specified", status=400)
+
+    scopes = scopes_str.split(",")
+    provider = PROVIDERS[provider_name]
+    flow_type = provider.get("flow", "auth_code")
+
+    if flow_type == "device":
+        params = urlencode(
+            {
+                "provider": provider_name,
+                "scopes": scopes_str,
+                "return_to": return_to,
+                "account": "default",
+                "consumer": consumer,
+            }
+        )
+        return redirect(f"/oauth/device?{params}")
+
+    client_id, client_secret = _get_provider_creds(provider_name)
+    if provider_name in DYNAMIC_CRED_PROVIDERS and (not client_id or not client_secret):
+        return _credentials_required_response(provider_name)
+
+    authorize_url = build_auth_url(provider_name, scopes, OAUTH_REDIRECT_URI, return_to, client_id, account="default")
+    # Attach consumer info to the pending flow so the callback can grant the permission
+    state = list(pending_auth_flows.keys())[-1]
+    pending_auth_flows[state]["consumer_app"] = consumer
+    pending_auth_flows[state]["service_url"] = OAUTH_SERVICE_URL
+
+    return redirect(authorize_url)
+
+
+async def _grant_app_scoped_permission(consumer_app: str, service_url: str, grant: dict) -> bool:
+    """Call the router API to grant an app-scoped permission for consumer_app."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            f"{ROUTER_URL}/api/permissions_v2/grant-app-scoped",
+            json={
+                "consumer_app": consumer_app,
+                "service_url": service_url,
+                "grant": grant,
+            },
+            headers={"Authorization": f"Bearer {APP_TOKEN}"},
+        )
+        return resp.status_code == 200
+
+
 # ─── OAuth Callback (auth code flow) ───
 
 
@@ -621,6 +707,16 @@ async def oauth_callback():
             ),
         )
         db.commit()
+
+    # If this flow was initiated from /oauth/grant, grant the app-scoped permission
+    consumer_app = flow.get("consumer_app")
+    if consumer_app:
+        for scope in flow["scopes"]:
+            await _grant_app_scoped_permission(
+                consumer_app,
+                flow["service_url"],
+                {"provider": flow["provider"], "scope": scope, "account": account},
+            )
 
     # Allow relative paths and protocol-relative URLs to zone subdomains
     return_to = flow["return_to"]

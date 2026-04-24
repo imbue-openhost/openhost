@@ -122,8 +122,9 @@ Returns a list of provider apps with versions and status. The `version` paramete
 
 **Permissions:**
 - `GET /api/permissions_v2` — list all V2 permissions (optional `?app=` filter)
-- `POST /api/permissions_v2/grant` — grant a permission (`{"app": "...", "service_url": "...", "grant": {...}, "scope": "global"}`)
-- `POST /api/permissions_v2/revoke` — revoke a permission (same body format)
+- `POST /api/permissions_v2/grant-global-scoped` — owner-authed, grant a global-scoped permission (`{"app": "...", "service_url": "...", "grant": {...}}`)
+- `POST /api/permissions_v2/grant-app-scoped` — app-token-authed, provider grants an app-scoped permission (`{"consumer_app": "...", "service_url": "...", "grant": {...}}`). The calling app must be a registered provider for the service; `scope` and `provider_app` are set automatically.
+- `POST /api/permissions_v2/revoke` — revoke a permission
 
 ### Differences from V1
 

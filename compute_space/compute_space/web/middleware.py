@@ -15,6 +15,7 @@ from quart import url_for
 from quart.typing import ResponseReturnValue
 
 from compute_space.core import auth
+from compute_space.core.auth import resolve_app_from_token
 from compute_space.db import get_db
 
 
@@ -70,6 +71,23 @@ def _try_refresh() -> dict[str, Any] | None:
     g.new_access_token = new_access_token
     g.refresh_token = refresh_tok
     return auth.decode_access_token(new_access_token)
+
+
+def app_token_required(
+    f: Callable[..., Any],
+) -> Callable[..., Awaitable[ResponseReturnValue]]:
+    @wraps(f)
+    async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid app token"}), 401
+        app_name = resolve_app_from_token(auth_header.removeprefix("Bearer "))
+        if not app_name:
+            return jsonify({"error": "Missing or invalid app token"}), 401
+        kwargs["app_name"] = app_name
+        return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
+
+    return decorated
 
 
 def login_required(

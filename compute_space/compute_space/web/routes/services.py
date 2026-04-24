@@ -1,4 +1,3 @@
-import hashlib
 import json
 from urllib.parse import urlparse
 
@@ -56,14 +55,9 @@ def _authenticate_and_resolve_consumer_app() -> str | None:
 
     Returns the app name or None.
     """
-    db = get_db()
-
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        token_row = db.execute("SELECT app_name FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
-        return token_row["app_name"] if token_row else None
+        return auth_module.resolve_app_from_token(auth_header[7:])
 
     # Browser auth: verify JWT cookie, derive app from Origin
     claims = auth_module.get_current_user_from_request(request)
@@ -74,7 +68,7 @@ def _authenticate_and_resolve_consumer_app() -> str | None:
     if not app_name:
         return None
 
-    app_row = db.execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
+    app_row = get_db().execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
     return app_row["name"] if app_row else None
 
 

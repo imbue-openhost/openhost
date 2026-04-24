@@ -3,8 +3,6 @@ from quart import Response
 from quart import jsonify
 from quart import request
 
-from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
 
@@ -33,15 +31,6 @@ async def discover_providers() -> Response | tuple[Response, int]:
         return jsonify({"error": "service query param is required"}), 400
 
     db = get_db()
-    version_spec = request.args.get("version")
-
-    if version_spec:
-        try:
-            app_name, port, svc_version, endpoint = resolve_provider(service_url, version_spec, db)
-            return jsonify({"providers": [{"app_name": app_name, "version": svc_version, "endpoint": endpoint}]})
-        except ServiceNotAvailable as e:
-            return jsonify({"providers": [], "message": e.message})
-
     rows = db.execute(
         """SELECT sp.app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
@@ -61,7 +50,7 @@ async def discover_providers() -> Response | tuple[Response, int]:
             "providers": [
                 {
                     "app_name": r["app_name"],
-                    "version": r["service_version"],
+                    "service_version": r["service_version"],
                     "endpoint": r["endpoint"],
                     "status": r["status"],
                     "is_default": r["app_name"] == default_app,
