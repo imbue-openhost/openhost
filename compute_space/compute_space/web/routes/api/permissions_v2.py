@@ -7,7 +7,7 @@ from quart import request
 from compute_space.core.permissions_v2 import get_all_permissions_v2
 from compute_space.core.permissions_v2 import grant_permission_v2
 from compute_space.core.permissions_v2 import revoke_permission_v2
-from compute_space.web.middleware import app_token_required
+from compute_space.web.middleware import app_auth_required
 from compute_space.web.middleware import login_required
 
 api_permissions_v2_bp = Blueprint("api_permissions_v2", __name__)
@@ -71,7 +71,7 @@ async def revoke_v2() -> Response | tuple[Response, int]:
 
 
 @api_permissions_v2_bp.route("/api/permissions_v2/grant-app-scoped", methods=["POST"])
-@app_token_required
+@app_auth_required
 async def grant_app_scoped(app_name: str) -> Response | tuple[Response, int]:
     """Grant an app-scoped V2 permission, authenticated with the provider's app token.
 

@@ -2,7 +2,6 @@
 provider-side permission validation."""
 
 import json
-from urllib.parse import unquote
 
 import attr
 from quart import Blueprint
@@ -15,32 +14,12 @@ from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
+from compute_space.web.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.routes.services import _add_cors_headers
-from compute_space.web.routes.services import _authenticate_and_resolve_consumer_app
 from compute_space.web.routes.services import _cors_origin
 
 services_v2_bp = Blueprint("services_v2", __name__)
-
-PREFIX = b"/_services_v2/"
-
-
-def _parse_service_url_and_endpoint(raw_path: bytes) -> tuple[str, str]:
-    """Split raw ASGI path into (service_url, endpoint).
-
-    The service URL is URL-encoded (internal slashes as %2F), so the first
-    literal '/' after the prefix separates service URL from endpoint.
-    """
-    after_prefix = raw_path[len(PREFIX) :]
-    # Strip query string
-    if b"?" in after_prefix:
-        after_prefix = after_prefix[: after_prefix.index(b"?")]
-    slash_idx = after_prefix.find(b"/")
-    if slash_idx == -1:
-        return unquote(after_prefix.decode("ascii")), ""
-    service_url_encoded = after_prefix[:slash_idx]
-    endpoint = after_prefix[slash_idx + 1 :]
-    return unquote(service_url_encoded.decode("ascii")), endpoint.decode("ascii")
 
 
 # ─── CORS ───
@@ -48,15 +27,15 @@ def _parse_service_url_and_endpoint(raw_path: bytes) -> tuple[str, str]:
 
 @services_v2_bp.after_request
 async def add_cors_to_services_v2(response: Response) -> Response:
-    if request.path.startswith("/_services_v2/"):
+    if request.path == "/_services_v2/service_request":
         origin = _cors_origin()
         if origin:
             _add_cors_headers(response, origin)
     return response
 
 
-@services_v2_bp.route("/_services_v2/<path:rest>", methods=["OPTIONS"])
-async def service_v2_cors(rest: str) -> Response:
+@services_v2_bp.route("/_services_v2/service_request", methods=["OPTIONS"])
+async def service_v2_cors() -> Response:
     origin = _cors_origin()
     if not origin:
         return Response("Forbidden", status=403)
@@ -67,25 +46,41 @@ async def service_v2_cors(rest: str) -> Response:
 
 
 @services_v2_bp.route(
-    "/_services_v2/<path:rest>",
+    "/_services_v2/service_request",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
-async def service_v2_proxy(rest: str) -> Response:
-    """Proxy a V2 service request to the resolved provider."""
-    consumer_app = _authenticate_and_resolve_consumer_app()
-    if not consumer_app:
-        return Response("Missing or invalid authorization", status=401)
+@app_auth_required
+async def service_v2_proxy(app_name: str) -> Response:
+    """Proxy a V2 service request to the provider that implements it.
 
-    raw_path = request.scope.get("raw_path", b"")
-    service_url, endpoint = _parse_service_url_and_endpoint(raw_path)
-    if not service_url:
-        return _json_error("bad_request", "Missing service URL in path", 400)
+    Resolves a service by service URL and version, looks up the consumer's granted
+    permissions, and forwards the request to the provider's local port.
+    The provider receives the caller's permissions in X-OpenHost-Permissions
+    so it can enforce access control itself.
 
-    version_spec = request.args.get("version")
-    if not version_spec:
-        return _json_error("bad_request", "Missing required 'version' query parameter", 400)
+    Required headers:
+        X-OpenHost-Service-URL:      Service identifier (e.g. github.com/org/repo/services/secrets).
+        X-OpenHost-Service-Version:  SemVer specifier (e.g. >=0.1.0, ==1.0.0).
+        X-OpenHost-Service-Endpoint: Path (and optional query string) to forward to the provider.
 
-    provider_app = request.args.get("provider_app")
+    Optional headers:
+        X-OpenHost-Provider-App:     Pin to a specific provider app (default: use service_defaults).
+
+    Returns 403 with grant/approve URLs if the provider rejects the request
+    for missing permissions.
+    """
+    consumer_app = app_name
+
+    if not (service_url := request.headers.get("X-OpenHost-Service-URL", "")):
+        return _json_error("bad_request", "Missing X-OpenHost-Service-URL header", 400)
+
+    if not (version_spec := request.headers.get("X-OpenHost-Service-Version", "")):
+        return _json_error("bad_request", "Missing X-OpenHost-Service-Version header", 400)
+
+    if not (endpoint := request.headers.get("X-OpenHost-Service-Endpoint", "")):
+        return _json_error("bad_request", "Missing X-OpenHost-Service-Endpoint header", 400)
+
+    provider_app = request.headers.get("X-OpenHost-Provider-App")
 
     db = get_db()
     try:
@@ -101,12 +96,12 @@ async def service_v2_proxy(rest: str) -> Response:
     grants = get_granted_permissions_v2(consumer_app, service_url)
     grants_json = json.dumps([attr.asdict(g) for g in grants])
 
-    target_path = provider_endpoint.rstrip("/") + "/" + endpoint if endpoint else provider_endpoint
+    target_path = provider_endpoint.rstrip("/") + "/" + endpoint.lstrip("/")
 
     response = await proxy_request(
         request,
         provider_port,
-        "",
+        base_path="",
         override_path=target_path,
         extra_headers={
             "Authorization": None,

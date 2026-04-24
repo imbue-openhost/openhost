@@ -1,9 +1,9 @@
 /**
  * Client-side OAuth helper library.
  *
- * Talks to the router's /_services endpoints via cross-origin fetch:
- *   POST /_services/secrets/oauth/accounts  — list connected accounts
- *   POST /_services/secrets/oauth/token     — get access token
+ * Talks to the router's V2 service endpoints via cross-origin fetch:
+ *   POST /_services_v2/<encoded-oauth-url>/accounts  — list connected accounts
+ *   POST /_services_v2/<encoded-oauth-url>/token     — get access token
  *
  * Usage:
  *   const oauth = new OAuthClient({
@@ -15,6 +15,9 @@
  *   const token = await oauth.getToken('google', 'user@gmail.com');
  *   await oauth.connect('google');  // must be called from a click handler
  */
+
+var OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth";
+var ENCODED_OAUTH_URL = encodeURIComponent(OAUTH_SERVICE_URL);
 
 class OAuthClient {
   constructor({ scopes, appName, zoneDomain }) {
@@ -34,9 +37,11 @@ class OAuthClient {
     return "//" + this.appName + "." + this.zoneDomain + "/client/oauth-complete";
   }
 
-  /** POST to a /_services/ endpoint with credentials. */
-  _serviceFetch(path, body) {
-    return fetch("//" + this.zoneDomain + "/_services/" + path, {
+  /** POST to a V2 service endpoint with credentials. */
+  _serviceFetch(endpoint, body) {
+    var url = "//" + this.zoneDomain + "/_services_v2/" + ENCODED_OAUTH_URL +
+      "/" + endpoint + "?version=>=0.1.0";
+    return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -46,7 +51,7 @@ class OAuthClient {
 
   /**
    * Parse an error response. Returns:
-   *   { type: "permission", approve_url } for 403 permission_denied
+   *   { type: "permission", url } for 403 permission_required (grant_url or approve_url)
    *   { type: "oauth", authorize_url } for 401 authorization_required
    *   { type: "error", message } for other errors
    *   null if response is ok
@@ -57,7 +62,12 @@ class OAuthClient {
     try { data = await resp.clone().json(); } catch (e) {
       return { type: "error", message: "Request failed: " + resp.status };
     }
-    if (data.approve_url) return { type: "permission", approve_url: data.approve_url };
+    if (data.error === "permission_required" && data.grants_needed) {
+      var grant = data.grants_needed[0] || {};
+      var url = grant.grant_url || grant.approve_url || "";
+      return { type: "permission", url: url };
+    }
+    if (data.approve_url) return { type: "permission", url: data.approve_url };
     if (data.authorize_url) return { type: "oauth", authorize_url: data.authorize_url };
     return { type: "error", message: data.message || "Request failed: " + resp.status };
   }
@@ -68,13 +78,13 @@ class OAuthClient {
    * Returns empty array on other errors.
    */
   async getAccounts(provider) {
-    var resp = await this._serviceFetch("secrets/oauth/accounts", {
+    var resp = await this._serviceFetch("accounts", {
       provider: provider,
       scopes: this._scopesFor(provider),
     });
     var err = await this._parseResponse(resp);
     if (!err) return (await resp.json()).accounts;
-    if (err.type === "permission") throw new OAuthPermissionError(err.approve_url);
+    if (err.type === "permission") throw new OAuthPermissionError(err.url);
     return [];
   }
 
@@ -84,7 +94,7 @@ class OAuthClient {
    * Handles OAuth consent via popup automatically.
    */
   async getToken(provider, account = "default") {
-    var resp = await this._serviceFetch("secrets/oauth/token", {
+    var resp = await this._serviceFetch("token", {
       provider: provider,
       scopes: this._scopesFor(provider),
       return_to: this._returnTo(),
@@ -92,11 +102,11 @@ class OAuthClient {
     });
     var err = await this._parseResponse(resp);
     if (!err) return (await resp.json()).access_token;
-    if (err.type === "permission") throw new OAuthPermissionError(err.approve_url);
+    if (err.type === "permission") throw new OAuthPermissionError(err.url);
     if (err.type === "oauth") {
       await this.openPopup(err.authorize_url);
       // Retry after OAuth
-      resp = await this._serviceFetch("secrets/oauth/token", {
+      resp = await this._serviceFetch("token", {
         provider: provider,
         scopes: this._scopesFor(provider),
         return_to: this._returnTo(),
@@ -112,7 +122,7 @@ class OAuthClient {
    * Throws OAuthPermissionError if permissions need granting first.
    */
   async connect(provider, account = "new") {
-    var resp = await this._serviceFetch("secrets/oauth/token", {
+    var resp = await this._serviceFetch("token", {
       provider: provider,
       scopes: this._scopesFor(provider),
       return_to: this._returnTo(),
@@ -120,7 +130,7 @@ class OAuthClient {
     });
     if (resp.ok) return;
     var err = await this._parseResponse(resp);
-    if (err.type === "permission") throw new OAuthPermissionError(err.approve_url);
+    if (err.type === "permission") throw new OAuthPermissionError(err.url);
     if (err.type === "oauth") {
       await this.openPopup(err.authorize_url);
       return;
@@ -157,9 +167,9 @@ class OAuthError extends Error {
 }
 
 class OAuthPermissionError extends Error {
-  constructor(approve_url) {
+  constructor(url) {
     super("Permissions required");
     this.name = "OAuthPermissionError";
-    this.approve_url = approve_url;
+    this.url = url;
   }
 }

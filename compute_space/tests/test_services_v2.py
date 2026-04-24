@@ -24,7 +24,6 @@ from compute_space.core.services_v2 import resolve_provider
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_bp
 from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp
 from compute_space.web.routes.services_v2 import _maybe_reform_403
-from compute_space.web.routes.services_v2 import _parse_service_url_and_endpoint
 
 SVC_SECRETS = "github.com/org/repo/services/secrets"
 SVC_OAUTH = "github.com/org/repo/services/oauth"
@@ -258,37 +257,6 @@ class TestPermissionsV2:
         grants = get_granted_permissions_v2("test-app", SVC_SECRETS)
         assert len(grants) == 1
         assert grants[0].grant["key"] == "SECRET_B"
-
-
-# ---------------------------------------------------------------------------
-# V2 proxy URL parsing
-# ---------------------------------------------------------------------------
-
-
-class TestServiceUrlParsing:
-    def test_basic_url_and_endpoint(self):
-        raw = b"/_services_v2/github.com%2Forg%2Frepo%2Fservices%2Fsecrets/get"
-        svc, ep = _parse_service_url_and_endpoint(raw)
-        assert svc == "github.com/org/repo/services/secrets"
-        assert ep == "get"
-
-    def test_nested_endpoint(self):
-        raw = b"/_services_v2/github.com%2Forg%2Frepo%2Fservices%2Foauth/oauth/token"
-        svc, ep = _parse_service_url_and_endpoint(raw)
-        assert svc == "github.com/org/repo/services/oauth"
-        assert ep == "oauth/token"
-
-    def test_no_endpoint(self):
-        raw = b"/_services_v2/github.com%2Forg%2Frepo%2Fservices%2Fsecrets"
-        svc, ep = _parse_service_url_and_endpoint(raw)
-        assert svc == "github.com/org/repo/services/secrets"
-        assert ep == ""
-
-    def test_query_string_stripped(self):
-        raw = b"/_services_v2/github.com%2Forg%2Frepo%2Fservices%2Fsecrets/get?version=>=0.1.0"
-        svc, ep = _parse_service_url_and_endpoint(raw)
-        assert svc == "github.com/org/repo/services/secrets"
-        assert ep == "get"
 
 
 # ---------------------------------------------------------------------------
