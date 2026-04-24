@@ -39,9 +39,14 @@ def mock_oauth_server(secrets_app_deployed):
     mock_oauth_server_module.authorize_base_url = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
 
     loop = asyncio.new_event_loop()
+    shutdown_event = asyncio.Event()
 
     async def _run():
-        await mock_oauth_server_module.app.run_task(host="0.0.0.0", port=MOCK_OAUTH_PORT)
+        await mock_oauth_server_module.app.run_task(
+            host="0.0.0.0",
+            port=MOCK_OAUTH_PORT,
+            shutdown_trigger=shutdown_event.wait,
+        )
 
     thread = threading.Thread(target=loop.run_until_complete, args=(_run(),), daemon=True)
     thread.start()
@@ -55,16 +60,20 @@ def mock_oauth_server(secrets_app_deployed):
 
     s = secrets_app_deployed["session"]
     url = secrets_app_deployed["router_url"]
-    mock_oauth_domain = f"http://127.0.0.1:{MOCK_OAUTH_PORT}"
+    # authorize_url is visited by the browser (on the host) — use 127.0.0.1.
+    # token/revoke/userinfo are called server-to-server from inside the secrets
+    # Docker container — use host.docker.internal.
+    browser_domain = f"http://127.0.0.1:{MOCK_OAUTH_PORT}"
+    server_domain = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
 
     r = s.post(
         f"{url}/secrets/test/set-mock-provider-url",
         json={
             "provider": "mock",
-            "authorize_url": f"{mock_oauth_domain}/authorize",
-            "token_url": f"{mock_oauth_domain}/oauth/token",
-            "revoke_url": f"{mock_oauth_domain}/oauth/revoke",
-            "userinfo_url": f"{mock_oauth_domain}/userinfo",
+            "authorize_url": f"{browser_domain}/authorize",
+            "token_url": f"{server_domain}/oauth/token",
+            "revoke_url": f"{server_domain}/oauth/revoke",
+            "userinfo_url": f"{server_domain}/userinfo",
             "userinfo_field": "email",
             "redirect_uri": f"http://{ZONE_DOMAIN}/secrets/oauth/callback",
         },
@@ -74,7 +83,7 @@ def mock_oauth_server(secrets_app_deployed):
 
     yield mock_oauth_server_module
 
-    loop.call_soon_threadsafe(loop.stop)
+    loop.call_soon_threadsafe(shutdown_event.set)
 
 
 @pytest.fixture(scope="module")
@@ -292,7 +301,7 @@ class TestOAuthFlow:
         assert r.json()["access_token"] == "redirected_token_123"
 
     def test_oauth_auth_code_server_side_flow(
-        self, admin_session, secrets_app_deployed, oauth_demo_deployed, mock_oauth_provider
+        self, admin_session, secrets_app_deployed, oauth_demo_deployed, mock_oauth_server
     ):
         """Full browser OAuth flow using Playwright — no API shortcuts.
 
@@ -327,9 +336,28 @@ class TestOAuthFlow:
 
         url = oauth_demo_deployed["router_url"]
 
-        # Transfer auth cookies to Playwright
+        # Point oauth-demo at the mock provider API so /emails can fetch from it.
+        # Only set provider_api_url — set_mock_oauth_url would bypass the router's
+        # service proxy (V1 shortcut) and skip the grant flow we want to exercise.
+        mock_api_from_docker = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
+        r = admin_session.post(
+            f"{url}/oauth-demo/test/set-mock-url",
+            json={"provider_api_url": mock_api_from_docker},
+            timeout=10,
+        )
+        assert r.status_code == 200
+
+        # Use zone_domain for the browser so cookies scoped to *.testzone.localhost
+        # are sent on both the zone root and app subdomains (oauth-demo.testzone.localhost).
+        # testzone.localhost resolves to 127.0.0.1 automatically on macOS/Linux.
+        zone_base = f"http://{ZONE_DOMAIN}"
+
+        # Transfer auth cookies to Playwright — scope to the zone parent so subdomain
+        # redirects (oauth-demo.testzone.localhost) also receive them. Leading dot
+        # makes the cookie match all subdomains.
+        zone_host = ZONE_DOMAIN.split(":", 1)[0]
         cookies = [
-            {"name": c.name, "value": c.value, "domain": "127.0.0.1", "path": "/"} for c in admin_session.cookies
+            {"name": c.name, "value": c.value, "domain": "." + zone_host, "path": "/"} for c in admin_session.cookies
         ]
 
         with sync_playwright() as p:
@@ -338,8 +366,8 @@ class TestOAuthFlow:
             context.add_cookies(cookies)
             page = context.new_page()
 
-            # Navigate to oauth-demo server page
-            page.goto(f"{url}/oauth-demo/server/", wait_until="networkidle")
+            # Navigate to oauth-demo server page on the zone domain
+            page.goto(f"{zone_base}/oauth-demo/server/", wait_until="networkidle")
 
             # Click "Connect" for Google — this triggers the OAuth flow
             page.click('a[href*="connect?provider=mock"]')
@@ -351,8 +379,10 @@ class TestOAuthFlow:
             # Click alice@example.com
             page.click('[data-testid="account-alice@example.com"]')
 
-            # Should redirect through the callback and back to oauth-demo
-            page.wait_for_url(f"**/{ZONE_DOMAIN}**/server/**", timeout=15000)
+            # Should redirect through the callback and back to oauth-demo.
+            # Use networkidle to wait for redirect chain to settle, then verify URL.
+            page.wait_for_load_state("networkidle", timeout=15000)
+            assert ZONE_DOMAIN in page.url and "/server/" in page.url, f"unexpected landing URL: {page.url}"
 
             # Verify alice is now listed as a connected account
             content = page.content()

@@ -14,6 +14,6 @@ cpu_millicores = 500
 [[permissions_v2]]
 service = "github.com/imbue-openhost/openhost/services/oauth"
 grants = [
-    {provider = "google", scope = "https://www.googleapis.com/auth/gmail.readonly"},
-    {provider = "github", scope = "repo"},
+    {provider = "google", scopes = ["https://www.googleapis.com/auth/gmail.readonly"]},
+    {provider = "github", scopes = ["repo"]},
 ]

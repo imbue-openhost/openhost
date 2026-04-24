@@ -1,4 +1,10 @@
 from client_demo import client_bp
+from quart import Quart
+from quart import jsonify
+from quart import render_template
+from quart import request
+from server_demo import server_bp
+
 from oauth import SCOPE_MAP
 from oauth import AuthRedirectRequired
 from oauth import OAuthError
@@ -7,11 +13,6 @@ from oauth import get_accounts
 from oauth import get_oauth_token
 from oauth import set_mock_oauth_url
 from oauth import set_mock_provider_api_url
-from quart import Quart
-from quart import jsonify
-from quart import render_template
-from quart import request
-from server_demo import server_bp
 
 app = Quart(__name__)
 app.register_blueprint(client_bp)
@@ -27,7 +28,8 @@ async def landing():
 async def test_set_mock_url():
     data = await request.get_json()
     url = data.get("url") if data else None
-    set_mock_oauth_url(url)
+    if "url" in (data or {}):
+        set_mock_oauth_url(url)
     provider_api_url = data.get("provider_api_url") if data else None
     if provider_api_url:
         set_mock_provider_api_url(provider_api_url)

@@ -32,6 +32,25 @@ info:
       "account": "alice@example.com"   // optional
     }
     ```
+
+    ## User-facing pages
+
+    The following browser-accessible pages support the OAuth consent and
+    device-code flows. They are not service endpoints — consumer apps
+    do not call them directly. Instead, the service returns URLs pointing
+    to these pages in `401` and `403` responses.
+
+    - **GET /grant** — Permission grant flow. Starts an OAuth consent
+      flow and, on completion, creates an app-scoped permission for the
+      consumer app. Reached via the `grant_url` in a `403` response.
+    - **GET /callback** — OAuth redirect callback. Handles the
+      authorization code exchange after the user authorizes with the
+      provider.
+    - **GET /device** — Device flow page. Displays the user code and
+      verification URL for device-code flows (e.g. GitHub).
+    - **GET /device/poll/{flow_id}** — Device flow polling endpoint.
+      Called by the device page's JavaScript to check whether the user
+      has completed authorization.
   version: 0.1.0
 
 paths:
@@ -186,6 +205,65 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PermissionDenied"
+
+  /revoke:
+    post:
+      summary: Revoke an OAuth token
+      description: |
+        Revokes the stored token for the given provider, scopes, and account.
+        Deletes the token from the service's storage and attempts to revoke it
+        with the upstream OAuth provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, scopes, account]
+              properties:
+                provider:
+                  type: string
+                  description: OAuth provider name.
+                  example: google
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: OAuth scopes of the token to revoke.
+                  example: ["https://www.googleapis.com/auth/gmail.readonly"]
+                account:
+                  type: string
+                  description: Account label of the token to revoke.
+                  example: alice@example.com
+      responses:
+        "200":
+          description: Token revoked successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          description: Missing required fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionDenied"
+        "404":
+          description: No token found for the given provider, scopes, and account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   schemas:
