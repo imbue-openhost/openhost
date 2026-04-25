@@ -25,7 +25,16 @@ def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> N
         return
 
     def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
+        # Unlinking a file needs write perms on the parent directory, not
+        # the file itself — so chmod both.  Git clones leave read-only
+        # dirs as well as read-only files.
         os.chmod(err_path, stat.S_IRWXU)
+        parent = os.path.dirname(err_path)
+        if parent and parent != err_path:
+            try:
+                os.chmod(parent, stat.S_IRWXU)
+            except OSError:
+                pass
         func(err_path)
 
     try:
