@@ -40,6 +40,7 @@ dev = [
     "mypy",
     "types-requests",
     "litestar>=2.0",
+    "schemathesis>=4.0",
 ]
 
 [build-system]
@@ -58,6 +59,7 @@ testpaths = [
     "compute_space/tests",
     "compute_space_cli/tests",
     "self_host_cli/tests",
+    "apps/oauth/tests",
 ]
 addopts = "-p no:randomly -v --import-mode=importlib"
 markers = [

@@ -32,7 +32,7 @@ async def api_list_tokens() -> TokenListResponse:
     return TokenListResponse(tokens=[TokenInfo(**r) for r in rows])
 
 
-@delete("/api/tokens/{token_id:int}")
+@delete("/api/tokens/{token_id:int}", status_code=200)
 async def api_delete_token(token_id: int) -> OkResponse | Response[Any]:
     row = get_token_by_id(token_id)
     if not row:

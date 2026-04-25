@@ -81,12 +81,15 @@ paths:
               properties:
                 provider:
                   type: string
+                  minLength: 1
                   description: OAuth provider name.
                   example: google
                 scopes:
                   type: array
+                  minItems: 1
                   items:
                     type: string
+                    minLength: 1
                   description: OAuth scopes to request.
                   example: ["https://www.googleapis.com/auth/gmail.readonly"]
                 account:
@@ -170,11 +173,14 @@ paths:
               properties:
                 provider:
                   type: string
+                  minLength: 1
                   example: google
                 scopes:
                   type: array
+                  minItems: 1
                   items:
                     type: string
+                    minLength: 1
                   example: ["https://www.googleapis.com/auth/gmail.readonly"]
       responses:
         "200":
@@ -223,12 +229,15 @@ paths:
               properties:
                 provider:
                   type: string
+                  minLength: 1
                   description: OAuth provider name.
                   example: google
                 scopes:
                   type: array
+                  minItems: 1
                   items:
                     type: string
+                    minLength: 1
                   description: OAuth scopes of the token to revoke.
                   example: ["https://www.googleapis.com/auth/gmail.readonly"]
                 account:

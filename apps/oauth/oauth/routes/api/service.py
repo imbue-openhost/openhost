@@ -38,11 +38,16 @@ from oauth.core.tokens import get_tokens_for_provider_scopes
 from oauth.core.tokens import update_token_access
 
 
-@post("/_svc/token")
+@post("/_svc/token", status_code=200)
 async def svc_token(request: Request[Any, Any, Any], data: TokenRequest) -> TokenResponse | Response[Any]:
-    if data.provider not in PROVIDERS:
+    if not data.provider or data.provider not in PROVIDERS:
         return Response(
             content=attr.asdict(ErrorResponse(error="unknown_provider", provider=data.provider)),
+            status_code=400,
+        )
+    if not data.scopes:
+        return Response(
+            content=attr.asdict(ErrorResponse(error="missing_scopes", message="At least one scope is required")),
             status_code=400,
         )
 
@@ -58,8 +63,18 @@ async def svc_token(request: Request[Any, Any, Any], data: TokenRequest) -> Toke
     return await _get_or_refresh_token(data.provider, data.scopes, data.account, data.return_to)
 
 
-@post("/_svc/accounts")
+@post("/_svc/accounts", status_code=200)
 async def svc_accounts(request: Request[Any, Any, Any], data: AccountsRequest) -> AccountsResponse | Response[Any]:
+    if not data.provider or data.provider not in PROVIDERS:
+        return Response(
+            content=attr.asdict(ErrorResponse(error="unknown_provider", provider=data.provider)),
+            status_code=400,
+        )
+    if not data.scopes:
+        return Response(
+            content=attr.asdict(ErrorResponse(error="missing_scopes", message="At least one scope is required")),
+            status_code=400,
+        )
     missing = check_oauth_v2_permission(request, data.provider, data.scopes)
     if missing:
         body = permission_denied_response(request, data.provider, data.scopes, missing)
@@ -69,8 +84,18 @@ async def svc_accounts(request: Request[Any, Any, Any], data: AccountsRequest) -
     return AccountsResponse(accounts=get_accounts(data.provider, scopes_key))
 
 
-@post("/_svc/revoke")
+@post("/_svc/revoke", status_code=200)
 async def svc_revoke(request: Request[Any, Any, Any], data: RevokeRequest) -> OkResponse | Response[Any]:
+    if not data.provider or data.provider not in PROVIDERS:
+        return Response(
+            content=attr.asdict(ErrorResponse(error="unknown_provider", provider=data.provider)),
+            status_code=400,
+        )
+    if not data.scopes:
+        return Response(
+            content=attr.asdict(ErrorResponse(error="missing_scopes", message="At least one scope is required")),
+            status_code=400,
+        )
     missing = check_oauth_v2_permission(request, data.provider, data.scopes, data.account)
     if missing:
         body = permission_denied_response(request, data.provider, data.scopes, missing)
@@ -159,7 +184,7 @@ async def _authorize_response(
                 "consumer": consumer_app,
             }
         )
-        authorize_url = f"//{config.APP_NAME}.{config.ZONE_DOMAIN}/device?{params}"
+        authorize_url = f"https://{config.APP_NAME}.{config.ZONE_DOMAIN}/device?{params}"
     else:
         client_id, client_secret = await get_provider_creds(provider_name)
         if provider_name in DYNAMIC_CRED_PROVIDERS and (not client_id or not client_secret):

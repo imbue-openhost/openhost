@@ -65,7 +65,7 @@ def permission_denied_response(
         required_grant=RequiredGrant(
             grant_payload=GrantPayload(provider=provider, scopes=missing_scopes),
             scope="app",
-            grant_url=f"//{APP_NAME}.{ZONE_DOMAIN}/grant?{params}",
+            grant_url=f"https://{APP_NAME}.{ZONE_DOMAIN}/grant?{params}",
         ),
     )
 

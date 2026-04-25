@@ -1,6 +1,12 @@
 """Server-side OAuth demo — redirect-based auth flow."""
 
 import httpx
+from quart import Blueprint
+from quart import Response
+from quart import redirect
+from quart import render_template
+from quart import request
+
 from oauth import APP_NAME
 from oauth import GITHUB_SCOPE
 from oauth import GMAIL_SCOPE
@@ -14,11 +20,6 @@ from oauth import OAuthServiceUnavailable
 from oauth import get_accounts
 from oauth import get_mock_provider_api_url
 from oauth import get_oauth_token
-from quart import Blueprint
-from quart import Response
-from quart import redirect
-from quart import render_template
-from quart import request
 
 server_bp = Blueprint("server", __name__, url_prefix="/server")
 

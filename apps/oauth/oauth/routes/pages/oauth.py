@@ -1,3 +1,4 @@
+from typing import Annotated
 from typing import Any
 from urllib.parse import urlencode
 
@@ -6,6 +7,7 @@ from litestar import Request
 from litestar import Response
 from litestar import Router
 from litestar import get
+from litestar.params import Parameter
 from litestar.response import Redirect
 from litestar.response import Template
 
@@ -98,7 +100,7 @@ async def oauth_grant(
 async def oauth_callback(
     request: Request[Any, Any, Any],
     code: str = "",
-    state: str = "",
+    oauth_state: Annotated[str, Parameter(query="state")] = "",
     error: str = "",
     scope: str = "",
 ) -> Redirect | Response[Any]:
@@ -108,14 +110,14 @@ async def oauth_callback(
             status_code=400,
             media_type=MediaType.TEXT,
         )
-    if not code or not state:
+    if not code or not oauth_state:
         return Response(
             content="Missing code or state parameter",
             status_code=400,
             media_type=MediaType.TEXT,
         )
 
-    flow = pending_auth_flows.pop(state, None)
+    flow = pending_auth_flows.pop(oauth_state, None)
     if not flow:
         return Response(
             content="Invalid or expired authorization flow",
