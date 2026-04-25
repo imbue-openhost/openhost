@@ -1,7 +1,7 @@
 """OAuth flow e2e tests — multi-account support, authorization redirects, and
 a full Playwright browser test through the mock OAuth provider.
 
-Requires Docker (--run-docker) and Playwright (chromium browser).
+Requires rootless podman (--run-containers) and Playwright (chromium browser).
 """
 
 import asyncio
@@ -19,7 +19,7 @@ from . import mock_oauth_server as mock_oauth_server_module
 from .conftest import MOCK_OAUTH_PORT
 from .conftest import ZONE_DOMAIN
 from .conftest import _APPS_DIR
-from .conftest import requires_docker
+from .conftest import requires_containers
 
 _OAUTH_DEMO_DIR = os.path.join(_APPS_DIR, "oauth_demo")
 
@@ -106,7 +106,7 @@ def oauth_demo_deployed(admin_session, router_url):
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestOAuthFlow:
     """Test the OAuth flow through the oauth-demo app against a mock OAuth service.
 

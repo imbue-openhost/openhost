@@ -2,15 +2,15 @@
 Full-stack integration tests for the OpenHost router.
 
 Starts the router directly (no QEMU VMs, no multiuser_provider), deploys apps
-via Docker, and exercises routing, auth, WebSockets, API tokens, app lifecycle,
-and system endpoints over HTTP.
+via rootless Podman, and exercises routing, auth, WebSockets, API tokens, app
+lifecycle, and system endpoints over HTTP.
 
 Prerequisites:
-    - Docker daemon running
+    - Rootless podman configured (see ansible/tasks/podman.yml)
     - *.localhost resolves to 127.0.0.1 (RFC 6761, default on most Linux systems)
 
 Run:
-    pytest tests/test_full_stack.py -v -s --run-docker --timeout=600
+    pytest tests/test_full_stack.py -v -s --run-containers --timeout=600
 """
 
 import asyncio
@@ -41,7 +41,7 @@ ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
 ZONE_DOMAIN = f"testzone.localhost:{ROUTER_PORT}"
 
-requires_docker = pytest.mark.requires_docker
+requires_containers = pytest.mark.requires_containers
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ def app_url(app_name):
 
 @pytest.fixture(scope="module")
 def test_app_deployed(admin_session, router_url):
-    """Deploy the Docker-based test-app and wait for it to be running."""
+    """Deploy the container-based test-app and wait for it to be running."""
     repo_url = f"file://{_TEST_APP_DIR}"
     r = admin_session.post(
         f"{router_url}/api/add_app",
@@ -176,7 +176,7 @@ def secrets_app_deployed(admin_session, router_url):
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestRouter:
     def test_router_health(self, router_process, router_url):
         r = requests.get(f"{router_url}/health")
@@ -205,7 +205,7 @@ class TestRouter:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestTestAppPathRouting:
     """Test test-app via path-based routing (/test-app/...)."""
 
@@ -279,7 +279,7 @@ class TestTestAppPathRouting:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestTestAppSubdomainRouting:
     """Test test-app via subdomain routing (test-app.testzone.localhost:port)."""
 
@@ -317,7 +317,7 @@ class TestTestAppSubdomainRouting:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestAppLifecycle:
     """Test app stop and reload through the router."""
 
@@ -354,7 +354,7 @@ class TestAppLifecycle:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestMultipleApps:
     """Test deploying multiple apps concurrently."""
 
@@ -420,7 +420,7 @@ class TestMultipleApps:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestAPITokens:
     """Test API token create, use, and delete."""
 
@@ -484,7 +484,7 @@ class TestAPITokens:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestLoginLogout:
     """Test login and logout flows."""
 
@@ -537,7 +537,7 @@ class TestLoginLogout:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestStorageAndSystem:
     def test_storage_status(self, admin_session, router_url):
         r = admin_session.get(f"{router_url}/api/storage-status", timeout=10)
@@ -567,7 +567,7 @@ class TestStorageAndSystem:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestSSHToggle:
     def test_ssh_status(self, admin_session, router_url):
         r = admin_session.get(f"{router_url}/api/ssh-status", timeout=10)
@@ -588,7 +588,7 @@ class TestSSHToggle:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestWebSocketProxy:
     def test_ws_echo_path_routing(self, test_app_deployed):
         """WebSocket echo via path-based routing (/test-app/ws)."""
@@ -638,7 +638,7 @@ class TestWebSocketProxy:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestAppRename:
     def test_rename_app(self, test_app_deployed):
         s = test_app_deployed["session"]
@@ -698,7 +698,7 @@ class TestAppRename:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestServicesV2:
     """Test V2 cross-app services: secrets app provides, test-app consumes.
 
@@ -715,7 +715,7 @@ class TestServicesV2:
         providers = [s for s in services if s["service_url"] == SECRETS_SERVICE_URL]
         assert len(providers) == 1
         assert providers[0]["app_name"] == "secrets"
-        assert providers[0]["version"] == "0.1.0"
+        assert providers[0]["service_version"] == "0.1.0"
 
     def test_install_time_grant_works(self, secrets_app_deployed, test_app_deployed):
         """test-app was deployed with grant_permissions_v2=true, so it can
@@ -806,7 +806,7 @@ class TestServicesV2:
 # ---------------------------------------------------------------------------
 
 
-@requires_docker
+@requires_containers
 class TestCleanup:
     """Final cleanup: remove the deployed test-app."""
 

@@ -177,12 +177,10 @@ async def ws_proxy(
     # the handshake completes and both send/receive are immediately usable.
     await client_ws.accept()
 
-    # Only pass `subprotocols` if the client actually negotiated some.
-    # Passing an empty list causes the `websockets` client to emit an
-    # empty `Sec-WebSocket-Protocol:` header, which strict backends
-    # (including `websockets`' own server, as used by Selkies / the
-    # linuxserver webtop image) reject with
-    # `InvalidHeaderFormat: expected token at 0 in`.
+    # Only pass `subprotocols` if the client actually negotiated some.  Passing an empty list causes the
+    # `websockets` client to emit an empty `Sec-WebSocket-Protocol:` header, which strict backends
+    # (including `websockets`' own server, as used by Selkies / the linuxserver webtop image) reject
+    # with `InvalidHeaderFormat: expected token at 0 in`.
     ws_kwargs: dict[str, Any] = {
         "additional_headers": extra_headers,
         "compression": None,  # avoid permessage-deflate mismatches with backend

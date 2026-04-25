@@ -1,0 +1,123 @@
+---
+# Install rootless Podman for the `host` user.  Runs with become: yes.
+
+- name: Install podman and rootless networking tooling
+  apt:
+    name:
+      # podman + its default OCI runtime
+      - podman
+      - crun
+      # Rootless networking backends.  passt provides `pasta` (preferred);
+      # slirp4netns is the fallback.  Install both for cross-version
+      # resilience.
+      - passt
+      - slirp4netns
+      # Rootless-friendly CNI replacement, needed for user-defined networks.
+      - netavark
+      - aardvark-dns
+      # newuidmap/newgidmap for podman's rootless userns setup.
+      - uidmap
+      # Rootless overlay fallback for kernels without native unprivileged
+      # overlay support.
+      - fuse-overlayfs
+    state: present
+    update_cache: yes
+
+# Without lingering, the user's systemd instance exits when the last
+# session ends, which would kill `podman run --restart=...` containers.
+- name: Check whether user lingering is already enabled for host
+  stat:
+    path: /var/lib/systemd/linger/host
+  register: _linger_sentinel
+
+- name: Enable user lingering for host
+  command: loginctl enable-linger host
+  when: not _linger_sentinel.stat.exists
+  changed_when: true
+
+# Rootless podman needs to publish ports >= 25 (the router's [[ports]]
+# binds on 0.0.0.0:<host_port>).  25 is chosen so SMTP-serving apps can
+# bind port 25 directly.  Must match
+# compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
+- name: Configure unprivileged port floor
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      net.ipv4.ip_unprivileged_port_start = 25
+    dest: /etc/sysctl.d/90-openhost-podman.conf
+    mode: "0644"
+
+- name: Apply unprivileged port sysctl
+  command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
+  changed_when: false
+
+# Unlike Docker, podman has no default registry.  Drop-in file sets
+# docker.io as the short-name search registry so unqualified `FROM`
+# lines in app Dockerfiles resolve without operator intervention.
+- name: Ensure registries.conf.d directory exists
+  file:
+    path: /etc/containers/registries.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Register docker.io as the default short-name search registry
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      unqualified-search-registries = ["docker.io"]
+    dest: /etc/containers/registries.conf.d/00-openhost.conf
+    mode: "0644"
+
+# Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
+# as ext2/ext3 by stat -f -c '%T'), xfs, btrfs, tmpfs.  ZFS < 2.2 and
+# certain FUSE filesystems don't support it.
+- name: Find filesystem of data root
+  command: stat -f -c '%T' /home/host
+  register: _data_fs
+  changed_when: false
+
+- name: Verify data filesystem supports idmapped mounts
+  assert:
+    that:
+      - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs']
+    fail_msg: >-
+      Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
+      support idmapped bind mounts.  Reprovision onto ext4, xfs, btrfs,
+      or tmpfs.  (Note: Linux reports every ext2/3/4 filesystem as
+      'ext2/ext3', so ext4 IS supported — this failure means something
+      else entirely, e.g. ZFS or a FUSE filesystem.)
+    success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
+
+- name: Verify podman works for host user
+  become: yes
+  become_user: host
+  command: podman info --format json
+  register: _podman_info
+  changed_when: false
+
+- name: Assert podman is running rootless
+  assert:
+    that:
+      - (_podman_info.stdout | from_json).host.security.rootless | bool
+    fail_msg: podman is not configured for rootless operation as the host user.
+    success_msg: "podman rootless for host user: OK"
+
+# /etc/openhost/runtime is read by compute_space.core.runtime_sentinel
+# and the dashboard update-check endpoint.  Bump runtime_version here
+# AND compute_space.core.runtime_sentinel.EXPECTED_RUNTIME_VERSION
+# together whenever a host-side change ships that existing hosts must
+# adopt before their next router restart.
+- name: Ensure /etc/openhost exists
+  file:
+    path: /etc/openhost
+    state: directory
+    mode: "0755"
+
+- name: Write host runtime sentinel
+  copy:
+    content: |
+      # Managed by ansible/tasks/podman.yml; do not edit by hand.
+      runtime=podman
+      runtime_version=1
+    dest: /etc/openhost/runtime
+    mode: "0644"

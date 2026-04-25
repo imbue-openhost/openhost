@@ -13,19 +13,14 @@ from compute_space.db.migrations import migrate
 from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
 from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
 
+from .conftest import _FakeApp
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
 SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
-
-
-class _FakeApp:
-    """Minimal stand-in for a Quart app so init_db(app) can read app.config."""
-
-    def __init__(self, db_path):
-        self.config = {"DB_PATH": db_path}
 
 
 def _fresh_db(path):

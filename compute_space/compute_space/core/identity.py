@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from compute_space.config import get_config
 from compute_space.core.logging import logger
+from compute_space.core.util import write_restricted
 
 # Identity tokens are short-lived (5 minutes) since they're one-time-use
 IDENTITY_TOKEN_EXPIRY: int = 300
@@ -73,7 +74,7 @@ def load_identity_keys(data_dir: str) -> None:
                 )
                 .decode()
             )
-            priv_path.write_text(_identity_private_key)
+            write_restricted(priv_path, _identity_private_key)
             pub_path.write_text(_identity_public_key)
             logger.info("Generated new persistent identity keys at %s", keys_dir)
     except (OSError, PermissionError, ValueError) as e:

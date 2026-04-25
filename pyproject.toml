@@ -63,7 +63,7 @@ testpaths = [
 ]
 addopts = "-p no:randomly -v --import-mode=importlib"
 markers = [
-    "requires_docker: needs --run-docker flag and Docker daemon running",
+    "requires_containers: needs --run-containers flag and a working rootless podman setup",
     "requires_tls: needs --run-tls flag, pebble, and coredns",
 ]
 

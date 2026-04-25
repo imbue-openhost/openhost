@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS apps (
     health_check TEXT,
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
-    docker_container_id TEXT,
+    container_id TEXT,
     status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,

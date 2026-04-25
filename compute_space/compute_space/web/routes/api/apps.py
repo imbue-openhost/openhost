@@ -2,8 +2,6 @@ import asyncio
 import os
 import re
 import shutil
-import stat
-import subprocess
 import threading
 
 import attr
@@ -23,12 +21,14 @@ from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
+from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
 from compute_space.core.data import deprovision_data
 from compute_space.core.data import deprovision_temp_data
+from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.ports import check_port_available
@@ -40,22 +40,13 @@ from compute_space.web.middleware import login_required
 
 
 def _rmtree_force(path: str) -> None:
-    """Remove a directory tree, handling files not owned by the current user.
+    """Remove a directory tree, re-raising on failure.
 
-    Git clones (or Docker) may leave files owned by a different uid.
-    We first try a normal rmtree with chmod retry; if that fails (EPERM
-    because we don't own the files) we fall back to sudo rm -rf.
+    Thin wrapper over ``rmtree_with_sudo_fallback`` for the code-sync /
+    redeploy path where a failed rmtree must propagate (as opposed to
+    data-dir deprovision, which swallows cleanup errors).
     """
-
-    def _make_writable_and_retry(func, err_path, _exc):  # type: ignore[no-untyped-def]
-        os.chmod(err_path, stat.S_IRWXU)
-        func(err_path)
-
-    try:
-        shutil.rmtree(path, onexc=_make_writable_and_retry)
-    except PermissionError:
-        logger.warning("rmtree failed on {}, falling back to sudo rm -rf", path)
-        subprocess.run(["sudo", "-n", "rm", "-rf", path], check=True, timeout=30)
+    rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -195,7 +186,10 @@ async def api_add_app() -> ResponseReturnValue:
             repo_url=repo_url,
             port_overrides=port_overrides,
         )
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # ValueError covers uid_map pool exhaustion (see compute_uid_map_base)
+        # and other manifest-validation errors raised at insert time; both
+        # map to a 400 rather than a 500.
         return jsonify({"error": str(e)}), 400
 
     return jsonify({"ok": True, "app_name": app_name, "status": "building"})
@@ -224,9 +218,12 @@ def app_status(app_name: str) -> ResponseReturnValue:
         return jsonify({"error": "not found"}), 404
     error_msg = app_row["error_message"]
     error_kind = None
-    if error_msg and "[CACHE_CORRUPT]" in error_msg:
-        error_kind = "cache_corrupt"
-        error_msg = "Docker build cache is corrupted."
+    # error_message may carry either the current BUILD_CACHE_CORRUPT_MARKER
+    # or the legacy ``[CACHE_CORRUPT]`` marker; both trigger the same
+    # 'drop cache and rebuild' remediation in the UI.
+    if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or "[CACHE_CORRUPT]" in error_msg):
+        error_kind = "build_cache_corrupt"
+        error_msg = "Container build cache is corrupted."
     return jsonify({"status": app_row["status"], "error": error_msg, "error_kind": error_kind})
 
 
@@ -238,7 +235,7 @@ def app_logs(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return "App not found", 404
-    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["docker_container_id"])
+    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
     return logs, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
@@ -253,7 +250,7 @@ def stop_app(app_name: str) -> ResponseReturnValue:
     stop_app_process(app_row)
     stop_container(f"openhost-{app_name}")
     db.execute(
-        "UPDATE apps SET status = 'stopped', docker_container_id = NULL WHERE name = ?",
+        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
         (app_name,),
     )
     db.commit()
@@ -352,7 +349,7 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
 
     await asyncio.to_thread(stop_app_process, app_row)
     db.execute(
-        "UPDATE apps SET status = 'building', docker_container_id = NULL, error_message = NULL WHERE name = ?",
+        "UPDATE apps SET status = 'building', container_id = NULL, error_message = NULL WHERE name = ?",
         (app_name,),
     )
     db.commit()
@@ -428,7 +425,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     was_running = app_row["status"] in ("running", "starting", "building")
     stop_app_process(app_row)
     db.execute(
-        "UPDATE apps SET status = 'stopped', docker_container_id = NULL WHERE name = ?",
+        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
         (app_name,),
     )
     db.commit()
@@ -472,6 +469,17 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     db.execute("PRAGMA foreign_keys=ON")
 
     if was_running:
-        start_app_process(new_name, db, config)
+        # Persist failures instead of letting them 500 out: the rename
+        # has already succeeded, and the dashboard needs a visible error
+        # on the app rather than a generic server error.
+        try:
+            start_app_process(new_name, db, config)
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Failed to restart %s after rename: %s", new_name, e)
+            db.execute(
+                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
+                (str(e), new_name),
+            )
+            db.commit()
 
     return jsonify({"ok": True, "name": new_name})

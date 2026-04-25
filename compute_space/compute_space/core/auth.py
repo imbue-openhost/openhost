@@ -20,6 +20,7 @@ from quart import Response
 
 from compute_space.config import get_config
 from compute_space.core.logging import logger
+from compute_space.core.util import write_restricted
 from compute_space.db import get_db
 
 _private_key: str | None = None
@@ -56,7 +57,7 @@ def _generate_keypair(keys_dir: str) -> tuple[str, str]:
         .decode()
     )
 
-    (keys_path / "private.pem").write_text(private_pem)
+    write_restricted(keys_path / "private.pem", private_pem)
     (keys_path / "public.pem").write_text(public_pem)
 
     return private_pem, public_pem

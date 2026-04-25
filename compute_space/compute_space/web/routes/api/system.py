@@ -206,7 +206,7 @@ async def toggle_ssh() -> Response:
 @api_system_bp.route("/api/drop-docker-cache", methods=["POST"])
 @login_required
 def drop_docker_cache() -> Response | tuple[Response, int]:
-    """Drop Docker build cache to free disk space."""
+    """Drop the container build cache to free disk space."""
     try:
         output = drop_docker_build_cache()
     except RuntimeError as e:

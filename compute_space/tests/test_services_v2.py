@@ -43,9 +43,9 @@ def db():
         CREATE TABLE service_providers_v2 (
             service_url TEXT NOT NULL,
             app_name TEXT NOT NULL,
-            version TEXT NOT NULL,
+            service_version TEXT NOT NULL,
             endpoint TEXT NOT NULL,
-            PRIMARY KEY (service_url, app_name, version)
+            PRIMARY KEY (service_url, app_name, service_version)
         );
         CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
@@ -73,7 +73,7 @@ def _add_provider(db, service_url, app_name, version, endpoint, port=9000, statu
         (app_name, port, status),
     )
     db.execute(
-        "INSERT INTO service_providers_v2 (service_url, app_name, version, endpoint) VALUES (?, ?, ?, ?)",
+        "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) VALUES (?, ?, ?, ?)",
         (service_url, app_name, version, endpoint),
     )
     if default:

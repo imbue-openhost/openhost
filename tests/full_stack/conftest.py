@@ -24,7 +24,7 @@ OWNER_PASSWORD = "routerpass123"
 ZONE_DOMAIN = f"testzone.localhost:{ROUTER_PORT}"
 MOCK_OAUTH_PORT = 29199
 
-requires_docker = pytest.mark.requires_docker
+requires_containers = pytest.mark.requires_containers
 
 
 @pytest.fixture(scope="module")
