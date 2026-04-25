@@ -1,0 +1,23 @@
+[app]
+name = "oauth"
+version = "0.1.0"
+description = "OAuth token management — acquire, refresh, and store tokens for third-party APIs"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[routing]
+public_paths = ["/callback", "/device", "/grant"]
+
+[resources]
+memory_mb = 256
+cpu_millicores = 1000
+
+[data]
+sqlite = ["main"]
+
+[[services_v2.provides]]
+service = "github.com/imbue-openhost/openhost/services/oauth"
+version = "0.1.0"
+endpoint = "/oauth_service/"

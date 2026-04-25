@@ -1,0 +1,3 @@
+[service]
+name = "oauth"
+description = "OAuth token management — acquire, refresh, and store tokens for third-party APIs"

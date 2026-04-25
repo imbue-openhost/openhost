@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authorize {{ provider | title }}</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 500px; margin: 4rem auto; padding: 0 1rem; text-align: center; }
+        .code { font-size: 2.5rem; font-weight: bold; background: #f3f4f6;
+                 padding: 0.5rem 1.5rem; border-radius: 12px; display: inline-block; margin: 1rem 0;
+                 font-family: monospace; }
+        a.btn { display: inline-block; padding: 0.8rem 2rem; background: #2563eb; color: white;
+                 text-decoration: none; border-radius: 8px; font-size: 1.1rem; margin: 1rem 0; }
+        a.btn:hover { background: #1d4ed8; }
+        .status { margin: 1.5rem 0; color: #666; }
+        .spinner { display: inline-block; width: 1.2em; height: 1.2em; border: 3px solid #ddd;
+                    border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite;
+                    vertical-align: middle; margin-right: 0.5em; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error { color: #dc2626; }
+        .scopes { font-size: 0.85rem; color: #888; margin: 0.5rem 0; }
+    </style>
+</head>
+<body>
+    <h2>Authorize {{ provider | title }}</h2>
+    <p class="scopes">Scopes: {{ scopes | join(', ') }}</p>
+
+    <p>1. Click the link below to open {{ provider | title }}'s authorization page:</p>
+    <a class="btn" href="{{ verification_url }}" target="_blank">Open {{ provider | title }}</a>
+    <p>2. Enter this code when prompted:</p>
+    <div class="code">{{- user_code -}}</div>
+    <button onclick="navigator.clipboard.writeText('{{ user_code }}'); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy code',1500)" style="padding:0.4rem 1rem; border:1px solid #ccc; border-radius:6px; background:white; cursor:pointer; font-size:0.9rem">Copy code</button>
+
+    <div class="status" id="status">
+        <span class="spinner"></span> Waiting for authorization...
+    </div>
+
+    <script>
+    const flowId = {{ flow_id | tojson }};
+    const returnTo = {{ return_to | tojson }};
+    async function pollStatus() {
+        try {
+            const resp = await fetch("/device/poll/" + flowId);
+            const data = await resp.json();
+            if (data.status === "completed") {
+                document.getElementById("status").innerHTML = "Authorized! Redirecting...";
+                window.location.href = returnTo;
+                return;
+            }
+            if (data.status === "error" || data.status === "expired") {
+                document.getElementById("status").innerHTML =
+                    '<span class="error">Error: ' + (data.error || "Flow expired") + '</span>';
+                return;
+            }
+        } catch (e) {
+            console.error("Poll error:", e);
+        }
+        setTimeout(pollStatus, 1000);
+    }
+
+    pollStatus();
+    </script>
+</body>
+</html>
