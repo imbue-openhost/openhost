@@ -36,7 +36,7 @@ _TEST_APP_DIR = os.path.join(_APPS_DIR, "test_app")
 
 ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
-ZONE_DOMAIN = "testzone.localhost"
+ZONE_DOMAIN = f"testzone.localhost:{ROUTER_PORT}"
 
 requires_containers = pytest.mark.requires_containers
 
@@ -109,8 +109,8 @@ def admin_session(router_process, router_url):
 
 
 def app_url(app_name):
-    """Build a subdomain URL for an app: http://{app}.{zone}.localhost:{port}."""
-    return f"http://{app_name}.{ZONE_DOMAIN}:{ROUTER_PORT}"
+    """Build a subdomain URL for an app: http://{app}.{zone_domain}/."""
+    return f"http://{app_name}.{ZONE_DOMAIN}"
 
 
 @pytest.fixture(scope="module")

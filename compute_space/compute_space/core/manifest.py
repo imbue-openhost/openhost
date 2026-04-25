@@ -3,6 +3,7 @@ import tomllib
 from typing import Any
 
 import attr
+import cattrs
 
 from compute_space.core.logging import logger
 
@@ -76,7 +77,21 @@ class PortMapping:
     host_port: int = 0  # 0 = auto-assign
 
 
-@attr.s(auto_attribs=True)
+@attr.s(auto_attribs=True, frozen=True)
+class ServiceProvides:
+    service: str
+    version: str
+    endpoint: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class PermissionV2Request:
+    service: str
+    # TODO: unsure of correct format.
+    grants: list[dict[str, Any]] = attr.Factory(list)
+
+
+@attr.s(auto_attribs=True, frozen=True)
 class AppManifest:
     # [app]
     name: str
@@ -115,6 +130,12 @@ class AppManifest:
     provides_services: list[str] = attr.Factory(list)
     requires_services: dict[str, list[dict[str, Any]]] = attr.Factory(dict)
     # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
+
+    # [services_v2]
+    provides_services_v2: list[ServiceProvides] = attr.Factory(list)
+
+    # [[permissions_v2]]
+    permissions_v2: list[PermissionV2Request] = attr.Factory(list)
 
     # [app] metadata
     hidden: bool = False
@@ -207,6 +228,32 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
     return result
 
 
+def _structure_list(data: list[Any], cls: type[Any], label: str) -> list[Any]:
+    try:
+        return [cattrs.structure(entry, cls) for entry in data]
+    except (cattrs.ClassValidationError, TypeError, KeyError) as exc:
+        raise ValueError(f"Invalid [[{label}]]: {exc}") from exc
+
+
+def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
+    entries = data.get("services_v2", {}).get("provides", [])
+    return _structure_list(entries, ServiceProvides, "services_v2.provides")
+
+
+def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
+    return _structure_list(data.get("permissions_v2", []), PermissionV2Request, "permissions_v2")
+
+
+def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for svc_name, svc_config in services.items():
+        if svc_name == "provides":
+            continue
+        if isinstance(svc_config, dict) and "keys" in svc_config:
+            result[svc_name] = svc_config["keys"]
+    return result
+
+
 def parse_manifest_from_string(raw_text: str) -> AppManifest:
     """Parse an openhost.toml manifest from its string content."""
     data = tomllib.loads(raw_text)
@@ -222,18 +269,39 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     if runtime_type not in ("serverless", "serverfull"):
         raise ValueError(f"Invalid runtime type: {runtime_type}")
 
-    routing = data.get("routing", {})
+    container = runtime.get("container", {})
+    if not container.get("image"):
+        raise ValueError("[runtime.container].image is required")
+    if not container.get("port"):
+        raise ValueError("[runtime.container].port is required")
 
+    routing = data.get("routing", {})
     resources = data.get("resources", {})
     data_section = data.get("data", {})
+    services = data.get("services", {})
 
-    manifest = AppManifest(
-        name=app_section["name"],
+    app_name = app_section["name"]
+
+    # Deprecated: extra_ports (raw Docker -p strings)
+    if container.get("extra_ports"):
+        logger.warning(
+            "App '%s' uses deprecated 'extra_ports' in [runtime.container]. Migrate to [[ports]] tables instead.",
+            app_name,
+        )
+
+    return AppManifest(
+        name=app_name,
         version=app_section["version"],
         description=app_section.get("description", ""),
         authors=app_section.get("authors", []),
         hidden=app_section.get("hidden", False),
         runtime_type=runtime_type,
+        container_image=container["image"],
+        container_port=container["port"],
+        container_command=container.get("command"),
+        port_mappings=_parse_ports(data.get("ports", [])),
+        capabilities=_validate_capabilities(container.get("capabilities", [])),
+        devices=_validate_devices(container.get("devices", [])),
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
         memory_mb=resources.get("memory_mb", 128),
@@ -244,42 +312,12 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_temp_data=data_section.get("app_temp_data", False),
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_data=data_section.get("access_all_data", False),
+        provides_services=services.get("provides", []),
+        requires_services=_parse_requires_services(services),
+        provides_services_v2=_parse_services_v2(data),
+        permissions_v2=_parse_permissions_v2(data),
         raw_toml=raw_text,
     )
-
-    # Parse [services] section
-    services = data.get("services", {})
-    manifest.provides_services = services.get("provides", [])
-
-    # Parse per-service requirements (e.g. [services.secrets] keys = [...])
-    for svc_name, svc_config in services.items():
-        if svc_name == "provides":
-            continue
-        if isinstance(svc_config, dict) and "keys" in svc_config:
-            manifest.requires_services[svc_name] = svc_config["keys"]
-
-    container = runtime.get("container", {})
-    if not container.get("image"):
-        raise ValueError("[runtime.container].image is required")
-    if not container.get("port"):
-        raise ValueError("[runtime.container].port is required")
-    manifest.container_image = container["image"]
-    manifest.container_port = container["port"]
-    manifest.container_command = container.get("command")
-    manifest.capabilities = _validate_capabilities(container.get("capabilities", []))
-    manifest.devices = _validate_devices(container.get("devices", []))
-
-    manifest.port_mappings = _parse_ports(data.get("ports", []))
-
-    # Deprecated: extra_ports (raw Docker -p strings)
-    extra_ports = container.get("extra_ports", [])
-    if extra_ports:
-        logger.warning(
-            "App '%s' uses deprecated 'extra_ports' in [runtime.container]. Migrate to [[ports]] tables instead.",
-            manifest.name,
-        )
-
-    return manifest
 
 
 def parse_manifest(repo_path: str) -> AppManifest:
