@@ -29,8 +29,8 @@ _OAUTH_DEMO_DIR = os.path.join(_APPS_DIR, "oauth_demo")
 
 
 @pytest.fixture(scope="module")
-def mock_oauth_server(secrets_app_deployed):
-    """Configure the secrets app to use the mock OAuth server as the 'mock' provider.
+def mock_oauth_server(oauth_app_deployed):
+    """Configure the oauth app to use the mock OAuth server as the 'mock' provider.
 
     Overrides the mock provider's auth/token/userinfo/revoke URLs so the full
     OAuth redirect flow goes through the mock server instead of a real provider.
@@ -58,16 +58,16 @@ def mock_oauth_server(secrets_app_deployed):
         fail_msg="Mock OAuth server did not start",
     )
 
-    s = secrets_app_deployed["session"]
-    url = secrets_app_deployed["router_url"]
+    s = oauth_app_deployed["session"]
+    url = oauth_app_deployed["router_url"]
     # authorize_url is visited by the browser (on the host) — use 127.0.0.1.
-    # token/revoke/userinfo are called server-to-server from inside the secrets
+    # token/revoke/userinfo are called server-to-server from inside the oauth
     # Docker container — use host.docker.internal.
     browser_domain = f"http://127.0.0.1:{MOCK_OAUTH_PORT}"
     server_domain = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
 
     r = s.post(
-        f"{url}/secrets/test/set-mock-provider-url",
+        f"{url}/oauth/test/set-mock-provider-url",
         json={
             "provider": "mock",
             "authorize_url": f"{browser_domain}/authorize",
@@ -75,7 +75,7 @@ def mock_oauth_server(secrets_app_deployed):
             "revoke_url": f"{server_domain}/oauth/revoke",
             "userinfo_url": f"{server_domain}/userinfo",
             "userinfo_field": "email",
-            "redirect_uri": f"http://{ZONE_DOMAIN}/secrets/oauth/callback",
+            "redirect_uri": f"http://{ZONE_DOMAIN}/_services_v2/oauth/callback",
         },
         timeout=10,
     )
@@ -301,37 +301,28 @@ class TestOAuthFlow:
         assert r.json()["access_token"] == "redirected_token_123"
 
     def test_oauth_auth_code_server_side_flow(
-        self, admin_session, secrets_app_deployed, oauth_demo_deployed, mock_oauth_server
+        self, admin_session, oauth_app_deployed, oauth_demo_deployed, mock_oauth_server
     ):
         """Full browser OAuth flow using Playwright — no API shortcuts.
 
-        Unlike the other tests in this class (which call /test/token endpoints and
-        inject tokens into the mock directly), this test drives a real browser through
-        the entire redirect chain a human user would experience:
+        Drives a real browser through the entire redirect chain:
 
         1. Browser navigates to oauth-demo's server demo page.
-        2. User clicks "Connect" for Google.
+        2. User clicks "Connect" for the mock provider.
         3. oauth-demo calls the V2 service proxy to request a token.
-        4. Router proxies to the secrets app, which has no cached token.
-        5. Secrets app returns a 401 with an authorize_url pointing to the mock
+        4. Router proxies to the oauth app, which has no cached token.
+        5. OAuth app returns a 401 with an authorize_url pointing to the mock
            provider's /authorize page.
         6. oauth-demo redirects the browser to the authorize URL.
-        7. Mock provider renders an HTML account picker (like Google's "Choose an account").
+        7. Mock provider renders an HTML account picker.
         8. User (Playwright) clicks an account (alice@example.com).
-        9. Mock provider redirects to the secrets app's /oauth/callback with an
+        9. Mock provider redirects to /_services_v2/oauth/callback with an
            authorization code and state.
-        10. Secrets app exchanges the code for a token via POST to the mock's /oauth/token.
-        11. Secrets app resolves the account identity via GET to the mock's /userinfo.
-        12. Secrets app stores the token and redirects the browser back to oauth-demo.
-        13. oauth-demo's server page now lists alice@example.com as a connected account.
-
-        Setup:
-        - The secrets app's Google provider URLs are overridden to point at the mock
-          (auth_url -> browser-reachable 127.0.0.1, token_url/userinfo_url ->
-          Docker-reachable host.docker.internal).
-        - Mock client credentials are stored in the secrets app so it doesn't 503.
-        - Auth cookies from the admin session are transferred to the Playwright browser
-          context so the router recognizes the user.
+        10. Router parses the app name from state JSON and proxies to the
+            oauth app's /callback handler.
+        11. OAuth app exchanges the code for a token, resolves account identity,
+            stores the token, and redirects back to oauth-demo.
+        12. oauth-demo's server page now lists alice@example.com as connected.
         """
 
         url = oauth_demo_deployed["router_url"]

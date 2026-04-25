@@ -17,6 +17,7 @@ from compute_space.testing import wait_app_running
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 _SECRETS_DIR = os.path.join(_APPS_DIR, "secrets")
+_OAUTH_DIR = os.path.join(_APPS_DIR, "oauth")
 
 ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
@@ -95,3 +96,18 @@ def secrets_app_deployed(admin_session, router_url):
 
     yield {"session": admin_session, "router_url": router_url}
     admin_session.post(f"{router_url}/remove_app/secrets", timeout=30)
+
+
+@pytest.fixture(scope="module")
+def oauth_app_deployed(admin_session, router_url):
+    r = admin_session.post(
+        f"{router_url}/api/add_app",
+        data={"repo_url": f"file://{_OAUTH_DIR}"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
+    assert r.json().get("app_name") == "oauth"
+    wait_app_running(admin_session, router_url, "oauth")
+
+    yield {"session": admin_session, "router_url": router_url}
+    admin_session.post(f"{router_url}/remove_app/oauth", timeout=30)
