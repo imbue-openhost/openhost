@@ -39,6 +39,8 @@ dev = [
     "ruff==0.15.5",
     "mypy",
     "types-requests",
+    "litestar>=2.0",
+    "schemathesis>=4.0",
 ]
 
 [build-system]
@@ -57,6 +59,7 @@ testpaths = [
     "compute_space/tests",
     "compute_space_cli/tests",
     "self_host_cli/tests",
+    "apps/oauth/tests",
 ]
 addopts = "-p no:randomly -v --import-mode=importlib"
 markers = [
@@ -93,11 +96,12 @@ known-first-party = [
     "compute_space_cli",
     "self_host_cli",
     "testing_helpers",
+    "oauth",
 ]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["compute_space/compute_space", "compute_space_cli"]
+files = ["compute_space/compute_space", "compute_space_cli", "apps/oauth/oauth"]
 strict = true
 ignore_missing_imports = true
 
@@ -110,6 +114,7 @@ python = "3.12.*"
 caddy = "*"
 # this doesn't work on arm mac :(
 coredns = "*"
+litestar = ">=2.21.1,<3"
 
 # these are minimum system requirements, not something that pixi manages.
 [tool.pixi.system-requirements]
