@@ -33,10 +33,13 @@ from compute_space.testing import wait_app_running
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 _TEST_APP_DIR = os.path.join(_APPS_DIR, "test_app")
+_SECRETS_DIR = os.path.join(_APPS_DIR, "secrets")
+
+SECRETS_SERVICE_URL = "github.com/imbue-openhost/openhost/services/secrets"
 
 ROUTER_PORT = 28080
 OWNER_PASSWORD = "routerpass123"
-ZONE_DOMAIN = "testzone.localhost"
+ZONE_DOMAIN = f"testzone.localhost:{ROUTER_PORT}"
 
 requires_containers = pytest.mark.requires_containers
 
@@ -109,8 +112,8 @@ def admin_session(router_process, router_url):
 
 
 def app_url(app_name):
-    """Build a subdomain URL for an app: http://{app}.{zone}.localhost:{port}."""
-    return f"http://{app_name}.{ZONE_DOMAIN}:{ROUTER_PORT}"
+    """Build a subdomain URL for an app: http://{app}.{zone_domain}/."""
+    return f"http://{app_name}.{ZONE_DOMAIN}"
 
 
 @pytest.fixture(scope="module")
@@ -119,7 +122,7 @@ def test_app_deployed(admin_session, router_url):
     repo_url = f"file://{_TEST_APP_DIR}"
     r = admin_session.post(
         f"{router_url}/api/add_app",
-        data={"repo_url": repo_url},
+        data={"repo_url": repo_url, "grant_permissions_v2": "true"},
         timeout=120,
     )
     assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
@@ -131,6 +134,41 @@ def test_app_deployed(admin_session, router_url):
         "session": admin_session,
         "router_url": router_url,
     }
+
+
+@pytest.fixture(scope="module")
+def secrets_app_deployed(admin_session, router_url):
+    """Deploy the secrets app and store a test secret."""
+    r = admin_session.post(
+        f"{router_url}/api/add_app",
+        data={"repo_url": f"file://{_SECRETS_DIR}"},
+        timeout=120,
+    )
+    assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
+    assert r.json().get("app_name") == "secrets"
+
+    wait_app_running(admin_session, router_url, "secrets")
+
+    # Store a test secret via the secrets app API
+    def _store():
+        try:
+            r = admin_session.post(
+                f"{router_url}/secrets/api/secrets",
+                json={"key": "TEST_SECRET", "value": "s3cret_value_42"},
+                timeout=10,
+            )
+            return r.status_code == 200
+        except requests.ConnectionError:
+            return False
+
+    poll(_store, timeout=30, interval=2, fail_msg="Could not store test secret")
+
+    yield {
+        "session": admin_session,
+        "router_url": router_url,
+    }
+
+    admin_session.post(f"{router_url}/remove_app/secrets", timeout=30)
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +691,114 @@ class TestAppRename:
             interval=2,
             fail_msg="test-app not responding after rename back",
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests — V2 Services (cross-app service proxy)
+# ---------------------------------------------------------------------------
+
+
+@requires_containers
+class TestServicesV2:
+    """Test V2 cross-app services: secrets app provides, test-app consumes.
+
+    The test-app manifest declares [[permissions_v2]] requesting
+    TEST_SECRET from the secrets service. It is deployed with
+    grant_permissions_v2=true so the permission is granted at install time.
+    """
+
+    def test_service_registered(self, secrets_app_deployed, admin_session, router_url):
+        """Deploying the secrets app registers its V2 service provider."""
+        r = admin_session.get(f"{router_url}/api/services_v2", timeout=10)
+        assert r.status_code == 200
+        services = r.json()
+        providers = [s for s in services if s["service_url"] == SECRETS_SERVICE_URL]
+        assert len(providers) == 1
+        assert providers[0]["app_name"] == "secrets"
+        assert providers[0]["service_version"] == "0.1.0"
+
+    def test_install_time_grant_works(self, secrets_app_deployed, test_app_deployed):
+        """test-app was deployed with grant_permissions_v2=true, so it can
+        fetch the secret immediately without an explicit grant call."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["secrets"]["TEST_SECRET"] == "s3cret_value_42"
+
+    def test_revoke_then_denied_with_grant_url(self, secrets_app_deployed, test_app_deployed):
+        """After revoking, 403 response includes a valid grant_url that loads the approval page."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+
+        r = s.post(
+            f"{url}/api/permissions_v2/revoke",
+            json={
+                "app": "test-app",
+                "service_url": SECRETS_SERVICE_URL,
+                "grant": {"key": "TEST_SECRET"},
+            },
+            timeout=10,
+        )
+        assert r.status_code == 200
+
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 403
+        data = r.json()
+        assert data["error"] == "permission_required"
+        assert "required_grant" in data
+        grant_url = data["required_grant"].get("grant_url")
+        assert grant_url, "403 response should include a grant_url"
+
+        r = s.get(grant_url, timeout=10)
+        assert r.status_code == 200, f"grant_url returned {r.status_code}"
+
+    def test_regrant_via_grant_url(self, secrets_app_deployed, test_app_deployed):
+        """The grant_url from a 403 leads to a working grant flow."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 403
+        data = r.json()
+        grant = data["required_grant"]
+        grant_url = grant.get("grant_url")
+        assert grant_url
+
+        r = s.post(
+            f"{url}/api/permissions_v2/grant-global-scoped",
+            json={
+                "app": "test-app",
+                "service_url": SECRETS_SERVICE_URL,
+                "grant": grant["grant_payload"],
+            },
+            timeout=10,
+        )
+        assert r.status_code == 200
+
+        r = s.get(f"{url}/test-app/fetch-secret/TEST_SECRET", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["secrets"]["TEST_SECRET"] == "s3cret_value_42"
+
+    def test_ungranted_key_still_denied(self, secrets_app_deployed, test_app_deployed):
+        """A key not covered by any grant is denied."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+        r = s.get(f"{url}/test-app/fetch-secret/OTHER_SECRET", timeout=15)
+        assert r.status_code == 403
+
+    def test_version_mismatch_rejected(self, secrets_app_deployed, test_app_deployed):
+        """Requesting an incompatible version returns 503."""
+        s = test_app_deployed["session"]
+        url = test_app_deployed["router_url"]
+        r = s.get(
+            f"{url}/test-app/fetch-secret/TEST_SECRET",
+            params={"version": ">=99.0.0"},
+            timeout=15,
+        )
+        assert r.status_code == 503
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,372 @@
+openapi: 3.0.3
+info:
+  title: OpenHost OAuth Service
+  description: |
+    OAuth token management — acquire, refresh, and store tokens for
+    third-party APIs (Google, GitHub, etc.).
+
+    **Service URL:** `github.com/imbue-openhost/openhost/services/oauth`
+
+    All requests are proxied through the router at
+    `/_services_v2/<url-encoded-service-url>/<endpoint>?version=<specifier>`.
+    The router injects an `X-OpenHost-Permissions` header containing the
+    consumer app's granted permissions. The service validates these
+    provider-side before returning data.
+
+    ## Permissions
+
+    Grants apply to a `(provider, account)` tuple. Each grant contains a
+    list of OAuth scopes. The `account` field is optional — a grant without
+    an account applies to all accounts for that provider.
+
+    Multiple grants may exist for the same consumer app. When validating a
+    request, the service collects the **union** of scopes across all
+    matching grants. If the union covers every requested scope, the request
+    is approved.
+
+    **Grant format:**
+    ```json
+    {
+      "provider": "google",
+      "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+      "account": "alice@example.com"   // optional
+    }
+    ```
+
+    ## User-facing pages
+
+    The following browser-accessible pages support the OAuth consent and
+    device-code flows. They are not service endpoints — consumer apps
+    do not call them directly. Instead, the service returns URLs pointing
+    to these pages in `401` and `403` responses.
+
+    - **GET /grant** — Permission grant flow. Starts an OAuth consent
+      flow and, on completion, creates an app-scoped permission for the
+      consumer app. Reached via the `grant_url` in a `403` response.
+    - **GET /callback** — OAuth redirect callback. Handles the
+      authorization code exchange after the user authorizes with the
+      provider. See "Callback routing" below.
+    - **GET /device** — Device flow page. Displays the user code and
+      verification URL for device-code flows (e.g. GitHub).
+    - **GET /device/poll/{flow_id}** — Device flow polling endpoint.
+      Called by the device page's JavaScript to check whether the user
+      has completed authorization.
+
+    ## Callback routing
+
+    OAuth providers redirect to a fixed callback URL on the zone's
+    redirect domain (`MY_REDIRECT_DOMAIN`). The router intercepts this
+    at `/secrets_v2/oauth/callback` and must forward it to whichever
+    oauth app initiated the flow.
+
+    To make this work, the oauth app encodes its identity in the OAuth
+    `state` parameter as JSON:
+    ```json
+    {"app": "oauth", "nonce": "random-token"}
+    ```
+    The router parses `state` from the callback query string, reads the
+    `app` field, looks up that app's port, and proxies the full request
+    (code, state, scope, etc.) to the app's `/callback` handler. The
+    app matches the flow using the full `state` string as a dict key.
+  version: 0.1.0
+
+paths:
+  /token:
+    post:
+      summary: Get an OAuth access token
+      description: |
+        Returns a valid access token for the requested provider, scopes, and
+        account. If a token is cached and still valid, it is returned directly.
+        If the token is expired and a refresh token exists, the service
+        refreshes it automatically.
+
+        If no token exists at all, the response is `401` with an
+        `authorize_url` the caller should redirect the user to in order to
+        start the OAuth consent flow.
+
+        When `account` is `"default"` and exactly one account exists for the
+        given provider+scopes, that account's token is returned. If multiple
+        accounts exist, the service returns `401` so the caller can prompt the
+        user to choose.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, scopes]
+              properties:
+                provider:
+                  type: string
+                  minLength: 1
+                  description: OAuth provider name.
+                  example: google
+                scopes:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    minLength: 1
+                  description: OAuth scopes to request.
+                  example: ["https://www.googleapis.com/auth/gmail.readonly"]
+                account:
+                  type: string
+                  default: "default"
+                  description: |
+                    Account label. Special values:
+                    - `"default"` — auto-resolve when exactly one account
+                      exists; returns 401 if multiple accounts exist so
+                      the caller can prompt the user to choose.
+                    - `"NEW"` — skip token lookup entirely and immediately
+                      return a 401 with an `authorize_url` to start a
+                      fresh OAuth consent flow for a new account. No
+                      permissions are required — the OAuth consent flow
+                      itself serves as authorization, and the
+                      corresponding permission grant is created when
+                      the flow completes.
+                return_to:
+                  type: string
+                  description: |
+                    URL to redirect the user back to after the OAuth consent
+                    flow completes. Should be a path or protocol-relative URL
+                    within the zone domain.
+                  example: "//myapp.zone.example.com/dashboard"
+      responses:
+        "200":
+          description: Valid access token returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Missing required fields or unknown provider.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: |
+            No valid token available — user authorization required.
+            The caller should redirect the user to `authorize_url`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, authorize_url]
+                properties:
+                  status:
+                    type: string
+                    enum: [authorization_required]
+                  authorize_url:
+                    type: string
+                    format: uri
+                    description: URL to redirect the user to for OAuth consent.
+        "403":
+          description: Permission denied — caller lacks grants for the requested provider+scopes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionDenied"
+        "503":
+          description: OAuth provider credentials not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /accounts:
+    post:
+      summary: List connected accounts
+      description: |
+        Returns the account labels (e.g. email addresses, usernames) that
+        have stored tokens for the given provider and scopes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, scopes]
+              properties:
+                provider:
+                  type: string
+                  minLength: 1
+                  example: google
+                scopes:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    minLength: 1
+                  example: ["https://www.googleapis.com/auth/gmail.readonly"]
+      responses:
+        "200":
+          description: List of connected account labels.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      type: string
+                    description: |
+                      Account labels with stored tokens. Empty if no accounts
+                      are connected for this provider+scopes.
+                    example: ["alice@example.com", "bob@example.com"]
+        "400":
+          description: Missing required fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionDenied"
+
+  /revoke:
+    post:
+      summary: Revoke an OAuth token
+      description: |
+        Revokes the stored token for the given provider, scopes, and account.
+        Deletes the token from the service's storage and attempts to revoke it
+        with the upstream OAuth provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, scopes, account]
+              properties:
+                provider:
+                  type: string
+                  minLength: 1
+                  description: OAuth provider name.
+                  example: google
+                scopes:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    minLength: 1
+                  description: OAuth scopes of the token to revoke.
+                  example: ["https://www.googleapis.com/auth/gmail.readonly"]
+                account:
+                  type: string
+                  description: Account label of the token to revoke.
+                  example: alice@example.com
+      responses:
+        "200":
+          description: Token revoked successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          description: Missing required fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionDenied"
+        "404":
+          description: No token found for the given provider, scopes, and account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    TokenResponse:
+      type: object
+      required: [access_token, token_type]
+      properties:
+        access_token:
+          type: string
+          description: The OAuth access token.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 expiry timestamp, or null if the token does not expire.
+        token_type:
+          type: string
+          enum: [Bearer]
+
+    PermissionDenied:
+      type: object
+      required: [error, required_grant]
+      properties:
+        error:
+          type: string
+          enum: [permission_required]
+        required_grant:
+          type: object
+          required: [grant_payload, scope, grant_url]
+          properties:
+            grant_payload:
+              type: object
+              required: [provider, scopes]
+              properties:
+                provider:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: OAuth scopes the caller is missing.
+              description: The grant the caller needs to be approved for.
+            scope:
+              type: string
+              enum: [app, global]
+              description: Whether this is an app-scoped or global grant.
+            grant_url:
+              type: string
+              format: uri
+              description: URL to redirect the user to for granting the permission.
+
+    OAuthGrant:
+      type: object
+      required: [provider, scopes]
+      properties:
+        provider:
+          type: string
+          description: OAuth provider name.
+          example: google
+        scopes:
+          type: array
+          items:
+            type: string
+          description: OAuth scopes this grant covers.
+          example: ["https://www.googleapis.com/auth/gmail.readonly"]
+        account:
+          type: string
+          description: |
+            Account this grant applies to. If omitted, the grant
+            applies to all accounts for the provider.
+          example: alice@example.com
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string

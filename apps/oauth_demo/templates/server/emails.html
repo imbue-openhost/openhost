@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Demo - Emails</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        .email { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+        .email .subject { font-weight: 600; }
+        .email .from { color: #666; font-size: 0.9rem; }
+        .error { color: #dc2626; }
+        a { color: #2563eb; }
+    </style>
+</head>
+<body>
+    <h1>Emails{% if account %} ({{ account }}){% endif %}</h1>
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% elif emails %}
+        <p>{{ emails | length }} email(s)</p>
+        {% for e in emails %}
+            <div class="email">
+                <div class="subject">{{ e.subject }}</div>
+                <div class="from">{{ e.from }}</div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p style="color:#999">No emails.</p>
+    {% endif %}
+    <p><a href="./">&larr; Back</a></p>
+</body>
+</html>

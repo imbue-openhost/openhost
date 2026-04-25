@@ -1,10 +1,10 @@
 import asyncio
-import dataclasses
 import os
 import re
 import shutil
 import threading
 
+import attr
 from quart import Blueprint
 from quart import jsonify
 from quart import redirect
@@ -75,7 +75,7 @@ async def clone_and_get_app_info() -> ResponseReturnValue:
         raise RuntimeError("manifest unexpectedly None after successful clone")
     db = get_db()
     validation_error = validate_manifest(manifest, db)
-    info = dataclasses.asdict(manifest)
+    info = attr.asdict(manifest)
     info.pop("raw_toml", None)
     return jsonify(
         {
@@ -115,6 +115,7 @@ async def api_add_app() -> ResponseReturnValue:
     app_name = form.get("app_name", "").strip() or None
     clone_dir = form.get("clone_dir", "").strip() or None
     grant_permissions_raw = form.get("grant_permissions")
+    grant_permissions_v2 = form.get("grant_permissions_v2", "").lower() in ("1", "true", "yes")
 
     if not repo_url:
         return jsonify({"error": "No repository URL provided"}), 400
@@ -180,6 +181,7 @@ async def api_add_app() -> ResponseReturnValue:
             config,
             db,
             grant_permissions=grant_permissions,
+            grant_permissions_v2=grant_permissions_v2,
             app_name=app_name,
             repo_url=repo_url,
             port_overrides=port_overrides,

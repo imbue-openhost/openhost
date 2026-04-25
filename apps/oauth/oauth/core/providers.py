@@ -1,37 +1,28 @@
 import asyncio
+import json
 import logging
 import secrets
 import time
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 
+import oauth.core.config as config
+
 log = logging.getLogger(__name__)
 
-PROVIDERS = {
-    # Web application OAuth client; create at https://console.cloud.google.com/apis/credentials
-    # see docs in docs/oauth.md for full setup instructions.
-    # client_id and client_secret are fetched from the secrets app env storage, as
-    # GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.
-    # TODO: we could maybe use PKCE to secure the client secret here
+PROVIDERS: dict[str, dict[str, Any]] = {
     "google": {
         "flow": "auth_code",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
         "revoke_url": "https://oauth2.googleapis.com/revoke",
-        # Google-specific: request offline access to get a refresh token
         "extra_auth_params": {"access_type": "offline", "prompt": "consent"},
     },
-    # GitHub OAuth app created at https://github.com/settings/developers
-    # Callback URL: https://my.host.imbue.com/secrets/oauth/callback
-    #               https://my.dev2-host.imbue.com/secrets/oauth/callback
-    # GitHub tokens don't expire and there's no refresh token.
-    # modify at:
-    # https://github.com/organizations/imbue-ai/settings/applications/3457100
-    # these are not truly "secret" and are ok to leave in the code.
     "github": {
         "flow": "device",
         "client_id": "Ov23liYd8LivfM50k6mn",  # gitleaks:allow
@@ -40,27 +31,38 @@ PROVIDERS = {
         "token_url": "https://github.com/login/oauth/access_token",
         "revoke_url": "https://api.github.com/applications/{client_id}/token",
         "revoke_method": "DELETE",
-        "revoke_auth": "basic",  # use client_id:client_secret as basic auth
-        "revoke_body": "json",  # send token in JSON body as {"access_token": token}
+        "revoke_auth": "basic",
+        "revoke_body": "json",
+    },
+    "mock": {
+        "flow": "auth_code",
+        "client_id": "dummy",
+        "client_secret": "dummy",
+        "auth_url": "dynamic",
+        "token_url": "dynamic",
+        "revoke_url": "dynamic",
+    },
+    "mock_device": {
+        "flow": "device",
+        "client_id": "dummy",
+        "client_secret": "none",
+        "device_code_url": "dummy",
+        "token_url": "dynamic",
+        "revoke_url": "dynamic",
     },
 }
 
-# Pending auth code flows, keyed by state parameter.
-pending_auth_flows: dict[str, dict] = {}
+pending_auth_flows: dict[str, dict[str, Any]] = {}
+active_device_flows: dict[str, dict[str, Any]] = {}
 
-# Active device flows, keyed by flow_id.
-# Value: {provider, scopes, device_code, user_code, verification_url,
-#          interval, status, result, started_at}
-active_device_flows: dict[str, dict] = {}
-
-DEVICE_FLOW_TIMEOUT = 300  # 5 minutes
+DEVICE_FLOW_TIMEOUT = 300
 
 
 def normalize_scopes(scopes: list[str]) -> str:
-    return " ".join(sorted(scopes))
+    return ",".join(sorted(scopes))
 
 
-# ─── Auth Code Flow (Google) ───
+# ─── Auth Code Flow ───
 
 
 def build_auth_url(
@@ -71,9 +73,8 @@ def build_auth_url(
     client_id: str,
     account: str = "default",
 ) -> str:
-    """Build an OAuth authorization URL and store the flow state."""
     provider = PROVIDERS[provider_name]
-    state = secrets.token_urlsafe(32)
+    state = json.dumps({"app": config.APP_NAME, "nonce": secrets.token_urlsafe(32)})
 
     pending_auth_flows[state] = {
         "provider": provider_name,
@@ -83,7 +84,6 @@ def build_auth_url(
         "account": account,
     }
 
-    # Always request email+openid for Google so we can identify the account
     request_scopes = list(scopes)
     if provider_name == "google":
         for s in ("email", "openid"):
@@ -101,8 +101,9 @@ def build_auth_url(
     return f"{provider['auth_url']}?{urlencode(params)}"
 
 
-async def exchange_code(provider_name: str, code: str, redirect_uri: str, client_id: str, client_secret: str) -> dict:
-    """Exchange an authorization code for tokens."""
+async def exchange_code(
+    provider_name: str, code: str, redirect_uri: str, client_id: str, client_secret: str
+) -> dict[str, Any]:
     provider = PROVIDERS[provider_name]
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -142,11 +143,10 @@ async def exchange_code(provider_name: str, code: str, redirect_uri: str, client
         }
 
 
-# ─── Device Flow (GitHub) ───
+# ─── Device Flow ───
 
 
-async def start_device_flow(provider_name: str, scopes: list[str]) -> dict:
-    """Request device and user codes from the provider."""
+async def start_device_flow(provider_name: str, scopes: list[str]) -> dict[str, Any]:
     provider = PROVIDERS[provider_name]
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -166,16 +166,23 @@ async def start_device_flow(provider_name: str, scopes: list[str]) -> dict:
                 "error": error_data.get("error", "request_failed"),
                 "error_description": error_data.get("error_description", resp.text),
             }
-        return resp.json()
+        result: dict[str, Any] = resp.json()
+        return result
 
 
-def create_device_flow(provider_name: str, scopes: list[str], flow_data: dict, account: str = "default") -> str:
-    """Register a new device flow and start background polling. Returns flow_id."""
+def create_device_flow(
+    provider_name: str,
+    scopes: list[str],
+    flow_data: dict[str, Any],
+    account: str = "default",
+    consumer_app: str = "",
+) -> str:
     flow_id = secrets.token_urlsafe(16)
     flow = {
         "provider": provider_name,
         "scopes": scopes,
         "account": account,
+        "consumer_app": consumer_app,
         "device_code": flow_data["device_code"],
         "user_code": flow_data["user_code"],
         "verification_url": flow_data.get("verification_uri", flow_data.get("verification_url", "")),
@@ -189,8 +196,7 @@ def create_device_flow(provider_name: str, scopes: list[str], flow_data: dict, a
     return flow_id
 
 
-async def _poll_device_flow(flow_id: str):
-    """Background task that polls the provider until the device flow completes."""
+async def _poll_device_flow(flow_id: str) -> None:
     flow = active_device_flows.get(flow_id)
     if not flow:
         return
@@ -218,7 +224,6 @@ async def _poll_device_flow(flow_id: str):
                 )
                 result = resp.json()
         except Exception:
-            # Network error or non-JSON response — retry on next interval
             log.warning("Device flow poll error for %s, will retry", flow_id, exc_info=True)
             continue
 
@@ -237,7 +242,6 @@ async def _poll_device_flow(flow_id: str):
             }
             return
 
-        # Success
         expires_at = None
         if result.get("expires_in"):
             expires_at = (datetime.now(UTC) + timedelta(seconds=result["expires_in"])).isoformat()
@@ -261,38 +265,35 @@ async def _poll_device_flow(flow_id: str):
 # ─── Identity ───
 
 
+USERINFO_URLS: dict[str, tuple[str, str]] = {
+    "google": ("https://www.googleapis.com/oauth2/v2/userinfo", "email"),
+    "github": ("https://api.github.com/user", "login"),
+}
+
+
 async def fetch_account_identity(provider_name: str, access_token: str) -> str | None:
-    """Fetch the user's identity (e.g. email) from the provider using the access token."""
+    entry = USERINFO_URLS.get(provider_name)
+    if not entry:
+        return None
+    url, field = entry
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            if provider_name == "google":
-                resp = await client.get(
-                    "https://www.googleapis.com/oauth2/v2/userinfo",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("email")
-            elif provider_name == "github":
-                resp = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Accept": "application/vnd.github+json",
-                    },
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("login")
+            resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+            if resp.status_code == 200:
+                data: dict[str, Any] = resp.json()
+                identity: str | None = data.get(field)
+                return identity
     except Exception:
         log.warning("Failed to fetch identity for %s", provider_name, exc_info=True)
     return None
 
 
-# ─── Shared ───
+# ─── Token Operations ───
 
 
 async def refresh_access_token(
     provider_name: str, refresh_token: str, client_id: str, client_secret: str
-) -> dict | None:
+) -> dict[str, Any] | None:
     provider = PROVIDERS[provider_name]
     if not provider.get("token_url"):
         return None
@@ -310,14 +311,14 @@ async def refresh_access_token(
             )
             if resp.status_code != 200:
                 return None
-            return resp.json()
+            result: dict[str, Any] = resp.json()
+            return result
     except Exception:
         log.warning("Failed to refresh %s token", provider_name, exc_info=True)
         return None
 
 
 async def revoke_token(provider_name: str, token: str, client_id: str, client_secret: str) -> bool:
-    """Revoke a token with the provider."""
     provider = PROVIDERS[provider_name]
     revoke_url = provider.get("revoke_url")
     if not revoke_url:
@@ -329,7 +330,7 @@ async def revoke_token(provider_name: str, token: str, client_id: str, client_se
     if provider.get("revoke_auth") == "basic":
         auth = (client_id, client_secret)
 
-    kwargs: dict = {"headers": {"Accept": "application/json"}}
+    kwargs: dict[str, Any] = {"headers": {"Accept": "application/json"}}
     if provider.get("revoke_body") == "json":
         kwargs["json"] = {"access_token": token}
     else:

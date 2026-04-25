@@ -1,10 +1,4 @@
-"""App lifecycle operations: clone, deploy, start, stop, reload, validate.
-
-Extracted from routes/apps.py — no HTTP/Quart dependencies.
-"""
-
 import asyncio
-import dataclasses
 import hashlib
 import json
 import os
@@ -17,6 +11,7 @@ import threading
 import time
 import urllib.parse
 
+import attr
 import httpx
 
 import compute_space.core.storage as storage
@@ -32,11 +27,13 @@ from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.permissions import grant_permissions as grant_permissions_fn
+from compute_space.core.permissions_v2 import grant_permission_v2
 from compute_space.core.ports import allocate_port
 from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
+from compute_space.core.services_v2 import register_v2_service_providers
 
 RESERVED_PATHS = {
     "/",
@@ -209,6 +206,7 @@ def insert_and_deploy(
     config: Config,
     db: sqlite3.Connection,
     grant_permissions: set[str],
+    grant_permissions_v2: bool = False,
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
@@ -218,6 +216,8 @@ def insert_and_deploy(
     Returns app_name. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
+    grant_permissions_v2: if True, grant all [[permissions_v2]] entries
+        from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     """
     if app_name is None:
@@ -228,7 +228,7 @@ def insert_and_deploy(
 
     # Apply port overrides from caller (CLI --port flags, etc.)
     mappings = [
-        dataclasses.replace(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
+        attr.evolve(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
         for pm in manifest.port_mappings
     ]
 
@@ -298,6 +298,8 @@ def insert_and_deploy(
             (svc_name, app_name),
         )
 
+    register_v2_service_providers(app_name, manifest, db)
+
     db.commit()
 
     # Grant only the service permissions the caller explicitly approved.
@@ -316,6 +318,15 @@ def insert_and_deploy(
     unknown = grant_permissions - all_manifest_keys
     if unknown:
         logger.warning("App %s granted unknown permissions not in manifest: %s", app_name, unknown)
+
+    if grant_permissions_v2 and manifest.permissions_v2:
+        for perm in manifest.permissions_v2:
+            for grant_payload in perm.grants:
+                grant_permission_v2(
+                    consumer_app=app_name,
+                    service_url=perm.service,
+                    grant_payload=grant_payload,
+                )
 
     threading.Thread(
         target=deploy_app_background,
@@ -474,7 +485,7 @@ def _sync_port_mappings(
     to_resolve: list[PortMapping] = []
     for pm in new_mappings:
         if pm.label in existing:
-            to_resolve.append(dataclasses.replace(pm, host_port=existing[pm.label]["host_port"]))
+            to_resolve.append(attr.evolve(pm, host_port=existing[pm.label]["host_port"]))
         else:
             to_resolve.append(pm)
 
@@ -526,6 +537,8 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
             "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
             (svc_name, app_name),
         )
+
+    register_v2_service_providers(app_name, manifest, db)
 
     # Load resolved port mappings from DB (preserves host_port assignments)
     port_mappings = _load_port_mappings_from_db(app_name, db)

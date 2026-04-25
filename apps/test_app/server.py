@@ -16,7 +16,10 @@ Routes:
 import json
 import os
 
+import aiohttp
 import aiohttp.web
+
+SECRETS_SERVICE_URL = "github.com/imbue-openhost/openhost/services/secrets"
 
 
 async def handle_health(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -56,6 +59,33 @@ async def handle_ws(request: aiohttp.web.Request) -> aiohttp.web.WebSocketRespon
     return ws
 
 
+async def handle_fetch_secret(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Fetch a secret from the secrets service via the V2 service proxy."""
+    key = request.match_info["key"]
+    version = request.query.get("version", ">=0.1.0")
+    router_url = os.environ.get("OPENHOST_ROUTER_URL", "")
+    app_token = os.environ.get("OPENHOST_APP_TOKEN", "")
+
+    if not router_url or not app_token:
+        return _json_response({"error": "OPENHOST_ROUTER_URL or OPENHOST_APP_TOKEN not set"}, status=500)
+
+    url = f"{router_url}/_services_v2/service_request"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            json={"keys": [key]},
+            headers={
+                "Authorization": f"Bearer {app_token}",
+                "X-OpenHost-Service-URL": SECRETS_SERVICE_URL,
+                "X-OpenHost-Service-Version": version,
+                "X-OpenHost-Service-Endpoint": "get",
+            },
+        ) as resp:
+            body = await resp.json()
+            return _json_response(body, status=resp.status)
+
+
 async def handle_404(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return _json_response({"error": "not found"}, status=404)
 
@@ -73,6 +103,7 @@ def create_app() -> aiohttp.web.Application:
     app.router.add_get("/health", handle_health)
     app.router.add_get("/", handle_root)
     app.router.add_get("/echo-headers", handle_echo_headers)
+    app.router.add_get("/fetch-secret/{key}", handle_fetch_secret)
     app.router.add_get("/ws", handle_ws)
     app.router.add_post("/{path:.*}", handle_post)
     # Catch-all for unknown GET paths -> 404

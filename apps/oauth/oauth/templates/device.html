@@ -38,7 +38,7 @@
     const returnTo = {{ return_to | tojson }};
     async function pollStatus() {
         try {
-            const resp = await fetch("/oauth/device/poll/" + flowId);
+            const resp = await fetch("/device/poll/" + flowId);
             const data = await resp.json();
             if (data.status === "completed") {
                 document.getElementById("status").innerHTML = "Authorized! Redirecting...";

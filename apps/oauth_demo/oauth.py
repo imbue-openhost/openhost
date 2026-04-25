@@ -7,14 +7,42 @@ APP_TOKEN = os.environ.get("OPENHOST_APP_TOKEN")
 APP_NAME = os.environ.get("OPENHOST_APP_NAME")
 ZONE_DOMAIN = os.environ.get("OPENHOST_ZONE_DOMAIN")
 
+OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
+SERVICE_REQUEST_URL = f"{ROUTER_URL}/_services_v2/service_request"
+
+_mock_base_url: str | None = None
+_mock_provider_api_url: str | None = None
+
+
+def set_mock_oauth_url(url: str | None) -> None:
+    global _mock_base_url
+    _mock_base_url = url.rstrip("/") if url else None
+
+
+def set_mock_provider_api_url(url: str | None) -> None:
+    global _mock_provider_api_url
+    _mock_provider_api_url = url.rstrip("/") if url else None
+
+
+def get_mock_provider_api_url() -> str | None:
+    return _mock_provider_api_url
+
+
+def _request_url() -> str:
+    return _mock_base_url or SERVICE_REQUEST_URL
+
+
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GITHUB_SCOPE = "repo"
 
 AUTH_HEADERS = {"Authorization": f"Bearer {APP_TOKEN}"}
 
+MOCK_SCOPE = "mock.emails"
+
 SCOPE_MAP = {
     "google": [GMAIL_SCOPE],
     "github": [GITHUB_SCOPE],
+    "mock": [MOCK_SCOPE],
 }
 
 PROVIDERS = [
@@ -30,6 +58,12 @@ PROVIDERS = [
         "action_path": "repos",
         "action_label": "Repos",
     },
+    {
+        "name": "mock",
+        "label": "Mock",
+        "action_path": "emails",
+        "action_label": "Emails",
+    },
 ]
 
 
@@ -44,13 +78,13 @@ class OAuthError(Exception):
     """OAuth token request failed with a displayable error."""
 
 
-class SecretsServiceUnavailable(Exception):
-    """The secrets service is not installed or not running."""
+class OAuthServiceUnavailable(Exception):
+    """The OAuth service is not installed or not running."""
 
 
 class _PermissionDenied(Exception):
-    def __init__(self, approve_url: str):
-        self.approve_url = approve_url
+    def __init__(self, grant_url: str):
+        self.grant_url = grant_url
 
 
 class _OAuthConsentRequired(Exception):
@@ -67,10 +101,11 @@ def _check_error_response(resp: httpx.Response) -> None:
     except Exception as e:
         raise OAuthError(f"Request failed: {resp.status_code} {resp.text}") from e
     error = data.get("error")
-    if error in ("service_not_found", "service_not_running", "service_not_available"):
-        raise SecretsServiceUnavailable(data.get("message", "Secrets service unavailable"))
-    if error == "permission_denied":
-        raise _PermissionDenied(approve_url=data.get("approve_url", ""))
+    if error == "service_not_available":
+        raise OAuthServiceUnavailable(data.get("message", "OAuth service unavailable"))
+    if error == "permission_required":
+        grant = data.get("required_grant", {})
+        raise _PermissionDenied(grant_url=grant.get("grant_url", ""))
     if resp.status_code == 401 and data.get("authorize_url"):
         raise _OAuthConsentRequired(data["authorize_url"])
     raise OAuthError(data.get("message", f"Request failed: {resp.status_code}"))
@@ -86,9 +121,14 @@ async def get_accounts(provider: str) -> list[str]:
         raise ValueError(f"Unknown provider: {provider}")
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            f"{ROUTER_URL}/_services/secrets/oauth/accounts",
+            _request_url(),
             json={"provider": provider, "scopes": scopes},
-            headers=AUTH_HEADERS,
+            headers={
+                **AUTH_HEADERS,
+                "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
+                "X-OpenHost-Service-Version": ">=0.1.0",
+                "X-OpenHost-Service-Endpoint": "accounts",
+            },
         )
         try:
             _check_error_response(resp)
@@ -108,7 +148,7 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
 
     Raises:
         AuthRedirectRequired: User needs to visit a URL (permissions or OAuth consent).
-        SecretsServiceUnavailable: The secrets service is not installed or not running.
+        OAuthServiceUnavailable: The OAuth service is not installed or not running.
         OAuthError: Other failures.
     """
     if not return_to:
@@ -116,14 +156,19 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                f"{ROUTER_URL}/_services/secrets/oauth/token",
+                _request_url(),
                 json={
                     "provider": provider,
                     "scopes": scopes,
                     "return_to": return_to,
                     "account": account,
                 },
-                headers=AUTH_HEADERS,
+                headers={
+                    **AUTH_HEADERS,
+                    "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
+                    "X-OpenHost-Service-Version": ">=0.1.0",
+                    "X-OpenHost-Service-Endpoint": "token",
+                },
             )
     except httpx.HTTPError as e:
         raise OAuthError(f"Token request failed: {e}") from e
@@ -131,7 +176,7 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
     try:
         _check_error_response(resp)
     except _PermissionDenied as e:
-        raise AuthRedirectRequired(e.approve_url) from e
+        raise AuthRedirectRequired(e.grant_url) from e
     except _OAuthConsentRequired as e:
         raise AuthRedirectRequired(e.authorize_url) from e
 

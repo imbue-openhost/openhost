@@ -226,6 +226,14 @@ def _validate_api_token(token: str) -> dict[str, str] | None:
     return {"sub": owner["username"], "username": owner["username"]}
 
 
+def resolve_app_from_token(token: str) -> str | None:
+    """Look up a Bearer token in the app_tokens table, return the app name or None."""
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    db = get_db()
+    row = db.execute("SELECT app_name FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+    return row["app_name"] if row else None
+
+
 def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
     """Extract and verify identity from request cookies or Authorization header.
 

@@ -38,7 +38,6 @@ def _parse_app_from_host(host: str) -> str | None:
     config = get_config()
     if not config.zone_domain:
         return None
-    host = host.split(":")[0]
     zone_domain = config.zone_domain
     if host == zone_domain:
         return None
