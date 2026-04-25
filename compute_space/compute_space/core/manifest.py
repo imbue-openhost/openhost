@@ -1,8 +1,8 @@
 import os
 import tomllib
-from dataclasses import dataclass
-from dataclasses import field
 from typing import Any
+
+import attr
 
 from compute_space.core.logging import logger
 
@@ -67,29 +67,22 @@ SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
 )
 
 
-@dataclass(frozen=True)
+@attr.s(auto_attribs=True, frozen=True)
 class PortMapping:
-    """A structured port mapping declared in [[ports]].
-
-    Defined as a dataclass (rather than an attrs class) so that the manifest,
-    which is itself a dataclass, serializes cleanly via ``dataclasses.asdict``.
-    Flask's default JSON encoder cannot serialize attrs instances, which
-    previously caused /api/clone_and_get_app_info to 500 whenever a manifest
-    declared any ``[[ports]]`` entries.
-    """
+    """A structured port mapping declared in [[ports]]."""
 
     label: str
     container_port: int
     host_port: int = 0  # 0 = auto-assign
 
 
-@dataclass
+@attr.s(auto_attribs=True)
 class AppManifest:
     # [app]
     name: str
     version: str
     description: str = ""
-    authors: list[str] = field(default_factory=list)
+    authors: list[str] = attr.Factory(list)
 
     # [runtime]
     runtime_type: str = "serverfull"
@@ -98,13 +91,13 @@ class AppManifest:
     container_image: str = ""
     container_port: int = 0
     container_command: str | None = None
-    port_mappings: list[PortMapping] = field(default_factory=list)
-    capabilities: list[str] = field(default_factory=list)
-    devices: list[str] = field(default_factory=list)
+    port_mappings: list[PortMapping] = attr.Factory(list)
+    capabilities: list[str] = attr.Factory(list)
+    devices: list[str] = attr.Factory(list)
 
     # [routing]
     health_check: str | None = None
-    public_paths: list[str] = field(default_factory=list)
+    public_paths: list[str] = attr.Factory(list)
 
     # [resources]
     memory_mb: int = 128
@@ -112,15 +105,15 @@ class AppManifest:
     gpu: bool = False
 
     # [data]
-    sqlite_dbs: list[str] = field(default_factory=list)
+    sqlite_dbs: list[str] = attr.Factory(list)
     app_data: bool = False
     app_temp_data: bool = False
     access_vm_data: bool = False
     access_all_data: bool = False
 
     # [services]
-    provides_services: list[str] = field(default_factory=list)
-    requires_services: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    provides_services: list[str] = attr.Factory(list)
+    requires_services: dict[str, list[dict[str, Any]]] = attr.Factory(dict)
     # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
 
     # [app] metadata

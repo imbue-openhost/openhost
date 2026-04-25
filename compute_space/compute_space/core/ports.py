@@ -1,7 +1,8 @@
-import dataclasses
 import random
 import socket
 import sqlite3
+
+import attr
 
 from compute_space.core.manifest import PortMapping
 from compute_space.db import get_db
@@ -104,7 +105,7 @@ def resolve_port_mappings(
         if pm.host_port == 0:
             assigned = _find_free_host_port(range_start, range_end, db, claimed, exclude_app=exclude_app)
             claimed.add(assigned)
-            resolved.append(dataclasses.replace(pm, host_port=assigned))
+            resolved.append(attr.evolve(pm, host_port=assigned))
 
     return resolved
 

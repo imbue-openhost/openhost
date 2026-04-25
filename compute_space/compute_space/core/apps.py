@@ -4,7 +4,6 @@ Extracted from routes/apps.py — no HTTP/Quart dependencies.
 """
 
 import asyncio
-import dataclasses
 import hashlib
 import json
 import os
@@ -17,6 +16,7 @@ import threading
 import time
 import urllib.parse
 
+import attr
 import httpx
 
 import compute_space.core.storage as storage
@@ -228,7 +228,7 @@ def insert_and_deploy(
 
     # Apply port overrides from caller (CLI --port flags, etc.)
     mappings = [
-        dataclasses.replace(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
+        attr.evolve(pm, host_port=port_overrides.get(pm.label, pm.host_port)) if port_overrides else pm
         for pm in manifest.port_mappings
     ]
 
@@ -474,7 +474,7 @@ def _sync_port_mappings(
     to_resolve: list[PortMapping] = []
     for pm in new_mappings:
         if pm.label in existing:
-            to_resolve.append(dataclasses.replace(pm, host_port=existing[pm.label]["host_port"]))
+            to_resolve.append(attr.evolve(pm, host_port=existing[pm.label]["host_port"]))
         else:
             to_resolve.append(pm)
 
