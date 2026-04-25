@@ -48,7 +48,7 @@
         { name: "github", label: "GitHub", actionLabel: "Repos" },
     ];
 
-    // Per-provider state: "needs_permission" (with approve_url), "ready", or "connected"
+    // Per-provider state: "needs_permission" (with url), "ready", or "connected"
     var providerState = {};
 
     async function init() {
@@ -66,21 +66,21 @@
             var p = PROVIDERS[i];
             var accounts = [];
             var needsPermission = false;
-            var approveUrl = null;
+            var grantUrl = null;
 
             try {
                 accounts = await oauth.getAccounts(p.name);
             } catch (e) {
                 if (e instanceof OAuthPermissionError) {
                     needsPermission = true;
-                    approveUrl = e.approve_url;
+                    grantUrl = e.url;
                 }
             }
 
             html += '<div class="provider"><h2>' + esc(p.label) + '</h2>';
 
             if (needsPermission) {
-                providerState[p.name] = { state: "needs_permission", approve_url: approveUrl };
+                providerState[p.name] = { state: "needs_permission", url: grantUrl };
                 html += '<p style="color:#888">This app needs permission to access ' + esc(p.label) + ' OAuth.</p>';
                 html += '<button class="permission" onclick="grantPermission(\'' + esc(p.name) + '\')">Allow ' + esc(p.label) + ' access</button>';
             } else {
@@ -110,9 +110,9 @@
 
     async function grantPermission(provider) {
         var state = providerState[provider];
-        if (!state || !state.approve_url) return;
+        if (!state || !state.url) return;
         try {
-            await oauth.openPopup(state.approve_url);
+            await oauth.openPopup(state.url);
             providerState[provider] = { state: "just_granted" };
             await refreshProviders();
         } catch (e) {
@@ -127,7 +127,7 @@
         } catch (e) {
             if (e instanceof OAuthPermissionError) {
                 // Permissions were revoked — refresh to show the grant button
-                providerState[provider] = { state: "needs_permission", approve_url: e.approve_url };
+                providerState[provider] = { state: "needs_permission", url: e.url };
                 await refreshProviders();
             } else {
                 showError(e.message);

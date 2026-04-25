@@ -1,7 +1,9 @@
 import os
 import signal
+import sqlite3
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ import requests
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
+from compute_space.db.migrations import _schema_path
 from compute_space.testing import kill_tree
 from compute_space.testing import managed_router
 
@@ -99,6 +102,25 @@ def _stop_router_process(proc: subprocess.Popen[Any]) -> None:
     except subprocess.TimeoutExpired:
         kill_tree(proc)
         proc.wait()
+
+
+@pytest.fixture
+def db() -> Iterator[sqlite3.Connection]:
+    """In-memory SQLite database loaded with the real production schema.
+
+    FK enforcement is left off (sqlite default) so individual tests don't
+    have to insert an apps row for every consumer/provider name they
+    reference — these tests are about service / permission semantics, not
+    referential integrity.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    with open(_schema_path()) as f:
+        conn.executescript(f.read())
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 @pytest.fixture(scope="module")

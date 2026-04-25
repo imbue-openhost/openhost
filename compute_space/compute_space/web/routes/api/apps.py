@@ -115,6 +115,7 @@ async def api_add_app() -> ResponseReturnValue:
     app_name = form.get("app_name", "").strip() or None
     clone_dir = form.get("clone_dir", "").strip() or None
     grant_permissions_raw = form.get("grant_permissions")
+    grant_permissions_v2 = form.get("grant_permissions_v2", "").lower() in ("1", "true", "yes")
 
     if not repo_url:
         return jsonify({"error": "No repository URL provided"}), 400
@@ -180,6 +181,7 @@ async def api_add_app() -> ResponseReturnValue:
             config,
             db,
             grant_permissions=grant_permissions,
+            grant_permissions_v2=grant_permissions_v2,
             app_name=app_name,
             repo_url=repo_url,
             port_overrides=port_overrides,

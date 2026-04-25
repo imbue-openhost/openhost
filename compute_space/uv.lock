@@ -7,7 +7,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-08T00:35:11.03467Z"
+exclude-newer = "2026-04-15T22:10:53.826226Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -660,6 +660,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "josepy" },
     { name = "loguru" },
+    { name = "packaging" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "quart" },
     { name = "tomli-w" },
@@ -681,11 +682,21 @@ requires-dist = [
     { name = "jinja2" },
     { name = "josepy" },
     { name = "loguru" },
+    { name = "packaging" },
     { name = "pyjwt", extras = ["crypto"] },
     { name = "quart" },
     { name = "tomli-w" },
     { name = "typed-settings" },
     { name = "websockets" },
+]
+
+[[package]]
+name = "packaging"
+version = "26.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/de/0d2b39fb4af88a0258f3bac87dfcbb48e73fbdea4a2ed0e2213f9a4c2f9a/packaging-26.1.tar.gz", hash = "sha256:f042152b681c4bfac5cae2742a55e103d27ab2ec0f3d88037136b6bfe7c9c5de", size = 215519, upload-time = "2026-04-14T21:12:49.362Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/c2/920ef838e2f0028c8262f16101ec09ebd5969864e5a64c4c05fad0617c56/packaging-26.1-py3-none-any.whl", hash = "sha256:5d9c0669c6285e491e0ced2eee587eaf67b670d94a19e94e3984a481aba6802f", size = 95831, upload-time = "2026-04-14T21:12:47.56Z" },
 ]
 
 [[package]]

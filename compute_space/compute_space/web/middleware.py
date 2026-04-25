@@ -6,6 +6,7 @@ from datetime import UTC
 from datetime import datetime
 from functools import wraps
 from typing import Any
+from urllib.parse import urlparse
 
 from quart import g
 from quart import jsonify
@@ -14,7 +15,9 @@ from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
 
+from compute_space.config import get_config
 from compute_space.core import auth
+from compute_space.core.auth import resolve_app_from_token
 from compute_space.db import get_db
 
 
@@ -70,6 +73,62 @@ def _try_refresh() -> dict[str, Any] | None:
     g.new_access_token = new_access_token
     g.refresh_token = refresh_tok
     return auth.decode_access_token(new_access_token)
+
+
+def _resolve_app_from_origin() -> str | None:
+    """Resolve app name from Origin/Referer subdomain + valid JWT cookie."""
+    if not auth.get_current_user_from_request(request):
+        return None
+
+    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    if not origin:
+        return None
+
+    parsed = urlparse(origin)
+    host = parsed.netloc or ""
+    config = get_config()
+    if not config.zone_domain or not host.endswith("." + config.zone_domain):
+        return None
+
+    app_name = host[: -(len(config.zone_domain) + 1)]
+    if "." in app_name:
+        return None
+
+    row = get_db().execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
+    return row["name"] if row else None
+
+
+def app_auth_required(
+    f: Callable[..., Any],
+) -> Callable[..., Awaitable[ResponseReturnValue]]:
+    """Identify+authenticate which app is making the request.
+
+    Cross-app requests can come from two contexts: server-side (app-to-app via Bearer token) or client-side
+    (browser JS calling the service proxy on behalf of an app). Both need to resolve to an app name so the
+    router can look up permissions and pass the caller's identity to the provider.
+
+    Bearer token:   The app authenticates directly with its issued token.
+    Browser cookie: The user is logged in (JWT) and the request originates from an app subdomain — the app
+                    name is derived from the Origin header.
+
+    Injects `app_name` as a keyword argument to the wrapped function.
+    """
+
+    @wraps(f)
+    async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            app_name = resolve_app_from_token(auth_header.removeprefix("Bearer ").strip())
+        else:
+            app_name = _resolve_app_from_origin()
+
+        if not app_name:
+            return jsonify({"error": "Missing or invalid authorization"}), 401
+
+        kwargs["app_name"] = app_name
+        return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
+
+    return decorated
 
 
 def login_required(
