@@ -12,10 +12,8 @@ from litestar.response import Redirect
 from litestar.response import Template
 
 import oauth.core.config as config
-from oauth.core.credentials import DYNAMIC_CRED_PROVIDERS
+from oauth.core.credentials import CredentialsNotAvailable
 from oauth.core.credentials import get_provider_creds
-from oauth.core.credentials import provider_cred_keys
-from oauth.core.models import DevicePollResponse
 from oauth.core.permissions import grant_app_scoped_permission
 from oauth.core.providers import PROVIDERS
 from oauth.core.providers import active_device_flows
@@ -37,6 +35,7 @@ async def oauth_grant(
     consumer: str = "",
     return_to: str = "",
 ) -> Redirect | Response[Any]:
+    """Start an OAuth consent flow. Redirects the user to the provider's authorization page."""
     if not provider or provider not in PROVIDERS:
         return Response(
             content=f"Unknown provider: {provider}",
@@ -68,18 +67,10 @@ async def oauth_grant(
         )
         return Redirect(path=f"/device?{params}")
 
-    client_id, client_secret = await get_provider_creds(provider)
-    if provider in DYNAMIC_CRED_PROVIDERS and (not client_id or not client_secret):
-        id_key, secret_key = provider_cred_keys(provider)
-        return Response(
-            content=(
-                f"{provider.capitalize()} OAuth requires {id_key} and {secret_key} to be set in the secrets app."
-            ),
-            status_code=503,
-            media_type=MediaType.TEXT,
-        )
-    assert client_id is not None
-    assert client_secret is not None
+    try:
+        client_id, client_secret = await get_provider_creds(provider)
+    except CredentialsNotAvailable as e:
+        return Response(content=e.message, status_code=503, media_type=MediaType.TEXT)
 
     authorize_url = build_auth_url(
         provider,
@@ -104,6 +95,7 @@ async def oauth_callback(
     error: str = "",
     scope: str = "",
 ) -> Redirect | Response[Any]:
+    """Handle the OAuth provider's redirect after user authorization. Exchanges code for token and redirects back."""
     if error:
         return Response(
             content=f"Authorization denied: {error}",
@@ -139,16 +131,10 @@ async def oauth_callback(
                 media_type=MediaType.TEXT,
             )
 
-    client_id, client_secret = await get_provider_creds(flow["provider"])
-    if flow["provider"] in DYNAMIC_CRED_PROVIDERS and (not client_id or not client_secret):
-        id_key, secret_key = provider_cred_keys(flow["provider"])
-        return Response(
-            content=(f"OAuth credentials missing: set {id_key} and {secret_key} in the secrets app."),
-            status_code=503,
-            media_type=MediaType.TEXT,
-        )
-    assert client_id is not None
-    assert client_secret is not None
+    try:
+        client_id, client_secret = await get_provider_creds(flow["provider"])
+    except CredentialsNotAvailable as e:
+        return Response(content=e.message, status_code=503, media_type=MediaType.TEXT)
 
     result = await exchange_code(flow["provider"], code, flow["redirect_uri"], client_id, client_secret)
     if "error" in result:
@@ -208,6 +194,7 @@ async def device_page(
     account: str = "default",
     consumer: str = "",
 ) -> Template | Response[Any]:
+    """Render the device flow page with a user code and verification URL."""
     if not provider or provider not in PROVIDERS:
         return Response(
             content=f"Unknown provider: {provider}",
@@ -243,49 +230,4 @@ async def device_page(
     )
 
 
-@get("/device/poll/{flow_id:str}")
-async def device_poll(flow_id: str) -> DevicePollResponse:
-    flow = active_device_flows.get(flow_id)
-    if not flow:
-        return DevicePollResponse(status="expired", error="Flow not found or expired")
-
-    if flow["status"] == "completed":
-        result = flow["result"]
-        scopes_key = normalize_scopes(flow["scopes"])
-        account = flow.get("account", "default")
-        identity = await fetch_account_identity(flow["provider"], result["access_token"])
-        if identity:
-            account = identity
-        store_token(
-            flow["provider"],
-            scopes_key,
-            account,
-            result["access_token"],
-            result.get("refresh_token"),
-            result.get("expires_at"),
-        )
-        consumer_app = flow.get("consumer_app")
-        if consumer_app:
-            await grant_app_scoped_permission(
-                consumer_app,
-                config.OAUTH_SERVICE_URL,
-                {
-                    "provider": flow["provider"],
-                    "scopes": flow["scopes"],
-                    "account": account,
-                },
-            )
-        active_device_flows.pop(flow_id, None)
-        return DevicePollResponse(status="completed")
-
-    if flow["status"] == "error":
-        active_device_flows.pop(flow_id, None)
-        return DevicePollResponse(
-            status="error",
-            error=flow["result"].get("message", "Unknown error"),
-        )
-
-    return DevicePollResponse(status="pending")
-
-
-router = Router(path="", route_handlers=[oauth_grant, oauth_callback, device_page, device_poll])
+router = Router(path="", route_handlers=[oauth_grant, oauth_callback, device_page])

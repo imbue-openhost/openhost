@@ -7,6 +7,5 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     refresh_token TEXT,
     expires_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(provider, scopes, account)
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

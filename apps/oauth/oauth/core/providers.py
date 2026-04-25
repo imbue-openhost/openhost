@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import secrets
 import time
@@ -9,6 +10,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+
+import oauth.core.config as config
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +59,7 @@ DEVICE_FLOW_TIMEOUT = 300
 
 
 def normalize_scopes(scopes: list[str]) -> str:
-    return " ".join(sorted(scopes))
+    return ",".join(sorted(scopes))
 
 
 # ─── Auth Code Flow ───
@@ -71,7 +74,7 @@ def build_auth_url(
     account: str = "default",
 ) -> str:
     provider = PROVIDERS[provider_name]
-    state = secrets.token_urlsafe(32)
+    state = json.dumps({"app": config.APP_NAME, "nonce": secrets.token_urlsafe(32)})
 
     pending_auth_flows[state] = {
         "provider": provider_name,

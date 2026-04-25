@@ -9,6 +9,7 @@ from oauth.core.models import OkResponse
 
 @post("/test/set-mock-provider-url")
 async def set_mock_provider_url(data: MockProviderUrlData) -> OkResponse:
+    """When using this app as part of a test suite, this route can be used to set the URLs for the mock provider."""
     assert data.provider in ("mock", "mock_device")
 
     key_map = {

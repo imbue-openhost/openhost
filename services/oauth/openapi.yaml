@@ -45,12 +45,29 @@ info:
       consumer app. Reached via the `grant_url` in a `403` response.
     - **GET /callback** — OAuth redirect callback. Handles the
       authorization code exchange after the user authorizes with the
-      provider.
+      provider. See "Callback routing" below.
     - **GET /device** — Device flow page. Displays the user code and
       verification URL for device-code flows (e.g. GitHub).
     - **GET /device/poll/{flow_id}** — Device flow polling endpoint.
       Called by the device page's JavaScript to check whether the user
       has completed authorization.
+
+    ## Callback routing
+
+    OAuth providers redirect to a fixed callback URL on the zone's
+    redirect domain (`MY_REDIRECT_DOMAIN`). The router intercepts this
+    at `/secrets_v2/oauth/callback` and must forward it to whichever
+    oauth app initiated the flow.
+
+    To make this work, the oauth app encodes its identity in the OAuth
+    `state` parameter as JSON:
+    ```json
+    {"app": "oauth", "nonce": "random-token"}
+    ```
+    The router parses `state` from the callback query string, reads the
+    `app` field, looks up that app's port, and proxies the full request
+    (code, state, scope, etc.) to the app's `/callback` handler. The
+    app matches the flow using the full `state` string as a dict key.
   version: 0.1.0
 
 paths:

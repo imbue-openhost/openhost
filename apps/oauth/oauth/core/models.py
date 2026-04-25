@@ -1,27 +1,43 @@
+from __future__ import annotations
+
+from typing import Any
+
 import attr
+
+from oauth.core.providers import PROVIDERS
+
+
+def _known_provider(_instance: Any, _attribute: attr.Attribute[str], value: str) -> None:
+    if value not in PROVIDERS:
+        raise ValueError(f"Unknown provider: {value}")
+
+
+_provider: Any = attr.ib(validator=_known_provider)
+_scopes: Any = attr.ib(validator=attr.validators.min_len(1))
+_non_empty: Any = attr.ib(validator=attr.validators.min_len(1))
 
 # ─── Requests ───
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class TokenRequest:
-    provider: str
-    scopes: list[str]
+    provider: str = _provider
+    scopes: list[str] = _scopes
     account: str = "default"
     return_to: str = ""
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class AccountsRequest:
-    provider: str
-    scopes: list[str]
+    provider: str = _provider
+    scopes: list[str] = _scopes
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class RevokeRequest:
-    provider: str
-    scopes: list[str]
-    account: str
+    provider: str = _provider
+    scopes: list[str] = _scopes
+    account: str = _non_empty
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -49,6 +65,13 @@ class TokenResponse:
 @attr.s(auto_attribs=True, frozen=True)
 class AccountsResponse:
     accounts: list[str]
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class OAuthGrant:
+    provider: str
+    scopes: list[str]
+    account: str | None = None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -92,6 +115,19 @@ class OkResponse:
 class CredentialsRequiredResponse:
     error: str
     message: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class StoredToken:
+    id: int
+    provider: str
+    scopes: str
+    account: str
+    access_token: str
+    refresh_token: str | None
+    expires_at: str | None
+    created_at: str
+    updated_at: str
 
 
 @attr.s(auto_attribs=True, frozen=True)

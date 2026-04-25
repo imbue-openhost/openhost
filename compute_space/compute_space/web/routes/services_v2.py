@@ -16,6 +16,7 @@ from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
 from compute_space.web.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
+from compute_space.web.routes.proxy import _find_app_by_name
 from compute_space.web.routes.services import _add_cors_headers
 from compute_space.web.routes.services import _cors_origin
 
@@ -47,7 +48,7 @@ async def service_v2_cors() -> Response:
 
 @services_v2_bp.route(
     "/_services_v2/service_request",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    methods=["GET", "POST"],
 )
 @app_auth_required
 async def service_v2_proxy(app_name: str) -> Response:
@@ -178,3 +179,37 @@ def _json_error(error: str, message: str, status: int) -> Response:
         status=status,
         content_type="application/json",
     )
+
+
+@services_v2_bp.route("/_services_v2/oauth/callback")
+async def oauth_callback_proxy_v2() -> Response:
+    """Proxy OAuth provider callbacks to the correct oauth service app.
+
+    OAuth providers (Google, GitHub, etc.) redirect to a fixed callback URL on MY_REDIRECT_DOMAIN after user
+    authorization. This endpoint receives that redirect and forwards it to the oauth app that initiated the flow.
+
+    The oauth app encodes its app name in the OAuth ``state`` parameter as JSON:
+    ``{"app": "<app_name>", "nonce": "<random>"}``. This endpoint parses that to determine which app should receive
+    the callback, then proxies the full request (including code, state, scope query params) to that app's
+    ``/callback`` handler.
+    """
+    state_raw = request.args.get("state", "")
+    if not state_raw:
+        return _json_error("bad_request", "Missing state parameter", 400)
+
+    try:
+        state = json.loads(state_raw)
+    except json.JSONDecodeError:
+        return _json_error("bad_request", "Invalid state parameter", 400)
+
+    app_name = state.get("app")
+    if not app_name or not isinstance(app_name, str):
+        return _json_error("bad_request", "Missing app in state", 400)
+
+    app_row = _find_app_by_name(app_name)
+    if not app_row:
+        return _json_error("service_not_available", f"App '{app_name}' not found", 503)
+    if app_row["status"] != "running":
+        return _json_error("service_not_available", f"App '{app_name}' is not running", 503)
+
+    return await proxy_request(request, app_row["local_port"], "", override_path="/callback")

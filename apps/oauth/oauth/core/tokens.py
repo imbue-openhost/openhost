@@ -1,6 +1,14 @@
 from contextlib import closing
-from typing import Any
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 
+from oauth.core.credentials import get_provider_creds
+from oauth.core.models import StoredToken
+from oauth.core.models import TokenInfo
+from oauth.core.models import TokenResponse
+from oauth.core.providers import normalize_scopes
+from oauth.core.providers import refresh_access_token
 from oauth.db import get_db
 
 
@@ -15,36 +23,28 @@ def store_token(
     with closing(get_db()) as db:
         db.execute(
             """INSERT INTO oauth_tokens (provider, scopes, account, access_token, refresh_token, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(provider, scopes, account) DO UPDATE SET
-                   access_token = excluded.access_token,
-                   refresh_token = COALESCE(excluded.refresh_token, oauth_tokens.refresh_token),
-                   expires_at = excluded.expires_at,
-                   updated_at = datetime('now')""",
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (provider, scopes_key, account, access_token, refresh_token, expires_at),
         )
         db.commit()
 
 
-def get_token(provider: str, scopes_key: str, account: str) -> dict[str, Any] | None:
+def select_tokens(provider: str, scopes_key: str, account: str | None) -> list[StoredToken]:
     with closing(get_db()) as db:
-        row = db.execute(
-            "SELECT * FROM oauth_tokens WHERE provider = ? AND scopes = ? AND account = ?",
-            (provider, scopes_key, account),
-        ).fetchone()
-    return dict(row) if row else None
+        if account:
+            rows = db.execute(
+                "SELECT * FROM oauth_tokens WHERE provider = ? AND scopes = ? AND account = ?",
+                (provider, scopes_key, account),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM oauth_tokens WHERE provider = ? AND scopes = ?",
+                (provider, scopes_key),
+            ).fetchall()
+    return [StoredToken(**dict(r)) for r in rows]
 
 
-def get_tokens_for_provider_scopes(provider: str, scopes_key: str) -> list[dict[str, Any]]:
-    with closing(get_db()) as db:
-        rows = db.execute(
-            "SELECT * FROM oauth_tokens WHERE provider = ? AND scopes = ?",
-            (provider, scopes_key),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def update_token_access(token_id: int, access_token: str, expires_at: str | None) -> None:
+def update_token_after_refresh(token_id: int, access_token: str, expires_at: str | None) -> None:
     with closing(get_db()) as db:
         db.execute(
             """UPDATE oauth_tokens
@@ -55,13 +55,13 @@ def update_token_access(token_id: int, access_token: str, expires_at: str | None
         db.commit()
 
 
-def get_token_by_id(token_id: int) -> dict[str, Any] | None:
+def get_token_by_id(token_id: int) -> StoredToken | None:
     with closing(get_db()) as db:
         row = db.execute(
             "SELECT * FROM oauth_tokens WHERE id = ?",
             (token_id,),
         ).fetchone()
-    return dict(row) if row else None
+    return StoredToken(**dict(row)) if row else None
 
 
 def remove_token_by_id(token_id: int) -> None:
@@ -70,7 +70,7 @@ def remove_token_by_id(token_id: int) -> None:
         db.commit()
 
 
-def find_and_remove_token(provider: str, scopes_key: str, account: str) -> dict[str, Any] | None:
+def find_and_remove_token(provider: str, scopes_key: str, account: str) -> StoredToken | None:
     with closing(get_db()) as db:
         row = db.execute(
             "SELECT * FROM oauth_tokens WHERE provider = ? AND scopes = ? AND account = ?",
@@ -79,19 +79,55 @@ def find_and_remove_token(provider: str, scopes_key: str, account: str) -> dict[
         if row:
             db.execute("DELETE FROM oauth_tokens WHERE id = ?", (row["id"],))
             db.commit()
-    return dict(row) if row else None
+    return StoredToken(**dict(row)) if row else None
 
 
-def list_all_tokens() -> list[dict[str, Any]]:
+def list_all_tokens() -> list[TokenInfo]:
     with closing(get_db()) as db:
         rows = db.execute(
             "SELECT id, provider, scopes, account, expires_at, created_at, updated_at "
             "FROM oauth_tokens ORDER BY provider, account"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [TokenInfo(**dict(r)) for r in rows]
+
+
+async def get_valid_token(provider_name: str, scopes: list[str], account: str) -> TokenResponse | None:
+    """Look up a cached token, auto-refreshing if expired. Returns None if no valid token is found."""
+    scopes_key = normalize_scopes(scopes)
+
+    tokens = select_tokens(provider_name, scopes_key, account if account != "default" else None)
+    if not tokens:
+        return None
+
+    # TODO: may want to fail if multiple tokens are returned
+    token = tokens[0]
+
+    if not token.expires_at:
+        return TokenResponse(access_token=token.access_token, expires_at=None)
+
+    exp = datetime.fromisoformat(token.expires_at)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=UTC)
+    if exp > datetime.now(UTC) + timedelta(seconds=60):
+        return TokenResponse(access_token=token.access_token, expires_at=token.expires_at)
+
+    if not token.refresh_token:
+        return None
+
+    client_id, client_secret = await get_provider_creds(provider_name)
+    refreshed = await refresh_access_token(provider_name, token.refresh_token, client_id, client_secret)
+    if refreshed and "access_token" in refreshed:
+        new_expires_at = None
+        if refreshed.get("expires_in"):
+            new_expires_at = (datetime.now(UTC) + timedelta(seconds=refreshed["expires_in"])).isoformat()
+        update_token_after_refresh(token.id, refreshed["access_token"], new_expires_at)
+        return TokenResponse(access_token=refreshed["access_token"], expires_at=new_expires_at)
+
+    return None
 
 
 def get_accounts(provider: str, scopes_key: str) -> list[str]:
+    """Get all accounts (emails/usernames) with stored tokens for a provider+scopes combo."""
     with closing(get_db()) as db:
         rows = db.execute(
             "SELECT account FROM oauth_tokens WHERE provider = ? AND scopes = ? ORDER BY account",

@@ -51,6 +51,8 @@ def oauth_app_url():
         "OPENHOST_APP_NAME": "oauth-test",
         "OPENHOST_ZONE_DOMAIN": "test.local",
         "OPENHOST_MY_REDIRECT_DOMAIN": "test.local",
+        "OPENHOST_APP_TOKEN": "test-token",
+        "OPENHOST_ROUTER_URL": "http://localhost:0",
         "OPENHOST_SQLITE_MAIN": db_path,
         "APP_DIR": str(OAUTH_APP_DIR),
         "PORT": str(port),

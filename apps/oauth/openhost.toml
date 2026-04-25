@@ -20,4 +20,4 @@ sqlite = ["main"]
 [[services_v2.provides]]
 service = "github.com/imbue-openhost/openhost/services/oauth"
 version = "0.1.0"
-endpoint = "/_svc/"
+endpoint = "/oauth_service/"

@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 SPEC_PATH = Path(__file__).resolve().parents[3] / "services" / "oauth" / "openapi.yaml"
-SVC_PREFIX = "/_svc"
+SVC_PREFIX = "/oauth_service"
 
 
 def _filter_service_paths(schema: dict) -> dict:

@@ -6,14 +6,15 @@ from litestar import Request
 from litestar import Response
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.exceptions import ClientException
-from litestar.exceptions import MethodNotAllowedException
 from litestar.template import TemplateConfig
 
 from oauth.db import init_db
-from oauth.routes.api.dashboard import router as dashboard_router
-from oauth.routes.api.service import router as service_router
+from oauth.routes.api.dashboard import router as api_dashboard_router
+from oauth.routes.api.device import router as api_device_router
 from oauth.routes.api.testing import router as testing_router
-from oauth.routes.pages.oauth import router as pages_router
+from oauth.routes.pages.dashboard import router as pages_dashboard_router
+from oauth.routes.pages.oauth import router as pages_oauth_router
+from oauth.routes.service.oauth import router as service_router
 
 
 def _on_startup(_app: Litestar) -> None:
@@ -21,21 +22,24 @@ def _on_startup(_app: Litestar) -> None:
 
 
 def _client_error_handler(_request: Request[Any, Any, Any], exc: ClientException) -> Response[Any]:
-    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-    if isinstance(exc, MethodNotAllowedException):
-        allow = "POST"
-        if exc.headers:
-            allow = exc.headers.get("allow", allow)
-        return Response(
-            content={"error": "method_not_allowed", "message": detail},
-            status_code=405,
-            headers={"Allow": allow},
-        )
-    return Response(content={"error": "validation_error", "message": detail}, status_code=400)
+    """Reformat Litestar's client errors (validation, malformed JSON) to match the spec's Error schema."""
+    headers = dict(exc.headers) if exc.headers else None
+    return Response(
+        content={"error": "validation_error", "message": str(exc.detail)},
+        status_code=exc.status_code,
+        headers=headers,
+    )
 
 
 app = Litestar(
-    route_handlers=[service_router, pages_router, dashboard_router, testing_router],
+    route_handlers=[
+        service_router,
+        pages_oauth_router,
+        pages_dashboard_router,
+        api_dashboard_router,
+        api_device_router,
+        testing_router,
+    ],
     on_startup=[_on_startup],
     template_config=TemplateConfig(
         directory=Path(__file__).parent / "templates",
