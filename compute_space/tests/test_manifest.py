@@ -1,8 +1,8 @@
 """Unit tests for the openhost.toml manifest parser."""
 
-import dataclasses
 import json
 
+import attr
 import pytest
 
 from compute_space.core.manifest import SAFE_CAPABILITIES
@@ -254,11 +254,8 @@ host_port = 0
 
     def test_manifest_with_port_mappings_is_json_serializable(self):
         """Regression: manifests with [[ports]] must round-trip through
-        ``dataclasses.asdict`` + ``json.dumps`` so that
-        ``/api/clone_and_get_app_info`` can return them. Previously
-        ``PortMapping`` was an attrs class, which ``dataclasses.asdict``
-        leaves as-is, and Flask's default JSON encoder then raises
-        ``TypeError: Object of type PortMapping is not JSON serializable``.
+        ``attr.asdict`` + ``json.dumps`` so that
+        ``/api/clone_and_get_app_info`` can return them.
         """
         toml = (
             MINIMAL
@@ -275,7 +272,7 @@ host_port = 0
 """
         )
         manifest = parse_manifest_from_string(toml)
-        info = dataclasses.asdict(manifest)
+        info = attr.asdict(manifest)
         # Round-trip through JSON; will raise TypeError on regression.
         payload = json.dumps(info)
         decoded = json.loads(payload)
