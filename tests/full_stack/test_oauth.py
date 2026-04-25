@@ -60,9 +60,10 @@ def mock_oauth_server(oauth_app_deployed):
 
     s = oauth_app_deployed["session"]
     url = oauth_app_deployed["router_url"]
-    # authorize_url is visited by the browser (on the host) — use 127.0.0.1.
-    # token/revoke/userinfo are called server-to-server from inside the oauth
-    # Docker container — use host.docker.internal.
+    # this is janky, but for running tests locally,
+    # we can't easily make a single URL that is resolvable both on the host and in the containers.
+    # so we'll use host.docker.internal for places that will get called from within a container,
+    # and 127.0.0.1 for places that will be visited from the host.
     browser_domain = f"http://127.0.0.1:{MOCK_OAUTH_PORT}"
     server_domain = f"http://host.docker.internal:{MOCK_OAUTH_PORT}"
 
