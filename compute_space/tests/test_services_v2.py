@@ -4,7 +4,6 @@ and OAuth app-scoped permission grant flow."""
 import asyncio
 import hashlib
 import json
-import sqlite3
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
@@ -29,48 +28,13 @@ SVC_SECRETS = "github.com/org/repo/services/secrets"
 SVC_OAUTH = "github.com/org/repo/services/oauth"
 
 
-@pytest.fixture
-def db():
-    """In-memory SQLite database with the v2 schema tables."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript("""
-        CREATE TABLE apps (
-            name TEXT PRIMARY KEY,
-            local_port INTEGER,
-            status TEXT
-        );
-        CREATE TABLE service_providers_v2 (
-            service_url TEXT NOT NULL,
-            app_name TEXT NOT NULL,
-            service_version TEXT NOT NULL,
-            endpoint TEXT NOT NULL,
-            PRIMARY KEY (service_url, app_name, service_version)
-        );
-        CREATE TABLE service_defaults (
-            service_url TEXT PRIMARY KEY,
-            app_name TEXT NOT NULL
-        );
-        CREATE TABLE permissions_v2 (
-            consumer_app TEXT NOT NULL,
-            service_url TEXT NOT NULL,
-            grant_payload TEXT NOT NULL,
-            scope TEXT NOT NULL DEFAULT 'global',
-            provider_app TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app)
-        );
-        CREATE TABLE app_tokens (
-            app_name TEXT PRIMARY KEY,
-            token_hash TEXT NOT NULL UNIQUE
-        );
-    """)
-    return conn
-
-
 def _add_provider(db, service_url, app_name, version, endpoint, port=9000, status="running", default=True):
+    # Insert a minimal apps row. Most NOT NULL columns have defaults; the few
+    # that don't (version, repo_path, local_port) we supply explicitly.
     db.execute(
-        "INSERT OR REPLACE INTO apps (name, local_port, status) VALUES (?, ?, ?)",
-        (app_name, port, status),
+        """INSERT OR REPLACE INTO apps (name, version, repo_path, local_port, status)
+           VALUES (?, ?, ?, ?, ?)""",
+        (app_name, "0.0.0", f"/tmp/{app_name}", port, status),
     )
     db.execute(
         "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) VALUES (?, ?, ?, ?)",
@@ -509,8 +473,9 @@ class TestOAuthPermissionFlow:
     def test_app_grant_scopes_to_calling_app(self, db, monkeypatch):
         """The grant is scoped to the calling app regardless of which app it is."""
         db.execute(
-            "INSERT INTO apps (name, local_port, status) VALUES (?, ?, ?)",
-            ("other-app", 9999, "running"),
+            """INSERT INTO apps (name, version, repo_path, local_port, status)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("other-app", "0.0.0", "/tmp/other-app", 9999, "running"),
         )
         _register_app_token(db, "other-app", "other-token-456")
         db.commit()
