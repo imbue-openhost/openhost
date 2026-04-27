@@ -49,7 +49,7 @@ CREATE TABLE apps (
     health_check TEXT,
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
-    docker_container_id TEXT,
+    container_id TEXT,
     status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,
@@ -78,6 +78,15 @@ CREATE TABLE permissions (
 );
 INSERT INTO "permissions" VALUES('orders','net.egress');
 INSERT INTO "permissions" VALUES('billing','net.egress');
+CREATE TABLE permissions_v2 (
+            consumer_app TEXT NOT NULL,
+            service_url TEXT NOT NULL,
+            grant_payload TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
+            provider_app TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app),
+            FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
+        );
 CREATE TABLE refresh_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token_hash TEXT UNIQUE NOT NULL,
@@ -91,6 +100,11 @@ CREATE TABLE schema_version (
     version INTEGER NOT NULL
 );
 INSERT INTO "schema_version" VALUES(1,2);
+CREATE TABLE service_defaults (
+            service_url TEXT PRIMARY KEY,
+            app_name TEXT NOT NULL,
+            FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+        );
 CREATE TABLE service_providers (
     service_name TEXT NOT NULL,
     app_name TEXT NOT NULL,
@@ -99,6 +113,14 @@ CREATE TABLE service_providers (
 );
 INSERT INTO "service_providers" VALUES('payments','orders');
 INSERT INTO "service_providers" VALUES('invoices','billing');
+CREATE TABLE service_providers_v2 (
+            service_url TEXT NOT NULL,
+            app_name TEXT NOT NULL,
+            service_version TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            PRIMARY KEY (service_url, app_name, service_version),
+            FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+        );
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX idx_apps_status ON apps(status);
 CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
