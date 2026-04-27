@@ -7,6 +7,13 @@ from datetime import datetime
 from datetime import timedelta
 from urllib.parse import urlencode
 
+from quart import Quart
+from quart import Response
+from quart import jsonify
+from quart import redirect
+from quart import render_template
+from quart import request
+
 from oauth import PROVIDERS
 from oauth import active_device_flows
 from oauth import build_auth_url
@@ -18,12 +25,6 @@ from oauth import pending_auth_flows
 from oauth import refresh_access_token
 from oauth import revoke_token
 from oauth import start_device_flow
-from quart import Quart
-from quart import Response
-from quart import jsonify
-from quart import redirect
-from quart import render_template
-from quart import request
 
 app = Quart(__name__)
 

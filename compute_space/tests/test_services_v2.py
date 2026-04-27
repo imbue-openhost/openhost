@@ -68,9 +68,12 @@ def db():
 
 
 def _add_provider(db, service_url, app_name, version, endpoint, port=9000, status="running", default=True):
+    # Insert a minimal apps row. Most NOT NULL columns have defaults; the few
+    # that don't (version, repo_path, local_port) we supply explicitly.
     db.execute(
-        "INSERT OR REPLACE INTO apps (name, local_port, status) VALUES (?, ?, ?)",
-        (app_name, port, status),
+        """INSERT OR REPLACE INTO apps (name, version, repo_path, local_port, status)
+           VALUES (?, ?, ?, ?, ?)""",
+        (app_name, "0.0.0", f"/tmp/{app_name}", port, status),
     )
     db.execute(
         "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) VALUES (?, ?, ?, ?)",

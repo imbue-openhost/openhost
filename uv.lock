@@ -3,7 +3,7 @@ revision = 3
 requires-python = "==3.12.*"
 
 [options]
-exclude-newer = "2026-04-18T00:05:07.057478Z"
+exclude-newer = "2026-04-20T20:56:22.485613Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -888,6 +888,7 @@ dependencies = [
     { name = "hypercorn" },
     { name = "josepy" },
     { name = "loguru" },
+    { name = "packaging" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "quart" },
     { name = "tomli-w" },
@@ -925,6 +926,7 @@ requires-dist = [
     { name = "hypercorn" },
     { name = "josepy" },
     { name = "loguru" },
+    { name = "packaging" },
     { name = "pyjwt", extras = ["crypto"] },
     { name = "quart" },
     { name = "tomli-w" },
