@@ -40,3 +40,6 @@ specs/
 # Beads (local only — not shared via git)
 .beads/
 
+# local test VM build cache
+tests/.vm-cache/
+
