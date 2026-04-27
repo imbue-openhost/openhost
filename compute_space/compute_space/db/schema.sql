@@ -48,8 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(status);
 CREATE TABLE IF NOT EXISTS owner (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     username TEXT NOT NULL UNIQUE,
-    password_hash TEXT,
-    password_needs_set INTEGER NOT NULL DEFAULT 0,
+    password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

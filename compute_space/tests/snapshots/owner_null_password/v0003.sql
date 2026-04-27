@@ -51,11 +51,10 @@ CREATE TABLE apps (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE owner (
+CREATE TABLE "owner" (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     username TEXT NOT NULL UNIQUE,
-    password_hash TEXT,
-    password_needs_set INTEGER NOT NULL DEFAULT 0,
+    password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE permissions (
@@ -83,7 +82,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,2);
+INSERT INTO "schema_version" VALUES(1,3);
 CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
             app_name TEXT NOT NULL,
