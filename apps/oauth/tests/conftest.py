@@ -29,7 +29,7 @@ def _wait_for_port(port: int, timeout: float = 10.0) -> None:
 
 
 _BOOT_SCRIPT = """
-import asyncio, sys, os
+import asyncio, resource, sys, os
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 sys.path.insert(0, os.environ["APP_DIR"])
