@@ -122,3 +122,11 @@ CREATE TABLE IF NOT EXISTS service_defaults (
     app_name TEXT NOT NULL,
     FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
 );
+
+-- Versioned-migrations metadata: single-row table recording the current
+-- schema version. The runner (compute_space/db/versioned/runner.py) owns
+-- the value; schema.sql only creates the table.
+CREATE TABLE IF NOT EXISTS schema_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
+);
