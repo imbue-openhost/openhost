@@ -9,4 +9,4 @@ from compute_space.db.versioned.base import SqlFileMigration
 
 class Migration0002Noop(SqlFileMigration):
     version = 2
-    sql_file = "0002_noop.sql"
+    sql_file = "v0002_noop.sql"
