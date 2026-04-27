@@ -86,7 +86,7 @@ def get_public_key_pem() -> str:
 
 def _zone_audience() -> str:
     """Return the audience/issuer identifier for this zone."""
-    return get_config().zone_domain or "localhost"
+    return get_config().zone_domain
 
 
 def create_access_token(username: str) -> str:
