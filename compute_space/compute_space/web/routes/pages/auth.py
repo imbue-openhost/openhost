@@ -108,7 +108,7 @@ async def setup() -> ResponseReturnValue:
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     db.execute(
-        "INSERT INTO owner (id, username, password_hash, password_needs_set) VALUES (1, 'owner', ?, 0)",
+        "INSERT INTO owner (id, username, password_hash) VALUES (1, 'owner', ?)",
         (password_hash,),
     )
 
