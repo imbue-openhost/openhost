@@ -19,6 +19,7 @@ dependencies = [
     "hypercorn",
     "josepy",
     "loguru",
+    "packaging",
     "quart",
     "tomli-w",
     "typed-settings>=25.3.0",
