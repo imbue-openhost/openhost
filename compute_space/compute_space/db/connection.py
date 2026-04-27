@@ -7,8 +7,7 @@ from quart import Quart
 from quart import current_app
 from quart import g
 
-from compute_space.db.migrations import _schema_path
-from compute_space.db.migrations import migrate
+from compute_space.db.versioned import apply_migrations
 
 
 @contextlib.contextmanager
@@ -46,11 +45,4 @@ def close_db(exception: BaseException | None = None) -> None:
 
 
 def init_db(app: Quart) -> None:
-    db = sqlite3.connect(app.config["DB_PATH"])
-    try:
-        migrate(db)
-        schema_path = _schema_path()
-        with open(schema_path) as f:
-            db.executescript(f.read())
-    finally:
-        db.close()
+    apply_migrations(app.config["DB_PATH"])

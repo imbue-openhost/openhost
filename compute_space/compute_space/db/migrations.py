@@ -3,6 +3,8 @@ import os
 import re
 import sqlite3
 
+from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
+
 
 def _schema_path() -> str:
     return os.path.join(os.path.dirname(__file__), "schema.sql")
@@ -256,4 +258,10 @@ def migrate(db: sqlite3.Connection) -> None:
             FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
         )"""
     )
+
+    # Versioned-migrations bootstrap: create the schema_version metadata
+    # table. The runner stamps version = 1 AFTER schema.sql has run, so
+    # that a mid-bootstrap crash leaves the DB unstamped and next startup
+    # retries the whole legacy path cleanly (REQ-LEG-2).
+    db.execute(SCHEMA_VERSION_DDL)
     db.commit()

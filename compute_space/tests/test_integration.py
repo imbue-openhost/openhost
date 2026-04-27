@@ -408,6 +408,8 @@ class TestRouterCore:
         expired_payload = {
             "sub": "owner",
             "username": "owner",
+            "iss": "testzone.local",
+            "aud": "testzone.local",
             "iat": now - timedelta(hours=2),
             "exp": now - timedelta(hours=1),
         }
