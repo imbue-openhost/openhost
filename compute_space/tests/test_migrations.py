@@ -138,7 +138,9 @@ class TestRouterMigrations:
         # Key columns that migrations add
         assert "public_paths" in snap["tables"]["apps"]
         assert "manifest_name" in snap["tables"]["apps"]
-        assert "password_needs_set" in snap["tables"]["owner"]
+        # password_hash is NOT NULL after v3 and password_needs_set is gone
+        assert snap["tables"]["owner"]["password_hash"]["notnull"] == 1
+        assert "password_needs_set" not in snap["tables"]["owner"]
         # Columns that should NOT exist
         assert "base_path" not in snap["tables"]["apps"]
         assert "subdomain" not in snap["tables"]["apps"]
@@ -257,8 +259,10 @@ class TestRouterMigrations:
         assert row["manifest_name"] == "testapp"
         assert row["public_paths"] == "[]"
 
-    def test_migrate_adds_password_needs_set(self, tmp_path):
-        """Migration adds password_needs_set to owner table."""
+    def test_owner_final_schema_after_all_migrations(self, tmp_path):
+        """End state of owner after the legacy bootstrap + v3 migration:
+        no password_needs_set column, password_hash is NOT NULL, and
+        existing data survives the table recreations."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         db.executescript(_OLDEST_ROUTER_SCHEMA)
@@ -275,9 +279,10 @@ class TestRouterMigrations:
         cols = {r[1]: r for r in db.execute("PRAGMA table_info(owner)").fetchall()}
         db.close()
 
-        assert "password_needs_set" in cols
-        assert row["password_needs_set"] == 0
-        # Verify existing owner data survived the table recreation
+        assert "password_needs_set" not in cols
+        # password_hash is NOT NULL (notnull column in PRAGMA table_info == 1)
+        assert cols["password_hash"][3] == 1
+        # Verify existing owner data survived the table recreations
         assert row["username"] == "admin"
         assert row["password_hash"] == "hash123"
         assert row["created_at"] is not None
