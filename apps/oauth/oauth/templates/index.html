@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+        th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; }
+        h1 { margin-bottom: 0.25rem; }
+        .subtitle { color: #666; margin-top: 0; }
+        button { padding: 0.4rem 0.8rem; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-del { background: #dc2626; color: white; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <h1>OAuth Tokens</h1>
+    <p class="subtitle">Manage OAuth tokens for third-party APIs</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Provider</th>
+                <th>Account</th>
+                <th>Scopes</th>
+                <th>Expires</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="tokens-body">
+            <tr><td colspan="5" style="color:#999; text-align:center">Loading...</td></tr>
+        </tbody>
+    </table>
+
+    <script>
+    async function loadTokens() {
+        const resp = await fetch('/api/tokens');
+        const data = await resp.json();
+        const tbody = document.getElementById('tokens-body');
+        if (data.tokens.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="color:#999; text-align:center">No OAuth tokens</td></tr>';
+        } else {
+            tbody.innerHTML = data.tokens.map(t =>
+                `<tr>` +
+                `<td>${t.provider}</td>` +
+                `<td>${t.account || 'default'}</td>` +
+                `<td style="font-size:0.85em">${t.scopes}</td>` +
+                `<td>${t.expires_at || 'never'}</td>` +
+                `<td><button class="btn-del" onclick="deleteToken(${t.id})">Revoke</button></td>` +
+                `</tr>`
+            ).join('');
+        }
+    }
+
+    async function deleteToken(id) {
+        if (!confirm('Revoke this token?')) return;
+        const resp = await fetch('/api/tokens/' + id, {method: 'DELETE'});
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            alert(data.message || data.error || 'Failed to revoke token');
+            return;
+        }
+        loadTokens();
+    }
+
+    loadTokens();
+    setInterval(loadTokens, 5000);
+    </script>
+</body>
+</html>

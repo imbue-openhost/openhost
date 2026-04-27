@@ -20,6 +20,7 @@ from quart import Response
 
 from compute_space.config import get_config
 from compute_space.core.logging import logger
+from compute_space.core.util import write_restricted
 from compute_space.db import get_db
 
 _private_key: str | None = None
@@ -56,7 +57,7 @@ def _generate_keypair(keys_dir: str) -> tuple[str, str]:
         .decode()
     )
 
-    (keys_path / "private.pem").write_text(private_pem)
+    write_restricted(keys_path / "private.pem", private_pem)
     (keys_path / "public.pem").write_text(public_pem)
 
     return private_pem, public_pem
@@ -83,14 +84,22 @@ def get_public_key_pem() -> str:
     return _public_key
 
 
+def _zone_audience() -> str:
+    """Return the audience/issuer identifier for this zone."""
+    return get_config().zone_domain
+
+
 def create_access_token(username: str) -> str:
     """Create a signed RS256 JWT."""
     if _private_key is None:
         raise RuntimeError("Keys not loaded. Call load_keys() first.")
     now = datetime.now(UTC)
+    zone = _zone_audience()
     payload = {
         "sub": username,
         "username": username,
+        "iss": zone,
+        "aud": zone,
         "iat": now,
         "exp": now + timedelta(seconds=ACCESS_TOKEN_EXPIRY),
     }
@@ -105,21 +114,30 @@ def create_refresh_token() -> str:
 def decode_access_token(token: str) -> dict[str, Any] | None:
     """Verify and decode a JWT. Returns claims dict or None."""
     try:
-        assert _public_key is not None
-        return jwt.decode(token, _public_key, algorithms=["RS256"])
+        if _public_key is None:
+            raise RuntimeError("public key not loaded")
+        zone = _zone_audience()
+        return jwt.decode(token, _public_key, algorithms=["RS256"], audience=zone, issuer=zone)
     except jwt.InvalidTokenError:
         return None
 
 
+REFRESH_GRACE_PERIOD = timedelta(hours=2)
+
+
 def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
-    """Decode a JWT ignoring expiry -- used during token refresh."""
+    """Decode a JWT allowing up to REFRESH_GRACE_PERIOD past expiry -- used during token refresh."""
     try:
-        assert _public_key is not None
+        if _public_key is None:
+            raise RuntimeError("public key not loaded")
+        zone = _zone_audience()
         return jwt.decode(
             token,
             _public_key,
             algorithms=["RS256"],
-            options={"verify_exp": False},
+            audience=zone,
+            issuer=zone,
+            leeway=REFRESH_GRACE_PERIOD,
         )
     except jwt.InvalidTokenError:
         return None
@@ -165,7 +183,7 @@ def set_auth_cookies(
         httponly=True,
         secure=get_config().tls_enabled,
         samesite="Lax",
-        max_age=REFRESH_TOKEN_EXPIRY,
+        max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
     )
     if refresh_token:
         response.set_cookie(
@@ -218,6 +236,14 @@ def _validate_api_token(token: str) -> dict[str, str] | None:
     if not owner:
         return None
     return {"sub": owner["username"], "username": owner["username"]}
+
+
+def resolve_app_from_token(token: str) -> str | None:
+    """Look up a Bearer token in the app_tokens table, return the app name or None."""
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    db = get_db()
+    row = db.execute("SELECT app_name FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+    return row["app_name"] if row else None
 
 
 def get_current_user_from_request(request: Request) -> dict[str, Any] | None:

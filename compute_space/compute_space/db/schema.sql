@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS apps (
     health_check TEXT,
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
-    docker_container_id TEXT,
+    container_id TEXT,
     status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,
@@ -48,20 +48,19 @@ CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(status);
 CREATE TABLE IF NOT EXISTS owner (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     username TEXT NOT NULL UNIQUE,
-    password_hash TEXT,
-    password_needs_set INTEGER NOT NULL DEFAULT 0,
+    password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Auth: refresh tokens for self-hosted JWT auth
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT UNIQUE NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
     expires_at TEXT NOT NULL,
     revoked INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
 
 -- API tokens: long-lived bearer tokens that grant owner-level access
 CREATE TABLE IF NOT EXISTS api_tokens (
@@ -75,7 +74,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 -- Cross-app services: app authentication tokens
 CREATE TABLE IF NOT EXISTS app_tokens (
     app_name TEXT PRIMARY KEY,
-    token TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE,
     FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
 );
 
@@ -93,4 +92,40 @@ CREATE TABLE IF NOT EXISTS permissions (
     permission_key TEXT NOT NULL,
     PRIMARY KEY (consumer_app, permission_key),
     FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
+);
+
+-- V2: service providers with git URL identity and versioning
+CREATE TABLE IF NOT EXISTS service_providers_v2 (
+    service_url TEXT NOT NULL,
+    app_name TEXT NOT NULL,
+    service_version TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    PRIMARY KEY (service_url, app_name, service_version),
+    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+);
+
+-- V2: permissions with JSON grants and scope
+CREATE TABLE IF NOT EXISTS permissions_v2 (
+    consumer_app TEXT NOT NULL,
+    service_url TEXT NOT NULL,
+    grant_payload TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
+    provider_app TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app),
+    FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
+);
+
+-- V2: owner-configured default providers
+CREATE TABLE IF NOT EXISTS service_defaults (
+    service_url TEXT PRIMARY KEY,
+    app_name TEXT NOT NULL,
+    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+);
+
+-- Versioned-migrations metadata: single-row table recording the current
+-- schema version. The runner (compute_space/db/versioned/runner.py) owns
+-- the value; schema.sql only creates the table.
+CREATE TABLE IF NOT EXISTS schema_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
 );

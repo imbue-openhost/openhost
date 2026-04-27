@@ -1,0 +1,4 @@
+-- v2: no-op marker. The SqlFileMigration wrapper's own
+-- INSERT OR REPLACE INTO schema_version ... bumps the version; this
+-- body exists so the framework has a real v2 to ship the snapshot
+-- harness against.

@@ -27,7 +27,7 @@
     ansible_python_interpreter: /usr/bin/python3
   tasks:
     - import_tasks: tasks/apt_packages.yml
-    - import_tasks: tasks/docker.yml
+    - import_tasks: tasks/podman.yml
 
 - name: Dev environment
   hosts: all

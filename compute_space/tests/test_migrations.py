@@ -4,6 +4,7 @@ identical to a fresh database created by schema.sql, and that data is
 preserved correctly through each migration path.
 """
 
+import hashlib
 import os
 import sqlite3
 
@@ -12,19 +13,14 @@ from compute_space.db.migrations import migrate
 from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
 from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
 
+from .conftest import _FakeApp
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
 SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
-
-
-class _FakeApp:
-    """Minimal stand-in for a Quart app so init_db(app) can read app.config."""
-
-    def __init__(self, db_path):
-        self.config = {"DB_PATH": db_path}
 
 
 def _fresh_db(path):
@@ -142,7 +138,9 @@ class TestRouterMigrations:
         # Key columns that migrations add
         assert "public_paths" in snap["tables"]["apps"]
         assert "manifest_name" in snap["tables"]["apps"]
-        assert "password_needs_set" in snap["tables"]["owner"]
+        # password_hash is NOT NULL after v3 and password_needs_set is gone
+        assert snap["tables"]["owner"]["password_hash"]["notnull"] == 1
+        assert "password_needs_set" not in snap["tables"]["owner"]
         # Columns that should NOT exist
         assert "base_path" not in snap["tables"]["apps"]
         assert "subdomain" not in snap["tables"]["apps"]
@@ -261,8 +259,10 @@ class TestRouterMigrations:
         assert row["manifest_name"] == "testapp"
         assert row["public_paths"] == "[]"
 
-    def test_migrate_adds_password_needs_set(self, tmp_path):
-        """Migration adds password_needs_set to owner table."""
+    def test_owner_final_schema_after_all_migrations(self, tmp_path):
+        """End state of owner after the legacy bootstrap + v3 migration:
+        no password_needs_set column, password_hash is NOT NULL, and
+        existing data survives the table recreations."""
         db_path = str(tmp_path / "test.db")
         db = sqlite3.connect(db_path)
         db.executescript(_OLDEST_ROUTER_SCHEMA)
@@ -279,9 +279,10 @@ class TestRouterMigrations:
         cols = {r[1]: r for r in db.execute("PRAGMA table_info(owner)").fetchall()}
         db.close()
 
-        assert "password_needs_set" in cols
-        assert row["password_needs_set"] == 0
-        # Verify existing owner data survived the table recreation
+        assert "password_needs_set" not in cols
+        # password_hash is NOT NULL (notnull column in PRAGMA table_info == 1)
+        assert cols["password_hash"][3] == 1
+        # Verify existing owner data survived the table recreations
         assert row["username"] == "admin"
         assert row["password_hash"] == "hash123"
         assert row["created_at"] is not None
@@ -433,6 +434,101 @@ class TestRouterMigrations:
         assert row is not None
         assert row["created_at"] is not None
         assert row["updated_at"] is not None
+
+    def test_migrate_hashes_refresh_tokens(self, tmp_path):
+        """Migration renames token -> token_hash and hashes existing plaintext values."""
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        # Insert plaintext refresh tokens
+        db.execute(
+            "INSERT INTO refresh_tokens (token, expires_at) VALUES ('plaintext-refresh-1', '2099-01-01T00:00:00')"
+        )
+        db.execute(
+            "INSERT INTO refresh_tokens (token, expires_at) VALUES ('plaintext-refresh-2', '2099-01-01T00:00:00')"
+        )
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        cols = {row[1] for row in db.execute("PRAGMA table_info(refresh_tokens)").fetchall()}
+        assert "token_hash" in cols
+        assert "token" not in cols
+
+        rows = db.execute("SELECT token_hash FROM refresh_tokens ORDER BY id").fetchall()
+        assert len(rows) == 2
+        expected_1 = hashlib.sha256(b"plaintext-refresh-1").hexdigest()
+        expected_2 = hashlib.sha256(b"plaintext-refresh-2").hexdigest()
+        assert rows[0]["token_hash"] == expected_1
+        assert rows[1]["token_hash"] == expected_2
+        # Must not be the original plaintext
+        assert rows[0]["token_hash"] != "plaintext-refresh-1"
+        db.close()
+
+    def test_migrate_hashes_app_tokens(self, tmp_path):
+        """Migration renames token -> token_hash and hashes existing plaintext values in app_tokens."""
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        # Need an app row for the FK
+        db.execute(
+            "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, repo_path, local_port) "
+            "VALUES ('myapp', '/myapp', 'myapp', '1.0', 'serverfull', '/repo', 9000)"
+        )
+        # app_tokens table doesn't exist in oldest schema, create it with old column name
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS app_tokens ("
+            "app_name TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, "
+            "FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE)"
+        )
+        db.execute("INSERT INTO app_tokens (app_name, token) VALUES ('myapp', 'plaintext-app-token')")
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        cols = {row[1] for row in db.execute("PRAGMA table_info(app_tokens)").fetchall()}
+        assert "token_hash" in cols
+        assert "token" not in cols
+
+        row = db.execute("SELECT token_hash FROM app_tokens WHERE app_name = 'myapp'").fetchone()
+        expected = hashlib.sha256(b"plaintext-app-token").hexdigest()
+        assert row["token_hash"] == expected
+        assert row["token_hash"] != "plaintext-app-token"
+        db.close()
+
+    def test_token_hash_migration_idempotent(self, tmp_path):
+        """Running init_db twice doesn't double-hash tokens."""
+        db_path = str(tmp_path / "test.db")
+        db = sqlite3.connect(db_path)
+        db.executescript(_OLDEST_ROUTER_SCHEMA)
+        db.execute("INSERT INTO refresh_tokens (token, expires_at) VALUES ('my-token', '2099-01-01T00:00:00')")
+        db.commit()
+        db.close()
+
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        hash_after_first = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()["token_hash"]
+        db.close()
+
+        # Run again — should be no-op since column is already token_hash
+        _run_init_db(db_path)
+
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        hash_after_second = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()["token_hash"]
+        db.close()
+
+        expected = hashlib.sha256(b"my-token").hexdigest()
+        assert hash_after_first == expected
+        assert hash_after_second == expected
 
 
 class TestCrashRecovery:

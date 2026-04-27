@@ -165,7 +165,7 @@ def _init_apps_db(db_path: str) -> None:
                 version TEXT NOT NULL,
                 repo_path TEXT NOT NULL,
                 local_port INTEGER NOT NULL UNIQUE,
-                docker_container_id TEXT,
+                container_id TEXT,
                 status TEXT NOT NULL,
                 error_message TEXT
             )
@@ -189,7 +189,7 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
 
     db = sqlite3.connect(config.db_path)
     db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, docker_container_id, status, error_message) "
+        "INSERT INTO apps (name, version, repo_path, local_port, container_id, status, error_message) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         ("notes", "1", "/tmp/notes", 9100, "cid-1", "running", None),
     )
@@ -204,7 +204,7 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
     storage.enforce_storage_guard(config)
 
     db = sqlite3.connect(config.db_path)
-    row = db.execute("SELECT status, error_message, docker_container_id FROM apps WHERE name = 'notes'").fetchone()
+    row = db.execute("SELECT status, error_message, container_id FROM apps WHERE name = 'notes'").fetchone()
     db.close()
 
     assert stopped == ["notes"]
@@ -219,7 +219,7 @@ def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
 
     db = sqlite3.connect(config.db_path)
     db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, docker_container_id, status, error_message) "
+        "INSERT INTO apps (name, version, repo_path, local_port, container_id, status, error_message) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         ("notes", "1", "/tmp/notes", 9100, "cid-1", "running", None),
     )

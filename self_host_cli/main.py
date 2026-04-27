@@ -75,7 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "doctor",
         help="Check prerequisites and common misconfigurations.",
-        description="Validates that Docker, ports, and other prerequisites are correctly configured.",
+        description="Validates that Podman, ports, and other prerequisites are correctly configured.",
     )
 
     # --- openhost update ---

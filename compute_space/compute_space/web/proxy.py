@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 import httpx
 import websockets
@@ -176,15 +177,21 @@ async def ws_proxy(
     # the handshake completes and both send/receive are immediately usable.
     await client_ws.accept()
 
+    # Only pass `subprotocols` if the client actually negotiated some.  Passing an empty list causes the
+    # `websockets` client to emit an empty `Sec-WebSocket-Protocol:` header, which strict backends
+    # (including `websockets`' own server, as used by Selkies / the linuxserver webtop image) reject
+    # with `InvalidHeaderFormat: expected token at 0 in`.
+    ws_kwargs: dict[str, Any] = {
+        "additional_headers": extra_headers,
+        "compression": None,  # avoid permessage-deflate mismatches with backend
+        "open_timeout": 10,
+        "close_timeout": 5,
+    }
+    if subprotocols:
+        ws_kwargs["subprotocols"] = subprotocols
+
     try:
-        async with websockets.connect(
-            target_url,
-            additional_headers=extra_headers,
-            subprotocols=subprotocols,  # type: ignore[arg-type]
-            compression=None,  # avoid permessage-deflate mismatches with backend
-            open_timeout=10,
-            close_timeout=5,
-        ) as backend:
+        async with websockets.connect(target_url, **ws_kwargs) as backend:
 
             async def backend_to_client() -> None:
                 try:

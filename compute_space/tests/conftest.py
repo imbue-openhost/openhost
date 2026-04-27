@@ -1,7 +1,9 @@
 import os
 import signal
+import sqlite3
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ import requests
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
+from compute_space.db.migrations import _schema_path
 from compute_space.testing import kill_tree
 from compute_space.testing import managed_router
 
@@ -19,6 +22,19 @@ from .helpers import router_cmd
 
 ROUTER_PORT = 18080
 OWNER_PASSWORD = "testpass123"
+
+
+class _FakeApp:
+    """Minimal Quart-like stand-in exposing just ``.config['DB_PATH']``.
+
+    Used by tests that call ``compute_space.db.connection.init_db``
+    (which reads ``app.config['DB_PATH']``) without setting up a real
+    Quart app.  Lives in conftest so every test module that needs one
+    can import a single shared implementation.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self.config = {"DB_PATH": db_path}
 
 
 def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
@@ -88,18 +104,23 @@ def _stop_router_process(proc: subprocess.Popen[Any]) -> None:
         proc.wait()
 
 
-def _docker_cleanup(container_name: str, app_name: str) -> None:
-    """Force-remove a test Docker container and image."""
-    subprocess.run(
-        ["docker", "rm", "-f", container_name],
-        capture_output=True,
-        timeout=10,
-    )
-    subprocess.run(
-        ["docker", "rmi", "-f", f"openhost-{app_name}:latest"],
-        capture_output=True,
-        timeout=10,
-    )
+@pytest.fixture
+def db() -> Iterator[sqlite3.Connection]:
+    """In-memory SQLite database loaded with the real production schema.
+
+    FK enforcement is left off (sqlite default) so individual tests don't
+    have to insert an apps row for every consumer/provider name they
+    reference — these tests are about service / permission semantics, not
+    referential integrity.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    with open(_schema_path()) as f:
+        conn.executescript(f.read())
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 @pytest.fixture(scope="module")

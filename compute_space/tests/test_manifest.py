@@ -1,7 +1,13 @@
 """Unit tests for the openhost.toml manifest parser."""
 
+import json
+
+import attr
 import pytest
 
+from compute_space.core.manifest import SAFE_CAPABILITIES
+from compute_space.core.manifest import SAFE_DEVICE_PATHS
+from compute_space.core.manifest import UNPRIVILEGED_PORT_FLOOR
 from compute_space.core.manifest import parse_manifest_from_string
 
 MINIMAL = """\
@@ -246,6 +252,35 @@ host_port = 0
         manifest = parse_manifest_from_string(toml)
         assert len(manifest.port_mappings) == 1
 
+    def test_manifest_with_port_mappings_is_json_serializable(self):
+        """Regression: manifests with [[ports]] must round-trip through
+        ``attr.asdict`` + ``json.dumps`` so that
+        ``/api/clone_and_get_app_info`` can return them.
+        """
+        toml = (
+            MINIMAL
+            + """
+[[ports]]
+label = "metrics"
+container_port = 9090
+host_port = 9090
+
+[[ports]]
+label = "debug"
+container_port = 5005
+host_port = 0
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        info = attr.asdict(manifest)
+        # Round-trip through JSON; will raise TypeError on regression.
+        payload = json.dumps(info)
+        decoded = json.loads(payload)
+        assert decoded["port_mappings"] == [
+            {"label": "metrics", "container_port": 9090, "host_port": 9090},
+            {"label": "debug", "container_port": 5005, "host_port": 0},
+        ]
+
 
 class TestContainerParsing:
     """Verify container fields are parsed correctly."""
@@ -273,9 +308,9 @@ class TestContainerParsing:
         assert manifest.capabilities == ["NET_ADMIN"]
 
     def test_devices(self):
-        toml = MINIMAL + 'devices = ["/dev/tun"]\n'
+        toml = MINIMAL + 'devices = ["/dev/net/tun"]\n'
         manifest = parse_manifest_from_string(toml)
-        assert manifest.devices == ["/dev/tun"]
+        assert manifest.devices == ["/dev/net/tun"]
 
 
 class TestValidation:
@@ -305,3 +340,213 @@ class TestValidation:
         toml = '[app]\nname = "x"\nversion = "1"\n[runtime.container]\nimage = "Dockerfile"\n'
         with pytest.raises(ValueError, match="port"):
             parse_manifest_from_string(toml)
+
+
+class TestServicesV2Parsing:
+    """Verify [[services_v2.provides]] and [[permissions_v2]] parsing."""
+
+    def test_single_service_provides(self):
+        toml = (
+            MINIMAL
+            + """
+[[services_v2.provides]]
+service = "github.com/org/repo/services/secrets"
+version = "0.1.0"
+endpoint = "/_service_v2/"
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.provides_services_v2) == 1
+        sp = manifest.provides_services_v2[0]
+        assert sp.service == "github.com/org/repo/services/secrets"
+        assert sp.version == "0.1.0"
+        assert sp.endpoint == "/_service_v2/"
+
+    def test_multiple_services_provides(self):
+        toml = (
+            MINIMAL
+            + """
+[[services_v2.provides]]
+service = "github.com/org/repo/services/secrets"
+version = "0.1.0"
+endpoint = "/_service_v2/"
+
+[[services_v2.provides]]
+service = "github.com/org/repo/services/oauth"
+version = "0.1.0"
+endpoint = "/_oauth_v2/"
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.provides_services_v2) == 2
+        assert manifest.provides_services_v2[0].service.endswith("/secrets")
+        assert manifest.provides_services_v2[1].service.endswith("/oauth")
+        assert manifest.provides_services_v2[1].endpoint == "/_oauth_v2/"
+
+    def test_permissions_v2_parsing(self):
+        toml = (
+            MINIMAL
+            + """
+[[permissions_v2]]
+service = "github.com/org/repo/services/oauth"
+grants = [
+    {provider = "google", scope = "https://www.googleapis.com/auth/gmail.readonly"},
+    {provider = "github", scope = "repo"},
+]
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.permissions_v2) == 1
+        perm = manifest.permissions_v2[0]
+        assert perm.service == "github.com/org/repo/services/oauth"
+        assert len(perm.grants) == 2
+        assert perm.grants[0] == {"provider": "google", "scope": "https://www.googleapis.com/auth/gmail.readonly"}
+
+    def test_permissions_v2_missing_service_raises(self):
+        toml = MINIMAL + '\n[[permissions_v2]]\ngrants = [{key = "X"}]\n'
+        with pytest.raises(ValueError, match="permissions_v2"):
+            parse_manifest_from_string(toml)
+
+    def test_services_v2_missing_version_raises(self):
+        toml = MINIMAL + '\n[[services_v2.provides]]\nservice = "github.com/x"\nendpoint = "/"\n'
+        with pytest.raises(ValueError, match="services_v2"):
+            parse_manifest_from_string(toml)
+
+
+class TestCapabilitiesValidation:
+    """Rootless podman constraints on [runtime.container].capabilities."""
+
+    def test_safe_cap_accepted(self):
+        toml = MINIMAL + 'capabilities = ["NET_ADMIN"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.capabilities == ["NET_ADMIN"]
+
+    @pytest.mark.parametrize("cap", sorted(SAFE_CAPABILITIES))
+    def test_every_safe_cap_is_accepted(self, cap):
+        """Every entry in SAFE_CAPABILITIES must actually parse.  By
+        parametrising directly on the production frozenset, adding a
+        new capability automatically adds a corresponding test case —
+        a typo in the frozenset will fail this test with the exact
+        unparseable entry as the pytest parameter id."""
+        toml = MINIMAL + f'capabilities = ["{cap}"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.capabilities == [cap]
+
+    def test_cap_prefix_is_stripped(self):
+        """Manifests using the linux cap CAP_* prefix still parse."""
+        toml = MINIMAL + 'capabilities = ["CAP_NET_ADMIN"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.capabilities == ["NET_ADMIN"]
+
+    def test_unsafe_cap_rejected(self):
+        """SYS_ADMIN grants real host privilege; must be rejected at parse time."""
+        toml = MINIMAL + 'capabilities = ["SYS_ADMIN"]\n'
+        with pytest.raises(ValueError, match="not safe"):
+            parse_manifest_from_string(toml)
+
+    def test_unknown_cap_rejected(self):
+        """Unknown caps are denied by default (tight allowlist)."""
+        toml = MINIMAL + 'capabilities = ["MADE_UP"]\n'
+        with pytest.raises(ValueError, match="not safe"):
+            parse_manifest_from_string(toml)
+
+    def test_non_list_caps_rejected(self):
+        toml = MINIMAL + 'capabilities = "NET_ADMIN"\n'
+        with pytest.raises(ValueError, match="list of strings"):
+            parse_manifest_from_string(toml)
+
+    def test_non_string_cap_entry_rejected(self):
+        """A list of caps that contains a non-string element must be
+        rejected at parse time — otherwise a type error would surface
+        from deep inside the runtime when ``.strip()`` is called on
+        the offending entry."""
+        toml = MINIMAL + "capabilities = [123]\n"
+        with pytest.raises(ValueError, match="must contain strings"):
+            parse_manifest_from_string(toml)
+
+
+class TestDevicesValidation:
+    """Rootless podman constraints on [runtime.container].devices."""
+
+    def test_safe_device_accepted(self):
+        toml = MINIMAL + 'devices = ["/dev/net/tun"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.devices == ["/dev/net/tun"]
+
+    @pytest.mark.parametrize("device", sorted(SAFE_DEVICE_PATHS))
+    def test_every_safe_device_is_accepted(self, device):
+        """Every entry in SAFE_DEVICE_PATHS must actually parse.  By
+        parametrising directly on the production frozenset, adding a
+        new device automatically adds a corresponding test case, and
+        a typo in the frozenset will fail this test with the exact
+        unparseable path as the pytest parameter id."""
+        toml = MINIMAL + f'devices = ["{device}"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.devices == [device]
+
+    def test_device_with_rwm_spec_accepted(self):
+        """podman --device accepts <host>:<container>:<perm> forms; the
+        validator must parse off the host-path and validate that alone."""
+        toml = MINIMAL + 'devices = ["/dev/net/tun:/dev/net/tun:rwm"]\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.devices == ["/dev/net/tun:/dev/net/tun:rwm"]
+
+    def test_dev_mem_rejected(self):
+        """/dev/mem exposes host RAM — must never reach the runtime."""
+        toml = MINIMAL + 'devices = ["/dev/mem"]\n'
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            parse_manifest_from_string(toml)
+
+    def test_dev_kvm_rejected(self):
+        toml = MINIMAL + 'devices = ["/dev/kvm"]\n'
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            parse_manifest_from_string(toml)
+
+    def test_arbitrary_block_device_rejected(self):
+        toml = MINIMAL + 'devices = ["/dev/sda"]\n'
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            parse_manifest_from_string(toml)
+
+    def test_non_string_device_entry_rejected(self):
+        toml = MINIMAL + "devices = [123]\n"
+        with pytest.raises(ValueError, match="must contain strings"):
+            parse_manifest_from_string(toml)
+
+    def test_non_list_devices_rejected(self):
+        toml = MINIMAL + 'devices = "/dev/net/tun"\n'
+        with pytest.raises(ValueError, match="list of strings"):
+            parse_manifest_from_string(toml)
+
+
+class TestUnprivilegedPortFloor:
+    """Rootless podman can't bind host_port < UNPRIVILEGED_PORT_FLOOR.
+
+    Tests derive their boundary values from the production constant
+    rather than hard-coding 80, so a change to the floor (e.g. if a
+    future kernel permits lower unprivileged binds) automatically
+    re-aligns the assertions.
+    """
+
+    def test_floor_is_accepted(self):
+        floor = UNPRIVILEGED_PORT_FLOOR
+        toml = MINIMAL + f'\n[[ports]]\nlabel = "http"\ncontainer_port = {floor}\nhost_port = {floor}\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.port_mappings[0].host_port == floor
+
+    def test_port_above_floor_accepted(self):
+        toml = MINIMAL + '\n[[ports]]\nlabel = "https"\ncontainer_port = 443\nhost_port = 443\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.port_mappings[0].host_port == 443
+
+    def test_port_below_floor_rejected(self):
+        below = UNPRIVILEGED_PORT_FLOOR - 1
+        toml = MINIMAL + f'\n[[ports]]\nlabel = "low"\ncontainer_port = {below}\nhost_port = {below}\n'
+        with pytest.raises(ValueError, match="unprivileged port floor"):
+            parse_manifest_from_string(toml)
+
+    def test_port_zero_still_allowed_for_autoassign(self):
+        """host_port=0 means the router auto-assigns; the floor check must
+        not clobber that sentinel."""
+        toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.port_mappings[0].host_port == 0

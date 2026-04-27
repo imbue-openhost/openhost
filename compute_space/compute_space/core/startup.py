@@ -7,19 +7,53 @@ from quart import Quart
 from compute_space.config import Config
 from compute_space.core import identity
 from compute_space.core.apps import start_app_process
-from compute_space.core.containers import get_container_status
+from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
+from compute_space.core.containers import container_runtime_available
+from compute_space.core.containers import is_container_running
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
 from compute_space.db import init_db
+
+
+def _mark_running_apps_container_runtime_missing(config: Config) -> int:
+    """Flip every running/starting/building app to ``status='error'`` with
+    ``CONTAINER_RUNTIME_MISSING_ERROR`` and clear ``container_id``.  Returns rowcount.
+    """
+    db = sqlite3.connect(config.db_path)
+    try:
+        cursor = db.execute(
+            "UPDATE apps SET status = 'error', error_message = ?, container_id = NULL "
+            "WHERE status IN ('running', 'starting', 'building')",
+            (CONTAINER_RUNTIME_MISSING_ERROR,),
+        )
+        db.commit()
+        return cursor.rowcount
+    finally:
+        db.close()
 
 
 def _check_app_status(config: Config) -> None:
     """On startup, verify apps marked 'running' are still alive.
 
     Apps that need rebuilding are restarted sequentially in a single
-    background thread to avoid concurrent Docker builds that can corrupt
-    BuildKit's content store.
+    background thread to avoid concurrent image builds against the same
+    containers-storage instance.  When podman isn't available, every
+    running/starting/building app is flipped to 'error' with a
+    remediation message and no rebuild is attempted — the dashboard
+    stays reachable so the operator can see what happened.
     """
+    if not container_runtime_available():
+        affected = _mark_running_apps_container_runtime_missing(config)
+        if affected:
+            logger.error(
+                "podman runtime missing; marked %d running/starting apps as error. %s",
+                affected,
+                CONTAINER_RUNTIME_MISSING_ERROR,
+            )
+        else:
+            logger.warning("podman runtime missing; no running apps to mark.")
+        return
+
     db = sqlite3.connect(config.db_path)
     db.row_factory = sqlite3.Row
     apps_to_restart: list[str] = []
@@ -27,12 +61,11 @@ def _check_app_status(config: Config) -> None:
         rows = db.execute("SELECT * FROM apps WHERE status = 'running'").fetchall()
         for row in rows:
             alive = False
-            if row["docker_container_id"]:
-                status = get_container_status(row["docker_container_id"])
-                alive = status == "running"
+            if row["container_id"]:
+                alive = is_container_running(row["container_id"])
 
             if not alive:
-                if row["docker_container_id"]:
+                if row["container_id"]:
                     repo_path = row["repo_path"]
                     if not repo_path or not os.path.isdir(repo_path):
                         db.execute(

@@ -7,13 +7,12 @@ from quart import request
 from quart import url_for
 
 from compute_space.config import get_config
-from compute_space.core import auth as auth_module
 from compute_space.core.permissions import get_granted_permissions
 from compute_space.core.service_access_rules import ServiceAccessDenied
 from compute_space.core.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_service_provider
-from compute_space.db import get_db
+from compute_space.web.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 
 services_bp = Blueprint("services", __name__)
@@ -32,48 +31,18 @@ def _app_subdomain_from_origin() -> tuple[str | None, str | None]:
         origin = referer
 
     parsed = urlparse(origin)
-    hostname = parsed.hostname or ""
-    raw_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else None
+    host = parsed.netloc or ""
+    raw_origin = f"{parsed.scheme}://{host}" if parsed.scheme else None
 
     config = get_config()
-    if not config.zone_domain or not hostname.endswith("." + config.zone_domain):
+    if not config.zone_domain or not host.endswith("." + config.zone_domain):
         return None, raw_origin
 
-    app_name = hostname[: -(len(config.zone_domain) + 1)]
+    app_name = host[: -(len(config.zone_domain) + 1)]
     if "." in app_name:
         return None, raw_origin
 
     return app_name, raw_origin
-
-
-def _authenticate_and_resolve_consumer_app() -> str | None:
-    """Resolve the calling app from the request.
-
-    Accepts either:
-    - Authorization: Bearer <app_token> (server-to-server)
-    - JWT auth cookie + Origin header (browser, derives app from subdomain)
-
-    Returns the app name or None.
-    """
-    db = get_db()
-
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        token_row = db.execute("SELECT app_name FROM app_tokens WHERE token = ?", (token,)).fetchone()
-        return token_row["app_name"] if token_row else None
-
-    # Browser auth: verify JWT cookie, derive app from Origin
-    claims = auth_module.get_current_user_from_request(request)
-    if not claims:
-        return None
-
-    app_name, _ = _app_subdomain_from_origin()
-    if not app_name:
-        return None
-
-    app_row = db.execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
-    return app_row["name"] if app_row else None
 
 
 def _cors_origin() -> str | None:
@@ -87,7 +56,11 @@ def _add_cors_headers(response: Response, origin: str) -> Response:
     response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, Authorization, "
+        "X-OpenHost-Service-URL, X-OpenHost-Service-Version, "
+        "X-OpenHost-Service-Endpoint, X-OpenHost-Provider-App"
+    )
     return response
 
 
@@ -117,14 +90,13 @@ async def service_proxy_cors(service_name: str, service_endpoint: str) -> Respon
     "/_services/<service_name>/<path:service_endpoint>",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
-async def service_proxy(service_name: str, service_endpoint: str) -> Response:
+@app_auth_required
+async def service_proxy(service_name: str, service_endpoint: str, app_name: str) -> Response:
     """Proxy a cross-app service request from a consumer app to the provider app.
 
     The request goes to the provider app at `/_service/<service_endpoint>`
     """
-    consumer_app = _authenticate_and_resolve_consumer_app()
-    if not consumer_app:
-        return Response("Missing or invalid authorization", status=401)
+    consumer_app = app_name
 
     try:
         provider_app, provider_port = get_service_provider(service_name)
@@ -153,13 +125,13 @@ async def service_proxy(service_name: str, service_endpoint: str) -> Response:
                 permissions=",".join(permissions_needed),
                 return_to=return_to,
             )
-            approve_url = f"https://{config.zone_domain}{approve_path}"
+            grant_url = f"https://{config.zone_domain}{approve_path}"
             return Response(
                 json.dumps(
                     {
                         "error": "permission_denied",
                         "denied_keys": permissions_needed,
-                        "approve_url": approve_url,
+                        "grant_url": grant_url,
                     }
                 ),
                 status=403,

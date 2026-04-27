@@ -1,6 +1,9 @@
+import hashlib
 import os
 import re
 import sqlite3
+
+from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
 
 
 def _schema_path() -> str:
@@ -64,7 +67,7 @@ def _recover_temp_tables(db: sqlite3.Connection) -> None:
     the ``<name>_new`` temp table.  Detect this and rename it back so
     the subsequent migration sees a valid table.
     """
-    for table_name in ("apps", "owner"):
+    for table_name in ("apps", "owner", "refresh_tokens", "app_tokens"):
         tmp_name = f"{table_name}_new"
         orig_exists = db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -80,13 +83,27 @@ def _recover_temp_tables(db: sqlite3.Connection) -> None:
                 db.commit()
 
 
+def _apps_columns(db: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
+
+
 def migrate(db: sqlite3.Connection) -> None:
     """Migrate older databases: add missing columns, drop obsolete ones, and recreate tables when constraints change."""
     _recover_temp_tables(db)
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
     if not columns:
         return  # Fresh DB — table doesn't exist yet, schema.sql will create it
+
+    # Bring the container-id column name in line with the current schema
+    # BEFORE any other migration step.  _recreate_table (used by later
+    # steps) rebuilds the table from schema.sql, which only knows about
+    # container_id; a lingering docker_container_id column would be
+    # silently dropped by the common-column filter and its data lost.
+    if "docker_container_id" in columns and "container_id" not in columns:
+        db.execute("ALTER TABLE apps RENAME COLUMN docker_container_id TO container_id")
+        db.commit()
+        columns = _apps_columns(db)
+
     if "public_paths" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN public_paths TEXT NOT NULL DEFAULT '[]'")
         db.commit()
@@ -98,8 +115,7 @@ def migrate(db: sqlite3.Connection) -> None:
 
     # Re-read columns after potential ALTER TABLEs above so the drop-column
     # migration copies all current columns (including just-added ones).
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     # Drop base_path and subdomain columns (no longer used).
     # base_path has a UNIQUE constraint so ALTER TABLE DROP won't work;
@@ -113,17 +129,13 @@ def migrate(db: sqlite3.Connection) -> None:
         finally:
             db.execute("PRAGMA foreign_keys=ON")
 
-    # Re-read columns after potential table recreation
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     if "repo_url" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN repo_url TEXT")
         db.commit()
 
-    # Re-read columns after potential ALTER TABLE
-    cursor = db.execute("PRAGMA table_info(apps)")
-    columns = {row[1] for row in cursor.fetchall()}
+    columns = _apps_columns(db)
 
     # Drop spin_pid column (serverless runtime removed) and update
     # runtime_type CHECK constraint.  Requires table recreation since
@@ -177,4 +189,79 @@ def migrate(db: sqlite3.Connection) -> None:
         )"""
     )
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_port_mappings_host_port ON app_port_mappings(host_port)")
+    db.commit()
+
+    # Migrate refresh_tokens: add token_hash column with hashed values, then
+    # drop the plaintext token column via _recreate_table.
+    rt_cols = {row[1] for row in db.execute("PRAGMA table_info(refresh_tokens)").fetchall()}
+    if "token" in rt_cols and "token_hash" not in rt_cols:
+        db.execute("ALTER TABLE refresh_tokens ADD COLUMN token_hash TEXT")
+        rows = db.execute("SELECT id, token FROM refresh_tokens").fetchall()
+        for row in rows:
+            hashed = hashlib.sha256(row[1].encode()).hexdigest()
+            db.execute("UPDATE refresh_tokens SET token_hash = ? WHERE id = ?", (hashed, row[0]))
+        db.commit()
+    # Drop the old plaintext token column if it still exists.
+    rt_cols = {row[1] for row in db.execute("PRAGMA table_info(refresh_tokens)").fetchall()}
+    if "token" in rt_cols:
+        db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            _recreate_table(db, "refresh_tokens", [c for c in rt_cols if c != "token"])
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")
+
+    # Migrate app_tokens: add token_hash column with hashed values, then
+    # drop the plaintext token column via _recreate_table.
+    at_cols = {row[1] for row in db.execute("PRAGMA table_info(app_tokens)").fetchall()}
+    if "token" in at_cols and "token_hash" not in at_cols:
+        db.execute("ALTER TABLE app_tokens ADD COLUMN token_hash TEXT")
+        rows = db.execute("SELECT app_name, token FROM app_tokens").fetchall()
+        for row in rows:
+            hashed = hashlib.sha256(row[1].encode()).hexdigest()
+            db.execute("UPDATE app_tokens SET token_hash = ? WHERE app_name = ?", (hashed, row[0]))
+        db.commit()
+    # Drop the old plaintext token column if it still exists.
+    at_cols = {row[1] for row in db.execute("PRAGMA table_info(app_tokens)").fetchall()}
+    if "token" in at_cols:
+        db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            _recreate_table(db, "app_tokens", [c for c in at_cols if c != "token"])
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")
+
+    # V2 services tables (idempotent — schema.sql also has CREATE IF NOT EXISTS)
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS service_providers_v2 (
+            service_url TEXT NOT NULL,
+            app_name TEXT NOT NULL,
+            service_version TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            PRIMARY KEY (service_url, app_name, service_version),
+            FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+        )"""
+    )
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS permissions_v2 (
+            consumer_app TEXT NOT NULL,
+            service_url TEXT NOT NULL,
+            grant_payload TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
+            provider_app TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app),
+            FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
+        )"""
+    )
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS service_defaults (
+            service_url TEXT PRIMARY KEY,
+            app_name TEXT NOT NULL,
+            FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+        )"""
+    )
+
+    # Versioned-migrations bootstrap: create the schema_version metadata
+    # table. The runner stamps version = 1 AFTER schema.sql has run, so
+    # that a mid-bootstrap crash leaves the DB unstamped and next startup
+    # retries the whole legacy path cleanly (REQ-LEG-2).
+    db.execute(SCHEMA_VERSION_DDL)
     db.commit()

@@ -1,9 +1,5 @@
-"""App lifecycle operations: clone, deploy, start, stop, reload, validate.
-
-Extracted from routes/apps.py — no HTTP/Quart dependencies.
-"""
-
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -20,20 +16,24 @@ import httpx
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
+from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
 from compute_space.core.containers import run_container
 from compute_space.core.data import provision_data
+from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.permissions import grant_permissions as grant_permissions_fn
+from compute_space.core.permissions_v2 import grant_permission_v2
 from compute_space.core.ports import allocate_port
 from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
+from compute_space.core.services_v2 import register_v2_service_providers
 
 RESERVED_PATHS = {
     "/",
@@ -118,10 +118,10 @@ async def clone_and_read_manifest(
                 manifest = parse_manifest(clone_dir)
                 return manifest, clone_dir, None
             except ValueError as e:
-                shutil.rmtree(tmp_parent, ignore_errors=True)
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
                 return None, None, str(e)
             except Exception as e:
-                shutil.rmtree(tmp_parent, ignore_errors=True)
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
                 return None, None, f"Copy failed: {e}"
 
     if github_token:
@@ -136,7 +136,7 @@ async def clone_and_read_manifest(
         clone_cmd.extend([clone_url, clone_dir])
         result = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
             return None, None, f"Git clone failed: {result.stderr.strip()}"
         # If we cloned with a token, reset the remote URL so the token isn't persisted
         if github_token and clone_url != base_url:
@@ -150,14 +150,14 @@ async def clone_and_read_manifest(
         try:
             manifest = parse_manifest(clone_dir)
         except ValueError as e:
-            shutil.rmtree(tmp_parent, ignore_errors=True)
+            rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
             return None, None, str(e)
         return manifest, clone_dir, None
     except subprocess.TimeoutExpired:
-        shutil.rmtree(tmp_parent, ignore_errors=True)
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
         return None, None, "Git clone timed out"
     except Exception as e:
-        shutil.rmtree(tmp_parent, ignore_errors=True)
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
         return None, None, f"Clone failed: {e}"
 
 
@@ -206,6 +206,7 @@ def insert_and_deploy(
     config: Config,
     db: sqlite3.Connection,
     grant_permissions: set[str],
+    grant_permissions_v2: bool = False,
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
@@ -215,6 +216,8 @@ def insert_and_deploy(
     Returns app_name. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
+    grant_permissions_v2: if True, grant all [[permissions_v2]] entries
+        from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     """
     if app_name is None:
@@ -283,9 +286,10 @@ def insert_and_deploy(
         )
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
+        app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token) VALUES (?, ?)",
-            (app_name, app_token),
+            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
+            (app_name, app_token_hash),
         )
 
     for svc_name in manifest.provides_services:
@@ -293,6 +297,8 @@ def insert_and_deploy(
             "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
             (svc_name, app_name),
         )
+
+    register_v2_service_providers(app_name, manifest, db)
 
     db.commit()
 
@@ -312,6 +318,15 @@ def insert_and_deploy(
     unknown = grant_permissions - all_manifest_keys
     if unknown:
         logger.warning("App %s granted unknown permissions not in manifest: %s", app_name, unknown)
+
+    if grant_permissions_v2 and manifest.permissions_v2:
+        for perm in manifest.permissions_v2:
+            for grant_payload in perm.grants:
+                grant_permission_v2(
+                    consumer_app=app_name,
+                    service_url=perm.service,
+                    grant_payload=grant_payload,
+                )
 
     threading.Thread(
         target=deploy_app_background,
@@ -342,8 +357,9 @@ def deploy_app_background(
     try:
         storage.check_before_deploy(config)
 
-        # Retry Docker builds for transient failures (daemon not ready yet,
-        # network blip during image pull, etc.).
+        # Retry container builds for transient failures.  Cache-corrupt
+        # failures re-raise immediately — retrying can't fix them and
+        # the dashboard needs the marker to surface the remediation.
         max_build_attempts = 3
         image_tag = ""
         for attempt in range(1, max_build_attempts + 1):
@@ -355,11 +371,13 @@ def deploy_app_background(
                     temp_data_dir=config.temporary_data_dir,
                 )
                 break
-            except RuntimeError:
+            except RuntimeError as e:
+                if BUILD_CACHE_CORRUPT_MARKER in str(e):
+                    raise
                 if attempt == max_build_attempts:
                     raise
                 logger.warning(
-                    "Docker build attempt %d/%d for %s failed, retrying in %ds",
+                    "Container build attempt %d/%d for %s failed, retrying in %ds",
                     attempt,
                     max_build_attempts,
                     app_name,
@@ -382,7 +400,7 @@ def deploy_app_background(
             port_mappings=port_mappings,
         )
         db.execute(
-            "UPDATE apps SET docker_container_id = ? WHERE name = ?",
+            "UPDATE apps SET container_id = ? WHERE name = ?",
             (container_id, app_name),
         )
         db.commit()
@@ -507,9 +525,10 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
+        app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token) VALUES (?, ?)",
-            (app_name, app_token),
+            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
+            (app_name, app_token_hash),
         )
 
     db.execute("DELETE FROM service_providers WHERE app_name = ?", (app_name,))
@@ -518,6 +537,8 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
             "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
             (svc_name, app_name),
         )
+
+    register_v2_service_providers(app_name, manifest, db)
 
     # Load resolved port mappings from DB (preserves host_port assignments)
     port_mappings = _load_port_mappings_from_db(app_name, db)
@@ -545,7 +566,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         port_mappings=port_mappings,
     )
     db.execute(
-        "UPDATE apps SET docker_container_id = ? WHERE name = ?",
+        "UPDATE apps SET container_id = ? WHERE name = ?",
         (container_id, app_name),
     )
     db.commit()
@@ -672,7 +693,9 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
                             pass
             if source_dir and os.path.isdir(source_dir):
                 if os.path.exists(repo_path):
-                    shutil.rmtree(repo_path)
+                    # Git clones can leave read-only objects that plain
+                    # shutil.rmtree refuses; fall back to sudo rm -rf.
+                    rmtree_with_sudo_fallback(repo_path, raise_on_failure=True)
                 shutil.copytree(source_dir, repo_path)
                 logger.info("Re-copied %s from %s", app_name, source_dir)
 
