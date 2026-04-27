@@ -29,17 +29,54 @@ function saveName() {
 
 // ─── App Actions (stop, reload, remove) ───
 
-function appAction(url, data, isRemove) {
+function setActionsBusy(label) {
+  var container = document.getElementById('app-action-buttons');
+  if (!container) return null;
+  var buttons = container.querySelectorAll('button');
+  buttons.forEach(function(b) { b.disabled = true; });
+  var msg = document.getElementById('app-action-msg');
+  if (msg) {
+    msg.style.color = '#d97706';
+    msg.textContent = label + '\u2026';
+  }
+  return function clear(errText) {
+    buttons.forEach(function(b) { b.disabled = false; });
+    if (msg) {
+      if (errText) {
+        msg.style.color = '#dc3545';
+        msg.textContent = errText;
+      } else {
+        msg.textContent = '';
+      }
+    }
+  };
+}
+
+function appAction(url, data, opts) {
+  // opts: {isRemove: bool, label: string}. For backward compat, opts may be passed
+  // as a boolean meaning isRemove (the old signature used `appAction(url, data, true)`).
+  if (opts === true || opts === false) opts = {isRemove: opts};
+  opts = opts || {};
+  var label = opts.label || (opts.isRemove ? 'Removing' : 'Working');
   var fd = new FormData();
   if (data) Object.keys(data).forEach(function(k) { fd.append(k, data[k]); });
+  var clear = setActionsBusy(label);
   fetch(url, {method: 'POST', credentials: 'same-origin', body: fd})
-    .then(function(r) { return r.json(); })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
-      if (res.error) { alert(res.error); return; }
-      if (isRemove) { window.location.href = '/dashboard'; }
+      if (!res.ok || (res.data && res.data.error)) {
+        var msg = (res.data && res.data.error) || 'Request failed';
+        if (clear) clear(msg);
+        alert(msg);
+        return;
+      }
+      if (opts.isRemove) { window.location.href = '/dashboard'; }
       else { location.reload(); }
     })
-    .catch(function() { alert('Request failed'); });
+    .catch(function() {
+      if (clear) clear('Request failed');
+      alert('Request failed');
+    });
 }
 
 // ─── Permissions ───
@@ -87,7 +124,7 @@ function clearCacheAndReload() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.ok) { alert('Failed to clear cache: ' + (data.error || 'unknown error')); return; }
-            appAction(config.reloadAppUrl);
+            appAction(config.reloadAppUrl, null, {label: 'Reloading'});
         })
         .catch(function() { alert('Failed to clear cache'); });
 }

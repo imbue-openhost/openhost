@@ -179,24 +179,76 @@ setInterval(updateSshStatus, 5000);
 
 // ─── App List ───
 
-function appAction(name, action, formData) {
+// Per-app pending action labels (e.g. 'Removing', 'Reloading'). Used to keep
+// the in-flight indicator visible across polling refreshes until the request
+// finishes (or the row disappears, in the case of remove).
+var pendingAppActions = {};
+
+function setPendingAction(name, label) {
+  pendingAppActions[name] = label;
+  var row = document.querySelector('tr[data-app="' + name + '"]');
+  if (row) {
+    var actionsEl = row.querySelector('.app-actions');
+    if (actionsEl) actionsEl.innerHTML = renderPendingActions(label);
+  }
+}
+
+function clearPendingAction(name) {
+  delete pendingAppActions[name];
+}
+
+function refreshApps() {
+  if (!config.apiAppsUrl) return;
+  fetch(config.apiAppsUrl)
+    .then(function(r) { return r.json(); })
+    .then(updateApps)
+    .catch(function() { /* swallow: next poll will refresh */ });
+}
+
+function appAction(name, action, formData, pendingLabel) {
+  setPendingAction(name, pendingLabel || 'Working');
   var opts = {method: 'POST', credentials: 'same-origin'};
   if (formData) { opts.body = formData; }
-  fetch(action + '/' + name, opts);
+  return fetch(action + '/' + name, opts)
+    .then(function(r) {
+      return r.json().then(function(d) { return {ok: r.ok, data: d}; },
+                          function() { return {ok: r.ok, data: {}}; });
+    })
+    .then(function(res) {
+      clearPendingAction(name);
+      if (!res.ok || (res.data && res.data.error)) {
+        var msg = (res.data && res.data.error) || 'Request failed';
+        alert(msg);
+      }
+      // Trigger an immediate refresh so the row updates without waiting for the poll.
+      refreshApps();
+    })
+    .catch(function() {
+      clearPendingAction(name);
+      alert('Request failed');
+      refreshApps();
+    });
 }
 
 function reloadAndUpdate(name) {
   var fd = new FormData();
   fd.append('update', '1');
-  appAction(name, 'reload_app', fd);
+  appAction(name, 'reload_app', fd, 'Reloading');
+}
+
+function renderPendingActions(label) {
+  return '<span style="color:#d97706;font-style:italic;">' + label + '&hellip;</span>';
 }
 
 function renderActions(name, status) {
+  if (pendingAppActions[name]) {
+    return renderPendingActions(pendingAppActions[name]);
+  }
   var detailsLink = '<a href="app_detail/' + name + '">Details</a> ';
   var btns = '';
-  btns = '<button class="btn" onclick="appAction(\'' + name + '\', \'reload_app\')">Reload</button> '
+  btns = '<button class="btn" onclick="appAction(\'' + name + '\', \'reload_app\', null, \'Reloading\')">Reload</button> '
        + '<button class="btn" onclick="reloadAndUpdate(\'' + name + '\')">Reload &amp; Update</button> '
-       + '<button class="btn btn-danger" onclick="if(confirm(\'Remove ' + name + ' and delete all data permanently?\')) appAction(\'' + name + '\', \'remove_app\')">Remove</button> ';
+       + '<button class="btn btn-danger" onclick="if(confirm(\'Remove ' + name + ' and delete all data permanently?\')) appAction(\'' + name + '\', \'remove_app\', null, \'Removing\')">Remove</button> ';
   return detailsLink + btns;
 }
 
@@ -204,7 +256,12 @@ function updateApps(data) {
   document.querySelectorAll('tr[data-app]').forEach(function(row) {
     var name = row.getAttribute('data-app');
     var info = data[name];
-    if (!info) { row.style.display = 'none'; return; }
+    if (!info) {
+      // App is gone from the API — drop any pending state and hide the row.
+      clearPendingAction(name);
+      row.style.display = 'none';
+      return;
+    }
     row.style.display = '';
     var statusEl = row.querySelector('.app-status');
     var actionsEl = row.querySelector('.app-actions');
@@ -217,10 +274,8 @@ function updateApps(data) {
 }
 
 if (config.apiAppsUrl) {
-  fetch(config.apiAppsUrl).then(function(r) { return r.json(); }).then(updateApps);
-  setInterval(function() {
-    fetch(config.apiAppsUrl).then(function(r) { return r.json(); }).then(updateApps);
-  }, 3000);
+  refreshApps();
+  setInterval(refreshApps, 3000);
 }
 
 // ─── API Tokens ───
