@@ -2,10 +2,10 @@
 
 Reports disk usage totals and per-app breakdowns for the dashboard.
 When ``storage_min_free_mb`` is configured (> 0), the storage guard runs as a
-daemon thread that periodically checks persistent storage free space and stops
-apps when free space drops below the threshold.  It can be paused from the
-dashboard so a user can start one app (e.g. a file browser) to clean up data
-before re-enabling enforcement.
+daemon thread that periodically checks disk free space and stops apps when free
+space drops below the threshold.  It can be paused from the dashboard so a user
+can start one app (e.g. a file browser) to clean up data before re-enabling
+enforcement.
 """
 
 from __future__ import annotations
@@ -104,10 +104,10 @@ def storage_min_free_bytes(config: Config) -> int | None:
     return limit * _MIB
 
 
-def persistent_free_bytes(config: Config) -> int:
-    """Return free bytes on the persistent disk."""
+def disk_free_bytes(config: Config) -> int:
+    """Return free bytes on the data disk."""
     _ensure_storage_roots(config)
-    return shutil.disk_usage(config.persistent_data_dir).free
+    return shutil.disk_usage(config.data_root_dir).free
 
 
 def openhost_data_usage_bytes(config: Config) -> int:
@@ -139,7 +139,7 @@ def _check_min_free(config: Config) -> tuple[int, int] | None:
     min_free = storage_min_free_bytes(config)
     if min_free is None:
         return None
-    free = persistent_free_bytes(config)
+    free = disk_free_bytes(config)
     if free < min_free:
         return free, min_free
     return None
@@ -155,30 +155,26 @@ def check_before_deploy(config: Config) -> None:
     result = _check_min_free(config)
     if result is not None:
         free, min_free = result
-        raise RuntimeError(
-            f"Persistent storage too low ({format_bytes(free)} free, {format_bytes(min_free)} required)"
-        )
+        raise RuntimeError(f"Storage too low ({format_bytes(free)} free, {format_bytes(min_free)} required)")
 
 
 def storage_status(config: Config) -> dict[str, object]:
-    """Return disk totals and usage for dashboard/API."""
+    """Return disk totals and usage for dashboard/API.
+
+    Both persistent and temporary data live on the same disk (under
+    ``data_root_dir``), so we report a single unified disk metric.
+    """
     _ensure_storage_roots(config)
 
-    persistent = shutil.disk_usage(config.persistent_data_dir)
-    temporary = shutil.disk_usage(config.temporary_data_dir)
+    disk = shutil.disk_usage(config.data_root_dir)
 
     min_free = storage_min_free_bytes(config)
 
     return {
-        "persistent": {
-            "total_bytes": persistent.total,
-            "used_bytes": persistent.used,
-            "free_bytes": persistent.free,
-        },
-        "temporary": {
-            "total_bytes": temporary.total,
-            "used_bytes": temporary.used,
-            "free_bytes": temporary.free,
+        "disk": {
+            "total_bytes": disk.total,
+            "used_bytes": disk.used,
+            "free_bytes": disk.free,
         },
         "openhost_data_used_bytes": openhost_data_usage_bytes(config),
         "app_data_used_bytes": app_data_usage_bytes(config),
@@ -203,7 +199,7 @@ def _stop_app_process_safe(row: sqlite3.Row) -> None:
 
 
 def enforce_storage_guard(config: Config) -> None:
-    """Enforce minimum free space on persistent storage.
+    """Enforce minimum free disk space.
 
     If free space is below the threshold and the guard is not paused,
     stops all running apps.
@@ -214,7 +210,7 @@ def enforce_storage_guard(config: Config) -> None:
 
     free, min_free = result
     logger.warning(
-        "Persistent storage low (%s free, %s required)",
+        "Storage low (%s free, %s required)",
         format_bytes(free),
         format_bytes(min_free),
     )
@@ -231,7 +227,7 @@ def enforce_storage_guard(config: Config) -> None:
             return
 
         for row in rows:
-            detail = "Persistent storage too low. Free space by removing app data or resizing disks."
+            detail = "Storage too low. Free space by removing app data or resizing disks."
             logger.warning("Stopping app %s due to low storage", row["name"])
             _stop_app_process_safe(row)
             db.execute(

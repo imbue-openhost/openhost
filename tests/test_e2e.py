@@ -452,8 +452,14 @@ class TestSelfHost:
         r = session.get(f"{router_url}/api/storage-status", timeout=10)
         assert r.status_code == 200
         data = r.json()
-        # Should have disk usage information
         assert isinstance(data, dict)
+        # Unified disk metric (no separate persistent/temporary keys)
+        assert "disk" in data
+        assert "total_bytes" in data["disk"]
+        assert "used_bytes" in data["disk"]
+        assert "free_bytes" in data["disk"]
+        assert "persistent" not in data
+        assert "temporary" not in data
 
     def test_12b_app_logs(self, session, router_url):
         """GET /app_logs/<app_name> returns log content."""

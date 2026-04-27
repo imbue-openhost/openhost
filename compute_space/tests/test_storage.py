@@ -27,17 +27,22 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
     with open(os.path.join(app_data, "blob.bin"), "wb") as f:
         f.write(b"x" * (512 * 1024))
 
+    calls = []
+
     def fake_disk_usage(path):
-        if path == config.persistent_data_dir:
-            return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
-        return usage(total=5 * 1024**3, used=2 * 1024**3, free=3 * 1024**3)
+        calls.append(path)
+        return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
-    assert status["persistent"]["total_bytes"] == 10 * 1024**3
-    assert status["temporary"]["total_bytes"] == 5 * 1024**3
+    assert config.data_root_dir in calls, "storage_status should query data_root_dir"
+    assert status["disk"]["total_bytes"] == 10 * 1024**3
+    assert status["disk"]["used_bytes"] == 4 * 1024**3
+    assert status["disk"]["free_bytes"] == 6 * 1024**3
+    assert "persistent" not in status
+    assert "temporary" not in status
     assert status["openhost_data_used_bytes"] > 0
     assert status["app_data_used_bytes"] > 0
     assert status["storage_min_free_bytes"] is None
@@ -49,17 +54,37 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
     config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     usage = namedtuple("usage", ["total", "used", "free"])
 
+    calls = []
+
     def fake_disk_usage(path):
-        if path == config.persistent_data_dir:
-            return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
-        return usage(total=5 * 1024**3, used=2 * 1024**3, free=3 * 1024**3)
+        calls.append(path)
+        return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
+    assert config.data_root_dir in calls, "storage_status should query data_root_dir"
     assert status["storage_min_free_bytes"] == 1000 * 1024 * 1024
     assert status["storage_low"] is False  # 6 GiB free > 1000 MiB required
+
+
+def test_disk_free_bytes_uses_data_root_dir(tmp_path, monkeypatch):
+    config = _make_test_config(tmp_path)
+    usage = namedtuple("usage", ["total", "used", "free"])
+
+    calls = []
+
+    def fake_disk_usage(path):
+        calls.append(path)
+        return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
+
+    monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
+
+    result = storage.disk_free_bytes(config)
+
+    assert result == 6 * 1024**3
+    assert config.data_root_dir in calls, "disk_free_bytes should query data_root_dir"
 
 
 def test_check_before_deploy_noop_without_min_free(tmp_path):
@@ -77,7 +102,7 @@ def test_check_before_deploy_raises_when_low(tmp_path, monkeypatch):
         return usage(total=10 * 1024**3, used=10 * 1024**3 - 100 * 1024**2, free=100 * 1024**2)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
-    with pytest.raises(RuntimeError, match="too low"):
+    with pytest.raises(RuntimeError, match="Storage too low"):
         storage.check_before_deploy(config)
 
 
@@ -173,7 +198,7 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
 
     stopped = []
     monkeypatch.setattr(storage, "storage_low", lambda _c: True)
-    monkeypatch.setattr(storage, "persistent_free_bytes", lambda _c: 50 * 1024 * 1024)
+    monkeypatch.setattr(storage, "disk_free_bytes", lambda _c: 50 * 1024 * 1024)
     monkeypatch.setattr(storage, "_stop_app_process_safe", lambda row: stopped.append(row["name"]))
 
     storage.enforce_storage_guard(config)
@@ -202,7 +227,7 @@ def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
     db.close()
 
     monkeypatch.setattr(storage, "storage_low", lambda _c: True)
-    monkeypatch.setattr(storage, "persistent_free_bytes", lambda _c: 50 * 1024 * 1024)
+    monkeypatch.setattr(storage, "disk_free_bytes", lambda _c: 50 * 1024 * 1024)
 
     storage.set_guard_paused(True)
     try:

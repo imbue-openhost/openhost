@@ -31,7 +31,7 @@
 ### Where data actually lives
 
 - persistent data (app_data, router_data) lives in the configured data directory
-- temp data (app_temp_data) should be in a separate location, so that we can only back up the persistent data
+- temp data (app_temp_data) lives in a separate subdirectory on the same disk, so that backups can target only the persistent data
 
 ### permissions
 

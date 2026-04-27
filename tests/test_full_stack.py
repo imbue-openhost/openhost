@@ -506,6 +506,12 @@ class TestStorageAndSystem:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, dict)
+        assert "disk" in data
+        assert "total_bytes" in data["disk"]
+        assert "used_bytes" in data["disk"]
+        assert "free_bytes" in data["disk"]
+        assert "persistent" not in data
+        assert "temporary" not in data
 
     def test_app_logs(self, test_app_deployed):
         s = test_app_deployed["session"]
