@@ -1,16 +1,13 @@
 ---
-# Rsync repo code and ACME key to server.
+# Clone repo from GitHub and optionally checkout a specific commit.
+# Pass -e openhost_commit=<sha> to pin a specific version.
 
-# TODO: maybe change this to a git clone, so the updater will work out of the box.
-# could also sync the .git dir, but i'd worry about leaking something by accident.
-- name: Sync repo code
-  synchronize:
-    src: "{{ playbook_dir }}/../"
-    dest: /home/host/openhost/
-    rsync_opts:
-      - "--exclude=.git"
-      - "--exclude=.pixi"
-      - "--filter=':- .gitignore'"
+- name: Clone or update openhost repo
+  ansible.builtin.git:
+    repo: https://github.com/imbue-openhost/openhost.git
+    dest: /home/host/openhost
+    version: "{{ openhost_commit | default('main') }}"
+    force: true
 
 - name: Copy ACME account key
   copy:
