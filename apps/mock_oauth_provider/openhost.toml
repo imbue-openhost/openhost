@@ -1,0 +1,16 @@
+[app]
+name = "mock-oauth-provider"
+version = "0.1.0"
+description = "Mock OAuth provider for e2e testing"
+hidden = true
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[routing]
+public_paths = ["/authorize", "/oauth/token", "/oauth/revoke", "/userinfo", "/api/emails", "/reset", "/health"]
+
+[resources]
+memory_mb = 128
+cpu_millicores = 100
