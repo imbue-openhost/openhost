@@ -252,13 +252,17 @@ def _wait_ssh(key: Path, timeout: int = SSH_TIMEOUT_S) -> None:
 
 
 def _run_ansible(key: Path) -> None:
+    # Use a non-127.0.0.1 alias so ansible's synchronize module doesn't
+    # short-circuit to local rsync (which would write to the Mac fs).
+    inv = CACHE_DIR / "inventory.ini"
+    inv.write_text(f"[vm]\nopenhost-test ansible_host=127.0.0.1 ansible_port={SSH_PORT}\n")
     env = os.environ.copy()
     env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
     cmd = [
         _require("ansible-playbook"),
         str(ANSIBLE_DIR / "setup.yml"),
         "-i",
-        f"127.0.0.1:{SSH_PORT},",
+        str(inv),
         "-e",
         "domain=test.local",
         "-e",
@@ -266,6 +270,8 @@ def _run_ansible(key: Path) -> None:
         "-e",
         f"ansible_ssh_private_key_file={key}",
         "--ssh-extra-args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        "--skip-tags",
+        "acme_key",
     ]
     subprocess.check_call(cmd, env=env)
 

@@ -19,3 +19,5 @@
     owner: host
     group: host
     mode: "0600"
+  tags:
+    - acme_key
