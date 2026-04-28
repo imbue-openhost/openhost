@@ -25,9 +25,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
 
-  # Rootless-podman test suites.  Re-runs compute_space and full-stack tests
-  # on a runner with rootless podman installed, so any suite that shells out
-  # to podman (even via mocks) gets an honest environment.
+  # Runs full test suite, including containerized tests.
   test-podman:
     runs-on: ubuntu-latest
     steps:
