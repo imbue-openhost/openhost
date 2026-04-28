@@ -241,12 +241,12 @@ function renderPendingActions(label) {
 }
 
 function renderActions(name, status) {
-  // Server-reported 'removing' is the authoritative source — it survives
-  // page reloads and second tabs. Render it in place of the action
-  // buttons even if we have no client-side pending state for this row.
-  if (status === 'removing') {
-    return renderPendingActions('Removing');
-  }
+  // We deliberately don't replace the buttons when status === 'removing'.
+  // The status column already reflects 'removing' on the very next poll,
+  // which is fast enough that a separate Removing... in-flight indicator
+  // in the actions column adds noise without adding information. The
+  // buttons stay rendered; routes guard against acting on a removing
+  // row server-side (409), so any stray click is a safe no-op.
   if (pendingAppActions[name]) {
     return renderPendingActions(pendingAppActions[name]);
   }
