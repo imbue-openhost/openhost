@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Annotated
 
 import attrs
@@ -443,6 +444,70 @@ class InstanceCmd:
     ) -> None:
         """Print the stored API token for an instance."""
         print(cfg.token)
+
+    @cappa.command(name="configure-ssh-key")
+    def configure_ssh_key(
+        self,
+        name: Annotated[str, cappa.Arg(help="Hostname or alias")],
+        key_path: Annotated[str, cappa.Arg(help="Path to SSH private key")],
+    ) -> None:
+        """Store an SSH key path for an instance."""
+        resolved = Path(key_path).expanduser().resolve()
+        if not resolved.exists():
+            print(f"Key file not found: {resolved}", file=sys.stderr)
+            raise SystemExit(1)
+
+        multi = _load_or_exit()
+        try:
+            hostname = multi._resolve_name(name)
+        except config.InstanceNotFoundError as e:
+            print(str(e), file=sys.stderr)
+            raise SystemExit(1) from None
+        old = multi.instances[hostname]
+        updated = config.Instance(
+            hostname=old.hostname,
+            token=old.token,
+            alias=old.alias,
+            ssh_key=str(resolved),
+        )
+        multi.upsert_instance(updated).save()
+        print(f"SSH key for {hostname} set to {resolved}")
+
+    @cappa.command(name="ssh")
+    def ssh(
+        self,
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+        args: Annotated[list[str] | None, cappa.Arg(num_args=-1, help="Extra arguments passed to ssh")] = None,
+    ) -> None:
+        """SSH into an instance as the host user."""
+        ssh_bin = shutil.which("ssh")
+        if not ssh_bin:
+            print("ssh not found on PATH", file=sys.stderr)
+            raise SystemExit(1)
+
+        cmd = [ssh_bin]
+        if cfg.ssh_key:
+            cmd += ["-i", cfg.ssh_key]
+        cmd += [f"host@{cfg.hostname}", *(args or [])]
+        raise SystemExit(subprocess.call(cmd))
+
+    @cappa.command(name="rsync")
+    def rsync(
+        self,
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+        args: Annotated[list[str] | None, cappa.Arg(num_args=-1, help="Arguments passed to rsync")] = None,
+    ) -> None:
+        """Run rsync against an instance over SSH."""
+        rsync_bin = shutil.which("rsync")
+        if not rsync_bin:
+            print("rsync not found on PATH", file=sys.stderr)
+            raise SystemExit(1)
+
+        ssh_cmd = "ssh"
+        if cfg.ssh_key:
+            ssh_cmd = f"ssh -i {cfg.ssh_key}"
+        cmd = [rsync_bin, "-e", ssh_cmd, *(args or [])]
+        raise SystemExit(subprocess.call(cmd))
 
 
 @cappa.command(name="curl", help="curl with your OpenHost bearer token injected.")
