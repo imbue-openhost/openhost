@@ -110,12 +110,11 @@ class MultiConfig:
         """Return a new config with the given instance added or replaced.
 
         If *set_default* is True, the new instance becomes the default.
-        Otherwise the existing default is preserved (or set to *name* if
-        there is no default yet).
+        Otherwise the existing default is preserved.
         """
         instances = dict(self.instances)
         instances[name] = inst
-        default = name if set_default else (self.default_instance or name)
+        default = name if set_default else self.default_instance
         return self.evolve(instances=instances, default_instance=default)
 
     def remove_instance(self, name: str) -> Self:
@@ -146,8 +145,6 @@ class MultiConfig:
         """Resolve which instance to use.
 
         Priority: explicit name > OH_INSTANCE env var > default_instance.
-        If none of these are set and only one instance is configured, it is
-        selected automatically.
         """
         name = instance_name
         if not name:
@@ -156,13 +153,13 @@ class MultiConfig:
             name = self.default_instance
 
         if not name:
-            if len(self.instances) == 1:
-                name = next(iter(self.instances))
-            else:
-                raise InstanceNotFoundError(
-                    f"No instance specified. Use --instance, OH_INSTANCE env var, or set "
-                    f"default_instance in config. Available: {self._available_names}"
-                )
+            if not self.instances:
+                raise InstanceNotFoundError("No instances configured. Run 'oh instance login' first.")
+            raise InstanceNotFoundError(
+                "No default instance set. Use --instance <name>, or set a default with:\n"
+                "  oh instance set-default <name>\n"
+                "Run 'oh instance list' to see configured instances."
+            )
 
         return self.get_instance(name)
 
