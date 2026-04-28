@@ -18,34 +18,34 @@ def tmp_config(tmp_path: Path) -> Path:
     return tmp_path / "config.toml"
 
 
+def _inst(hostname: str = "a.com", token: str = "t", alias: str | None = None) -> Instance:
+    return Instance(hostname=hostname, token=token, alias=alias)
+
+
 def _make_multi(
     instances: dict[str, Instance] | None = None,
     default: str | None = None,
 ) -> MultiConfig:
-    return MultiConfig(
-        instances=instances or {},
-        default_instance=default,
-    )
+    return MultiConfig(instances=instances or {}, default_instance=default)
 
 
 class TestInstance:
-    def test_valid_https(self) -> None:
-        inst = Instance(url="https://example.com", token="tok")
-        assert inst.url == "https://example.com"
+    def test_fields(self) -> None:
+        inst = _inst("example.com", "tok", "ex")
+        assert inst.hostname == "example.com"
         assert inst.token == "tok"
+        assert inst.alias == "ex"
 
-    def test_valid_http(self) -> None:
-        inst = Instance(url="http://localhost:8080", token="tok")
-        assert inst.url == "http://localhost:8080"
+    def test_url_property(self) -> None:
+        assert _inst("example.com").url == "https://example.com"
 
-    def test_missing_protocol_raises(self) -> None:
-        with pytest.raises(ValueError, match="URL must include protocol"):
-            Instance(url="example.com", token="tok")
+    def test_alias_defaults_none(self) -> None:
+        assert _inst("a.com").alias is None
 
     def test_frozen(self) -> None:
-        inst = Instance(url="https://a.com", token="t")
+        inst = _inst()
         with pytest.raises(AttributeError):
-            inst.url = "https://b.com"  # type: ignore[misc]
+            inst.hostname = "b.com"  # type: ignore[misc]
 
 
 class TestNormalizeUrl:
@@ -63,25 +63,27 @@ class TestMultiConfigSaveLoad:
     def test_roundtrip(self, tmp_config: Path) -> None:
         original = _make_multi(
             instances={
-                "a": Instance(url="https://a.com", token="tok-a"),
-                "b": Instance(url="https://b.com", token="tok-b"),
+                "a.com": _inst("a.com", "tok-a", alias="a"),
+                "b.com": _inst("b.com", "tok-b"),
             },
-            default="a",
+            default="a.com",
         )
         original.save(tmp_config)
         loaded = MultiConfig.load(tmp_config)
-        assert loaded.default_instance == "a"
+        assert loaded.default_instance == "a.com"
         assert len(loaded.instances) == 2
-        assert loaded.instances["a"].url == "https://a.com"
-        assert loaded.instances["b"].token == "tok-b"
+        assert loaded.instances["a.com"].url == "https://a.com"
+        assert loaded.instances["a.com"].alias == "a"
+        assert loaded.instances["b.com"].token == "tok-b"
+        assert loaded.instances["b.com"].alias is None
 
     def test_load_legacy_format(self, tmp_config: Path) -> None:
         with open(tmp_config, "wb") as f:
             tomli_w.dump({"url": "https://old.com", "token": "old-tok"}, f)
         loaded = MultiConfig.load(tmp_config)
-        assert loaded.default_instance == "default"
-        assert loaded.instances["default"].url == "https://old.com"
-        assert loaded.instances["default"].token == "old-tok"
+        assert loaded.default_instance == "old.com"
+        assert loaded.instances["old.com"].url == "https://old.com"
+        assert loaded.instances["old.com"].token == "old-tok"
 
     def test_load_missing_file(self, tmp_config: Path) -> None:
         with pytest.raises(ConfigFileNotFoundError, match="not found"):
@@ -112,215 +114,149 @@ class TestMultiConfigSaveLoad:
 
     def test_save_creates_parent_dirs(self, tmp_path: Path) -> None:
         path = tmp_path / "nested" / "dir" / "config.toml"
-        _make_multi(
-            instances={"x": Instance(url="https://x.com", token="t")},
-            default="x",
-        ).save(path)
+        _make_multi(instances={"x.com": _inst("x.com")}, default="x.com").save(path)
         loaded = MultiConfig.load(path)
-        assert loaded.instances["x"].url == "https://x.com"
+        assert loaded.instances["x.com"].hostname == "x.com"
 
 
 class TestMultiConfigResolve:
     def test_explicit_name(self) -> None:
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
-        assert multi.resolve(instance_name="b").url == "https://b.com"
+        assert multi.resolve(instance_name="b.com").url == "https://b.com"
+
+    def test_resolve_by_alias(self) -> None:
+        multi = _make_multi(
+            instances={"a.com": _inst("a.com", alias="dev")},
+            default="a.com",
+        )
+        assert multi.resolve(instance_name="dev").hostname == "a.com"
 
     def test_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
-        monkeypatch.setenv("OH_INSTANCE", "b")
+        monkeypatch.setenv("OH_INSTANCE", "b.com")
         assert multi.resolve().url == "https://b.com"
 
     def test_default_instance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OH_INSTANCE", raising=False)
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
         assert multi.resolve().url == "https://a.com"
 
     def test_no_default_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OH_INSTANCE", raising=False)
-        multi = _make_multi(
-            instances={"only": Instance(url="https://only.com", token="t")},
-        )
+        multi = _make_multi(instances={"only.com": _inst("only.com")})
         with pytest.raises(InstanceNotFoundError, match="No default instance set"):
             multi.resolve()
 
     def test_nonexistent_name_raises(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-            default="a",
-        )
+        multi = _make_multi(instances={"a.com": _inst("a.com")}, default="a.com")
         with pytest.raises(InstanceNotFoundError, match="not found"):
             multi.resolve(instance_name="nope")
 
     def test_explicit_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
-        monkeypatch.setenv("OH_INSTANCE", "a")
-        assert multi.resolve(instance_name="b").url == "https://b.com"
+        monkeypatch.setenv("OH_INSTANCE", "a.com")
+        assert multi.resolve(instance_name="b.com").url == "https://b.com"
 
     def test_env_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
-        monkeypatch.setenv("OH_INSTANCE", "b")
+        monkeypatch.setenv("OH_INSTANCE", "b.com")
         assert multi.resolve().url == "https://b.com"
-
-
-class TestMultiConfigEvolve:
-    def test_evolve_default(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-            default="a",
-        )
-        evolved = multi.evolve(default_instance="b")
-        assert evolved.default_instance == "b"
-        assert multi.default_instance == "a"  # original unchanged
-
-    def test_evolve_instances(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-        )
-        new_instances = dict(multi.instances)
-        new_instances["b"] = Instance(url="https://b.com", token="t2")
-        evolved = multi.evolve(instances=new_instances)
-        assert "b" in evolved.instances
-        assert "b" not in multi.instances  # original unchanged
 
 
 class TestUpsertInstance:
     def test_add_to_empty_no_default(self) -> None:
-        multi = _make_multi()
-        result = multi.upsert_instance("a", Instance(url="https://a.com", token="t"))
-        assert "a" in result.instances
+        result = _make_multi().upsert_instance(_inst("a.com"))
+        assert "a.com" in result.instances
         assert result.default_instance is None
 
     def test_set_default_true(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-            default="a",
-        )
-        result = multi.upsert_instance("b", Instance(url="https://b.com", token="t"), set_default=True)
-        assert result.default_instance == "b"
+        multi = _make_multi(instances={"a.com": _inst("a.com")}, default="a.com")
+        result = multi.upsert_instance(_inst("b.com"), set_default=True)
+        assert result.default_instance == "b.com"
 
     def test_preserves_existing_default(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-            default="a",
-        )
-        result = multi.upsert_instance("b", Instance(url="https://b.com", token="t"))
-        assert result.default_instance == "a"
-        assert "b" in result.instances
+        multi = _make_multi(instances={"a.com": _inst("a.com")}, default="a.com")
+        result = multi.upsert_instance(_inst("b.com"))
+        assert result.default_instance == "a.com"
+        assert "b.com" in result.instances
 
     def test_replaces_existing_instance(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="old")},
-            default="a",
-        )
-        result = multi.upsert_instance("a", Instance(url="https://a.com", token="new"))
-        assert result.instances["a"].token == "new"
+        multi = _make_multi(instances={"a.com": _inst("a.com", "old")}, default="a.com")
+        result = multi.upsert_instance(_inst("a.com", "new"))
+        assert result.instances["a.com"].token == "new"
 
     def test_original_unchanged(self) -> None:
         multi = _make_multi()
-        multi.upsert_instance("a", Instance(url="https://a.com", token="t"))
-        assert "a" not in multi.instances
+        multi.upsert_instance(_inst("a.com"))
+        assert "a.com" not in multi.instances
 
 
 class TestRemoveInstance:
     def test_remove_non_default(self) -> None:
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
-        result = multi.remove_instance("b")
-        assert "b" not in result.instances
-        assert result.default_instance == "a"
+        result = multi.remove_instance("b.com")
+        assert "b.com" not in result.instances
+        assert result.default_instance == "a.com"
 
-    def test_remove_default_auto_selects_new(self) -> None:
+    def test_remove_default_clears(self) -> None:
         multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-            default="a",
+            instances={"a.com": _inst("a.com"), "b.com": _inst("b.com")},
+            default="a.com",
         )
-        result = multi.remove_instance("a")
-        assert "a" not in result.instances
-        assert result.default_instance == "b"
+        result = multi.remove_instance("a.com")
+        assert "a.com" not in result.instances
+        assert result.default_instance is None
+
+    def test_remove_by_alias(self) -> None:
+        multi = _make_multi(instances={"a.com": _inst("a.com", alias="dev")})
+        result = multi.remove_instance("dev")
+        assert "a.com" not in result.instances
 
     def test_remove_last_instance(self) -> None:
-        multi = _make_multi(
-            instances={"only": Instance(url="https://only.com", token="t")},
-            default="only",
-        )
-        result = multi.remove_instance("only")
+        multi = _make_multi(instances={"only.com": _inst("only.com")}, default="only.com")
+        result = multi.remove_instance("only.com")
         assert len(result.instances) == 0
         assert result.default_instance is None
 
     def test_remove_nonexistent_raises(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-        )
+        multi = _make_multi(instances={"a.com": _inst("a.com")})
         with pytest.raises(InstanceNotFoundError, match="nope"):
             multi.remove_instance("nope")
 
     def test_original_unchanged(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-            default="a",
-        )
-        multi.remove_instance("a")
-        assert "a" in multi.instances
+        multi = _make_multi(instances={"a.com": _inst("a.com")}, default="a.com")
+        multi.remove_instance("a.com")
+        assert "a.com" in multi.instances
 
 
 class TestGetInstance:
-    def test_found(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-        )
-        assert multi.get_instance("a").url == "https://a.com"
+    def test_by_hostname(self) -> None:
+        multi = _make_multi(instances={"a.com": _inst("a.com")})
+        assert multi.get_instance("a.com").hostname == "a.com"
+
+    def test_by_alias(self) -> None:
+        multi = _make_multi(instances={"a.com": _inst("a.com", alias="dev")})
+        assert multi.get_instance("dev").hostname == "a.com"
 
     def test_not_found(self) -> None:
-        multi = _make_multi(
-            instances={"a": Instance(url="https://a.com", token="t")},
-        )
+        multi = _make_multi(instances={"a.com": _inst("a.com")})
         with pytest.raises(InstanceNotFoundError, match="nope"):
-            multi.get_instance("nope")
-
-    def test_not_found_lists_available(self) -> None:
-        multi = _make_multi(
-            instances={
-                "alpha": Instance(url="https://a.com", token="t"),
-                "beta": Instance(url="https://b.com", token="t"),
-            },
-        )
-        with pytest.raises(InstanceNotFoundError, match="alpha, beta"):
             multi.get_instance("nope")

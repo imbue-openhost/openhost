@@ -64,11 +64,6 @@ class Status:
             raise SystemExit(1) from None
 
 
-def _instance_name_from_url(url: str) -> str:
-    """Derive a short instance name from a URL, e.g. 'https://user.host.imbue.com' → 'user.host.imbue.com'."""
-    return url.replace("https://", "").replace("http://", "").rstrip("/")
-
-
 @cappa.command(name="app", help="Manage apps.")
 @attrs.define
 class AppCmd:
@@ -309,6 +304,7 @@ class InstanceCmd:
             print("No URL provided.", file=sys.stderr)
             raise SystemExit(1)
         url = config.normalize_url(url)
+        hostname = config.hostname_from_url(url)
 
         print("\nOpen this link and create an API token:")
         print(f"  {url}")
@@ -335,21 +331,26 @@ class InstanceCmd:
             raise SystemExit(1) from None
         print("ok")
 
-        name = _instance_name_from_url(url)
+        alias = input(f"\nAlias for '{hostname}' (optional, press Enter to skip): ").strip() or None
+        inst = config.Instance(hostname=hostname, token=token, alias=alias)
         multi = _load_or_create()
-        inst = config.Instance(url=url, token=token)
-        multi.upsert_instance(name, inst).save()
+        multi.upsert_instance(inst).save()
 
-        print(f"\nSaved as '{name}'.")
-        if not multi.default_instance:
-            answer = input(f"Set '{name}' as default instance? [Y/n] ").strip().lower()
-            if answer != "n":
-                _load_or_exit().evolve(default_instance=name).save()
-                print(f"Default instance set to '{name}'")
-            else:
-                print(f"Use with: oh --instance {name} <command>")
+        display_name = alias or hostname
+        print(f"\nSaved as '{hostname}'.", end="")
+        if alias:
+            print(f" Alias: '{alias}'.")
         else:
-            print(f"Use with: oh --instance {name} <command>")
+            print()
+        if not multi.default_instance:
+            answer = input(f"Set '{display_name}' as default instance? [Y/n] ").strip().lower()
+            if answer != "n":
+                _load_or_exit().evolve(default_instance=hostname).save()
+                print(f"Default instance set to '{display_name}'")
+            else:
+                print(f"Use with: oh --instance {display_name} <command>")
+        else:
+            print(f"Use with: oh --instance {display_name} <command>")
 
     @cappa.command(name="list")
     def list_instances(self) -> None:
@@ -360,34 +361,38 @@ class InstanceCmd:
             print("No instances configured.")
             return
 
-        max_name = max(len(n) for n in multi.instances)
-        for name, inst in sorted(multi.instances.items()):
+        max_name = max(len(h) for h in multi.instances)
+        for hostname, inst in sorted(multi.instances.items()):
             flags: list[str] = []
-            if name == multi.default_instance:
+            if hostname == multi.default_instance:
                 flags.append("default")
+            if inst.alias:
+                flags.append(f"alias: {inst.alias}")
             flag_str = f"  [{', '.join(flags)}]" if flags else ""
-            print(f"  {name:<{max_name}}  {inst.url}{flag_str}")
+            print(f"  {hostname:<{max_name}}{flag_str}")
 
     @cappa.command(name="add")
     def add(
         self,
-        name: Annotated[str, cappa.Arg(help="Instance name")],
-        url: Annotated[str, cappa.Arg(help="Instance URL")],
+        url: Annotated[str, cappa.Arg(help="Instance URL or hostname")],
         token: Annotated[str, cappa.Arg(help="API token")],
+        alias: Annotated[str | None, cappa.Arg(long=True, help="Short alias")] = None,
         set_default: Annotated[bool, cappa.Arg(long=True, help="Set as default instance")] = False,
     ) -> None:
         """Add a new instance to the config."""
-        url = config.normalize_url(url)
-        inst = config.Instance(url=url, token=token)
-        _load_or_create().upsert_instance(name, inst, set_default=set_default).save()
-        print(f"Added instance '{name}' ({url})")
+        hostname = config.hostname_from_url(config.normalize_url(url))
+        inst = config.Instance(hostname=hostname, token=token, alias=alias)
+        _load_or_create().upsert_instance(inst, set_default=set_default).save()
+        print(f"Added instance '{hostname}'")
+        if alias:
+            print(f"  alias: {alias}")
         if set_default:
             print("  set as default")
 
     @cappa.command(name="remove")
     def remove(
         self,
-        name: Annotated[str, cappa.Arg(help="Instance name to remove")],
+        name: Annotated[str, cappa.Arg(help="Hostname or alias")],
     ) -> None:
         """Remove an instance from the config."""
         multi = _load_or_exit()
@@ -401,17 +406,43 @@ class InstanceCmd:
     @cappa.command(name="set-default")
     def set_default(
         self,
-        name: Annotated[str, cappa.Arg(help="Instance name")],
+        name: Annotated[str, cappa.Arg(help="Hostname or alias")],
     ) -> None:
         """Set the default instance."""
         multi = _load_or_exit()
         try:
-            multi.get_instance(name)
+            hostname = multi._resolve_name(name)
         except config.InstanceNotFoundError as e:
             print(str(e), file=sys.stderr)
             raise SystemExit(1) from None
-        multi.evolve(default_instance=name).save()
+        multi.evolve(default_instance=hostname).save()
         print(f"Default instance set to '{name}'")
+
+    @cappa.command(name="alias")
+    def alias(
+        self,
+        name: Annotated[str, cappa.Arg(help="Hostname or current alias")],
+        new_alias: Annotated[str, cappa.Arg(help="Alias to set")],
+    ) -> None:
+        """Set or update an alias for an instance."""
+        multi = _load_or_exit()
+        try:
+            hostname = multi._resolve_name(name)
+        except config.InstanceNotFoundError as e:
+            print(str(e), file=sys.stderr)
+            raise SystemExit(1) from None
+        old = multi.instances[hostname]
+        updated = config.Instance(hostname=old.hostname, token=old.token, alias=new_alias)
+        multi.upsert_instance(updated).save()
+        print(f"Alias '{new_alias}' set for {hostname}")
+
+    @cappa.command(name="token")
+    def token(
+        self,
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+    ) -> None:
+        """Print the stored API token for an instance."""
+        print(cfg.token)
 
 
 @cappa.command(name="curl", help="curl with your OpenHost bearer token injected.")
