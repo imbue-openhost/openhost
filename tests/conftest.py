@@ -13,6 +13,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    # TODO: figure out how to make sure existing instance is on the same code version as the tests
     name = config.getoption("--use-existing-instance", default=None)
     if not name:
         return
