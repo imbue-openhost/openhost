@@ -115,7 +115,7 @@ jobs:
       - name: Run E2E tests
         run: |
           source "$E2E_ENV_FILE"
-          uv run pytest tests/test_e2e.py -v -s --timeout=600
+          uv run pytest tests/test_e2e.py tests/test_e2e_oauth.py -v -s --timeout=600
 
       - name: Dump logs on failure
         if: failure()

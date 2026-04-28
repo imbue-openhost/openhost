@@ -62,8 +62,8 @@ def oauth_app_url():
     proc = subprocess.Popen(
         [sys.executable, "-c", _BOOT_SCRIPT],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     try:
         _wait_for_port(port)
