@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -33,47 +34,50 @@ def _seed_app_with_children(db_path: str, app_name: str = "myapp") -> None:
     with leftover permissions / ports / tokens.
     """
     db = sqlite3.connect(db_path)
-    db.execute("PRAGMA foreign_keys = ON")
-    db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, status) "
-        "VALUES (?, '1.0', '/repo', 19500, 'removing')",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO app_databases (app_name, db_name, db_path) VALUES (?, 'main', '/data/main.db')",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?, 'http', 8080, 19501)",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO app_tokens (app_name, token_hash) VALUES (?, 'fakehash')",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO service_providers (service_name, app_name) VALUES ('s1', ?)",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) "
-        "VALUES ('https://e.x/s', ?, '1.0', '/svc')",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO permissions (consumer_app, permission_key) VALUES (?, 'k')",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO permissions_v2 (consumer_app, service_url, grant_payload) VALUES (?, 'u', '{}')",
-        (app_name,),
-    )
-    db.execute(
-        "INSERT INTO service_defaults (service_url, app_name) VALUES ('https://e.x/s', ?)",
-        (app_name,),
-    )
-    db.commit()
-    db.close()
+    try:
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, status) "
+            "VALUES (?, '1.0', '/repo', 19500, 'removing')",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO app_databases (app_name, db_name, db_path) VALUES (?, 'main', '/data/main.db')",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) "
+            "VALUES (?, 'http', 8080, 19501)",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO app_tokens (app_name, token_hash) VALUES (?, 'fakehash')",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO service_providers (service_name, app_name) VALUES ('s1', ?)",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) "
+            "VALUES ('https://e.x/s', ?, '1.0', '/svc')",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO permissions (consumer_app, permission_key) VALUES (?, 'k')",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO permissions_v2 (consumer_app, service_url, grant_payload) VALUES (?, 'u', '{}')",
+            (app_name,),
+        )
+        db.execute(
+            "INSERT INTO service_defaults (service_url, app_name) VALUES ('https://e.x/s', ?)",
+            (app_name,),
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 def _table_has_app(db_path: str, table: str, app_name: str, key_col: str = "app_name") -> bool:
@@ -193,44 +197,75 @@ def test_remove_proceeds_when_deprovision_raises(tmp_path: Path) -> None:
     assert not _table_has_app(cfg.db_path, "apps", "myapp", key_col="name")
 
 
+def test_remove_returns_quietly_when_app_already_gone(tmp_path: Path) -> None:
+    """Calling the worker for a non-existent app must be a clean no-op.
+
+    Reachable when startup recovery spawns a worker for a row that a
+    fresh user request finished removing in the same window. The worker
+    sees ``app_row is None`` and returns before invoking any teardown
+    helpers.
+    """
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    # No app seeded.
+
+    with (
+        patch("compute_space.core.apps.stop_app_process") as stop,
+        patch("compute_space.core.apps.remove_image") as rmi,
+        patch("compute_space.core.apps.deprovision_data") as full,
+        patch("compute_space.core.apps.deprovision_temp_data") as temp_only,
+    ):
+        # Must not raise.
+        remove_app_background("ghost", keep_data=False, config=cfg)
+
+    stop.assert_not_called()
+    rmi.assert_not_called()
+    full.assert_not_called()
+    temp_only.assert_not_called()
+
+
 def test_remove_records_error_when_db_delete_path_explodes(tmp_path: Path) -> None:
-    """If something *inside the worker's outer try* blows up (not just a
-    deprovision hiccup), the row should land in 'error' so the operator
-    isn't left staring at a permanent 'removing' indicator."""
+    """If the DELETE itself fails, the row should land in 'error' so
+    the operator isn't left staring at a permanent 'removing' indicator.
+
+    Stop/remove/deprovision failures are caught by inner handlers so the
+    DELETE proceeds normally; this test exercises the OUTER except
+    handler, which only fires when something escapes those inner
+    handlers — most realistically a SQLite error on the DELETE itself.
+    We trigger that by wrapping the connection so DELETE raises.
+    """
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
     _seed_app_with_children(cfg.db_path, "myapp")
 
-    # Make stop_app_process explode inside a way that's caught locally,
-    # but also make remove_image trigger something the outer except will
-    # see — easiest is to patch the sqlite3.Connection.execute used by
-    # the DELETE step. We simulate that via a side-effect on remove_image
-    # that *itself* raises a non-Exception type; instead, make the DELETE
-    # path raise by patching remove_image to mutate the connection state.
-    # Simplest: patch deprovision_data to raise BaseException so the
-    # narrow ``except Exception`` in the worker doesn't catch it and
-    # the outer ``except Exception`` records the failure. BaseException
-    # IS caught by ``except Exception:`` though. Use a custom exception
-    # raised after the deprovision try-block — patch deprovision_data
-    # to mutate a flag and then patch the DELETE step directly. The
-    # easiest reliable signal is to replace ``sqlite3.connect`` inside
-    # the function so the second .execute() call raises.
     real_connect = sqlite3.connect
-    call_log: list[str] = []
 
     class _ExplodingConn:
+        """Wrapper that raises ``OperationalError`` on ``DELETE FROM apps``
+        and forwards every other call to the real connection.
+
+        ``__setattr__`` and ``__getattr__`` both forward through to the
+        real connection so that mutations like ``db.row_factory =
+        sqlite3.Row`` actually take effect on the underlying connection
+        — otherwise reads would come back as plain tuples and the test
+        would exercise an unintended TypeError path before ever hitting
+        the simulated DELETE failure.
+        """
+
         def __init__(self, real):
-            self._real = real
+            object.__setattr__(self, "_real", real)
 
         def execute(self, *args, **kwargs):
             sql = args[0] if args else ""
-            call_log.append(sql)
             if sql.startswith("DELETE FROM apps"):
                 raise sqlite3.OperationalError("simulated DELETE failure")
             return self._real.execute(*args, **kwargs)
 
         def __getattr__(self, name):
             return getattr(self._real, name)
+
+        def __setattr__(self, name, value):
+            setattr(self._real, name, value)
 
     def _wrap(*args, **kwargs):
         return _ExplodingConn(real_connect(*args, **kwargs))
@@ -328,3 +363,131 @@ def test_resume_pending_removals_keep_data_uses_temp_only(tmp_path: Path) -> Non
 
     full.assert_not_called()
     temp_only.assert_called_once_with("myapp", cfg.temporary_data_dir)
+
+
+def test_resume_pending_removals_null_keep_data_defaults_to_full(tmp_path: Path) -> None:
+    """If ``removing_keep_data`` is NULL on a recovery row (an anomalous
+    DB state — the route always sets the column), the worker must
+    default to the FULL deprovision path (keep_data=False).
+
+    Rationale: the user only ever reaches the removal flow via an
+    explicit confirmation, and "Keep Data" is the opt-in branch.
+    Defaulting to True (keep) would silently leave files on disk that
+    the user expected to be deleted, which is the behaviour we want to
+    avoid. This test pins that choice so a future refactor doesn't
+    flip the default.
+    """
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_with_children(cfg.db_path, "myapp")
+    db = sqlite3.connect(cfg.db_path)
+    db.execute("UPDATE apps SET removing_keep_data = NULL WHERE name = ?", ("myapp",))
+    db.commit()
+    db.close()
+
+    with (
+        patch("compute_space.core.apps.stop_app_process"),
+        patch("compute_space.core.apps.remove_image"),
+        patch("compute_space.core.apps.deprovision_data") as full,
+        patch("compute_space.core.apps.deprovision_temp_data") as temp_only,
+    ):
+        _resume_pending_removals(cfg)
+        if not _wait_for_app_gone(cfg.db_path, "myapp"):
+            pytest.fail("Pending removal was not finished by _resume_pending_removals")
+
+    temp_only.assert_not_called()
+    full.assert_called_once_with("myapp", cfg.persistent_data_dir, cfg.temporary_data_dir)
+
+
+def test_remove_records_error_when_initial_connect_fails(tmp_path: Path) -> None:
+    """If even ``sqlite3.connect()`` raises (locked DB, permissions,
+    disk full), the worker still flips the row to 'error' through a
+    fresh connection so it doesn't sit stuck in 'removing' forever.
+    """
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_with_children(cfg.db_path, "myapp")
+
+    real_connect = sqlite3.connect
+    calls = {"n": 0}
+
+    def _connect_side_effect(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First call (worker's main connection) — fail.
+            raise sqlite3.OperationalError("simulated initial connect failure")
+        # Second call (recovery connection inside outer except) — succeed.
+        return real_connect(*args, **kwargs)
+
+    with patch("compute_space.core.apps.sqlite3.connect", side_effect=_connect_side_effect):
+        # Must not raise; must still flip the row to error.
+        remove_app_background("myapp", keep_data=False, config=cfg)
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        row = db.execute("SELECT status, removing_keep_data FROM apps WHERE name = 'myapp'").fetchone()
+    finally:
+        db.close()
+    assert row is not None
+    assert row[0] == "error"
+    assert row[1] is None
+
+
+def test_resume_pending_removals_swallows_db_errors(tmp_path: Path) -> None:
+    """A DB error during startup recovery must not prevent server boot.
+
+    Rationale: ``_resume_pending_removals`` is invoked from ``init_app``,
+    so any unhandled exception aborts the entire startup. The function
+    should log and return, leaving any 'removing' rows for an operator
+    to retry from the dashboard.
+    """
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    # Don't seed any app — instead make the SELECT fail.
+    with patch(
+        "compute_space.core.startup.sqlite3.connect",
+        side_effect=sqlite3.OperationalError("disk on fire"),
+    ):
+        # Must NOT raise.
+        _resume_pending_removals(cfg)
+
+
+def test_resume_pending_removals_survives_per_row_thread_spawn_failure(tmp_path: Path) -> None:
+    """A per-row Thread.start() failure must be caught so that startup
+    continues. Without this, a single hostile row (or genuinely
+    resource-exhausted host) would crash init_app and prevent the
+    server from coming up at all — far worse than leaving the row in
+    a recoverable state.
+
+    The recovery state itself must be ``status='error'``, NOT
+    'removing': the route's atomic-claim guard
+    ``WHERE status != 'removing'`` would refuse every dashboard retry
+    if the row were left in 'removing', forcing the operator to wait
+    for another server restart to re-run this function. Flipping to
+    'error' mirrors the route handler's own thread-spawn-failure
+    recovery and unsticks the row for an immediate retry.
+    """
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_with_children(cfg.db_path, "myapp")
+    db = sqlite3.connect(cfg.db_path)
+    db.execute("UPDATE apps SET removing_keep_data = 0 WHERE name = ?", ("myapp",))
+    db.commit()
+    db.close()
+
+    failing_thread = MagicMock()
+    failing_thread.return_value.start.side_effect = RuntimeError("can't start new thread")
+
+    with patch("compute_space.core.startup.threading.Thread", failing_thread):
+        # Must NOT raise — the per-row guard catches the failure.
+        _resume_pending_removals(cfg)
+
+    # Row is flipped to 'error' so a dashboard retry can re-claim it
+    # via the atomic UPDATE in /remove_app.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        row = db.execute("SELECT status, removing_keep_data FROM apps WHERE name = 'myapp'").fetchone()
+    finally:
+        db.close()
+    assert row[0] == "error"
+    assert row[1] is None

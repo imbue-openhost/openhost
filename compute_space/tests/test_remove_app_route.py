@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -46,12 +47,14 @@ async def _call_remove(cfg, app_name: str, *, keep_data: bool = False):
 
 def _seed_app(db_path: str, name: str, status: str = "running") -> None:
     db = sqlite3.connect(db_path)
-    db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, status) VALUES (?, '1.0', '/r', 19500, ?)",
-        (name, status),
-    )
-    db.commit()
-    db.close()
+    try:
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, status) VALUES (?, '1.0', '/r', 19500, ?)",
+            (name, status),
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio
@@ -68,6 +71,10 @@ async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
     assert status == 202
     assert payload == {"ok": True}
     Thread.assert_called_once()
+    # Constructing the Thread is not enough — the route must also call
+    # .start() on it. A regression where Thread() is invoked but
+    # .start() is omitted would silently skip all teardown work.
+    Thread.return_value.start.assert_called_once()
     # Row state is observable to the next poll before the worker finishes.
     db = sqlite3.connect(cfg.db_path)
     try:
@@ -108,6 +115,37 @@ async def test_remove_404_when_app_missing(tmp_path: Path) -> None:
     assert status == 404
     assert "not found" in (payload.get("error") or "").lower()
     Thread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
+    """If ``Thread.start()`` raises (resource exhaustion), the route
+    must flip the row out of 'removing' and back to 'error' so the
+    operator can retry from the dashboard. Otherwise the row would sit
+    stuck in 'removing' and every retry would hit the
+    ``already_removing`` short-circuit, blocking removal entirely
+    until a server restart re-runs startup recovery.
+    """
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app(cfg.db_path, "myapp")
+
+    failing_thread = MagicMock()
+    failing_thread.return_value.start.side_effect = RuntimeError("can't start new thread")
+
+    with patch("compute_space.web.routes.api.apps.threading.Thread", failing_thread):
+        status, payload = await _call_remove(cfg, "myapp")
+
+    assert status == 503
+    assert "removal worker" in payload["error"].lower()
+    # Row must be unstuck so a retry can re-claim.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        row = db.execute("SELECT status, removing_keep_data FROM apps WHERE name = 'myapp'").fetchone()
+    finally:
+        db.close()
+    assert row[0] == "error"
+    assert row[1] is None
 
 
 @pytest.mark.asyncio

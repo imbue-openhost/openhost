@@ -13,6 +13,7 @@ from cappa import Dep
 
 from compute_space_cli import config
 from compute_space_cli.helpers import make_api_request
+from compute_space_cli.helpers import wait_for_app_removed
 from compute_space_cli.helpers import wait_for_app_running
 
 
@@ -230,8 +231,14 @@ class AppCmd:
     ) -> None:
         """Remove an app."""
         data = {"keep_data": "1"} if keep_data else None
+        # /remove_app returns 202 immediately and runs the teardown in a
+        # background thread. Poll until the row disappears before claiming
+        # the removal is complete; otherwise a follow-up `oh app list` or
+        # redeploy could race the still-running worker.
         make_api_request(cfg.url, cfg.token, "POST", f"/remove_app/{app_name}", data=data)
         suffix = " (data kept)" if keep_data else ""
+        print(f"Removing {app_name}{suffix}...")
+        wait_for_app_removed(cfg.url, cfg.token, app_name)
         print(f"Removed {app_name}{suffix}")
 
     @cappa.command(name="rename")

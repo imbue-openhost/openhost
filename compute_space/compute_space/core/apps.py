@@ -743,27 +743,50 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
     work after a crash. We do the slow steps (stop process, remove image,
     deprovision data) here, then delete the row.
 
-    Errors during stop/remove/deprovision are logged and swallowed; the
-    final ``DELETE FROM apps`` still proceeds so the row doesn't sit in
-    'removing' forever after a partial cleanup failure.
+    Four outcome shapes:
+
+    * Happy path / partial-cleanup-failure: any of stop/remove/deprovision
+      may individually raise; those exceptions are logged and swallowed,
+      then ``DELETE FROM apps`` runs and the row is gone. This is the
+      common case and ensures the row never gets stuck in 'removing'
+      because a single sub-step failed.
+    * Outer failure: an exception escapes the inner handlers (e.g. the
+      ``DELETE`` statement itself raises). The outer ``except`` flips
+      the row to ``status='error'`` with a generic message and clears
+      ``removing_keep_data`` so the operator can retry from the
+      dashboard. The row is NOT deleted.
+    * Initial-connect failure: ``sqlite3.connect`` itself raises (locked
+      DB, permission error). The outer ``except`` opens a fresh second
+      connection just to record the error state. No teardown work was
+      performed.
+    * Already gone: if the row vanished between the caller's status
+      flip and our SELECT (e.g. startup recovery raced a fresh
+      request that finished first), we early-return before any work.
     """
-    db = sqlite3.connect(config.db_path, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    # FK enforcement is per-connection, OFF by default. The request
-    # path uses ``get_db()`` which turns it ON; this thread opens its
-    # own connection so we have to repeat the PRAGMA, otherwise the
-    # final DELETE FROM apps would leave orphaned rows in app_tokens,
-    # app_port_mappings, service_providers{,_v2}, permissions{,_v2},
-    # and service_defaults (all of which carry ON DELETE CASCADE).
-    db.execute("PRAGMA foreign_keys = ON")
+    db: sqlite3.Connection | None = None
     try:
+        # Connect inside the try so that a connect-time failure
+        # (locked DB file, permission error, disk full) still reaches
+        # the outer except handler which flips the row to 'error'. If
+        # we connected outside the try and connect() raised, the row
+        # would sit stuck in 'removing' forever with no worker to
+        # finish it.
+        db = sqlite3.connect(config.db_path, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        # FK enforcement is per-connection, OFF by default. The request
+        # path uses ``get_db()`` which turns it ON; this thread opens
+        # its own connection so we have to repeat the PRAGMA, otherwise
+        # the final DELETE FROM apps would leave orphaned rows in
+        # app_databases, app_tokens, app_port_mappings,
+        # service_providers{,_v2}, permissions{,_v2}, and
+        # service_defaults (all of which carry ON DELETE CASCADE).
+        db.execute("PRAGMA foreign_keys = ON")
         app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
         if app_row is None:
-            # Already gone — nothing to do. This can happen if startup
-            # recovery races with a fresh request, or if a previous run
-            # finished the DELETE but crashed before… well, no, the
-            # DELETE is the last step, so this branch is mostly defensive.
+            # Already gone — nothing to do. Reachable when startup
+            # recovery spawns a worker for a row that a fresh user
+            # request finished removing in the same window.
             return
 
         try:
@@ -771,6 +794,13 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
         except Exception:
             logger.exception("stop_app_process failed during remove of %s", app_name)
         try:
+            # remove_image() runs ``podman rmi`` with capture_output and
+            # *no* ``check=True`` — a non-zero podman exit (e.g. image
+            # not found) is silently swallowed inside that helper. The
+            # try/except here catches the rarer Python-side failures
+            # (FileNotFoundError if podman isn't on PATH, TimeoutExpired
+            # if the rmi hangs past 30s), so that any of those don't
+            # prevent the rest of the teardown from running.
             remove_image(app_row["name"])
         except Exception:
             logger.exception("remove_image failed during remove of %s", app_name)
@@ -795,15 +825,23 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
     except Exception:
         # Catch-all: don't let the worker thread die silently and leave
         # the row stuck in 'removing' forever. Log + flip back to
-        # 'error' so the operator can retry / inspect.
+        # 'error' so the operator can retry / inspect. We try to use
+        # the existing connection if it opened successfully; if connect
+        # itself failed, open a fresh one just for the error update.
         logger.exception("remove_app_background failed for %s", app_name)
         try:
-            db.execute(
-                "UPDATE apps SET status = 'error', error_message = ?, removing_keep_data = NULL WHERE name = ?",
-                ("Removal failed; retry from the dashboard. See server logs for details.", app_name),
-            )
-            db.commit()
+            err_db = db if db is not None else sqlite3.connect(config.db_path)
+            try:
+                err_db.execute(
+                    "UPDATE apps SET status = 'error', error_message = ?, removing_keep_data = NULL WHERE name = ?",
+                    ("Removal failed; retry from the dashboard. See server logs for details.", app_name),
+                )
+                err_db.commit()
+            finally:
+                if db is None:
+                    err_db.close()
         except sqlite3.Error:
             logger.exception("Could not record removal failure for %s", app_name)
     finally:
-        db.close()
+        if db is not None:
+            db.close()

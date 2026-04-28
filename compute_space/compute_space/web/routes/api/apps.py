@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import shutil
+import sqlite3
 import threading
 
 import attr
@@ -47,7 +48,7 @@ def _rmtree_force(path: str) -> None:
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
-def _is_removing(app_row) -> bool:  # type: ignore[no-untyped-def]
+def _is_removing(app_row: sqlite3.Row | None) -> bool:
     """Return True if the row is currently being torn down by the
     remove_app_background worker.
 
@@ -57,8 +58,15 @@ def _is_removing(app_row) -> bool:  # type: ignore[no-untyped-def]
     write races the cleanup (rename re-keys the row out from under the
     worker, reload starts a build that the worker is about to obviate,
     stop fights the same stop_app_process the worker just issued).
+
+    The ``remove_app`` route deliberately does NOT use this helper. It
+    uses an atomic ``UPDATE ... WHERE status != 'removing'`` instead so
+    that two concurrent removal requests can never both pass a SELECT
+    check and both spawn workers — ``rowcount`` distinguishes the
+    winner from the duplicate. Switching ``remove_app`` to a SELECT +
+    ``_is_removing`` check would re-introduce the TOCTOU race.
     """
-    return bool(app_row) and app_row["status"] == "removing"
+    return app_row is not None and app_row["status"] == "removing"
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -398,7 +406,11 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     """
     config = get_config()
     db = get_db()
-    app_row = db.execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
+    # Match the SELECT * pattern used by sibling routes; downstream
+    # logic only needs ``name`` but fetching the whole row makes the
+    # routes uniform and avoids surprising future maintainers who add
+    # status / id reads here.
+    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
 
@@ -425,11 +437,27 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
         # polling; the original background thread will finish.
         return jsonify({"ok": True, "already_removing": True}), 202
 
-    threading.Thread(
-        target=remove_app_background,
-        args=(app_name, keep_data, config),
-        daemon=True,
-    ).start()
+    try:
+        threading.Thread(
+            target=remove_app_background,
+            args=(app_name, keep_data, config),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        # Thread spawn failed (resource exhaustion etc.). Roll the row
+        # back to ``status='error'`` so a subsequent dashboard click
+        # can re-claim it; otherwise the row would sit in 'removing'
+        # forever and every retry would hit the already_removing
+        # short-circuit. Startup recovery would eventually pick it up
+        # but only after a server restart, which is a much worse
+        # operator experience.
+        logger.exception("Could not spawn remove worker for %s", app_name)
+        db.execute(
+            "UPDATE apps SET status = 'error', error_message = ?, removing_keep_data = NULL WHERE name = ?",
+            (f"Could not start removal worker: {e}", app_name),
+        )
+        db.commit()
+        return jsonify({"error": "Could not start removal worker; try again."}), 503
 
     return jsonify({"ok": True}), 202
 

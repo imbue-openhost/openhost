@@ -53,9 +53,13 @@ function setActionsBusy(label) {
 }
 
 function appAction(url, data, opts) {
-  // opts: {isRemove: bool, label: string}. For backward compat, opts may be passed
-  // as a boolean meaning isRemove (the old signature used `appAction(url, data, true)`).
-  if (opts === true || opts === false) opts = {isRemove: opts};
+  // opts is { isRemove?: bool, label?: string }.
+  //   isRemove=true  → on success, navigate to /dashboard (the row is
+  //                    or will be gone; staying here is pointless).
+  //   isRemove=false → on success, location.reload() (re-render the
+  //                    detail page with the new state).
+  //   label          → text shown next to the action buttons while the
+  //                    request is in flight.
   opts = opts || {};
   var label = opts.label || (opts.isRemove ? 'Removing' : 'Working');
   var fd = new FormData();
@@ -172,11 +176,19 @@ function clearCacheAndReload() {
     // action buttons + show "Removing…" beside them. We don't redirect
     // immediately on 'removing' because the row still exists; we wait
     // for the row to disappear (404) and then redirect to /dashboard.
-    var removingApplied = false;
+    // If the removal worker fails it flips the row to 'error', and we
+    // need to re-enable the buttons so the operator can act on the row
+    // (retry remove, stop, etc.) — otherwise they'd be stuck disabled
+    // until manual reload.
+    var clearRemovingChrome = null;
     function applyRemovingChrome() {
-        if (removingApplied) return;
-        removingApplied = true;
-        setActionsBusy('Removing');
+        if (clearRemovingChrome) return;
+        clearRemovingChrome = setActionsBusy('Removing');
+    }
+    function clearRemovingChromeIfApplied(errText) {
+        if (!clearRemovingChrome) return;
+        clearRemovingChrome(errText || null);
+        clearRemovingChrome = null;
     }
 
     function pollStatus() {
@@ -198,6 +210,14 @@ function clearCacheAndReload() {
                 }
                 if (appStatus === 'removing') {
                     applyRemovingChrome();
+                } else {
+                    // Status flipped away from 'removing' (almost always
+                    // to 'error' from a failed teardown — successful
+                    // teardown deletes the row and we redirect via the
+                    // 404 branch above). Re-enable the buttons.
+                    clearRemovingChromeIfApplied(
+                        appStatus === 'error' ? (data.error || 'Removal failed') : null
+                    );
                 }
                 if (appStatus === 'running' && nextUrl) {
                     window.location.href = nextUrl;

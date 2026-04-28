@@ -694,6 +694,13 @@ class TestContainerGone:
                         f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
                         timeout=10,
                     )
+                    # Wait for the background remove worker to finish
+                    # before stopping the router; otherwise the daemon
+                    # thread is killed mid-teardown and leaves
+                    # containers / data behind. Best-effort with a
+                    # short timeout — container_cleanup() below
+                    # force-removes what's left if this poll times out.
+                    wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
                     pass
                 _stop_router_process(router)
@@ -944,6 +951,10 @@ class TestContainerRestart:
                         f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
                         timeout=10,
                     )
+                    # Wait for the background worker to finish so it
+                    # isn't killed when we stop the router. Best-effort
+                    # with a short timeout.
+                    wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
                     pass
                 _stop_router_process(router)
@@ -1129,8 +1140,6 @@ class TestContainerE2E:
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
-        # /remove_app returns 202 (Accepted): the row is flipped to
-        # 'removing' and the actual teardown runs in a background thread.
         assert r.status_code == 202
         wait_app_removed(admin_session, base_url, "test-app")
 
