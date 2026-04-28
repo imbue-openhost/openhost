@@ -153,22 +153,12 @@ class TestMultiConfigResolve:
         )
         assert multi.resolve().url == "https://a.com"
 
-    def test_single_instance_auto_select(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_default_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OH_INSTANCE", raising=False)
         multi = _make_multi(
             instances={"only": Instance(url="https://only.com", token="t")},
         )
-        assert multi.resolve().url == "https://only.com"
-
-    def test_multiple_no_default_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OH_INSTANCE", raising=False)
-        multi = _make_multi(
-            instances={
-                "a": Instance(url="https://a.com", token="t"),
-                "b": Instance(url="https://b.com", token="t"),
-            },
-        )
-        with pytest.raises(InstanceNotFoundError, match="No instance specified"):
+        with pytest.raises(InstanceNotFoundError, match="No default instance set"):
             multi.resolve()
 
     def test_nonexistent_name_raises(self) -> None:
@@ -224,11 +214,11 @@ class TestMultiConfigEvolve:
 
 
 class TestUpsertInstance:
-    def test_add_to_empty_sets_default(self) -> None:
+    def test_add_to_empty_no_default(self) -> None:
         multi = _make_multi()
         result = multi.upsert_instance("a", Instance(url="https://a.com", token="t"))
         assert "a" in result.instances
-        assert result.default_instance == "a"
+        assert result.default_instance is None
 
     def test_set_default_true(self) -> None:
         multi = _make_multi(

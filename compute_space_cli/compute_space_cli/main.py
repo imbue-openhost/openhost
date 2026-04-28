@@ -21,7 +21,7 @@ def _load_or_exit() -> config.MultiConfig:
     try:
         return config.get_multi_config()
     except config.ConfigFileNotFoundError:
-        print("No config file. Run 'oh login' first.", file=sys.stderr)
+        print("No config file. Run 'oh instance login' first.", file=sys.stderr)
         raise SystemExit(1) from None
     except config.ConfigInvalidError as e:
         print(f"Invalid config file: {e}", file=sys.stderr)
@@ -64,49 +64,9 @@ class Status:
             raise SystemExit(1) from None
 
 
-@cappa.command(name="login", help="Log in to your compute space.")
-@attrs.define
-class Login:
-    name: Annotated[
-        str,
-        cappa.Arg(long=True, help="Instance name (used in multi-instance config)"),
-    ] = "default"
-
-    def __call__(self) -> None:
-        url = input("Compute space URL (eg username.host.imbue.com/): ").strip().rstrip("/")
-        if not url:
-            print("No URL provided.", file=sys.stderr)
-            raise SystemExit(1)
-        url = config.normalize_url(url)
-
-        print("\nOpen this link and create an API token:")
-        print(f"  {url}")
-        print()
-
-        token = input("Paste your API token here: ").strip()
-        if not token:
-            print("No token provided.", file=sys.stderr)
-            raise SystemExit(1)
-
-        print("\nVerifying...", end=" ", flush=True)
-        try:
-            resp = httpx.get(
-                f"{url}/dashboard",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-                follow_redirects=False,
-            )
-            if resp.status_code != 200:
-                print("failed (invalid token or unreachable)", file=sys.stderr)
-                raise SystemExit(1)
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
-            print(f"failed ({e})", file=sys.stderr)
-            raise SystemExit(1) from None
-        print("ok")
-
-        inst = config.Instance(url=url, token=token)
-        _load_or_create().upsert_instance(self.name, inst).save()
-        print(f"Saved instance '{self.name}'. Compute space: {url}")
+def _instance_name_from_url(url: str) -> str:
+    """Derive a short instance name from a URL, e.g. 'https://user.host.imbue.com' → 'user.host.imbue.com'."""
+    return url.replace("https://", "").replace("http://", "").rstrip("/")
 
 
 @cappa.command(name="app", help="Manage apps.")
@@ -341,6 +301,56 @@ class LogsCmd:
 @cappa.command(name="instance", help="Manage configured instances.")
 @attrs.define
 class InstanceCmd:
+    @cappa.command(name="login")
+    def login(self) -> None:
+        """Log in to an instance interactively."""
+        url = input("Compute space URL (eg username.host.imbue.com/): ").strip().rstrip("/")
+        if not url:
+            print("No URL provided.", file=sys.stderr)
+            raise SystemExit(1)
+        url = config.normalize_url(url)
+
+        print("\nOpen this link and create an API token:")
+        print(f"  {url}")
+        print()
+
+        token = input("Paste your API token here: ").strip()
+        if not token:
+            print("No token provided.", file=sys.stderr)
+            raise SystemExit(1)
+
+        print("\nVerifying...", end=" ", flush=True)
+        try:
+            resp = httpx.get(
+                f"{url}/dashboard",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+                follow_redirects=False,
+            )
+            if resp.status_code != 200:
+                print("failed (invalid token or unreachable)", file=sys.stderr)
+                raise SystemExit(1)
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            print(f"failed ({e})", file=sys.stderr)
+            raise SystemExit(1) from None
+        print("ok")
+
+        name = _instance_name_from_url(url)
+        multi = _load_or_create()
+        inst = config.Instance(url=url, token=token)
+        multi.upsert_instance(name, inst).save()
+
+        print(f"\nSaved as '{name}'.")
+        if not multi.default_instance:
+            answer = input(f"Set '{name}' as default instance? [Y/n] ").strip().lower()
+            if answer != "n":
+                _load_or_exit().evolve(default_instance=name).save()
+                print(f"Default instance set to '{name}'")
+            else:
+                print(f"Use with: oh --instance {name} <command>")
+        else:
+            print(f"Use with: oh --instance {name} <command>")
+
     @cappa.command(name="list")
     def list_instances(self) -> None:
         """List all configured instances."""
@@ -435,7 +445,7 @@ class Curl:
 @cappa.command(name="oh", help="OpenHost compute space CLI — manage things in your compute space.")
 @attrs.define
 class Oh:
-    subcommand: cappa.Subcommands[Status | Login | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl]
+    subcommand: cappa.Subcommands[Status | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl]
     instance: Annotated[
         str | None,
         cappa.Arg(long=True, default=None, help="Target a specific named instance"),
