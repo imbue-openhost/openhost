@@ -493,12 +493,14 @@ class TestSelfHost:
 
     def test_12d_websocket_echo(self, session, domain):
         """WebSocket proxy: connect to test-app's /ws endpoint and echo a message."""
-        # Extract auth cookies from the session for the WS handshake
-        cookie_header = "; ".join(f"{c.name}={c.value}" for c in session.cookies)
+        extra_headers: dict[str, str] = {}
+        if session.cookies:
+            extra_headers["Cookie"] = "; ".join(f"{c.name}={c.value}" for c in session.cookies)
+        if "Authorization" in session.headers:
+            extra_headers["Authorization"] = session.headers["Authorization"]
 
         async def _ws_echo():
             uri = f"wss://{APP1}.{domain}/ws"
-            extra_headers = {"Cookie": cookie_header}
             async with websockets.connect(
                 uri,
                 additional_headers=extra_headers,
