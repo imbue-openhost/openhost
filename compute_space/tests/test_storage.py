@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 
 import compute_space.core.storage as storage
-from conftest import _make_test_config
+from tests.conftest import _make_test_config
 
 
 def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):

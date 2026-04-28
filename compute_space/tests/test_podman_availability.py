@@ -27,8 +27,9 @@ from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
 from compute_space.db.connection import init_db as real_init_db
-from conftest import _FakeApp
-from conftest import _make_test_config
+
+from .conftest import _FakeApp
+from .conftest import _make_test_config
 
 # ---------------------------------------------------------------------------
 # container_runtime_available

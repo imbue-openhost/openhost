@@ -7,7 +7,7 @@ import argparse
 import subprocess
 import sys
 
-from compute_space.config import OPENHOST_PROJECT_DIR
+from compute_space import OPENHOST_PROJECT_DIR
 from self_host_cli.down import _ROUTER_PID
 from self_host_cli.down import _is_alive
 from self_host_cli.down import _read_pid

@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 import requests
 
-from compute_space.config import COMPUTE_SPACE_PACKAGE_DIR
+from compute_space import COMPUTE_SPACE_PACKAGE_DIR
 from compute_space.config import Config
 
 
