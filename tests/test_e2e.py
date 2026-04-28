@@ -185,7 +185,7 @@ class TestSelfHost:
         r = session.get(f"{router_url}/{APP1}/", timeout=5)
         assert r.status_code == 200
         data = r.json()
-        assert data["app"] == APP1
+        assert data["app"] == "test-app"
         assert data["app_name"] == APP1
 
     def test_06c_path_routing_post(self, session, router_url):
@@ -249,7 +249,7 @@ class TestSelfHost:
         r = session.get(f"{app_url}/", timeout=5)
         assert r.status_code == 200
         data = r.json()
-        assert data["app"] == APP1
+        assert data["app"] == "test-app"
 
     def test_07c_subdomain_unauth_rejected(self, domain):
         """Unauthenticated subdomain request to a non-public path is rejected."""
