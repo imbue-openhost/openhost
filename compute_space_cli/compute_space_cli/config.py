@@ -5,7 +5,6 @@ from typing import Any
 from typing import Self
 
 import attr
-import cattrs
 import tomli_w
 
 CONFIG_DIR = Path.home() / ".openhost"
@@ -31,17 +30,21 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def _validate_url(instance: object, attribute: object, value: str) -> None:
-    if not value.startswith(("http://", "https://")):
-        raise ValueError(f"URL must include protocol (http:// or https://): {value}")
+def hostname_from_url(url: str) -> str:
+    return url.replace("https://", "").replace("http://", "").rstrip("/")
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class Instance:
     """A single OpenHost compute-space instance."""
 
-    url: str = attr.ib(validator=_validate_url)
+    hostname: str = attr.ib()
     token: str = attr.ib()
+    alias: str | None = attr.ib(default=None)
+
+    @property
+    def url(self) -> str:
+        return f"https://{self.hostname}"
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -62,9 +65,11 @@ class MultiConfig:
         if self.default_instance:
             raw["default_instance"] = self.default_instance
         instances_raw: dict[str, object] = {}
-        for name, inst in self.instances.items():
-            entry: dict[str, object] = {"url": inst.url, "token": inst.token}
-            instances_raw[name] = entry
+        for hostname, inst in self.instances.items():
+            entry: dict[str, object] = {"token": inst.token}
+            if inst.alias:
+                entry["alias"] = inst.alias
+            instances_raw[hostname] = entry
         if instances_raw:
             raw["instances"] = instances_raw
         with open(path, "wb") as f:
@@ -84,62 +89,59 @@ class MultiConfig:
         try:
             if "instances" in data:
                 instances: dict[str, Instance] = {}
-                for name, raw_inst in data["instances"].items():
-                    instances[name] = cattrs.structure(raw_inst, Instance)
+                for hostname, raw_inst in data["instances"].items():
+                    if not isinstance(raw_inst, dict):
+                        raise TypeError(f"Instance '{hostname}' must be a table")
+                    instances[hostname] = Instance(
+                        hostname=hostname,
+                        token=raw_inst["token"],
+                        alias=raw_inst.get("alias"),
+                    )
                 raw_default = data.get("default_instance")
                 if raw_default is not None and not isinstance(raw_default, str):
                     raise TypeError(f"default_instance must be a string, got {type(raw_default).__name__}")
-                return cls(
-                    instances=instances,
-                    default_instance=raw_default,
-                )
+                return cls(instances=instances, default_instance=raw_default)
 
+            # Legacy format: bare url + token at top level.
             if "url" in data and "token" in data:
-                inst = cattrs.structure(data, Instance)
-                return cls(
-                    instances={"default": inst},
-                    default_instance="default",
-                )
-        except (cattrs.ClassValidationError, ValueError, TypeError, AttributeError) as e:
+                hostname = hostname_from_url(data["url"])
+                inst = Instance(hostname=hostname, token=data["token"])
+                return cls(instances={hostname: inst}, default_instance=hostname)
+        except (KeyError, ValueError, TypeError, AttributeError) as e:
             raise ConfigInvalidError(f"Config file at {path} is malformed: {e}") from None
 
-        # Empty or unrecognized config — return empty MultiConfig.
         return cls()
 
-    def upsert_instance(self, name: str, inst: Instance, *, set_default: bool = False) -> Self:
-        """Return a new config with the given instance added or replaced.
-
-        If *set_default* is True, the new instance becomes the default.
-        Otherwise the existing default is preserved.
-        """
+    def upsert_instance(self, inst: Instance, *, set_default: bool = False) -> Self:
+        """Return a new config with the given instance added or replaced."""
         instances = dict(self.instances)
-        instances[name] = inst
-        default = name if set_default else self.default_instance
+        instances[inst.hostname] = inst
+        default = inst.hostname if set_default else self.default_instance
         return self.evolve(instances=instances, default_instance=default)
 
     def remove_instance(self, name: str) -> Self:
-        """Return a new config with the named instance removed.
-
-        Raises *InstanceNotFoundError* if the name does not exist.
-        If the removed instance was the default, the first remaining instance
-        becomes the new default (or ``None`` if no instances remain).
-        """
-        self.get_instance(name)  # raises InstanceNotFoundError if missing
-        instances = {k: v for k, v in self.instances.items() if k != name}
+        """Return a new config with the named instance removed."""
+        hostname = self._resolve_name(name)
+        instances = {k: v for k, v in self.instances.items() if k != hostname}
         default = self.default_instance
-        if default == name:
-            default = next(iter(instances), None)
+        if default == hostname:
+            default = None
         return self.evolve(instances=instances, default_instance=default)
 
-    @property
-    def _available_names(self) -> str:
-        return ", ".join(sorted(self.instances)) or "(none)"
+    def _resolve_name(self, name: str) -> str:
+        """Resolve a name (hostname or alias) to a hostname. Raises if not found."""
+        if name in self.instances:
+            return name
+        for hostname, inst in self.instances.items():
+            if inst.alias == name:
+                return hostname
+        raise InstanceNotFoundError(
+            f"Instance '{name}' not found. Run 'oh instance list' to see configured instances."
+        )
 
     def get_instance(self, name: str) -> Instance:
-        """Return a named instance or raise."""
-        if name not in self.instances:
-            raise InstanceNotFoundError(f"Instance '{name}' not found. Available: {self._available_names}")
-        return self.instances[name]
+        """Return an instance by hostname or alias."""
+        return self.instances[self._resolve_name(name)]
 
     def resolve(self, instance_name: str | None = None) -> Instance:
         """Resolve which instance to use.
