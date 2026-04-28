@@ -178,24 +178,12 @@ updateSshStatus();
 setInterval(updateSshStatus, 5000);
 
 // ─── App List ───
-
-// Per-app pending action labels (e.g. 'Removing', 'Reloading'). Used to keep
-// the in-flight indicator visible across polling refreshes until the request
-// finishes (or the row disappears, in the case of remove).
-var pendingAppActions = {};
-
-function setPendingAction(name, label) {
-  pendingAppActions[name] = label;
-  var row = document.querySelector('tr[data-app="' + name + '"]');
-  if (row) {
-    var actionsEl = row.querySelector('.app-actions');
-    if (actionsEl) actionsEl.innerHTML = renderPendingActions(label);
-  }
-}
-
-function clearPendingAction(name) {
-  delete pendingAppActions[name];
-}
+//
+// Action buttons stay rendered for the entire lifetime of the row; the
+// only source of progress feedback is the status column, which the
+// /api/apps poll refreshes every 3s. Server-side route guards (409 on
+// stop/reload/rename of a removing row) make any stray click a safe
+// no-op, so we don't need to disable / re-render the buttons mid-action.
 
 function refreshApps() {
   if (!config.apiAppsUrl) return;
@@ -205,8 +193,7 @@ function refreshApps() {
     .catch(function() { /* swallow: next poll will refresh */ });
 }
 
-function appAction(name, action, formData, pendingLabel) {
-  setPendingAction(name, pendingLabel || 'Working');
+function appAction(name, action, formData) {
   var opts = {method: 'POST', credentials: 'same-origin'};
   if (formData) { opts.body = formData; }
   return fetch(action + '/' + name, opts)
@@ -215,16 +202,15 @@ function appAction(name, action, formData, pendingLabel) {
                           function() { return {ok: r.ok, data: {}}; });
     })
     .then(function(res) {
-      clearPendingAction(name);
       if (!res.ok || (res.data && res.data.error)) {
         var msg = (res.data && res.data.error) || 'Request failed';
         alert(msg);
       }
-      // Trigger an immediate refresh so the row updates without waiting for the poll.
+      // Trigger an immediate refresh so the status column updates
+      // without waiting for the next 3s poll tick.
       refreshApps();
     })
     .catch(function() {
-      clearPendingAction(name);
       alert('Request failed');
       refreshApps();
     });
@@ -233,28 +219,14 @@ function appAction(name, action, formData, pendingLabel) {
 function reloadAndUpdate(name) {
   var fd = new FormData();
   fd.append('update', '1');
-  appAction(name, 'reload_app', fd, 'Reloading');
-}
-
-function renderPendingActions(label) {
-  return '<span style="color:#d97706;font-style:italic;">' + label + '&hellip;</span>';
+  appAction(name, 'reload_app', fd);
 }
 
 function renderActions(name, status) {
-  // We deliberately don't replace the buttons when status === 'removing'.
-  // The status column already reflects 'removing' on the very next poll,
-  // which is fast enough that a separate Removing... in-flight indicator
-  // in the actions column adds noise without adding information. The
-  // buttons stay rendered; routes guard against acting on a removing
-  // row server-side (409), so any stray click is a safe no-op.
-  if (pendingAppActions[name]) {
-    return renderPendingActions(pendingAppActions[name]);
-  }
   var detailsLink = '<a href="app_detail/' + name + '">Details</a> ';
-  var btns = '';
-  btns = '<button class="btn" onclick="appAction(\'' + name + '\', \'reload_app\', null, \'Reloading\')">Reload</button> '
+  var btns = '<button class="btn" onclick="appAction(\'' + name + '\', \'reload_app\')">Reload</button> '
        + '<button class="btn" onclick="reloadAndUpdate(\'' + name + '\')">Reload &amp; Update</button> '
-       + '<button class="btn btn-danger" onclick="if(confirm(\'Remove ' + name + ' and delete all data permanently?\')) appAction(\'' + name + '\', \'remove_app\', null, \'Removing\')">Remove</button> ';
+       + '<button class="btn btn-danger" onclick="if(confirm(\'Remove ' + name + ' and delete all data permanently?\')) appAction(\'' + name + '\', \'remove_app\')">Remove</button> ';
   return detailsLink + btns;
 }
 
@@ -263,8 +235,7 @@ function updateApps(data) {
     var name = row.getAttribute('data-app');
     var info = data[name];
     if (!info) {
-      // App is gone from the API — drop any pending state and hide the row.
-      clearPendingAction(name);
+      // App is gone from the API — hide the row.
       row.style.display = 'none';
       return;
     }
