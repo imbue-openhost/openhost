@@ -369,6 +369,8 @@ class InstanceCmd:
                 flags.append("default")
             if inst.alias:
                 flags.append(f"alias: {inst.alias}")
+            if inst.ssh_key:
+                flags.append(f"ssh-key: {inst.ssh_key}")
             flag_str = f"  [{', '.join(flags)}]" if flags else ""
             print(f"  {hostname:<{max_name}}{flag_str}")
 
@@ -448,7 +450,7 @@ class InstanceCmd:
     @cappa.command(name="configure-ssh-key")
     def configure_ssh_key(
         self,
-        name: Annotated[str, cappa.Arg(help="Hostname or alias")],
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
         key_path: Annotated[str, cappa.Arg(help="Path to SSH private key")],
     ) -> None:
         """Store an SSH key path for an instance."""
@@ -458,20 +460,14 @@ class InstanceCmd:
             raise SystemExit(1)
 
         multi = _load_or_exit()
-        try:
-            hostname = multi._resolve_name(name)
-        except config.InstanceNotFoundError as e:
-            print(str(e), file=sys.stderr)
-            raise SystemExit(1) from None
-        old = multi.instances[hostname]
         updated = config.Instance(
-            hostname=old.hostname,
-            token=old.token,
-            alias=old.alias,
+            hostname=cfg.hostname,
+            token=cfg.token,
+            alias=cfg.alias,
             ssh_key=str(resolved),
         )
         multi.upsert_instance(updated).save()
-        print(f"SSH key for {hostname} set to {resolved}")
+        print(f"SSH key for {cfg.hostname} set to {resolved}")
 
     @cappa.command(name="ssh")
     def ssh(
@@ -544,7 +540,7 @@ class Oh:
     subcommand: cappa.Subcommands[Status | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl]
     instance: Annotated[
         str | None,
-        cappa.Arg(long=True, default=None, help="Target a specific named instance"),
+        cappa.Arg(long=True, default=None, propagate=True, help="Target a specific named instance"),
     ] = None
 
 
