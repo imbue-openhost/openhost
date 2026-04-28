@@ -18,9 +18,8 @@ import compute_space.web.routes.api.apps as apps_routes
 from compute_space.config import get_config
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
-
-from .conftest import _FakeApp
-from .conftest import _make_test_config
+from conftest import _FakeApp
+from conftest import _make_test_config
 
 
 async def _app_status_response(tmp_path: Path, *, error_message: str, port: int) -> tuple[int, dict]:

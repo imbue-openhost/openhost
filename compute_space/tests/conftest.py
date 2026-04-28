@@ -2,23 +2,32 @@ import os
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import pytest
-import requests
+# pytest may resolve compute_space/ (project dir, no __init__.py) as a namespace
+# package before the real compute_space/compute_space/ package is importable.
+_tests_dir = str(Path(__file__).resolve().parent)
+_cs_parent = str(Path(__file__).resolve().parent.parent)
+for _p in (_tests_dir, _cs_parent):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+sys.modules.pop("compute_space", None)
 
-from compute_space import OPENHOST_PROJECT_DIR
-from compute_space.config import Config
-from compute_space.config import DefaultConfig
-from compute_space.db.migrations import _schema_path
-from compute_space.testing import kill_tree
-from compute_space.testing import managed_router
+import pytest  # noqa: E402
+import requests  # noqa: E402
+from helpers import COMPUTE_SPACE_PACKAGE_DIR  # noqa: E402
+from helpers import router_cmd  # noqa: E402
 
-from .helpers import COMPUTE_SPACE_PACKAGE_DIR
-from .helpers import router_cmd
+from compute_space.config import OPENHOST_PROJECT_DIR  # noqa: E402
+from compute_space.config import Config  # noqa: E402
+from compute_space.config import DefaultConfig  # noqa: E402
+from compute_space.db.migrations import _schema_path  # noqa: E402
+from compute_space.testing import kill_tree  # noqa: E402
+from compute_space.testing import managed_router  # noqa: E402
 
 ROUTER_PORT = 18080
 OWNER_PASSWORD = "testpass123"

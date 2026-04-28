@@ -10,10 +10,9 @@ import sqlite3
 
 from compute_space.db.connection import init_db
 from compute_space.db.migrations import migrate
+from conftest import _FakeApp
 from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
 from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
-
-from .conftest import _FakeApp
 
 # ---------------------------------------------------------------------------
 # Helpers
