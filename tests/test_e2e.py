@@ -1,7 +1,11 @@
 """Cloud E2E tests for OpenHost self-host deployment.
 
-Requires ``OPENHOST_DOMAIN`` env var pointing at a running instance.
-See ``tests/gcp/`` or ``tests/ec2/`` for infrastructure setup scripts.
+Run against an existing instance::
+
+    pytest tests/test_e2e.py --use-existing-instance NAME
+
+where NAME is an ``oh`` CLI hostname or alias. Or set ``OPENHOST_DOMAIN``
+and ``OPENHOST_TOKEN`` env vars directly.
 """
 
 import asyncio
