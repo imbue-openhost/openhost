@@ -25,7 +25,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
 
-  # Runs full test suite, including containerized tests.
+  # Runs full unit test suite, including containerized tests.
   test-containers:
     runs-on: ubuntu-latest
     steps:
