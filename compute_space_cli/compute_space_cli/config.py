@@ -41,6 +41,7 @@ class Instance:
     hostname: str = attr.ib()
     token: str = attr.ib()
     alias: str | None = attr.ib(default=None)
+    ssh_key: str | None = attr.ib(default=None)
 
     @property
     def url(self) -> str:
@@ -69,6 +70,8 @@ class MultiConfig:
             entry: dict[str, object] = {"token": inst.token}
             if inst.alias:
                 entry["alias"] = inst.alias
+            if inst.ssh_key:
+                entry["ssh_key"] = inst.ssh_key
             instances_raw[hostname] = entry
         if instances_raw:
             raw["instances"] = instances_raw
@@ -96,6 +99,7 @@ class MultiConfig:
                         hostname=hostname,
                         token=raw_inst["token"],
                         alias=raw_inst.get("alias"),
+                        ssh_key=raw_inst.get("ssh_key"),
                     )
                 raw_default = data.get("default_instance")
                 if raw_default is not None and not isinstance(raw_default, str):
