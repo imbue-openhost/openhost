@@ -1,6 +1,7 @@
 ---
-# Fast re-deploy: sync code and restart the service.
+# Fast re-deploy: clone/update code from GitHub and restart the service.
 # Usage: ansible-playbook ansible/deploy.yml -i <IP>, -e domain=<domain>
+# Optional: -e openhost_commit=<sha> to deploy a specific commit (defaults to main)
 
 - name: Deploy OpenHost
   hosts: all

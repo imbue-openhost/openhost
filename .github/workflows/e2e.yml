@@ -37,6 +37,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-1
       SKIP_APT_UPGRADE: "1"
+      OPENHOST_COMMIT: ${{ github.sha }}
       # GCP-specific
       GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
       GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}

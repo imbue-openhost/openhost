@@ -5,8 +5,9 @@
 # Example: ansible-playbook ansible/setup.yml -i 65.21.1.2, -e domain=host.example.com
 #
 # Optional variables:
-#   -e public_ip=1.2.3.4   (defaults to target IP)
-#   -e initial_user=ubuntu  (defaults to root)
+#   -e public_ip=1.2.3.4         (defaults to target IP)
+#   -e initial_user=ubuntu        (defaults to root)
+#   -e openhost_commit=<sha>      (git commit to deploy; defaults to main)
 
 - name: Bootstrap host user
   hosts: all
