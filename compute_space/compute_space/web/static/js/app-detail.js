@@ -168,14 +168,36 @@ function clearCacheAndReload() {
         );
     }
 
+    // Reflect server status='removing' in the page chrome: disable the
+    // action buttons + show "Removing…" beside them. We don't redirect
+    // immediately on 'removing' because the row still exists; we wait
+    // for the row to disappear (404) and then redirect to /dashboard.
+    var removingApplied = false;
+    function applyRemovingChrome() {
+        if (removingApplied) return;
+        removingApplied = true;
+        setActionsBusy('Removing');
+    }
+
     function pollStatus() {
         fetch(config.appStatusUrl)
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (r.status === 404) {
+                    // App removal completed — bounce to the dashboard.
+                    window.location.href = '/dashboard';
+                    return null;
+                }
+                return r.json();
+            })
             .then(function(data) {
+                if (!data) return;
                 if (data.status !== appStatus) {
                     appStatus = data.status;
                     statusEl.textContent = appStatus;
                     statusEl.className = 'status-' + appStatus;
+                }
+                if (appStatus === 'removing') {
+                    applyRemovingChrome();
                 }
                 if (appStatus === 'running' && nextUrl) {
                     window.location.href = nextUrl;
@@ -195,11 +217,26 @@ function clearCacheAndReload() {
             });
     }
 
+    // If the page loads while the app is already in the middle of a
+    // removal (user reloaded the tab, or opened the detail page in a
+    // second window), reflect that immediately so the buttons are
+    // disabled before the first poll completes.
+    if (appStatus === 'removing') {
+        applyRemovingChrome();
+    }
+
     // Scroll to bottom on load
     logEl.scrollTop = logEl.scrollHeight;
 
-    // Poll while app is active — faster during builds for streaming output
-    if (appStatus === 'running' || appStatus === 'starting' || appStatus === 'building') {
+    // Poll while app is active — faster during builds for streaming output.
+    // 'removing' is included so the page learns when the app row goes
+    // away (transition to 404 → redirect to /dashboard).
+    if (
+        appStatus === 'running' ||
+        appStatus === 'starting' ||
+        appStatus === 'building' ||
+        appStatus === 'removing'
+    ) {
         var interval = (appStatus === 'building') ? 1000 : 3000;
         setInterval(fetchLogs, interval);
         setInterval(pollStatus, interval);

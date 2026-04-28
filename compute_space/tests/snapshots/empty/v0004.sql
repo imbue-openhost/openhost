@@ -28,7 +28,7 @@ CREATE TABLE app_tokens (
     token_hash TEXT NOT NULL UNIQUE,
     FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
 );
-CREATE TABLE apps (
+CREATE TABLE "apps" (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     manifest_name TEXT NOT NULL DEFAULT '',
@@ -41,7 +41,7 @@ CREATE TABLE apps (
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
     container_id TEXT,
-    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
+    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,
     cpu_millicores INTEGER NOT NULL DEFAULT 100,
@@ -49,7 +49,8 @@ CREATE TABLE apps (
     public_paths TEXT NOT NULL DEFAULT '[]',
     manifest_raw TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    removing_keep_data INTEGER
 );
 CREATE TABLE "owner" (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -82,7 +83,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,3);
+INSERT INTO "schema_version" VALUES(1,4);
 CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
             app_name TEXT NOT NULL,
@@ -103,6 +104,6 @@ CREATE TABLE service_providers_v2 (
             FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
         );
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
-CREATE INDEX idx_apps_status ON apps(status);
 CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+CREATE INDEX idx_apps_status ON apps(status);
 COMMIT;

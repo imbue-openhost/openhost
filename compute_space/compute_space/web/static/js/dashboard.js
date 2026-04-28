@@ -241,6 +241,12 @@ function renderPendingActions(label) {
 }
 
 function renderActions(name, status) {
+  // Server-reported 'removing' is the authoritative source — it survives
+  // page reloads and second tabs. Render it in place of the action
+  // buttons even if we have no client-side pending state for this row.
+  if (status === 'removing') {
+    return renderPendingActions('Removing');
+  }
   if (pendingAppActions[name]) {
     return renderPendingActions(pendingAppActions[name]);
   }

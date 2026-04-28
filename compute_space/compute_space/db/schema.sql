@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS apps (
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
     container_id TEXT,
-    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
+    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,
     cpu_millicores INTEGER NOT NULL DEFAULT 100,
@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS apps (
     public_paths TEXT NOT NULL DEFAULT '[]',
     manifest_raw TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- 1 = keep data dirs, 0 = wipe data dirs, NULL = no remove in flight.
+    -- Set when a /remove_app request enters status='removing' and read
+    -- by startup recovery if the server crashes mid-removal.
+    removing_keep_data INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS app_databases (

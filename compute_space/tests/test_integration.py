@@ -28,6 +28,7 @@ from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
+from compute_space.testing import wait_app_removed
 from compute_space.testing import wait_app_running
 
 from .conftest import _make_config_and_env
@@ -1128,7 +1129,10 @@ class TestContainerE2E:
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
-        assert r.status_code == 200
+        # /remove_app returns 202 (Accepted): the row is flipped to
+        # 'removing' and the actual teardown runs in a background thread.
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, "test-app")
 
     def test_proxy_gone_after_remove(self, admin_session, config):
         """After removal, proxied requests should 404."""
@@ -1204,7 +1208,8 @@ class TestRemoveKeepData:
             f"{base_url}/remove_app/test-app",
             data={"keep_data": "1"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, "test-app")
 
         # Persistent data should still exist
         marker = os.path.join(
@@ -1242,7 +1247,8 @@ class TestRemoveKeepData:
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, "test-app")
 
         app_data = os.path.join(config.persistent_data_dir, "app_data", "test-app")
         app_temp = os.path.join(config.temporary_data_dir, "app_temp_data", "test-app")
@@ -1460,7 +1466,8 @@ class TestGitUrlDeployE2E:
         r = admin_session.post(
             f"{base_url}/remove_app/{self.APP_NAME}",
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, self.APP_NAME)
 
     def test_proxy_gone_after_remove(self, admin_session, config):
         """After removal, proxied requests should 404."""

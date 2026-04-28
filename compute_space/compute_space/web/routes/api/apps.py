@@ -19,15 +19,13 @@ from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import reload_app_background
+from compute_space.core.apps import remove_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
-from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
-from compute_space.core.data import deprovision_data
-from compute_space.core.data import deprovision_temp_data
 from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
@@ -47,6 +45,20 @@ def _rmtree_force(path: str) -> None:
     data-dir deprovision, which swallows cleanup errors).
     """
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
+
+
+def _is_removing(app_row) -> bool:  # type: ignore[no-untyped-def]
+    """Return True if the row is currently being torn down by the
+    remove_app_background worker.
+
+    Mutating routes (reload, stop, rename) must refuse to touch a row in
+    ``status='removing'``: the worker holds exclusive ownership of the
+    row from the status-flip until the final DELETE, and any concurrent
+    write races the cleanup (rename re-keys the row out from under the
+    worker, reload starts a build that the worker is about to obviate,
+    stop fights the same stop_app_process the worker just issued).
+    """
+    return bool(app_row) and app_row["status"] == "removing"
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -246,6 +258,8 @@ def stop_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+    if _is_removing(app_row):
+        return jsonify({"error": "App is being removed"}), 409
 
     stop_app_process(app_row)
     stop_container(f"openhost-{app_name}")
@@ -265,6 +279,8 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+    if _is_removing(app_row):
+        return jsonify({"error": "App is being removed"}), 409
 
     form = await request.form if request.method == "POST" else {}
     update = form.get("update") == "1"
@@ -366,31 +382,56 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
 @api_apps_bp.route("/remove_app/<app_name>", methods=["POST"])
 @login_required
 async def remove_app(app_name: str) -> ResponseReturnValue:
+    """Mark an app for removal and run the teardown in a background thread.
+
+    Returns 202 (Accepted) immediately after flipping the row to
+    ``status='removing'``. The actual stop/image-remove/deprovision/DELETE
+    happens in :func:`compute_space.core.apps.remove_app_background`.
+
+    The dashboard observes the new status via its existing /api/apps poll
+    and renders 'Removing…' until the row disappears, so a page reload
+    or a second tab still sees the in-flight state.
+
+    If the server crashes after the status flip but before the row is
+    deleted, startup recovery resumes the removal — see
+    :func:`compute_space.core.startup._resume_pending_removals`.
+    """
     config = get_config()
     db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+    app_row = db.execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
 
     form = await request.form
     keep_data = form.get("keep_data") == "1"
 
-    await asyncio.to_thread(stop_app_process, app_row)
-    await asyncio.to_thread(remove_image, app_row["name"])
-
-    try:
-        if keep_data:
-            await asyncio.to_thread(deprovision_temp_data, app_name, config.temporary_data_dir)
-        else:
-            await asyncio.to_thread(deprovision_data, app_name, config.persistent_data_dir, config.temporary_data_dir)
-    except Exception as e:
-        logger.warning("Failed to deprovision data for %s: %s", app_name, e)
-
-    db.execute("DELETE FROM apps WHERE name = ?", (app_name,))
-    db.execute("DELETE FROM app_databases WHERE app_name = ?", (app_name,))
+    # Atomic claim: only spawn the worker if THIS request is the one that
+    # transitioned the row into 'removing'. Two concurrent POSTs (dup
+    # click, page reload + retry, second tab) would otherwise both pass
+    # a separate SELECT-then-UPDATE check and both spawn workers that
+    # race on stop/remove_image/deprovision/DELETE. The WHERE clause
+    # filters out a row that's already 'removing' so only the first
+    # claimant gets rowcount=1.
+    cursor = db.execute(
+        "UPDATE apps SET status = 'removing', removing_keep_data = ?, error_message = NULL "
+        "WHERE name = ? AND status != 'removing'",
+        (1 if keep_data else 0, app_name),
+    )
     db.commit()
 
-    return jsonify({"ok": True})
+    if cursor.rowcount == 0:
+        # Already in flight from a prior request. Return 202 so the
+        # client treats this the same as a fresh request and keeps
+        # polling; the original background thread will finish.
+        return jsonify({"ok": True, "already_removing": True}), 202
+
+    threading.Thread(
+        target=remove_app_background,
+        args=(app_name, keep_data, config),
+        daemon=True,
+    ).start()
+
+    return jsonify({"ok": True}), 202
 
 
 @api_apps_bp.route("/rename_app/<app_name>", methods=["POST"])
@@ -414,6 +455,8 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+    if _is_removing(app_row):
+        return jsonify({"error": "App is being removed"}), 409
 
     if new_name == app_name:
         return jsonify({"ok": True, "name": new_name})

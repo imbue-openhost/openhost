@@ -6,6 +6,7 @@ from quart import Quart
 
 from compute_space.config import Config
 from compute_space.core import identity
+from compute_space.core.apps import remove_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
@@ -119,10 +120,44 @@ def _restart_apps_sequential(app_names: list[str], config: Config) -> None:
         db.close()
 
 
+def _resume_pending_removals(config: Config) -> None:
+    """Resume any app removal that was in flight when the server stopped.
+
+    A row in ``status='removing'`` means a previous request flipped the
+    status, persisted ``removing_keep_data``, and either crashed or was
+    interrupted before the row was deleted. The keep-data choice was
+    captured at request time, so we just spawn the same background
+    worker again to finish what it started. The worker is idempotent
+    (stop/remove/deprovision swallow already-clean errors, and the
+    final DELETE is a no-op if the row is gone).
+    """
+    db = sqlite3.connect(config.db_path)
+    db.row_factory = sqlite3.Row
+    try:
+        rows = db.execute("SELECT name, removing_keep_data FROM apps WHERE status = 'removing'").fetchall()
+    finally:
+        db.close()
+
+    for row in rows:
+        # Default to ``keep_data=False`` if the column is somehow NULL —
+        # this can only happen with a hand-mucked DB; the route always
+        # sets the column when it flips status. False is the safer
+        # default because the user only reaches removal through an
+        # explicit confirmation, and "Keep Data" is the opt-in branch.
+        keep_data = bool(row["removing_keep_data"]) if row["removing_keep_data"] is not None else False
+        logger.info("Resuming pending removal of %s (keep_data=%s)", row["name"], keep_data)
+        threading.Thread(
+            target=remove_app_background,
+            args=(row["name"], keep_data, config),
+            daemon=True,
+        ).start()
+
+
 def init_app(app: Quart) -> None:
     """Initialize DB and app state. Call after data directories are ready."""
     config = app.openhost_config  # type: ignore[attr-defined]
     init_db(app)
     _check_app_status(config)
+    _resume_pending_removals(config)
     identity.load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)

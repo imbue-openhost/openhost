@@ -18,7 +18,11 @@ import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
+from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
+from compute_space.core.containers import stop_app_process
+from compute_space.core.data import deprovision_data
+from compute_space.core.data import deprovision_temp_data
 from compute_space.core.data import provision_data
 from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.git_ops import parse_repo_url
@@ -727,5 +731,79 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
             (str(e), app_name),
         )
         db.commit()
+    finally:
+        db.close()
+
+
+def remove_app_background(app_name: str, keep_data: bool, config: Config) -> None:
+    """Tear an app down in a background thread.
+
+    Caller must have already flipped the row to ``status='removing'`` and
+    set ``removing_keep_data`` so that startup recovery can resume the
+    work after a crash. We do the slow steps (stop process, remove image,
+    deprovision data) here, then delete the row.
+
+    Errors during stop/remove/deprovision are logged and swallowed; the
+    final ``DELETE FROM apps`` still proceeds so the row doesn't sit in
+    'removing' forever after a partial cleanup failure.
+    """
+    db = sqlite3.connect(config.db_path, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    # FK enforcement is per-connection, OFF by default. The request
+    # path uses ``get_db()`` which turns it ON; this thread opens its
+    # own connection so we have to repeat the PRAGMA, otherwise the
+    # final DELETE FROM apps would leave orphaned rows in app_tokens,
+    # app_port_mappings, service_providers{,_v2}, permissions{,_v2},
+    # and service_defaults (all of which carry ON DELETE CASCADE).
+    db.execute("PRAGMA foreign_keys = ON")
+    try:
+        app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+        if app_row is None:
+            # Already gone — nothing to do. This can happen if startup
+            # recovery races with a fresh request, or if a previous run
+            # finished the DELETE but crashed before… well, no, the
+            # DELETE is the last step, so this branch is mostly defensive.
+            return
+
+        try:
+            stop_app_process(app_row)
+        except Exception:
+            logger.exception("stop_app_process failed during remove of %s", app_name)
+        try:
+            remove_image(app_row["name"])
+        except Exception:
+            logger.exception("remove_image failed during remove of %s", app_name)
+
+        try:
+            if keep_data:
+                deprovision_temp_data(app_name, config.temporary_data_dir)
+            else:
+                deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
+        except Exception:
+            logger.exception("Failed to deprovision data for %s", app_name)
+
+        # Cascades to app_databases, app_tokens, app_port_mappings,
+        # service_providers, service_providers_v2, permissions,
+        # permissions_v2, and service_defaults via their ON DELETE
+        # CASCADE constraints. We rely on the PRAGMA above to enable
+        # FK enforcement on this connection; without it the cascade is
+        # a silent no-op and child rows leak.
+        db.execute("DELETE FROM apps WHERE name = ?", (app_name,))
+        db.commit()
+        logger.info("Removed app %s (keep_data=%s)", app_name, keep_data)
+    except Exception:
+        # Catch-all: don't let the worker thread die silently and leave
+        # the row stuck in 'removing' forever. Log + flip back to
+        # 'error' so the operator can retry / inspect.
+        logger.exception("remove_app_background failed for %s", app_name)
+        try:
+            db.execute(
+                "UPDATE apps SET status = 'error', error_message = ?, removing_keep_data = NULL WHERE name = ?",
+                ("Removal failed; retry from the dashboard. See server logs for details.", app_name),
+            )
+            db.commit()
+        except sqlite3.Error:
+            logger.exception("Could not record removal failure for %s", app_name)
     finally:
         db.close()
