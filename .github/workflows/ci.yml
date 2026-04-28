@@ -26,7 +26,7 @@ jobs:
       - run: uv run pytest
 
   # Runs full test suite, including containerized tests.
-  test-podman:
+  test-containers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
