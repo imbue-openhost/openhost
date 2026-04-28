@@ -24,11 +24,13 @@ from tests.helpers import poll_endpoint
 # ---------------------------------------------------------------------------
 
 DOMAIN = os.environ.get("OPENHOST_DOMAIN", "")
+TOKEN = os.environ.get("OPENHOST_TOKEN", "")
 APP_DEPLOY_TIMEOUT_S = 300
 # Apps live in the synced repo on the host (deployed via ansible).
 TEST_APP_PATH = "/home/host/openhost/apps/test_app"
-# Generate a random password per test run since instances are publicly routable.
-OWNER_PASSWORD = "E2e!" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20))
+OWNER_PASSWORD = os.environ.get("OPENHOST_PASSWORD") or "E2e!" + "".join(
+    secrets.choice(string.ascii_letters + string.digits) for _ in range(20)
+)
 
 
 # ---------------------------------------------------------------------------
@@ -50,8 +52,12 @@ def router_url(domain):
 
 @pytest.fixture(scope="module")
 def session(router_url):
-    """Starts unauthenticated; test_02 adds auth cookies via /setup."""
-    return requests.Session()
+    """If OPENHOST_TOKEN is set, uses bearer auth; otherwise starts
+    unauthenticated and test_02 adds auth cookies via /setup."""
+    s = requests.Session()
+    if TOKEN:
+        s.headers["Authorization"] = f"Bearer {TOKEN}"
+    return s
 
 
 @pytest.fixture(scope="module")
@@ -93,6 +99,8 @@ class TestSelfHost:
 
     def test_02_setup(self, session, router_url, healthy_router):
         """First visitor to /setup becomes the owner."""
+        if TOKEN:
+            pytest.skip("Using token auth against existing instance")
         r = session.get(f"{router_url}/setup", timeout=10)
         assert r.status_code == 200, f"/setup returned {r.status_code}: {r.text[:500]}"
 
@@ -391,6 +399,8 @@ class TestSelfHost:
 
     def test_11_login_bad_password(self, router_url):
         """Login with wrong credentials is rejected."""
+        if TOKEN and not os.environ.get("OPENHOST_PASSWORD"):
+            pytest.skip("Password not available with token-only auth")
         r = requests.post(
             f"{router_url}/login",
             data={"username": "admin", "password": "wrong-password"},
@@ -401,6 +411,8 @@ class TestSelfHost:
 
     def test_11b_login_good_password(self, router_url):
         """Login with correct credentials sets auth cookies."""
+        if TOKEN and not os.environ.get("OPENHOST_PASSWORD"):
+            pytest.skip("Password not available with token-only auth")
         login_session = requests.Session()
         login_session.verify = True
         r = login_session.post(
@@ -424,6 +436,8 @@ class TestSelfHost:
 
     def test_11c_logout(self, router_url):
         """Logout clears the session."""
+        if TOKEN and not os.environ.get("OPENHOST_PASSWORD"):
+            pytest.skip("Password not available with token-only auth")
         # Create a fresh session, log in, then log out
         s = requests.Session()
         s.verify = True
