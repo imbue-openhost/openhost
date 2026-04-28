@@ -179,22 +179,17 @@ setInterval(updateSshStatus, 5000);
 
 // ─── App List ───
 //
-// The action buttons in each row are rendered server-side by the
-// dashboard template at page load and the polling loop deliberately
-// does NOT touch them. That keeps the button DOM nodes (and any focus
-// or hover state) stable for the entire lifetime of the row, even
-// during long-running operations. The only piece the loop refreshes
-// is the row's status column, which is the single source of progress
-// feedback. Server-side route guards (409 on stop/reload/rename of a
-// row in status='removing') make any stray click a safe no-op, so
-// nothing on the client needs to disable buttons mid-action.
+// Action buttons are rendered server-side by the dashboard template;
+// the polling loop only refreshes the status column. Server-side
+// guards (409 on stop/reload/rename of a removing row) make any stray
+// click a safe no-op.
 
 function refreshApps() {
   if (!config.apiAppsUrl) return;
   fetch(config.apiAppsUrl)
     .then(function(r) { return r.json(); })
     .then(updateApps)
-    .catch(function() { /* swallow: next poll will refresh */ });
+    .catch(function() {});
 }
 
 function appAction(name, action, formData) {
@@ -207,11 +202,8 @@ function appAction(name, action, formData) {
     })
     .then(function(res) {
       if (!res.ok || (res.data && res.data.error)) {
-        var msg = (res.data && res.data.error) || 'Request failed';
-        alert(msg);
+        alert((res.data && res.data.error) || 'Request failed');
       }
-      // Trigger an immediate refresh so the status column updates
-      // without waiting for the next 3s poll tick.
       refreshApps();
     })
     .catch(function() {
@@ -231,7 +223,6 @@ function updateApps(data) {
     var name = row.getAttribute('data-app');
     var info = data[name];
     if (!info) {
-      // App is gone from the API — hide the row.
       row.style.display = 'none';
       return;
     }
@@ -239,8 +230,6 @@ function updateApps(data) {
     var statusEl = row.querySelector('.app-status');
     statusEl.className = 'app-status status-' + info.status;
     statusEl.textContent = info.status;
-    // Intentionally NOT touching the .app-actions cell here — see the
-    // section comment above.
   });
 }
 

@@ -1,10 +1,4 @@
-"""Tests for the /remove_app/<name> Quart route.
-
-Covers the route-level behaviour: 202 on accept, 404 on missing app,
-and the atomic-claim guard against duplicate concurrent removal
-requests. The actual teardown is in remove_app_background and is
-exercised in ``test_remove_app_background.py``.
-"""
+"""Tests for the /remove_app/<name> Quart route."""
 
 from __future__ import annotations
 
@@ -24,12 +18,8 @@ from .conftest import _make_test_config
 
 
 async def _call_remove(cfg, app_name: str, *, keep_data: bool = False):
-    """Drive the remove_app view function directly with a Quart context.
-
-    We bypass the @login_required decorator by calling __wrapped__ — same
-    pattern as test_app_status.py — because test fixtures don't carry
-    a login session.
-    """
+    # Bypass @login_required by calling __wrapped__ directly — same
+    # pattern as test_app_status.py.
     app = Quart(__name__)
     app.config["DB_PATH"] = cfg.db_path
     app.openhost_config = cfg  # type: ignore[attr-defined]
@@ -59,8 +49,8 @@ def _seed_app(db_path: str, name: str, status: str = "running") -> None:
 
 @pytest.mark.asyncio
 async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
-    """Happy path: the row flips to 'removing' synchronously, the worker
-    is launched, and the response is 202 (Accepted)."""
+    """Happy path: row flips to 'removing' synchronously, worker is
+    spawned, response is 202."""
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
     _seed_app(cfg.db_path, "myapp")
@@ -71,37 +61,14 @@ async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
     assert status == 202
     assert payload == {"ok": True}
     Thread.assert_called_once()
-    # Constructing the Thread is not enough — the route must also call
-    # .start() on it. A regression where Thread() is invoked but
-    # .start() is omitted would silently skip all teardown work.
+    # Constructing the Thread isn't enough — the route must call .start().
     Thread.return_value.start.assert_called_once()
-    # Row state is observable to the next poll before the worker finishes.
     db = sqlite3.connect(cfg.db_path)
     try:
-        row = db.execute("SELECT status, removing_keep_data FROM apps WHERE name = 'myapp'").fetchone()
+        row = db.execute("SELECT status FROM apps WHERE name = 'myapp'").fetchone()
     finally:
         db.close()
-    assert row == ("removing", 0)
-
-
-@pytest.mark.asyncio
-async def test_remove_keep_data_persists_choice(tmp_path: Path) -> None:
-    """The keep_data form value is persisted into ``removing_keep_data``
-    so startup recovery resumes with the right choice if we crash."""
-    cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
-    _seed_app(cfg.db_path, "myapp")
-
-    with patch("compute_space.web.routes.api.apps.threading.Thread"):
-        status, _payload = await _call_remove(cfg, "myapp", keep_data=True)
-
-    assert status == 202
-    db = sqlite3.connect(cfg.db_path)
-    try:
-        row = db.execute("SELECT removing_keep_data FROM apps WHERE name = 'myapp'").fetchone()
-    finally:
-        db.close()
-    assert row == (1,)
+    assert row == ("removing",)
 
 
 @pytest.mark.asyncio
@@ -119,12 +86,10 @@ async def test_remove_404_when_app_missing(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
-    """If ``Thread.start()`` raises (resource exhaustion), the route
-    must flip the row out of 'removing' and back to 'error' so the
-    operator can retry from the dashboard. Otherwise the row would sit
-    stuck in 'removing' and every retry would hit the
-    ``already_removing`` short-circuit, blocking removal entirely
-    until a server restart re-runs startup recovery.
+    """If Thread.start() raises (resource exhaustion), the route must
+    flip the row to 'error' so the operator can retry from the
+    dashboard. Otherwise the row sits stuck in 'removing' and every
+    retry hits the already_removing short-circuit.
     """
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
@@ -138,26 +103,17 @@ async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
 
     assert status == 503
     assert "removal worker" in payload["error"].lower()
-    # Row must be unstuck so a retry can re-claim.
     db = sqlite3.connect(cfg.db_path)
     try:
-        row = db.execute("SELECT status, removing_keep_data FROM apps WHERE name = 'myapp'").fetchone()
+        row = db.execute("SELECT status FROM apps WHERE name = 'myapp'").fetchone()
     finally:
         db.close()
     assert row[0] == "error"
-    assert row[1] is None
 
 
 @pytest.mark.asyncio
 async def test_concurrent_removes_only_spawn_one_worker(tmp_path: Path) -> None:
-    """Two POSTs racing on the same app: only one wins the atomic claim
-    and only one worker is started.
-
-    Without the ``WHERE status != 'removing'`` filter, both requests
-    would pass a SELECT-then-UPDATE check and we'd get two concurrent
-    teardown threads racing on stop / remove_image / deprovision /
-    DELETE. This regression test pins the atomic-claim contract.
-    """
+    """Two POSTs racing on the same app: only one wins the atomic claim."""
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
     _seed_app(cfg.db_path, "myapp")
@@ -170,17 +126,10 @@ async def test_concurrent_removes_only_spawn_one_worker(tmp_path: Path) -> None:
     assert payload1 == {"ok": True}
     assert status2 == 202
     assert payload2.get("already_removing") is True
-    # Worker only spawned for the first claimant.
     assert Thread.call_count == 1
 
 
-# ---- Guards on sibling routes while a removal is in flight -----------------
-#
-# Each of these mutating routes (stop, reload, rename) must refuse to
-# touch a row in status='removing'. The background remove worker holds
-# exclusive ownership of the row from the status flip until DELETE; any
-# concurrent write either re-keys the row out from under the worker
-# (rename) or kicks off conflicting teardown / build steps (stop, reload).
+# Guards on sibling routes (stop, reload, rename) while a removal is in flight.
 
 
 async def _call_route(cfg, view_name: str, app_name: str, *, form_data=None, method="POST"):

@@ -694,12 +694,9 @@ class TestContainerGone:
                         f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
                         timeout=10,
                     )
-                    # Wait for the background remove worker to finish
-                    # before stopping the router; otherwise the daemon
-                    # thread is killed mid-teardown and leaves
-                    # containers / data behind. Best-effort with a
-                    # short timeout — container_cleanup() below
-                    # force-removes what's left if this poll times out.
+                    # Wait for the bg worker before stopping the router
+                    # or it gets killed mid-teardown. container_cleanup()
+                    # below force-removes anything left over.
                     wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
                     pass
@@ -951,9 +948,7 @@ class TestContainerRestart:
                         f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
                         timeout=10,
                     )
-                    # Wait for the background worker to finish so it
-                    # isn't killed when we stop the router. Best-effort
-                    # with a short timeout.
+                    # Wait for the bg worker before stopping the router.
                     wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
                     pass

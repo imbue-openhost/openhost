@@ -1,27 +1,11 @@
-"""v4: extend ``apps.status`` CHECK to include ``'removing'`` and add
-``removing_keep_data`` so an in-flight removal survives a restart.
+"""v4: extend ``apps.status`` CHECK to include ``'removing'``.
 
-This is a Python (not SQL-file) migration because it must toggle
-``PRAGMA foreign_keys`` *outside* the transaction wrapper. SQLite
-documents that ``PRAGMA foreign_keys`` is a no-op while a transaction
-is open. The base ``Migration.apply()`` opens a ``BEGIN EXCLUSIVE``
-before calling ``up()``, and ``SqlFileMigration`` embeds its own
-``BEGIN EXCLUSIVE`` inside the script — both paths leave us with no
-clean place to flip foreign-key enforcement off. We override
-:meth:`apply` here so the PRAGMA toggle straddles the transaction
-boundary the way the SQLite docs prescribe.
-
-Why we need foreign keys off at all: SQLite cannot ALTER a column's
-``CHECK`` constraint in place, so we have to do the standard
-"create new table, copy, drop, rename" dance on ``apps``. Several
-sibling tables hold ``FOREIGN KEY ... REFERENCES apps(name)``
-constraints. ``DROP TABLE apps`` itself does not trigger
-``ON DELETE CASCADE`` (cascades only fire for ``DELETE`` statements),
-*but* SQLite still validates referential integrity on the
-``ALTER TABLE apps_new RENAME TO apps`` step when foreign keys are
-enabled, and any orphan would be rejected. Disabling FK enforcement
-for the duration of the swap matches the recipe at
-https://sqlite.org/lang_altertable.html (section 7).
+Python (not SQL-file) migration so we can toggle ``PRAGMA
+foreign_keys`` outside the transaction wrapper — SQLite makes that
+PRAGMA a no-op while a transaction is open, and the standard "create
+new table, copy, drop, rename" recipe for changing a CHECK constraint
+needs FKs disabled across the swap (otherwise the RENAME step
+rejects rows in sibling tables that reference apps).
 """
 
 from __future__ import annotations
@@ -52,8 +36,7 @@ CREATE TABLE apps_new (
     public_paths TEXT NOT NULL DEFAULT '[]',
     manifest_raw TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    removing_keep_data INTEGER
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
 
@@ -77,16 +60,9 @@ class Migration0004AppsRemovingStatus(Migration):
     version = 4
 
     def up(self, db: sqlite3.Connection) -> None:  # pragma: no cover - apply() is overridden
-        # Unused: we override apply() to control the transaction boundary
-        # so PRAGMA foreign_keys can be toggled outside the BEGIN EXCLUSIVE.
         raise NotImplementedError("Migration0004AppsRemovingStatus drives execution through apply()")
 
     def apply(self, db: sqlite3.Connection) -> None:
-        # PRAGMA foreign_keys must be set outside any open transaction
-        # (per SQLite docs). The runner opens the connection in
-        # autocommit mode (isolation_level=None), so issuing the PRAGMA
-        # here, before BEGIN EXCLUSIVE, takes effect. We restore it
-        # after COMMIT regardless of outcome.
         db.execute("PRAGMA foreign_keys = OFF")
         db.execute("BEGIN EXCLUSIVE")
         try:

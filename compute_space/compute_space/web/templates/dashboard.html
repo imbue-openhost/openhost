@@ -34,12 +34,9 @@
     <td>{{ app.version }}</td>
     <td>{{ app.local_port }}</td>
     <td class="app-status status-{{ app.status }}">{{ app.status }}</td>
-    {# Action buttons are rendered server-side at page load and never
-       re-rendered by the polling loop, so the DOM nodes (and any focus
-       state) remain stable while a user is interacting with them. The
-       row's status cell above is the only piece the polling loop
-       updates. Server-side route guards (409 on stop/reload/rename for
-       a row in status='removing') make stray clicks safe no-ops. #}
+    {# Action buttons rendered server-side and never re-rendered by
+       the polling loop; server-side guards (409 on stop/reload/rename
+       of a removing row) make stray clicks safe no-ops. #}
     <td class="app-actions">
       <a href="{{ url_for('apps.app_detail', app_name=app.name) }}">Details</a>
       <button class="btn" onclick="appAction('{{ app.name }}', 'reload_app')">Reload</button>

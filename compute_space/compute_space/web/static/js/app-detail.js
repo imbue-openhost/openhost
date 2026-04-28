@@ -53,13 +53,9 @@ function setActionsBusy(label) {
 }
 
 function appAction(url, data, opts) {
-  // opts is { isRemove?: bool, label?: string }.
-  //   isRemove=true  → on success, navigate to /dashboard (the row is
-  //                    or will be gone; staying here is pointless).
-  //   isRemove=false → on success, location.reload() (re-render the
-  //                    detail page with the new state).
-  //   label          → text shown next to the action buttons while the
-  //                    request is in flight.
+  // opts: { isRemove?: bool, label?: string }. isRemove navigates to
+  // /dashboard on success; otherwise location.reload(). label is the
+  // text shown next to the action buttons while the request is in flight.
   opts = opts || {};
   var label = opts.label || (opts.isRemove ? 'Removing' : 'Working');
   var fd = new FormData();
@@ -172,14 +168,10 @@ function clearCacheAndReload() {
         );
     }
 
-    // Reflect server status='removing' in the page chrome: disable the
-    // action buttons + show "Removing…" beside them. We don't redirect
-    // immediately on 'removing' because the row still exists; we wait
-    // for the row to disappear (404) and then redirect to /dashboard.
-    // If the removal worker fails it flips the row to 'error', and we
-    // need to re-enable the buttons so the operator can act on the row
-    // (retry remove, stop, etc.) — otherwise they'd be stuck disabled
-    // until manual reload.
+    // While status='removing', disable the action buttons and show
+    // "Removing…". Re-enable on transition to 'error' (failed teardown);
+    // a successful teardown deletes the row and we redirect via the
+    // 404 branch in pollStatus.
     var clearRemovingChrome = null;
     function applyRemovingChrome() {
         if (clearRemovingChrome) return;
@@ -195,7 +187,6 @@ function clearCacheAndReload() {
         fetch(config.appStatusUrl)
             .then(function(r) {
                 if (r.status === 404) {
-                    // App removal completed — bounce to the dashboard.
                     window.location.href = '/dashboard';
                     return null;
                 }
@@ -211,10 +202,6 @@ function clearCacheAndReload() {
                 if (appStatus === 'removing') {
                     applyRemovingChrome();
                 } else {
-                    // Status flipped away from 'removing' (almost always
-                    // to 'error' from a failed teardown — successful
-                    // teardown deletes the row and we redirect via the
-                    // 404 branch above). Re-enable the buttons.
                     clearRemovingChromeIfApplied(
                         appStatus === 'error' ? (data.error || 'Removal failed') : null
                     );
@@ -237,20 +224,15 @@ function clearCacheAndReload() {
             });
     }
 
-    // If the page loads while the app is already in the middle of a
-    // removal (user reloaded the tab, or opened the detail page in a
-    // second window), reflect that immediately so the buttons are
-    // disabled before the first poll completes.
+    // If the page loads with the app already in 'removing', reflect
+    // that before the first poll fires.
     if (appStatus === 'removing') {
         applyRemovingChrome();
     }
 
-    // Scroll to bottom on load
     logEl.scrollTop = logEl.scrollHeight;
 
-    // Poll while app is active — faster during builds for streaming output.
-    // 'removing' is included so the page learns when the app row goes
-    // away (transition to 404 → redirect to /dashboard).
+    // 'removing' polls so the page learns when the row vanishes (404).
     if (
         appStatus === 'running' ||
         appStatus === 'starting' ||

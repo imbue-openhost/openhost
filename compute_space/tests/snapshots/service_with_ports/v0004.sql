@@ -58,11 +58,10 @@ CREATE TABLE "apps" (
     public_paths TEXT NOT NULL DEFAULT '[]',
     manifest_raw TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    removing_keep_data INTEGER
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT INTO "apps" VALUES(1,'orders','orders','1.0.0','Order service','serverfull','/repo/orders',NULL,NULL,19100,NULL,NULL,'stopped',NULL,256,500,0,'[]',NULL,'2024-01-01T00:00:00','2024-01-01T00:00:00',NULL);
-INSERT INTO "apps" VALUES(2,'billing','billing','2.1.0','Billing service','serverfull','/repo/billing','https://git.example/billing',NULL,19101,NULL,NULL,'running',NULL,512,1000,0,'["/invoices"]',NULL,'2024-02-15T10:00:00','2024-02-15T10:00:00',NULL);
+INSERT INTO "apps" VALUES(1,'orders','orders','1.0.0','Order service','serverfull','/repo/orders',NULL,NULL,19100,NULL,NULL,'stopped',NULL,256,500,0,'[]',NULL,'2024-01-01T00:00:00','2024-01-01T00:00:00');
+INSERT INTO "apps" VALUES(2,'billing','billing','2.1.0','Billing service','serverfull','/repo/billing','https://git.example/billing',NULL,19101,NULL,NULL,'running',NULL,512,1000,0,'["/invoices"]',NULL,'2024-02-15T10:00:00','2024-02-15T10:00:00');
 CREATE TABLE "owner" (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     username TEXT NOT NULL UNIQUE,

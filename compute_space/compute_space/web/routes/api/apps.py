@@ -49,22 +49,12 @@ def _rmtree_force(path: str) -> None:
 
 
 def _is_removing(app_row: sqlite3.Row | None) -> bool:
-    """Return True if the row is currently being torn down by the
-    remove_app_background worker.
+    """True if the row is being torn down by remove_app_background.
 
-    Mutating routes (reload, stop, rename) must refuse to touch a row in
-    ``status='removing'``: the worker holds exclusive ownership of the
-    row from the status-flip until the final DELETE, and any concurrent
-    write races the cleanup (rename re-keys the row out from under the
-    worker, reload starts a build that the worker is about to obviate,
-    stop fights the same stop_app_process the worker just issued).
-
-    The ``remove_app`` route deliberately does NOT use this helper. It
-    uses an atomic ``UPDATE ... WHERE status != 'removing'`` instead so
-    that two concurrent removal requests can never both pass a SELECT
-    check and both spawn workers — ``rowcount`` distinguishes the
-    winner from the duplicate. Switching ``remove_app`` to a SELECT +
-    ``_is_removing`` check would re-introduce the TOCTOU race.
+    Mutating routes (stop, reload, rename) refuse to touch a removing
+    row with 409. /remove_app itself uses an atomic UPDATE...WHERE
+    status != 'removing' instead of this helper to avoid a TOCTOU race
+    on concurrent removal requests.
     """
     return app_row is not None and app_row["status"] == "removing"
 
@@ -390,26 +380,15 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
 @api_apps_bp.route("/remove_app/<app_name>", methods=["POST"])
 @login_required
 async def remove_app(app_name: str) -> ResponseReturnValue:
-    """Mark an app for removal and run the teardown in a background thread.
+    """Flip the row to ``status='removing'`` and run teardown in a thread.
 
-    Returns 202 (Accepted) immediately after flipping the row to
-    ``status='removing'``. The actual stop/image-remove/deprovision/DELETE
-    happens in :func:`compute_space.core.apps.remove_app_background`.
-
-    The dashboard observes the new status via its existing /api/apps poll
-    and renders 'Removing…' until the row disappears, so a page reload
-    or a second tab still sees the in-flight state.
-
-    If the server crashes after the status flip but before the row is
-    deleted, startup recovery resumes the removal — see
-    :func:`compute_space.core.startup._resume_pending_removals`.
+    Returns 202 immediately. The dashboard's /api/apps poll picks up
+    the new status and renders 'Removing…' until the row is deleted,
+    so reloading the page or opening a second tab still shows the
+    in-flight state.
     """
     config = get_config()
     db = get_db()
-    # Match the SELECT * pattern used by sibling routes; downstream
-    # logic only needs ``name`` but fetching the whole row makes the
-    # routes uniform and avoids surprising future maintainers who add
-    # status / id reads here.
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
@@ -417,24 +396,16 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     form = await request.form
     keep_data = form.get("keep_data") == "1"
 
-    # Atomic claim: only spawn the worker if THIS request is the one that
-    # transitioned the row into 'removing'. Two concurrent POSTs (dup
-    # click, page reload + retry, second tab) would otherwise both pass
-    # a separate SELECT-then-UPDATE check and both spawn workers that
-    # race on stop/remove_image/deprovision/DELETE. The WHERE clause
-    # filters out a row that's already 'removing' so only the first
-    # claimant gets rowcount=1.
+    # Atomic claim: ``WHERE status != 'removing'`` makes concurrent
+    # POSTs safe — only the first one gets rowcount=1 and spawns a
+    # worker; later ones short-circuit to the already_removing branch.
     cursor = db.execute(
-        "UPDATE apps SET status = 'removing', removing_keep_data = ?, error_message = NULL "
-        "WHERE name = ? AND status != 'removing'",
-        (1 if keep_data else 0, app_name),
+        "UPDATE apps SET status = 'removing', error_message = NULL WHERE name = ? AND status != 'removing'",
+        (app_name,),
     )
     db.commit()
 
     if cursor.rowcount == 0:
-        # Already in flight from a prior request. Return 202 so the
-        # client treats this the same as a fresh request and keeps
-        # polling; the original background thread will finish.
         return jsonify({"ok": True, "already_removing": True}), 202
 
     try:
@@ -444,16 +415,11 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
             daemon=True,
         ).start()
     except Exception as e:
-        # Thread spawn failed (resource exhaustion etc.). Roll the row
-        # back to ``status='error'`` so a subsequent dashboard click
-        # can re-claim it; otherwise the row would sit in 'removing'
-        # forever and every retry would hit the already_removing
-        # short-circuit. Startup recovery would eventually pick it up
-        # but only after a server restart, which is a much worse
-        # operator experience.
+        # Thread spawn failed (resource exhaustion). Roll the row back
+        # to 'error' so a retry can re-claim it via the atomic UPDATE.
         logger.exception("Could not spawn remove worker for %s", app_name)
         db.execute(
-            "UPDATE apps SET status = 'error', error_message = ?, removing_keep_data = NULL WHERE name = ?",
+            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
             (f"Could not start removal worker: {e}", app_name),
         )
         db.commit()

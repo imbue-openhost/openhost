@@ -76,12 +76,11 @@ def wait_app_running(session: requests.Session, router_url: str, app_name: str, 
 
 
 def wait_app_removed(session: requests.Session, router_url: str, app_name: str, timeout: float = 120) -> None:
-    """Poll ``/api/app_status/<app>`` until the app row is gone (404).
+    """Poll ``/api/app_status/<app>`` until the row is gone (404).
 
-    ``/remove_app`` returns 202 immediately and runs the actual teardown
-    in a background thread. Tests that assert on filesystem or container
-    state after a remove must wait for the background work to complete
-    before observing — the row is only deleted as the last step.
+    /remove_app returns 202 and runs teardown in a background thread;
+    tests asserting on filesystem / container state after a remove
+    must wait for the row to disappear (the row is the last step).
     """
 
     def _check() -> bool:
