@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run pytest
+      - run: uv run --group dev pytest -v
 
   # Runs full unit test suite, including containerized tests.
   test-containers:
@@ -40,6 +40,6 @@ jobs:
       - name: Verify rootless podman works
         run: |
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
-      - name: Run compute_space and full-stack tests
+      - name: Run all tests, including containerized tests
         run: |
-          uv run --group dev pytest compute_space/tests/ tests/test_full_stack.py -v
+          uv run --group dev pytest --run-containers -v

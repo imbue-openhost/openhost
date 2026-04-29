@@ -62,6 +62,7 @@ testpaths = [
     "self_host_cli/src/self_host_cli/tests",
     "apps/oauth/src/oauth/tests",
 ]
+# do NOT set --import-mode=importlib or change the import-mode.
 addopts = "-p no:randomly -v"
 markers = [
     "requires_containers: needs --run-containers flag and a working rootless podman setup",
