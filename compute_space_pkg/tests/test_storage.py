@@ -9,9 +9,9 @@ from typing import Any
 from typing import cast
 
 import pytest
+from tests.conftest import _make_test_config
 
 import compute_space.core.storage as storage
-from tests.conftest import _make_test_config
 
 
 def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):

@@ -40,3 +40,7 @@ coredns = "*"
 [tool.pixi.system-requirements]
 linux = "6.8"
 libc = "2.39"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
