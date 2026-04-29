@@ -206,6 +206,10 @@ class TestRouterCore:
         r = admin_session.get(f"{base_url}/dashboard")
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
+        # Security audit, storage status, and SSH toggle live on the System page,
+        # not the dashboard.
+        for system_only_element in ('id="security-status"', 'id="storage-status"', 'id="ssh-btn"'):
+            assert system_only_element not in r.text
 
     def test_system_page_requires_auth(self, admin_session, config):
         """Unauthenticated requests to /system/ redirect to /login."""
@@ -221,8 +225,7 @@ class TestRouterCore:
         base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(f"{base_url}/system/")
         assert r.status_code == 200
-        # Mount points for the security audit, storage status, and SSH toggle
-        # all live on the System page now.
+        # The System page hosts the security audit, storage status, and SSH toggle.
         assert 'id="security-status"' in r.text
         assert 'id="storage-status"' in r.text
         assert 'id="ssh-btn"' in r.text

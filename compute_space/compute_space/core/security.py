@@ -73,7 +73,7 @@ def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
 def _check_ssh_disabled() -> CheckResult:
     """SSH daemon is not running (no remote shell access to the VM)."""
     if is_sshd_active():
-        return {"ok": False, "detail": "sshd is running — disable via dashboard toggle"}
+        return {"ok": False, "detail": "sshd is running — disable via System page toggle"}
     return {"ok": True, "detail": "sshd is not running"}
 
 
