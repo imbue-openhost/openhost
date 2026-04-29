@@ -11,6 +11,13 @@ from compute_space.web.routes.proxy import ws_catch_all
 pages_system_bp = Blueprint("pages_system", __name__)
 
 
+@pages_system_bp.route("/system/")
+@login_required
+async def system_page() -> str:
+    """Serve the System dashboard (security audit, storage, maintenance actions)."""
+    return await render_template("system.html")
+
+
 @pages_system_bp.route("/logs/")
 @login_required
 async def logs_page() -> str:

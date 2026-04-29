@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - System{% endblock %}
+{% block content %}
+<h2>System</h2>
+
+<div id="security-status" style="margin-bottom: 1em;"></div>
+<div id="storage-status" style="margin-bottom: 1em;"></div>
+
+<h3 style="margin-top: 1.5em;">Maintenance</h3>
+<div style="margin-bottom: 1em; display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
+  <button class="btn" onclick="restartRouter()">Restart Router</button>
+  <span id="restart-msg" style="color: #d97706;"></span>
+  <span style="color: #ccc;">|</span>
+  <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
+  <span id="drop-build-cache-msg" style="color: #d97706;"></span>
+  <span style="color: #ccc;">|</span>
+  <span id="ssh-toggle">
+    <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
+    <span id="ssh-status" style="font-size: 0.9em; color: #6b7280;"></span>
+  </span>
+</div>
+
+<script id="page-config" type="application/json">
+{
+  "securityAuditUrl": "{{ url_for('api_system.security_audit') }}",
+  "storageStatusUrl": "{{ url_for('api_system.api_storage_status') }}",
+  "restartRouterUrl": "{{ url_for('api_system.restart_router') }}",
+  "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
+  "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
+  "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
+  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}"
+}
+</script>
+<script src="{{ url_for('static', filename='js/system.js') }}"></script>
+{% endblock %}

@@ -3,22 +3,6 @@
 {% block content %}
 <h2>Deployed Apps</h2>
 
-<div id="security-status" style="margin-bottom: 1em;"></div>
-<div id="storage-status" style="margin-bottom: 1em;"></div>
-
-<div style="margin-bottom: 1em; display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
-  <button class="btn" onclick="restartRouter()">Restart Router</button>
-  <span id="restart-msg" style="color: #d97706;"></span>
-  <span style="color: #ccc;">|</span>
-  <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
-  <span id="drop-build-cache-msg" style="color: #d97706;"></span>
-  <span style="color: #ccc;">|</span>
-  <span id="ssh-toggle">
-    <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
-    <span id="ssh-status" style="font-size: 0.9em; color: #6b7280;"></span>
-  </span>
-</div>
-
 {% if apps %}
 <table>
   <tr>
@@ -68,16 +52,9 @@
 
 <script id="page-config" type="application/json">
 {
-  "securityAuditUrl": "{{ url_for('api_system.security_audit') }}",
-  "storageStatusUrl": "{{ url_for('api_system.api_storage_status') }}",
-  "restartRouterUrl": "{{ url_for('api_system.restart_router') }}",
-  "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
-  "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
-  "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
 "apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},
   "tokensListUrl": "{{ url_for('api_system.api_tokens_list') }}",
-  "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}",
-  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}"
+  "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}"
 }
 </script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
