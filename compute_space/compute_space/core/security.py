@@ -3,7 +3,7 @@
 Checks actual security posture regardless of config settings: TLS active,
 SSH disabled, no unexpected ports, code read-only.
 
-When SSH is enabled via the router dashboard toggle, the audit will fail
+When SSH is enabled via the System page toggle, the audit will fail
 on ssh_disabled — this is intentional (SSH is a temporary debug tool).
 
 Results are exposed via /health and /api/security-audit endpoints.
