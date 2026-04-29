@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from schemathesis import Case
 from schemathesis.checks import CHECKS
 from schemathesis.checks import load_all_checks
 from schemathesis.openapi import from_path
@@ -13,7 +14,7 @@ schema = from_path(str(SPEC_PATH))
 
 
 @schema.parametrize()
-def test_openapi_conformance(case, oauth_app_url: str) -> None:
+def test_openapi_conformance(case: Case, oauth_app_url: str) -> None:
     case.call_and_validate(
         base_url=f"{oauth_app_url}/oauth_service",
         excluded_checks=[positive_data_acceptance],

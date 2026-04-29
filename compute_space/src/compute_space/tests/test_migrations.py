@@ -10,8 +10,8 @@ import sqlite3
 
 from compute_space.db.connection import init_db
 from compute_space.db.migrations import migrate
-from testing_helpers.schema_helpers import assert_schemas_equal as _assert_schemas_equal
-from testing_helpers.schema_helpers import get_schema_snapshot as _get_schema_snapshot
+from compute_space.tests.schema_helpers import assert_schemas_equal as _assert_schemas_equal
+from compute_space.tests.schema_helpers import get_schema_snapshot as _get_schema_snapshot
 
 from .conftest import _FakeApp
 
@@ -19,7 +19,7 @@ from .conftest import _FakeApp
 # Helpers
 # ---------------------------------------------------------------------------
 
-PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
+PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
 
 

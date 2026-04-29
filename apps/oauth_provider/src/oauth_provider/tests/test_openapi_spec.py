@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -12,7 +13,7 @@ SPEC_PATH = Path(__file__).resolve().parents[3] / "services" / "oauth" / "openap
 SVC_PREFIX = "/oauth_service"
 
 
-def _filter_service_paths(schema: dict) -> dict:
+def _filter_service_paths(schema: dict[str, Any]) -> dict[str, Any]:
     filtered = dict(schema)
     new_paths = {}
     for path, ops in schema.get("paths", {}).items():

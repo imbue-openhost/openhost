@@ -23,9 +23,9 @@ import websockets
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import DefaultConfig
-from compute_space.testing import managed_router
-from compute_space.testing import poll
-from compute_space.testing import wait_app_running
+from compute_space.tests.utils import managed_router
+from compute_space.tests.utils import poll
+from compute_space.tests.utils import wait_app_running
 
 # ---------------------------------------------------------------------------
 # Constants

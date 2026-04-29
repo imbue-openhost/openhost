@@ -49,7 +49,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["self_host_cli", "compute_space/compute_space", "compute_space_cli/compute_space_cli"]
+packages = ["self_host_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli"]
 
 [tool.uv]
 # dependency cooldown, to help avoid pulling uber fresh packages that may have issues/exploits/etc.
@@ -57,12 +57,13 @@ exclude-newer = "1 week"
 
 [tool.pytest.ini_options]
 testpaths = [
-    "compute_space/tests",
-    "compute_space_cli/tests",
-    "self_host_cli/tests",
-    "apps/oauth/tests",
+    "compute_space/src/compute_space/tests",
+    "compute_space_cli/src/compute_space_cli/tests",
+    "self_host_cli/src/self_host_cli/tests",
+    "apps/oauth/src/oauth/tests",
 ]
-addopts = "-p no:randomly -v --import-mode=importlib"
+# do NOT set --import-mode=importlib or change the import-mode.
+addopts = "-p no:randomly -v"
 markers = [
     "requires_containers: needs --run-containers flag and a working rootless podman setup",
     "requires_tls: needs --run-tls flag, pebble, and coredns",
@@ -96,15 +97,15 @@ known-first-party = [
     "compute_space",
     "compute_space_cli",
     "self_host_cli",
-    "testing_helpers",
     "oauth",
 ]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["compute_space/compute_space", "compute_space_cli", "apps/oauth/oauth"]
+files = ["compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "apps/oauth_provider/src/oauth_provider"]
 strict = true
 ignore_missing_imports = true
+exclude = ["compute_space/src/compute_space/tests/"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]

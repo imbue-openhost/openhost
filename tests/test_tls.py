@@ -37,9 +37,9 @@ from josepy import JWKRSA
 from compute_space.core.tls.acquire_cert import acquire_tls_cert
 from compute_space.core.tls.util import _acquire_cert_dns01
 from compute_space.core.tls.util import load_account_key
-from compute_space.testing import kill_tree
-from compute_space.testing import poll
-from compute_space.testing import port_connectable
+from compute_space.tests.utils import kill_tree
+from compute_space.tests.utils import poll
+from compute_space.tests.utils import port_connectable
 
 # ---------------------------------------------------------------------------
 # Constants

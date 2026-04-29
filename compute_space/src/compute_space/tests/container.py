@@ -20,13 +20,14 @@ def container_cleanup(container_name: str, app_name: str) -> None:
     swallowed — callers use this in teardown paths where the point is to
     leave the host clean, not to assert on the removal itself.
     """
-    subprocess.run(
-        ["podman", "rm", "-f", container_name],
-        capture_output=True,
-        timeout=10,
-    )
-    subprocess.run(
+    # `-t 0` skips the SIGTERM grace window so we don't race podman's own
+    # internal stop-timeout (default 10s); this is force-cleanup, not a
+    # graceful shutdown.
+    for cmd in (
+        ["podman", "rm", "-f", "-t", "0", container_name],
         ["podman", "rmi", "-f", f"openhost-{app_name}:latest"],
-        capture_output=True,
-        timeout=10,
-    )
+    ):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
