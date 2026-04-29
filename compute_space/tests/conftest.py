@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 import requests
 
-from compute_space import OPENHOST_PROJECT_DIR
+from compute_space.config import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
 from compute_space.db.migrations import _schema_path

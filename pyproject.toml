@@ -49,7 +49,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["self_host_cli", "compute_space/compute_space", "compute_space_cli/compute_space_cli"]
+packages = ["self_host_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/compute_space_cli"]
 
 [tool.uv]
 # dependency cooldown, to help avoid pulling uber fresh packages that may have issues/exploits/etc.
@@ -102,7 +102,7 @@ known-first-party = [
 
 [tool.mypy]
 python_version = "3.12"
-files = ["compute_space/compute_space", "compute_space_cli", "apps/oauth/oauth"]
+files = ["compute_space/src/compute_space", "compute_space_cli", "self_host_cli/src/self_host_cli", "apps/oauth/oauth"]
 strict = true
 ignore_missing_imports = true
 

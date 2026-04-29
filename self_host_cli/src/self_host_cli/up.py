@@ -12,7 +12,7 @@ import socket
 import subprocess
 import sys
 
-from compute_space import COMPUTE_SPACE_PACKAGE_DIR
+from compute_space.config import COMPUTE_SPACE_PACKAGE_DIR
 from self_host_cli.config_gen import generate_config
 
 _PID_DIR = os.path.expanduser("~/.openhost/run")
@@ -57,7 +57,7 @@ def _detect_public_ip() -> str:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(2)
             s.connect(("8.8.8.8", 53))
-            ip = s.getsockname()[0]
+            ip = str(s.getsockname()[0])
             if _is_public_ip(ip):
                 return ip
     except OSError:

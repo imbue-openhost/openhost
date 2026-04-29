@@ -21,7 +21,7 @@ import pytest
 import requests
 import websockets
 
-from compute_space import OPENHOST_PROJECT_DIR
+from compute_space.config import OPENHOST_PROJECT_DIR
 from compute_space.config import DefaultConfig
 from compute_space.testing import managed_router
 from compute_space.testing import poll

@@ -24,7 +24,7 @@ import pytest
 import requests
 from loguru import logger
 
-from compute_space import OPENHOST_PROJECT_DIR
+from compute_space.config import OPENHOST_PROJECT_DIR
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest

@@ -10,6 +10,11 @@ import tomli_w
 import typed_settings
 from quart import current_app
 
+# compute_space/ project subdirectory (parent of src/)
+COMPUTE_SPACE_PACKAGE_DIR = Path(__file__).resolve().parent.parent.parent
+# Repository root
+OPENHOST_PROJECT_DIR = COMPUTE_SPACE_PACKAGE_DIR.parent
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class Config:
