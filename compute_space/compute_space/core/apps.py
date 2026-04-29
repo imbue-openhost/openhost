@@ -54,6 +54,7 @@ RESERVED_PATHS = {
     "/toggle-ssh",
     "/identity",
     "/settings",
+    "/system",
 }
 
 

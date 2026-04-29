@@ -159,7 +159,7 @@ def check_before_deploy(config: Config) -> None:
 
 
 def storage_status(config: Config) -> dict[str, object]:
-    """Return disk totals and usage for dashboard/API.
+    """Return disk totals and usage for the System page / API.
 
     Both persistent and temporary data live on the same disk (under
     ``data_root_dir``), so we report a single unified disk metric.
