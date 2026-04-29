@@ -19,7 +19,7 @@ from .conftest import _FakeApp
 # Helpers
 # ---------------------------------------------------------------------------
 
-PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "compute_space"))
+PACKAGE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 SCHEMA_SQL_PATH = os.path.join(PACKAGE_DIR, "db", "schema.sql")
 
 

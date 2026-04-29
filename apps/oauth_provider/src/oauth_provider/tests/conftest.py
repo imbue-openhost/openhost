@@ -3,6 +3,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,8 @@ SPEC_PATH = Path(__file__).resolve().parents[3] / "services" / "oauth" / "openap
 def _find_free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 def _wait_for_port(port: int, timeout: float = 10.0) -> None:
@@ -45,7 +47,7 @@ asyncio.run(serve(app, cfg))
 
 
 @pytest.fixture(scope="session")
-def oauth_app_url():
+def oauth_app_url() -> Iterator[str]:
     db_path = str(OAUTH_APP_DIR / "tests" / "test_oauth.db")
     port = _find_free_port()
     env = {
