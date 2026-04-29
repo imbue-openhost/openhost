@@ -382,7 +382,13 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
         if keep_data:
             await asyncio.to_thread(deprovision_temp_data, app_name, config.temporary_data_dir)
         else:
-            await asyncio.to_thread(deprovision_data, app_name, config.persistent_data_dir, config.temporary_data_dir)
+            await asyncio.to_thread(
+                deprovision_data,
+                app_name,
+                config.persistent_data_dir,
+                config.temporary_data_dir,
+                config.app_archive_dir,
+            )
     except Exception as e:
         logger.warning("Failed to deprovision data for %s: %s", app_name, e)
 

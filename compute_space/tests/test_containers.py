@@ -315,8 +315,10 @@ def _run_and_capture(
 
     data_dir = str(tmp_path / "persistent")
     temp_data_dir = str(tmp_path / "temp")
+    archive_dir = str(tmp_path / "archive")
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(archive_dir, exist_ok=True)
     os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
 
     run_container(
@@ -327,6 +329,7 @@ def _run_and_capture(
         env_vars=env_vars or {},
         data_dir=data_dir,
         temp_data_dir=temp_data_dir,
+        archive_dir=archive_dir,
         port_mappings=port_mappings,
     )
     # The "run" call is the one after the pre-cleanup "rm".
@@ -462,6 +465,88 @@ def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeyp
     vm_mounts = [v for v in volume_args if "/data/vm_data" in v]
     assert len(vm_mounts) == 1, vm_mounts
     assert vm_mounts[0].endswith(":ro,idmap"), vm_mounts[0]
+
+
+def test_run_container_app_archive_mounts_per_app_subdir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Apps that opt in via [data].app_archive get a per-app bind mount
+    at /data/app_archive/<name>/.  The host source comes from the
+    operator-configured archive_dir (defaulting to a local-disk path
+    under persistent_data_dir; can be overridden to a JuiceFS mount).
+    The container path is the same regardless of backing.
+
+    A regression that mounted the archive parent (instead of the
+    per-app subdir) would expose every app's archive contents to
+    every app — same security concern as the equivalent app_data
+    isolation invariant, pinned here for the new tier.
+    """
+    manifest = _basic_manifest(app_data=True, app_archive=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    archive_mounts = [v for v in volume_args if "/data/app_archive" in v]
+    assert len(archive_mounts) == 1, archive_mounts
+
+    # Per-app subdir, not the parent.
+    assert archive_mounts[0].endswith(f":/data/app_archive/{manifest.name}:idmap"), archive_mounts[0]
+
+    # Source path is the per-app subdir under the configured
+    # archive_dir (here, tmp_path/archive/<name>).
+    assert f"archive/{manifest.name}:" in archive_mounts[0], archive_mounts[0]
+
+
+def test_run_container_app_archive_off_by_default(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Apps that don't opt into app_archive get NO archive bind mount.
+    A regression that always mounted the archive tier would surface
+    operator-configured backings (potentially with stale credentials,
+    a slow JuiceFS, etc.) to apps that never asked for it."""
+    manifest = _basic_manifest(app_data=True)  # no app_archive
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    assert not any("/data/app_archive" in v for v in volume_args)
+
+
+def test_run_container_access_all_data_mounts_archive_parent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """access_all_data implies access to every app's archive too.
+    The mount is the parent ``/data/app_archive`` directory, not a
+    single per-app subdir, mirroring how app_data is mounted under
+    access_all_data."""
+    manifest = _basic_manifest(access_all_data=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    targets = [v.rsplit(":", 2)[1] for v in volume_args]
+    # Specifically the parent, not a per-app subdir.
+    assert "/data/app_archive" in targets
+    assert f"/data/app_archive/{manifest.name}" not in targets
+
+
+def test_run_container_app_archive_env_var_translated_to_container_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``OPENHOST_APP_ARCHIVE_DIR`` in env_vars must be translated from
+    the host path to the in-container path before being stamped on the
+    podman run argv.  The host-vs-container path translation is the
+    same pattern as ``OPENHOST_APP_DATA_DIR`` and
+    ``OPENHOST_APP_TEMP_DIR``; pin the new key follows the same rule."""
+    manifest = _basic_manifest(app_data=True, app_archive=True)
+    # Arbitrary host path; provision_data would normally produce
+    # something like ``<archive_dir>/<name>``.
+    env_vars = {"OPENHOST_APP_ARCHIVE_DIR": "/some/host/archive/myapp"}
+    argv = _run_and_capture(
+        monkeypatch, manifest=manifest, tmp_path=tmp_path, env_vars=env_vars
+    )
+
+    e_values = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-e"]
+    archive_env = [e for e in e_values if e.startswith("OPENHOST_APP_ARCHIVE_DIR=")]
+    assert len(archive_env) == 1, archive_env
+    assert archive_env[0] == f"OPENHOST_APP_ARCHIVE_DIR=/data/app_archive/{manifest.name}"
 
 
 def test_run_container_port_mappings_bind_tcp_and_udp_on_all_interfaces(

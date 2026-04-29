@@ -36,6 +36,16 @@ class Config:
     data_root_dir: str
     apps_dir_override: str | None
 
+    # Optional override for where ``app_archive`` bind mounts are
+    # backed.  When unset, the archive tier defaults to a local-disk
+    # subdirectory under ``persistent_data_dir`` — same backing as
+    # ``app_data``, just a separate dir.  When the operator sets up
+    # JuiceFS (or any other host-mounted POSIX filesystem) and points
+    # this at the mount path, every app that opts into ``app_archive``
+    # gets bind-mounts into that filesystem instead.  The app sees the
+    # same in-container path either way; only the backing changes.
+    archive_dir_override: str | None
+
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int
 
@@ -67,6 +77,19 @@ class Config:
     @property
     def temporary_data_dir(self) -> str:
         return os.path.join(self.data_root_dir, "temporary_data")
+
+    @property
+    def app_archive_dir(self) -> str:
+        # Where every app's ``/data/app_archive/<name>/`` bind-mount
+        # source lives.  Operator override (e.g. a JuiceFS mount path)
+        # takes priority; otherwise we fall back to a local-disk
+        # subdirectory of ``persistent_data_dir`` so apps that opt
+        # into ``app_archive`` work even on instances with no
+        # JuiceFS configured — they just don't get the elastic-S3
+        # benefit.
+        if self.archive_dir_override:
+            return self.archive_dir_override
+        return os.path.join(self.persistent_data_dir, "app_archive")
 
     @property
     def apps_dir(self) -> str:
@@ -121,6 +144,13 @@ class Config:
         assert os.path.exists(self.data_root_dir)
         os.makedirs(self.persistent_data_dir, exist_ok=True)
         os.makedirs(self.temporary_data_dir, exist_ok=True)
+        # ``app_archive_dir`` may resolve to an external mount the
+        # operator already set up (e.g. JuiceFS); we don't try to
+        # mkdir it in that case because we likely lack permission and
+        # the mount itself was already created by ansible.  Only
+        # create it when it's pointing at the local fallback.
+        if not self.archive_dir_override:
+            os.makedirs(self.app_archive_dir, exist_ok=True)
         os.makedirs(self.apps_dir, exist_ok=True)
         os.makedirs(self.openhost_data_path, exist_ok=True)
         os.makedirs(self.keys_dir, exist_ok=True)
@@ -152,6 +182,7 @@ class DefaultConfig(Config):
     # Data
     data_root_dir: str = "/opt/openhost"
     apps_dir_override: str | None = None  # if None, defaults to data_root_dir/apps
+    archive_dir_override: str | None = None  # if None, defaults to persistent_data_dir/app_archive
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int = 0
