@@ -1,5 +1,3 @@
-"""Unit tests for storage usage helpers and storage guard."""
-
 from __future__ import annotations
 
 import os
@@ -11,7 +9,7 @@ from typing import cast
 import pytest
 
 import compute_space.core.storage as storage
-from tests.conftest import _make_test_config
+from compute_space.tests.conftest import _make_test_config
 
 
 def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):

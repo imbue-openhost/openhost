@@ -16,7 +16,7 @@ import pytest
 import requests
 import websockets
 
-from compute_space.testing import wait_app_running
+from compute_space.tests.utils import wait_app_running
 from tests.helpers import poll_endpoint
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
-from compute_space.testing import wait_app_running
+from compute_space.tests.utils import wait_app_running
 
 from .conftest import _make_config_and_env
 from .conftest import _start_router_process

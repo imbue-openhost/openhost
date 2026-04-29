@@ -40,8 +40,8 @@ from compute_space.db.versioned import highest_registered_version
 from compute_space.db.versioned import read_version
 from compute_space.db.versioned import runner as runner_mod
 from compute_space.db.versioned import validate_registry
-from testing_helpers.schema_helpers import assert_schemas_equal
-from testing_helpers.schema_helpers import get_schema_snapshot
+from compute_space.tests.schema_helpers import assert_schemas_equal
+from compute_space.tests.schema_helpers import get_schema_snapshot
 
 # --------------------------------------------------------------------------- #
 # Fixtures

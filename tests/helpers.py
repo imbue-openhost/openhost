@@ -2,7 +2,7 @@
 
 import requests
 
-from compute_space.testing import poll
+from compute_space.tests.utils import poll
 
 
 def poll_endpoint(session, url, timeout=30, interval=2, fail_msg="Endpoint not responding"):

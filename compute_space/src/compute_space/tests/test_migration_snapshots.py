@@ -63,8 +63,7 @@ import pytest
 from compute_space.db.versioned import REGISTRY
 from compute_space.db.versioned import apply_migrations
 from compute_space.db.versioned import read_version
-from testing_helpers.schema_helpers import assert_schemas_equal
-from testing_helpers.schema_helpers import get_schema_snapshot
+from compute_space.tests.schema_helpers import assert_schemas_equal, get_schema_snapshot
 
 SNAPSHOTS_DIR = Path(__file__).resolve().parent / "snapshots"
 _VERSION_FILE_RE = re.compile(r"^v(\d+)\.sql$")
