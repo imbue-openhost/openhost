@@ -52,7 +52,7 @@
 
 <script id="page-config" type="application/json">
 {
-"apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},
+  "apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},
   "tokensListUrl": "{{ url_for('api_system.api_tokens_list') }}",
   "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}"
 }

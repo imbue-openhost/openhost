@@ -207,6 +207,26 @@ class TestRouterCore:
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
 
+    def test_system_page_requires_auth(self, admin_session, config):
+        """Unauthenticated requests to /system/ redirect to /login."""
+        base_url = f"http://{config.host}:{config.port}"
+        r = requests.get(
+            f"{base_url}/system/",
+            allow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
+
+    def test_system_page_after_login(self, admin_session, config):
+        base_url = f"http://{config.host}:{config.port}"
+        r = admin_session.get(f"{base_url}/system/")
+        assert r.status_code == 200
+        # Mount points for the security audit, storage status, and SSH toggle
+        # all live on the System page now.
+        assert 'id="security-status"' in r.text
+        assert 'id="storage-status"' in r.text
+        assert 'id="ssh-btn"' in r.text
+
     def test_setup_returns_403_if_already_set_up(self, admin_session, config):
         """GET /setup returns 403 when owner already exists."""
         base_url = f"http://{config.host}:{config.port}"
