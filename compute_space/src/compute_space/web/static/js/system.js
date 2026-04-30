@@ -20,15 +20,7 @@ function updateSecurityAudit() {
   fetch(config.securityAuditUrl, {credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      var headline = document.getElementById('security-headline');
       var body = document.getElementById('security-body');
-
-      if (data.secure) {
-        headline.innerHTML = '<span class="status-running">passing</span>';
-      } else {
-        headline.innerHTML = '<span class="status-error">failing</span>';
-      }
-
       var rows = '';
       Object.keys(data.checks).sort().forEach(function(name) {
         var c = data.checks[name];
