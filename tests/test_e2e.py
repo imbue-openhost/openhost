@@ -16,6 +16,7 @@ import pytest
 import requests
 import websockets
 
+from compute_space.tests.utils import wait_app_removed
 from compute_space.tests.utils import wait_app_running
 from tests.helpers import poll_endpoint
 
@@ -313,7 +314,8 @@ class TestSelfHost:
     def test_09e_remove_second_app(self, session, router_url):
         """Remove the second app; first app still works."""
         r = session.post(f"{router_url}/remove_app/test-app-2", timeout=30)
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(session, router_url, "test-app-2")
 
         # Second app is gone
         r = session.get(f"{router_url}/test-app-2/health", timeout=5)
@@ -536,7 +538,8 @@ class TestSelfHost:
     def test_14_remove_app(self, session, router_url):
         """Remove the deployed test-app."""
         r = session.post(f"{router_url}/remove_app/test-app", timeout=30)
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(session, router_url, "test-app")
 
     def test_14b_app_gone(self, session, router_url):
         """After removal, app routes return 404."""

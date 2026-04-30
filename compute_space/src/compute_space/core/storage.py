@@ -1,10 +1,10 @@
 """Storage usage helpers and optional storage guard.
 
-Reports disk usage totals and per-app breakdowns for the dashboard.
+Reports disk usage totals and per-app breakdowns for the System page.
 When ``storage_min_free_mb`` is configured (> 0), the storage guard runs as a
 daemon thread that periodically checks disk free space and stops apps when free
-space drops below the threshold.  It can be paused from the dashboard so a user
-can start one app (e.g. a file browser) to clean up data before re-enabling
+space drops below the threshold.  It can be paused from the System page so a
+user can start one app (e.g. a file browser) to clean up data before re-enabling
 enforcement.
 """
 
@@ -159,7 +159,7 @@ def check_before_deploy(config: Config) -> None:
 
 
 def storage_status(config: Config) -> dict[str, object]:
-    """Return disk totals and usage for dashboard/API.
+    """Return disk totals and usage for the System page / API.
 
     Both persistent and temporary data live on the same disk (under
     ``data_root_dir``), so we report a single unified disk metric.

@@ -28,6 +28,7 @@ from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
+from compute_space.tests.utils import wait_app_removed
 from compute_space.tests.utils import wait_app_running
 
 from .conftest import _make_config_and_env
@@ -96,7 +97,7 @@ def test_pre_setup_security_audit(tmp_path):
         assert isinstance(security["secure"], bool)
         assert "checks" in security
 
-        expected_checks = {"ssh_disabled", "ssh_password_disabled", "tls_active", "no_unexpected_ports"}
+        expected_checks = {"ssh_password_disabled", "tls_active", "no_unexpected_ports"}
         assert set(security["checks"].keys()) == expected_checks
 
         for name, check in security["checks"].items():
@@ -170,7 +171,6 @@ class TestRouterCore:
         data = r.json()
         assert isinstance(data["secure"], bool)
         expected_checks = {
-            "ssh_disabled",
             "ssh_password_disabled",
             "tls_active",
             "no_unexpected_ports",
@@ -206,6 +206,51 @@ class TestRouterCore:
         r = admin_session.get(f"{base_url}/dashboard")
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
+        # Security audit, storage status, and SSH toggle live on the System page,
+        # not the dashboard.
+        for system_only_element in (
+            'id="security-table"',
+            'id="storage-table"',
+            'id="ports-table"',
+            'id="ssh-btn"',
+        ):
+            assert system_only_element not in r.text
+
+    def test_system_page_requires_auth(self, admin_session, config):
+        """Unauthenticated requests to /system/ redirect to /login."""
+        base_url = f"http://{config.host}:{config.port}"
+        r = requests.get(
+            f"{base_url}/system/",
+            allow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
+
+    def test_system_page_after_login(self, admin_session, config):
+        base_url = f"http://{config.host}:{config.port}"
+        r = admin_session.get(f"{base_url}/system/")
+        assert r.status_code == 200
+        # The System page hosts the security audit, listening ports, storage,
+        # and SSH controls.
+        assert 'id="security-table"' in r.text
+        assert 'id="ports-table"' in r.text
+        assert 'id="storage-table"' in r.text
+        assert 'id="ssh-btn"' in r.text
+
+    def test_listening_ports_endpoint(self, admin_session, config):
+        """GET /api/listening-ports returns a list of classified ports."""
+        base_url = f"http://{config.host}:{config.port}"
+        r = admin_session.get(f"{base_url}/api/listening-ports")
+        assert r.status_code == 200
+        data = r.json()
+        assert "ports" in data
+        assert isinstance(data["ports"], list)
+        # Each entry must have the expected shape.
+        for entry in data["ports"]:
+            assert isinstance(entry["port"], int)
+            assert isinstance(entry["address"], str)
+            assert entry["classification"] in {"secure", "app_range", "allocated", "unexpected"}
+            assert isinstance(entry["label"], str)
 
     def test_setup_returns_403_if_already_set_up(self, admin_session, config):
         """GET /setup returns 403 when owner already exists."""
@@ -693,6 +738,10 @@ class TestContainerGone:
                         f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
                         timeout=10,
                     )
+                    # Wait for the bg worker before stopping the router
+                    # or it gets killed mid-teardown. container_cleanup()
+                    # below force-removes anything left over.
+                    wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
                     pass
                 _stop_router_process(router)
@@ -943,6 +992,8 @@ class TestContainerRestart:
                         f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
                         timeout=10,
                     )
+                    # Wait for the bg worker before stopping the router.
+                    wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
                     pass
                 _stop_router_process(router)
@@ -1128,7 +1179,8 @@ class TestContainerE2E:
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, "test-app")
 
     def test_proxy_gone_after_remove(self, admin_session, config):
         """After removal, proxied requests should 404."""
@@ -1204,7 +1256,8 @@ class TestRemoveKeepData:
             f"{base_url}/remove_app/test-app",
             data={"keep_data": "1"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, "test-app")
 
         # Persistent data should still exist
         marker = os.path.join(
@@ -1242,7 +1295,8 @@ class TestRemoveKeepData:
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, "test-app")
 
         app_data = os.path.join(config.persistent_data_dir, "app_data", "test-app")
         app_temp = os.path.join(config.temporary_data_dir, "app_temp_data", "test-app")
@@ -1460,7 +1514,8 @@ class TestGitUrlDeployE2E:
         r = admin_session.post(
             f"{base_url}/remove_app/{self.APP_NAME}",
         )
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, base_url, self.APP_NAME)
 
     def test_proxy_gone_after_remove(self, admin_session, config):
         """After removal, proxied requests should 404."""

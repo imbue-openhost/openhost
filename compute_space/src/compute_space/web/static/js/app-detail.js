@@ -29,17 +29,54 @@ function saveName() {
 
 // ─── App Actions (stop, reload, remove) ───
 
-function appAction(url, data, isRemove) {
+function setActionsBusy(label) {
+  var container = document.getElementById('app-action-buttons');
+  if (!container) return null;
+  var buttons = container.querySelectorAll('button');
+  buttons.forEach(function(b) { b.disabled = true; });
+  var msg = document.getElementById('app-action-msg');
+  if (msg) {
+    msg.style.color = '#d97706';
+    msg.textContent = label + '\u2026';
+  }
+  return function clear(errText) {
+    buttons.forEach(function(b) { b.disabled = false; });
+    if (msg) {
+      if (errText) {
+        msg.style.color = '#dc3545';
+        msg.textContent = errText;
+      } else {
+        msg.textContent = '';
+      }
+    }
+  };
+}
+
+function appAction(url, data, opts) {
+  // opts: { isRemove?: bool, label?: string }. isRemove navigates to
+  // /dashboard on success; otherwise location.reload(). label is the
+  // text shown next to the action buttons while the request is in flight.
+  opts = opts || {};
+  var label = opts.label || (opts.isRemove ? 'Removing' : 'Working');
   var fd = new FormData();
   if (data) Object.keys(data).forEach(function(k) { fd.append(k, data[k]); });
+  var clear = setActionsBusy(label);
   fetch(url, {method: 'POST', credentials: 'same-origin', body: fd})
-    .then(function(r) { return r.json(); })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
-      if (res.error) { alert(res.error); return; }
-      if (isRemove) { window.location.href = '/dashboard'; }
+      if (!res.ok || (res.data && res.data.error)) {
+        var msg = (res.data && res.data.error) || 'Request failed';
+        if (clear) clear(msg);
+        alert(msg);
+        return;
+      }
+      if (opts.isRemove) { window.location.href = '/dashboard'; }
       else { location.reload(); }
     })
-    .catch(function() { alert('Request failed'); });
+    .catch(function() {
+      if (clear) clear('Request failed');
+      alert('Request failed');
+    });
 }
 
 // ─── Permissions ───
@@ -87,7 +124,7 @@ function clearCacheAndReload() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.ok) { alert('Failed to clear cache: ' + (data.error || 'unknown error')); return; }
-            appAction(config.reloadAppUrl);
+            appAction(config.reloadAppUrl, null, {label: 'Reloading'});
         })
         .catch(function() { alert('Failed to clear cache'); });
 }
@@ -131,14 +168,43 @@ function clearCacheAndReload() {
         );
     }
 
+    // While status='removing', disable the action buttons and show
+    // "Removing…". Re-enable on transition to 'error' (failed teardown);
+    // a successful teardown deletes the row and we redirect via the
+    // 404 branch in pollStatus.
+    var clearRemovingChrome = null;
+    function applyRemovingChrome() {
+        if (clearRemovingChrome) return;
+        clearRemovingChrome = setActionsBusy('Removing');
+    }
+    function clearRemovingChromeIfApplied(errText) {
+        if (!clearRemovingChrome) return;
+        clearRemovingChrome(errText || null);
+        clearRemovingChrome = null;
+    }
+
     function pollStatus() {
         fetch(config.appStatusUrl)
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (r.status === 404) {
+                    window.location.href = '/dashboard';
+                    return null;
+                }
+                return r.json();
+            })
             .then(function(data) {
+                if (!data) return;
                 if (data.status !== appStatus) {
                     appStatus = data.status;
                     statusEl.textContent = appStatus;
                     statusEl.className = 'status-' + appStatus;
+                }
+                if (appStatus === 'removing') {
+                    applyRemovingChrome();
+                } else {
+                    clearRemovingChromeIfApplied(
+                        appStatus === 'error' ? (data.error || 'Removal failed') : null
+                    );
                 }
                 if (appStatus === 'running' && nextUrl) {
                     window.location.href = nextUrl;
@@ -158,11 +224,21 @@ function clearCacheAndReload() {
             });
     }
 
-    // Scroll to bottom on load
+    // If the page loads with the app already in 'removing', reflect
+    // that before the first poll fires.
+    if (appStatus === 'removing') {
+        applyRemovingChrome();
+    }
+
     logEl.scrollTop = logEl.scrollHeight;
 
-    // Poll while app is active — faster during builds for streaming output
-    if (appStatus === 'running' || appStatus === 'starting' || appStatus === 'building') {
+    // 'removing' polls so the page learns when the row vanishes (404).
+    if (
+        appStatus === 'running' ||
+        appStatus === 'starting' ||
+        appStatus === 'building' ||
+        appStatus === 'removing'
+    ) {
         var interval = (appStatus === 'building') ? 1000 : 3000;
         setInterval(fetchLogs, interval);
         setInterval(pollStatus, interval);

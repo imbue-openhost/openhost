@@ -74,6 +74,27 @@ def wait_app_running(session: requests.Session, router_url: str, app_name: str, 
     poll(_check, timeout=timeout, interval=5, fail_msg=f"{app_name} did not reach 'running' state")
 
 
+def wait_app_removed(session: requests.Session, router_url: str, app_name: str, timeout: float = 120) -> None:
+    """Poll ``/api/app_status/<app>`` until the row is gone (404).
+
+    /remove_app returns 202 and runs teardown in a background thread;
+    tests asserting on filesystem / container state after a remove
+    must wait for the row to disappear (the row is the last step).
+    """
+
+    def _check() -> bool:
+        r = session.get(f"{router_url}/api/app_status/{app_name}", timeout=10)
+        if r.status_code == 404:
+            return True
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "error":
+                pytest.fail(f"{app_name} removal failed: {data.get('error')}")
+        return False
+
+    poll(_check, timeout=timeout, interval=2, fail_msg=f"{app_name} was not removed within {timeout}s")
+
+
 def router_cmd() -> list[str]:
     """Return the command list to launch the router as a subprocess.
 

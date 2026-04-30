@@ -18,7 +18,7 @@
     .status-running { color: #080; font-weight: bold; }
     .status-error { color: #c00; font-weight: bold; }
     .status-stopped { color: #888; }
-    .status-building, .status-starting { color: #c80; }
+    .status-building, .status-starting, .status-removing { color: #c80; }
     .error-inline { background: #fff0f0; border: 1px solid #fcc; padding: 0.5em; margin-top: 0.3em; font-size: 0.85em; white-space: pre-wrap; word-break: break-word; max-height: 6em; overflow-y: auto; }
     .log-output { background: #1e1e1e; color: #d4d4d4; padding: 1em; font-size: 0.85em; overflow-x: auto; max-height: 30em; overflow-y: auto; border-radius: 4px; }
     .toast { position: fixed; bottom: 1.5em; right: 1.5em; background: #fff; border: 1px solid #ddd; border-left: 4px solid #c80; border-radius: 4px; padding: 1em 1.2em; box-shadow: 0 2px 8px rgba(0,0,0,0.15); max-width: 28em; z-index: 1000; }
@@ -31,6 +31,7 @@
   <nav>
     <a href="{{ url_for('apps.dashboard') }}">Dashboard</a>
     <a href="{{ url_for('apps.add_app') }}">Deploy App</a>
+    <a href="{{ url_for('pages_system.system_page') }}">System</a>
     <a href="{{ url_for('pages_system.logs_page') }}">Logs</a>
     <a href="{{ url_for('pages_system.terminal_page') }}">Terminal</a>
     <a href="{{ url_for('pages_settings.settings_page') }}">Settings</a>

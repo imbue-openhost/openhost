@@ -101,12 +101,13 @@
 <pre class="log-output" id="app-logs">{{ logs or "No log output available." }}</pre>
 
 <br>
-<div style="display: flex; gap: 0.5rem; align-items: center;">
-  <button class="btn" onclick="appAction('{{ url_for('api_apps.stop_app', app_name=app.name) }}')">Stop App</button>
-  <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_name=app.name) }}')">Reload App</button>
-  <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_name=app.name) }}', {update: '1'})">Update &amp; Reload</button>
-  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('{{ url_for('api_apps.remove_app', app_name=app.name) }}', {keep_data: '1'}, true)">Remove App (Keep Data)</button>
-  <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('{{ url_for('api_apps.remove_app', app_name=app.name) }}', {}, true)">Remove App &amp; Data</button>
+<div id="app-action-buttons" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+  <button class="btn" onclick="appAction('{{ url_for('api_apps.stop_app', app_name=app.name) }}', null, {label: 'Stopping'})">Stop App</button>
+  <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_name=app.name) }}', null, {label: 'Reloading'})">Reload App</button>
+  <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_name=app.name) }}', {update: '1'}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
+  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('{{ url_for('api_apps.remove_app', app_name=app.name) }}', {keep_data: '1'}, {isRemove: true, label: 'Removing (keeping data)'})">Remove App (Keep Data)</button>
+  <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('{{ url_for('api_apps.remove_app', app_name=app.name) }}', {}, {isRemove: true, label: 'Removing'})">Remove App &amp; Data</button>
+  <span id="app-action-msg" style="margin-left:0.5em;"></span>
 </div>
 
 <script id="page-config" type="application/json">
@@ -121,5 +122,5 @@
   "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}"
 }
 </script>
-<script src="{{ url_for('static', filename='js/app-detail.js') }}"></script>
+<script src="{{ static_url('js/app-detail.js') }}"></script>
 {% endblock %}
