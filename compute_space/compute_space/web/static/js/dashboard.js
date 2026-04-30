@@ -268,3 +268,166 @@ function deleteToken(id) {
 }
 
 loadTokens();
+
+// ─── Archive Backend ───
+//
+// Operator-facing panel that lets the operator switch the app_archive
+// storage tier between local-disk (default) and S3-backed (JuiceFS).
+// The switch flow stops every opted-in app, copies data, brings up
+// the new backend, then restarts the apps.  We poll while a switch
+// is in flight so the operator can see progress.
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderArchiveBackend(state) {
+  var el = document.getElementById('archive-backend-status');
+  var bgColor = state.backend === 's3' ? '#e3f2fd' : '#f5f5f5';
+  var borderColor = state.backend === 's3' ? '#2196f3' : '#9e9e9e';
+  var label = state.backend === 's3' ? 'S3 (JuiceFS)' : 'Local disk';
+  var note = '';
+  if (state.state === 'switching') {
+    note = '<div style="margin-top:0.5em;color:#d97706;">Switching: ' + escapeHtml(state.state_message || '') + '…</div>';
+  } else if (state.state_message) {
+    note = '<div style="margin-top:0.5em;color:#dc3545;">Last switch error: ' + escapeHtml(state.state_message) + '</div>';
+  }
+  var details = '';
+  if (state.backend === 's3') {
+    details = ' <span style="color:#666;font-size:0.9em;">'
+      + 'bucket=' + escapeHtml(state.s3_bucket || '?')
+      + (state.s3_region ? ', region=' + escapeHtml(state.s3_region) : '')
+      + (state.s3_access_key_id ? ', key=' + escapeHtml(state.s3_access_key_id.slice(0, 4)) + '…' : '')
+      + '</span>';
+  }
+  var pathInfo = '<div style="margin-top:0.35em;color:#666;font-size:0.9em;">'
+    + 'Host path: <code>' + escapeHtml(state.archive_dir || '') + '</code></div>';
+  var disabled = state.state === 'switching' ? 'disabled' : '';
+  var buttonLabel = state.backend === 's3' ? 'Switch to local disk…' : 'Switch to S3…';
+  var btn = '<button class="btn" id="archive-backend-switch-btn" ' + disabled + '>' + buttonLabel + '</button>';
+  el.innerHTML = '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';padding:0.8em 1em;border-radius:4px;">'
+    + '<strong>&#x1F5C4;&#xFE0F; Archive backend:</strong> ' + escapeHtml(label) + details
+    + pathInfo + note
+    + '<div style="margin-top:0.5em;">' + btn + '</div>'
+    + '<div id="archive-backend-form" style="display:none;margin-top:0.8em;border-top:1px solid #ccc;padding-top:0.8em;"></div>'
+    + '</div>';
+  document.getElementById('archive-backend-switch-btn').onclick = function() { showSwitchForm(state); };
+}
+
+function showSwitchForm(state) {
+  var formEl = document.getElementById('archive-backend-form');
+  var goingToS3 = state.backend === 'local';
+  var html;
+  if (goingToS3) {
+    html = '<p><strong>Switch to S3-backed archive.</strong> Affected apps (those using <code>app_archive</code> or <code>access_all_data</code>) will be stopped, archive data copied to the new backend, and apps restarted. In-flight uploads will be lost.</p>'
+      + '<div style="display:grid;grid-template-columns:max-content 1fr;gap:0.4em 0.8em;align-items:center;max-width:600px;">'
+      + '<label>S3 bucket</label><input id="ab-bucket" value="' + escapeHtml(state.s3_bucket || '') + '" placeholder="my-openhost-archive">'
+      + '<label>Region</label><input id="ab-region" value="' + escapeHtml(state.s3_region || 'us-east-1') + '">'
+      + '<label>Endpoint <span style="color:#888;font-size:0.85em;">(optional, non-AWS)</span></label><input id="ab-endpoint" value="' + escapeHtml(state.s3_endpoint || '') + '" placeholder="https://...">'
+      + '<label>Access key ID</label><input id="ab-access-key" value="' + escapeHtml(state.s3_access_key_id || '') + '">'
+      + '<label>Secret access key</label><input id="ab-secret-key" type="password">'
+      + '<label>Volume name</label><input id="ab-volume" value="' + escapeHtml(state.juicefs_volume_name || 'openhost') + '">'
+      + '</div>'
+      + '<label style="display:block;margin-top:0.6em;"><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped, restarted, and any in-flight uploads will be lost.</label>'
+      + '<label style="display:block;margin-top:0.3em;"><input type="checkbox" id="ab-delete-source"> Also delete the local-disk archive after the copy succeeds.</label>'
+      + '<div style="margin-top:0.6em;display:flex;gap:0.5em;align-items:center;">'
+      + '<button class="btn" id="ab-test-btn">Test connection</button>'
+      + '<button class="btn btn-primary" id="ab-submit-btn">Switch to S3</button>'
+      + '<button class="btn" id="ab-cancel-btn">Cancel</button>'
+      + '<span id="ab-msg" style="font-size:0.9em;"></span>'
+      + '</div>';
+  } else {
+    html = '<p><strong>Switch to local-disk archive.</strong> Affected apps will be stopped, archive data copied off S3 to local disk, and apps restarted.  The S3 bucket\'s contents stay; you can delete it manually after.</p>'
+      + '<label style="display:block;"><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped and restarted, and in-flight uploads will be lost.</label>'
+      + '<div style="margin-top:0.6em;display:flex;gap:0.5em;align-items:center;">'
+      + '<button class="btn btn-primary" id="ab-submit-btn">Switch to local</button>'
+      + '<button class="btn" id="ab-cancel-btn">Cancel</button>'
+      + '<span id="ab-msg" style="font-size:0.9em;"></span>'
+      + '</div>';
+  }
+  formEl.innerHTML = html;
+  formEl.style.display = '';
+  document.getElementById('ab-cancel-btn').onclick = function() { formEl.style.display = 'none'; formEl.innerHTML = ''; };
+  if (goingToS3) {
+    document.getElementById('ab-test-btn').onclick = function() { testArchiveConnection(); };
+  }
+  document.getElementById('ab-submit-btn').onclick = function() { submitSwitch(goingToS3); };
+}
+
+function testArchiveConnection() {
+  var msg = document.getElementById('ab-msg');
+  msg.textContent = 'Testing…';
+  msg.style.color = '';
+  var fd = new FormData();
+  fd.append('s3_bucket', document.getElementById('ab-bucket').value);
+  fd.append('s3_region', document.getElementById('ab-region').value);
+  fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
+  fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
+  fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
+  fetch(config.archiveBackendTestUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+    .then(function(r) { return r.json().then(function(b) { return [r.status, b]; }); })
+    .then(function(pair) {
+      var ok = pair[0] === 200 && pair[1].ok;
+      msg.style.color = ok ? '#16a34a' : '#dc3545';
+      msg.textContent = ok ? 'Bucket reachable' : ('Failed: ' + (pair[1].error || ''));
+    });
+}
+
+function submitSwitch(goingToS3) {
+  var msg = document.getElementById('ab-msg');
+  if (!document.getElementById('ab-confirm').checked) {
+    msg.style.color = '#dc3545';
+    msg.textContent = 'Tick the confirmation checkbox first.';
+    return;
+  }
+  var fd = new FormData();
+  fd.append('backend', goingToS3 ? 's3' : 'local');
+  fd.append('confirm_data_loss', 'true');
+  if (goingToS3) {
+    fd.append('s3_bucket', document.getElementById('ab-bucket').value);
+    fd.append('s3_region', document.getElementById('ab-region').value);
+    fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
+    fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
+    fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
+    fd.append('juicefs_volume_name', document.getElementById('ab-volume').value);
+    if (document.getElementById('ab-delete-source').checked) {
+      fd.append('delete_source_after_copy', 'true');
+    }
+  }
+  msg.style.color = '';
+  msg.textContent = 'Submitting…';
+  fetch(config.archiveBackendUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+    .then(function(r) { return r.json().then(function(b) { return [r.status, b]; }); })
+    .then(function(pair) {
+      if (pair[0] === 202) {
+        msg.style.color = '#d97706';
+        msg.textContent = 'Switch in progress…';
+        document.getElementById('archive-backend-form').style.display = 'none';
+        pollArchiveBackend();
+      } else {
+        msg.style.color = '#dc3545';
+        msg.textContent = 'Failed: ' + (pair[1].error || pair[1]);
+      }
+    });
+}
+
+function pollArchiveBackend() {
+  loadArchiveBackend().then(function(state) {
+    if (state && state.state === 'switching') {
+      setTimeout(pollArchiveBackend, 1500);
+    }
+  });
+}
+
+function loadArchiveBackend() {
+  return fetch(config.archiveBackendUrl, {credentials: 'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderArchiveBackend(data);
+      return data;
+    });
+}
+
+loadArchiveBackend();

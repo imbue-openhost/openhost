@@ -5,6 +5,7 @@
 
 <div id="security-status" style="margin-bottom: 1em;"></div>
 <div id="storage-status" style="margin-bottom: 1em;"></div>
+<div id="archive-backend-status" style="margin-bottom: 1em;"></div>
 
 <div style="margin-bottom: 1em; display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
   <button class="btn" onclick="restartRouter()">Restart Router</button>
@@ -77,7 +78,9 @@
 "apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},
   "tokensListUrl": "{{ url_for('api_system.api_tokens_list') }}",
   "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}",
-  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}"
+  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}",
+  "archiveBackendUrl": "{{ url_for('api_archive_backend.get_archive_backend') }}",
+  "archiveBackendTestUrl": "{{ url_for('api_archive_backend.test_connection') }}"
 }
 </script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
