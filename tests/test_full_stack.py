@@ -23,10 +23,10 @@ import websockets
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import DefaultConfig
-from compute_space.testing import managed_router
-from compute_space.testing import poll
-from compute_space.testing import wait_app_removed
-from compute_space.testing import wait_app_running
+from compute_space.tests.utils import managed_router
+from compute_space.tests.utils import poll
+from compute_space.tests.utils import wait_app_removed
+from compute_space.tests.utils import wait_app_running
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -508,6 +508,12 @@ class TestStorageAndSystem:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, dict)
+        assert "disk" in data
+        assert "total_bytes" in data["disk"]
+        assert "used_bytes" in data["disk"]
+        assert "free_bytes" in data["disk"]
+        assert "persistent" not in data
+        assert "temporary" not in data
 
     def test_app_logs(self, test_app_deployed):
         s = test_app_deployed["session"]

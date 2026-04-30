@@ -11,11 +11,11 @@ uv tool install "oh @ git+https://github.com/imbue-ai/openhost.git#subdirectory=
 ## Setup
 
 ```bash
-oh login                     # add default instance
-oh login --name staging      # add a named instance
+oh instance login                    # add an instance interactively
+oh instance set-default x.host.com   # set it as default
 ```
 
-This will prompt you for your compute space URL and walk you through creating an API token. Credentials are saved to `~/.openhost/compute_space_cli.toml`.
+This will prompt you for your compute space URL and walk you through creating an API token. The instance is saved under its domain name (e.g. `x.host.com`) to `~/.openhost/compute_space_cli.toml`.
 
 For development, use an editable install so changes take effect immediately:
 
@@ -55,21 +55,25 @@ The CLI supports managing multiple named instances.
 ### Instance management
 
 ```bash
+oh instance login                            # interactive login (saves as domain name)
 oh instance list                             # list all instances
-oh instance add prod https://prod.host.com TOKEN --set-default
-oh instance add staging https://s.host.com TOKEN
-oh instance remove staging
-oh instance set-default prod
+oh instance add user.host.com TOKEN          # add non-interactively
+oh instance alias user.host.com dev          # set a short alias
+oh instance set-default dev                  # set default (by hostname or alias)
+oh instance remove dev                       # remove (by hostname or alias)
+oh instance token                            # print stored token for current instance
 ```
 
 ### Targeting instances
 
 ```bash
-oh --instance staging app list               # target a specific instance
-OH_INSTANCE=staging oh app list              # same, via env var
+oh --instance dev app list                   # target by alias
+oh --instance user.host.com app list         # target by hostname
+OH_INSTANCE=dev oh app list                  # same, via env var
 ```
 
-Resolution order: `--instance` flag > `OH_INSTANCE` env var > default instance. If none of these are set and only one instance is configured, it is selected automatically.
+Resolution order: `--instance` flag > `OH_INSTANCE` env var > default instance.
+Names are resolved as hostnames first, then aliases.
 
 ## Update
 

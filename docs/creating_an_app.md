@@ -167,7 +167,7 @@ or if not,
 ```bash
 uv tool install "oh @ git+https://github.com/imbue-ai/openhost.git#subdirectory=compute_space_cli"
 ```
-Run `oh login` to login to your compute space.
+Run `oh instance login` to login to your compute space.
 
 ## AI Agent Development
 

@@ -23,16 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run pytest
+      - run: uv run --group dev pytest -v
 
-  # Rootless-podman unit suites.  Re-runs the same compute_space tests as the
-  # ``test`` job above, but on a runner with rootless podman installed, so any
-  # suite that shells out to podman (even via mocks) gets an honest environment.
-  # ``compute_space/tests/test_integration.py`` and ``tests/test_full_stack.py``
-  # are intentionally excluded: their ``@requires_containers``-marked classes
-  # need ``:idmap`` on the workspace bind mount, which GitHub's overlayfs
-  # runners don't reliably support; those run in the e2e workflow on real VMs.
-  test-podman:
+  # Runs full unit test suite, including containerized tests.
+  test-containers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +40,6 @@ jobs:
       - name: Verify rootless podman works
         run: |
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
-      - name: Run compute_space unit tests (excluding idmap-dependent ones)
+      - name: Run all tests, including containerized tests
         run: |
-          uv run --group dev pytest compute_space/tests/ -v \
-            --ignore=compute_space/tests/test_integration.py
+          uv run --group dev pytest --run-containers -v

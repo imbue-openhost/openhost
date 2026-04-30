@@ -143,7 +143,8 @@ EOF
 #   $4 - SSH user on the instance (initial user, e.g., ubuntu)
 #
 # Environment:
-#   SKIP_APT_UPGRADE=1  — skip apt dist-upgrade (speeds up ephemeral CI instances)
+#   SKIP_APT_UPGRADE=1    — skip apt dist-upgrade (speeds up ephemeral CI instances)
+#   OPENHOST_COMMIT=<sha> — deploy a specific git commit (defaults to main)
 run_ansible_setup() {
     local ip="$1" ssh_key="$2" domain="$3" ssh_user="${4:-ubuntu}"
     local repo_dir
@@ -151,9 +152,6 @@ run_ansible_setup() {
 
     echo ""
     echo "--- Deploying OpenHost via ansible ---"
-
-    # Ensure git submodules are populated (ansible syncs the whole repo)
-    git -C "$repo_dir" submodule update --init --recursive 2>/dev/null || true
 
     # Build extra vars.
     local extra_vars=()
@@ -163,6 +161,10 @@ run_ansible_setup() {
     if [ "${SKIP_APT_UPGRADE:-0}" = "1" ]; then
         extra_vars+=(-e "skip_apt_upgrade=true")
         echo "  (skipping apt dist-upgrade)"
+    fi
+    if [ -n "${OPENHOST_COMMIT:-}" ]; then
+        extra_vars+=(-e "openhost_commit=$OPENHOST_COMMIT")
+        echo "  (deploying commit $OPENHOST_COMMIT)"
     fi
 
     # Run the full setup playbook.
