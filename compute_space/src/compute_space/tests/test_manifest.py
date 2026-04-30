@@ -438,17 +438,31 @@ class TestCapabilitiesValidation:
         manifest = parse_manifest_from_string(toml)
         assert manifest.capabilities == ["NET_ADMIN"]
 
-    def test_unsafe_cap_rejected(self):
-        """SYS_ADMIN grants real host privilege; must be rejected at parse time."""
+    def test_sys_admin_rejected_without_privileged(self):
+        """SYS_ADMIN grants real host privilege; rejected unless the
+        manifest explicitly opts in to [runtime.security] privileged."""
         toml = MINIMAL + 'capabilities = ["SYS_ADMIN"]\n'
-        with pytest.raises(ValueError, match="not safe"):
+        with pytest.raises(ValueError, match="privileged = true"):
             parse_manifest_from_string(toml)
 
+    def test_sys_admin_accepted_with_privileged(self):
+        """The privileged opt-in unlocks SYS_ADMIN (and only the caps
+        in PRIVILEGED_ONLY_CAPABILITIES — never an arbitrary unknown
+        cap). Operator opt-in happens at the dashboard deploy step."""
+        toml = MINIMAL + 'capabilities = ["SYS_ADMIN"]\n\n[runtime.security]\nprivileged = true\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.capabilities == ["SYS_ADMIN"]
+        assert manifest.privileged is True
+
     def test_unknown_cap_rejected(self):
-        """Unknown caps are denied by default (tight allowlist)."""
+        """Unknown caps are denied even with privileged=true (the
+        allowlist is exhaustive)."""
         toml = MINIMAL + 'capabilities = ["MADE_UP"]\n'
         with pytest.raises(ValueError, match="not safe"):
             parse_manifest_from_string(toml)
+        toml_priv = MINIMAL + 'capabilities = ["MADE_UP"]\n\n[runtime.security]\nprivileged = true\n'
+        with pytest.raises(ValueError, match="not safe"):
+            parse_manifest_from_string(toml_priv)
 
     def test_non_list_caps_rejected(self):
         toml = MINIMAL + 'capabilities = "NET_ADMIN"\n'
@@ -550,3 +564,37 @@ class TestUnprivilegedPortFloor:
         toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.port_mappings[0].host_port == 0
+
+
+class TestPrivilegedAndShmMb:
+    """[runtime.security].privileged and [runtime.container].shm_mb."""
+
+    def test_default_not_privileged(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.privileged is False
+        assert manifest.shm_mb == 0
+
+    def test_privileged_true(self):
+        toml = MINIMAL + "\n[runtime.security]\nprivileged = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.privileged is True
+
+    def test_privileged_non_bool_rejected(self):
+        toml = MINIMAL + '\n[runtime.security]\nprivileged = "yes"\n'
+        with pytest.raises(ValueError, match="must be a boolean"):
+            parse_manifest_from_string(toml)
+
+    def test_shm_mb_accepted(self):
+        toml = MINIMAL + "shm_mb = 2048\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.shm_mb == 2048
+
+    def test_shm_mb_negative_rejected(self):
+        toml = MINIMAL + "shm_mb = -1\n"
+        with pytest.raises(ValueError, match="shm_mb"):
+            parse_manifest_from_string(toml)
+
+    def test_shm_mb_non_int_rejected(self):
+        toml = MINIMAL + 'shm_mb = "big"\n'
+        with pytest.raises(ValueError, match="shm_mb"):
+            parse_manifest_from_string(toml)
