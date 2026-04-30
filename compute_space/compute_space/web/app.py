@@ -43,6 +43,7 @@ def create_app(config: Config | None = None) -> Quart:
 
     # Register blueprints (imported here per Flask/Quart convention - blueprints have globals/side effects)
     from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
+    from compute_space.web.routes.api.archive_backend import api_archive_backend_bp  # noqa: PLC0415
     from compute_space.web.routes.api.permissions import api_permissions_bp  # noqa: PLC0415
     from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.api.services import api_services_bp  # noqa: PLC0415
@@ -67,6 +68,7 @@ def create_app(config: Config | None = None) -> Quart:
     app.register_blueprint(pages_system_bp)
     app.register_blueprint(pages_permissions_bp)
     app.register_blueprint(api_apps_bp)
+    app.register_blueprint(api_archive_backend_bp)
     app.register_blueprint(api_settings_bp)
     app.register_blueprint(api_system_bp)
     app.register_blueprint(api_services_bp)
