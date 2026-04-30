@@ -51,6 +51,20 @@ CREATE TABLE apps (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE archive_backend (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    backend TEXT NOT NULL DEFAULT 'local' CHECK(backend IN ('local', 's3')),
+    state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('idle', 'switching')),
+    s3_bucket TEXT,
+    s3_region TEXT,
+    s3_endpoint TEXT,
+    s3_access_key_id TEXT,
+    s3_secret_access_key TEXT,
+    juicefs_volume_name TEXT NOT NULL DEFAULT 'openhost',
+    last_switched_at TEXT,
+    state_message TEXT
+);
+INSERT INTO "archive_backend" VALUES(1,'local','idle',NULL,NULL,NULL,NULL,NULL,'openhost',NULL,NULL);
 CREATE TABLE "owner" (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     username TEXT NOT NULL UNIQUE,
@@ -82,7 +96,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,3);
+INSERT INTO "schema_version" VALUES(1,4);
 CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
             app_name TEXT NOT NULL,
