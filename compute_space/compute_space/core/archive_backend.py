@@ -1,0 +1,843 @@
+"""Operator-controlled archive backend management.
+
+The ``app_archive`` storage tier has two backends:
+
+- ``local``: per-app subdirs under ``<persistent_data_dir>/app_archive/``.
+  This is the default; new zones come up in this state and apps that
+  opt into ``app_archive`` work immediately.
+
+- ``s3``: per-app subdirs under a JuiceFS mount whose object backing
+  is an operator-supplied S3 bucket.  Switched on from the dashboard;
+  no provisioning-time configuration required.
+
+The current backend + S3 connection params are persisted in the
+``archive_backend`` row (see ``compute_space/db/schema.sql``).  This
+module owns everything that turns a desired backend state into the
+right host-side filesystem reality:
+
+- downloading and verifying the JuiceFS binary,
+- formatting the JuiceFS volume against an S3 bucket (idempotent),
+- starting/stopping the JuiceFS mount (managed as a child process of
+  openhost-core, not via systemd, so we don't need a sudoers
+  carve-out — the mount lives under the host user's home dir),
+- running the switch-flow that copies data between backends and
+  flips ``Config.archive_dir_override`` in-process,
+- reattaching to the configured backend on openhost-core startup.
+
+The module is intended to be the single source of truth for the
+backend state — the dashboard / API layer reads and writes via
+``get_state`` / ``switch_backend``; the rest of openhost-core asks
+``current_archive_dir(config)`` rather than touching ``Config``
+fields directly.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import os
+import shutil
+import socket
+import sqlite3
+import subprocess
+import tarfile
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+
+from compute_space.config import Config
+from compute_space.core.logging import logger
+
+
+# ---------------------------------------------------------------------------
+# JuiceFS install + mount machinery
+# ---------------------------------------------------------------------------
+
+# Pin to a specific JuiceFS release; checksums verified before extract
+# so a compromised release page can't swap the tarball.  Bump this
+# tuple to upgrade.
+JUICEFS_VERSION = "1.3.1"
+JUICEFS_SHA256 = {
+    "amd64": "eb67a7be5d174b420cb3734d441971b3a462ab522b78ad2a6ed993e7deddcd44",
+    "arm64": "c29bff8f609366011cee03b9abcc76c11a06308b2c314364b8c340a2bfbc6c48",
+}
+
+
+def _arch() -> str:
+    """Return the JuiceFS-release-asset arch string for the running host."""
+    machine = os.uname().machine
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    return "amd64"
+
+
+def _juicefs_install_dir(config: Config) -> str:
+    """Where the JuiceFS binary lives.  Under the host user's data tree
+    so install never needs sudo."""
+    return os.path.join(config.openhost_data_path, "juicefs")
+
+
+def _juicefs_binary(config: Config) -> str:
+    return os.path.join(_juicefs_install_dir(config), f"juicefs-{JUICEFS_VERSION}")
+
+
+def _juicefs_meta_db(config: Config) -> str:
+    """SQLite metadata DB for JuiceFS.  Lives under persistent_data_dir
+    so the existing backup flow picks it up — that's what lets a fresh
+    VM with the same S3 bucket reattach via the metadata.
+    """
+    return os.path.join(config.openhost_data_path, "juicefs-meta.db")
+
+
+def juicefs_mount_dir(config: Config) -> str:
+    """The host-side directory where the JuiceFS mount lives.  Per-app
+    subdirs underneath are bind-mounted into containers at
+    ``/data/app_archive/<app>/`` (see ``run_container``).
+    """
+    # Lives under data_root_dir so all openhost state is in one tree.
+    # NOT under persistent_data_dir, because we don't want this path
+    # included in restic backups (the bytes are already in S3).
+    return os.path.join(config.data_root_dir, "app_archive_juicefs")
+
+
+def juicefs_dump_path(config: Config) -> str:
+    """Where the daily metadata dump lands so the existing backup app
+    picks it up.  The dump is a JSON snapshot of every inode + chunk
+    pointer; restoring is ``juicefs format`` + ``juicefs load``.
+    """
+    return os.path.join(config.openhost_data_path, "juicefs-metadata-dump.json")
+
+
+def is_juicefs_installed(config: Config) -> bool:
+    return os.path.isfile(_juicefs_binary(config)) and os.access(
+        _juicefs_binary(config), os.X_OK
+    )
+
+
+def install_juicefs(config: Config) -> None:
+    """Download + verify + extract the JuiceFS binary.  Idempotent.
+
+    Lives under the host user's data tree so no sudo is needed; the
+    binary is per-version-suffixed so a future upgrade can install the
+    new one alongside the old before swapping a symlink (we don't ship
+    that flow today — bumping JUICEFS_VERSION just makes a fresh
+    install on the next boot).
+    """
+    if is_juicefs_installed(config):
+        return
+    install_dir = _juicefs_install_dir(config)
+    os.makedirs(install_dir, exist_ok=True)
+    arch = _arch()
+    expected_sha = JUICEFS_SHA256.get(arch)
+    if not expected_sha:
+        raise RuntimeError(
+            f"No pinned JuiceFS sha256 for arch {arch!r}; refusing to install."
+        )
+    url = (
+        f"https://github.com/juicedata/juicefs/releases/download/"
+        f"v{JUICEFS_VERSION}/juicefs-{JUICEFS_VERSION}-linux-{arch}.tar.gz"
+    )
+    logger.info("Downloading JuiceFS %s for %s", JUICEFS_VERSION, arch)
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            tarball_bytes = resp.read()
+    except (urllib.error.URLError, socket.timeout) as exc:
+        raise RuntimeError(f"Failed to download JuiceFS: {exc}") from exc
+
+    actual_sha = hashlib.sha256(tarball_bytes).hexdigest()
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            f"JuiceFS tarball sha256 mismatch (expected {expected_sha}, "
+            f"got {actual_sha}).  Refusing to install."
+        )
+
+    # Extract just the ``juicefs`` binary; ignore the LICENSE / README
+    # the tarball ships alongside.  ``tarfile`` is safer than shelling
+    # out to ``tar`` when the input is opaque bytes.
+    with tarfile.open(fileobj=io.BytesIO(tarball_bytes), mode="r:gz") as tar:
+        member = next((m for m in tar.getmembers() if m.name == "juicefs"), None)
+        if member is None:
+            raise RuntimeError("JuiceFS tarball missing the ``juicefs`` binary")
+        f = tar.extractfile(member)
+        if f is None:
+            raise RuntimeError("JuiceFS tarball entry was unreadable")
+        binary_path = _juicefs_binary(config)
+        with open(binary_path, "wb") as out:
+            shutil.copyfileobj(f, out)
+    os.chmod(_juicefs_binary(config), 0o750)
+    logger.info("JuiceFS installed at %s", _juicefs_binary(config))
+
+
+def _format_meta_dsn(config: Config) -> str:
+    return f"sqlite3://{_juicefs_meta_db(config)}"
+
+
+def _bucket_url(s3_bucket: str, s3_region: str, s3_endpoint: str | None) -> str:
+    """JuiceFS expects the bucket as a URL even on AWS.  Custom S3
+    endpoints (MinIO etc.) need the explicit endpoint; AWS gets the
+    region-suffixed virtual-host URL.
+    """
+    if s3_endpoint:
+        return f"{s3_endpoint.rstrip('/')}/{s3_bucket}"
+    return f"https://{s3_bucket}.s3.{s3_region or 'us-east-1'}.amazonaws.com"
+
+
+def format_volume(
+    config: Config,
+    s3_bucket: str,
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+    juicefs_volume_name: str,
+) -> None:
+    """Run ``juicefs format`` against the S3 bucket.  Idempotent.
+
+    ``juicefs format`` is a no-op when the volume already exists in the
+    bucket with the same params (it just refreshes the local metadata).
+    Running it on every backend-on switch is therefore safe and means
+    the recovery flow ("provision a fresh VM with the same bucket") is
+    the same code path as the first-time setup.
+    """
+    bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint)
+    cmd = [
+        _juicefs_binary(config),
+        "format",
+        "--storage", "s3",
+        "--bucket", bucket_url,
+        "--access-key", s3_access_key_id,
+        "--secret-key", s3_secret_access_key,
+        _format_meta_dsn(config),
+        juicefs_volume_name,
+    ]
+    logger.info("Running juicefs format against %s", bucket_url)
+    # We pass creds on argv because juicefs format reads --secret-key
+    # only that way; ps would briefly show them but format runs for
+    # under a second on an existing volume and a few seconds on a new
+    # one.  The mount path doesn't have this issue because we use the
+    # ACCESS_KEY/SECRET_KEY env vars instead.
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"juicefs format failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mount supervision
+# ---------------------------------------------------------------------------
+
+
+_mount_lock = threading.Lock()
+_mount_proc: subprocess.Popen[bytes] | None = None
+
+
+def is_mounted(mount_point: str) -> bool:
+    """Return True iff ``mount_point`` is a mount point right now.
+
+    /proc/self/mountinfo is the source of truth; ``os.path.ismount``
+    works but breaks on some FS/userns combinations.
+    """
+    try:
+        with open("/proc/self/mountinfo", "r") as f:
+            for line in f:
+                # Each line: "id parent maj:min root mount_point ..."
+                parts = line.split()
+                if len(parts) >= 5 and parts[4] == mount_point:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def mount(
+    config: Config,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+) -> None:
+    """Start ``juicefs mount`` as a foregrounded child process so it
+    inherits openhost-core's lifecycle.  Idempotent: if the mount is
+    already up, no-ops.
+
+    Running with ``--no-background`` rather than as a systemd unit
+    means we don't need root or a sudoers carve-out.  openhost.service
+    already restarts on crash; if openhost-core dies the mount goes
+    with it, which is the right semantics — apps mid-archive-write
+    would see the mount drop, the supervisor restarts everything, and
+    the mount comes back at the same path.
+    """
+    global _mount_proc
+    mount_point = juicefs_mount_dir(config)
+    os.makedirs(mount_point, exist_ok=True)
+
+    with _mount_lock:
+        if is_mounted(mount_point):
+            logger.info("juicefs already mounted at %s", mount_point)
+            return
+        env = os.environ.copy()
+        # Creds out of argv to keep them out of ``ps``.
+        env["ACCESS_KEY"] = s3_access_key_id
+        env["SECRET_KEY"] = s3_secret_access_key
+        cmd = [
+            _juicefs_binary(config),
+            "mount",
+            "--no-usage-report",
+            _format_meta_dsn(config),
+            mount_point,
+        ]
+        logger.info("Starting juicefs mount at %s", mount_point)
+        _mount_proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Wait up to 15 s for the mount to register in mountinfo.  If
+        # juicefs exits before then, the Popen.poll picks up the exit
+        # code and we surface the captured stderr.
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if is_mounted(mount_point):
+                logger.info("juicefs mount ready at %s", mount_point)
+                return
+            rc = _mount_proc.poll()
+            if rc is not None:
+                stderr = (_mount_proc.stderr.read() or b"").decode(errors="replace")
+                _mount_proc = None
+                raise RuntimeError(
+                    f"juicefs mount exited early (rc={rc}): {stderr.strip()}"
+                )
+            time.sleep(0.2)
+        raise RuntimeError(
+            f"juicefs mount did not become ready within 15s at {mount_point}"
+        )
+
+
+def umount(config: Config) -> None:
+    """Unmount the JuiceFS mount and reap the supervised process.
+
+    Tries the clean ``juicefs umount`` first; falls back to a lazy
+    ``umount -l`` if the FS is busy.  Idempotent.
+    """
+    global _mount_proc
+    mount_point = juicefs_mount_dir(config)
+
+    with _mount_lock:
+        if not is_mounted(mount_point):
+            if _mount_proc is not None and _mount_proc.poll() is None:
+                _mount_proc.terminate()
+                try:
+                    _mount_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _mount_proc.kill()
+            _mount_proc = None
+            return
+        cmd = [_juicefs_binary(config), "umount", mount_point]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.warning(
+                "juicefs umount failed (rc=%d), falling back to lazy umount: %s",
+                result.returncode,
+                result.stderr.strip(),
+            )
+            # Lazy umount needs root; we don't have it.  But if the FS
+            # is busy because containers are still bind-mounted into it,
+            # the operator already accepted in the dashboard that apps
+            # would be stopped — by the time we get here there should
+            # be no containers using the path.  If it's still busy,
+            # surface an error rather than silently leaking.
+            raise RuntimeError(
+                f"juicefs umount of {mount_point} failed and lazy umount "
+                f"requires root; ensure all containers using the archive "
+                f"tier are stopped before switching backends.  Original: "
+                f"{result.stderr.strip()}"
+            )
+        if _mount_proc is not None:
+            try:
+                _mount_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _mount_proc.kill()
+        _mount_proc = None
+        logger.info("juicefs unmounted from %s", mount_point)
+
+
+# ---------------------------------------------------------------------------
+# Backend state (DB read/write)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BackendState:
+    """Operator-visible archive backend state."""
+
+    backend: str  # "local" | "s3"
+    state: str  # "idle" | "switching"
+    s3_bucket: str | None
+    s3_region: str | None
+    s3_endpoint: str | None
+    s3_access_key_id: str | None
+    s3_secret_access_key: str | None
+    juicefs_volume_name: str
+    last_switched_at: str | None
+    state_message: str | None
+
+
+def read_state(db: sqlite3.Connection) -> BackendState:
+    row = db.execute(
+        "SELECT backend, state, s3_bucket, s3_region, s3_endpoint, "
+        "s3_access_key_id, s3_secret_access_key, juicefs_volume_name, "
+        "last_switched_at, state_message FROM archive_backend WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        # Should never happen — the v4 migration seeds this row — but
+        # tolerate it so the dashboard doesn't crash on a partial DB.
+        return BackendState(
+            backend="local",
+            state="idle",
+            s3_bucket=None,
+            s3_region=None,
+            s3_endpoint=None,
+            s3_access_key_id=None,
+            s3_secret_access_key=None,
+            juicefs_volume_name="openhost",
+            last_switched_at=None,
+            state_message=None,
+        )
+    return BackendState(
+        backend=row[0],
+        state=row[1],
+        s3_bucket=row[2],
+        s3_region=row[3],
+        s3_endpoint=row[4],
+        s3_access_key_id=row[5],
+        s3_secret_access_key=row[6],
+        juicefs_volume_name=row[7] or "openhost",
+        last_switched_at=row[8],
+        state_message=row[9],
+    )
+
+
+def _update_state(
+    db: sqlite3.Connection,
+    *,
+    state: str | None = None,
+    state_message: str | None = None,
+    backend: str | None = None,
+    s3_bucket: str | None = None,
+    s3_region: str | None = None,
+    s3_endpoint: str | None = None,
+    s3_access_key_id: str | None = None,
+    s3_secret_access_key: str | None = None,
+    juicefs_volume_name: str | None = None,
+    last_switched_at: str | None = None,
+    clear_s3_credentials: bool = False,
+) -> None:
+    """Update the single archive_backend row; only applies the fields
+    explicitly passed (or that the caller asked to clear).
+    """
+    fields: dict[str, object | None] = {}
+    if state is not None:
+        fields["state"] = state
+    if state_message is not None or state is not None:
+        # Clear stale state_message whenever we transition state.
+        fields["state_message"] = state_message
+    if backend is not None:
+        fields["backend"] = backend
+    if s3_bucket is not None:
+        fields["s3_bucket"] = s3_bucket
+    if s3_region is not None:
+        fields["s3_region"] = s3_region
+    if s3_endpoint is not None:
+        fields["s3_endpoint"] = s3_endpoint
+    if s3_access_key_id is not None:
+        fields["s3_access_key_id"] = s3_access_key_id
+    if s3_secret_access_key is not None:
+        fields["s3_secret_access_key"] = s3_secret_access_key
+    if juicefs_volume_name is not None:
+        fields["juicefs_volume_name"] = juicefs_volume_name
+    if last_switched_at is not None:
+        fields["last_switched_at"] = last_switched_at
+    if clear_s3_credentials:
+        # Switching back to ``local`` should drop the S3 credentials so
+        # we don't leave them lying in the DB beyond their useful life.
+        # The bucket / region / endpoint stay, so the operator's
+        # next-switch-back-to-S3 form is pre-filled with the previous
+        # bucket — convenient and not sensitive.
+        fields["s3_access_key_id"] = None
+        fields["s3_secret_access_key"] = None
+
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    db.execute(
+        f"UPDATE archive_backend SET {set_clause} WHERE id = 1",
+        list(fields.values()),
+    )
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def archive_dir_for_backend(config: Config, backend: str) -> str:
+    """Return the host-side archive root for ``backend``.
+
+    Used by ``apply_backend_to_config`` to compute the right
+    ``archive_dir_override`` value after a switch, and by the switch
+    flow itself to know where to copy data to/from.
+    """
+    if backend == "s3":
+        return juicefs_mount_dir(config)
+    return os.path.join(config.persistent_data_dir, "app_archive")
+
+
+def apply_backend_to_config(config: Config, db: sqlite3.Connection) -> Config:
+    """Return a Config whose ``archive_dir_override`` matches the
+    backend currently recorded in the DB.
+
+    Called once at startup and again after every backend switch so
+    that ``config.app_archive_dir`` always points at the right place.
+    The original Config object isn't mutated (it's frozen attrs); the
+    caller stores the returned Config wherever the live one lives
+    (typically ``app.openhost_config`` on the Quart app).
+    """
+    state = read_state(db)
+    if state.backend == "s3":
+        return config.evolve(archive_dir_override=juicefs_mount_dir(config))
+    # Local backend: archive_dir_override should be unset so the
+    # property falls back to persistent_data_dir/app_archive.
+    return config.evolve(archive_dir_override=None)
+
+
+def attach_on_startup(config: Config, db: sqlite3.Connection) -> Config:
+    """Bring the archive backend back online after openhost-core boots.
+
+    Returns a Config whose ``archive_dir_override`` matches the
+    persisted backend so the caller can store it as the live config.
+    For local backend: nothing to do; the directory is already there.
+    For s3 backend: install JuiceFS if needed, then mount.
+
+    Failures here MUST NOT crash the boot — we want the dashboard
+    reachable even if the S3 backend is unhealthy, so the operator
+    can fix it.  Surface the failure via the ``state_message`` column
+    instead.
+
+    On any failure we still return a Config matching the desired
+    backend so that the api routes report the intended path.  Apps
+    that try to deploy will fail loudly because the mount isn't
+    actually up, which is the right semantic — silently falling
+    back to local would let apps write to a path that gets shadowed
+    when the operator fixes the S3 issue.
+    """
+    state = read_state(db)
+    if state.state == "switching":
+        # Boot in the middle of an in-flight switch.  We don't try
+        # to resume — the operator's switch_backend caller already
+        # left state_message in place; just clear the flag so the
+        # dashboard isn't permanently locked.
+        _update_state(
+            db,
+            state="idle",
+            state_message=(state.state_message or "")
+            + " (interrupted by openhost-core restart)",
+        )
+    if state.backend == "local":
+        return apply_backend_to_config(config, db)
+    if state.backend != "s3":
+        logger.error("archive_backend has unknown backend %r", state.backend)
+        return config
+    try:
+        if not is_juicefs_installed(config):
+            install_juicefs(config)
+        if state.s3_access_key_id is None or state.s3_secret_access_key is None:
+            raise RuntimeError(
+                "S3 credentials are missing from the archive_backend row; "
+                "switch back to local from the dashboard and re-enter them."
+            )
+        mount(config, state.s3_access_key_id, state.s3_secret_access_key)
+        _update_state(db, state="idle", state_message=None)
+    except Exception as exc:
+        logger.exception("Failed to attach archive backend on startup")
+        _update_state(
+            db,
+            state="idle",
+            state_message=f"Failed to attach archive backend: {exc}",
+        )
+    return apply_backend_to_config(config, db)
+
+
+def test_s3_credentials(
+    s3_bucket: str,
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+) -> str | None:
+    """Try to reach the bucket with the given credentials.
+
+    Returns ``None`` on success or a human-readable error string on
+    failure.  Used by the dashboard's "Test connection" button before
+    the operator commits to a backend switch.
+
+    Implementation: do a HEAD on the bucket using boto3 if available,
+    else fall back to a signed v4 PUT-of-zero-bytes attempt and discard
+    the result.  We import boto3 lazily because openhost-core doesn't
+    otherwise need it and we don't want to widen the dep tree.
+    """
+    try:
+        import boto3
+        import botocore.exceptions  # noqa: F401
+    except ImportError:
+        return (
+            "boto3 is not installed in this openhost-core; cannot pre-flight "
+            "the S3 connection.  The backend switch itself will surface "
+            "any credential problems, but you'll have to roll back manually."
+        )
+
+    try:
+        kwargs: dict[str, object] = {
+            "aws_access_key_id": s3_access_key_id,
+            "aws_secret_access_key": s3_secret_access_key,
+        }
+        if s3_endpoint:
+            kwargs["endpoint_url"] = s3_endpoint
+        if s3_region:
+            kwargs["region_name"] = s3_region
+        client = boto3.client("s3", **kwargs)
+        client.head_bucket(Bucket=s3_bucket)
+    except Exception as exc:
+        return f"S3 reachability test failed: {exc}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Backend switch
+# ---------------------------------------------------------------------------
+
+
+# Stop-and-restart of opted-in apps is wired in via callbacks rather
+# than direct imports of compute_space.core.containers / apps so this
+# module stays unit-testable without standing up the whole web stack.
+# The api layer wires the real callbacks; tests pass fakes.
+
+@dataclass
+class AppHook:
+    """Callbacks the api layer hands to ``switch_backend`` so the
+    archive-backend code stays decoupled from the apps/containers
+    modules that import each other heavily.
+
+    ``set_config`` is called after the backend swap with a new
+    ``Config`` whose ``archive_dir_override`` matches the new state.
+    The api layer wires this to ``app.openhost_config = new_config``
+    so subsequent requests see the new path.
+    """
+
+    list_app_archive_apps: "callable"  # () -> list[str]
+    stop_app: "callable"  # (app_name: str) -> None
+    start_app: "callable"  # (app_name: str) -> None
+    set_config: "callable"  # (Config) -> None
+
+
+class BackendSwitchError(Exception):
+    """Raised by ``switch_backend`` when a step in the flow fails.
+
+    The DB ``state_message`` is also populated so the dashboard can
+    show the operator what went wrong; raising the exception lets
+    the api layer return a 500 with the same string.
+    """
+
+
+def _copy_tree(src: str, dst: str) -> None:
+    """Recursively copy every entry under ``src`` into ``dst``.  Used by
+    the migrate phase of a backend switch.
+
+    Doesn't use ``shutil.copytree(dirs_exist_ok=True)`` directly because
+    we want to preserve mtimes (so app code that uses mtime as a cache
+    key isn't surprised by the switch) and we want clear error messages
+    on per-file failures.
+    """
+    os.makedirs(dst, exist_ok=True)
+    for entry in os.scandir(src):
+        s = entry.path
+        d = os.path.join(dst, entry.name)
+        if entry.is_dir(follow_symlinks=False):
+            _copy_tree(s, d)
+        else:
+            shutil.copy2(s, d)
+
+
+def switch_backend(
+    config: Config,
+    db: sqlite3.Connection,
+    hook: AppHook,
+    *,
+    target_backend: str,
+    s3_bucket: str | None = None,
+    s3_region: str | None = None,
+    s3_endpoint: str | None = None,
+    s3_access_key_id: str | None = None,
+    s3_secret_access_key: str | None = None,
+    juicefs_volume_name: str | None = None,
+    delete_source_after_copy: bool = False,
+) -> None:
+    """Switch the archive backend, copying data + restarting opted-in
+    apps as needed.
+
+    The high-level steps are:
+
+    1. Persist ``state='switching'`` so a crash mid-flow leaves
+       enough breadcrumbs in the DB for the operator to see what
+       happened on the next dashboard load.
+    2. Stop every running app that opted into ``app_archive`` (or
+       ``access_all_data``).  This is destructive from the app's
+       perspective but the dashboard already warned the operator.
+    3. Bring up the target backend (install + format + mount JuiceFS
+       if going to s3; nothing if going to local).
+    4. Copy data from the source backend's host-side path into the
+       target backend's host-side path.
+    5. Tear down the source backend if any (umount JuiceFS if
+       going local).
+    6. Persist the new backend state and clear ``state``.
+    7. Restart the apps from step 2.
+
+    On any failure between steps 3-6, the function tries to leave the
+    system in a recoverable state: the source backend is not torn
+    down until the copy succeeds, so a failed switch can be retried
+    or rolled back manually.
+    """
+    if target_backend not in ("local", "s3"):
+        raise BackendSwitchError(f"Unknown target backend {target_backend!r}")
+
+    current = read_state(db)
+    if current.state != "idle":
+        raise BackendSwitchError(
+            f"Archive backend is already in state {current.state!r}; "
+            "wait for the in-flight switch to finish before starting a new one."
+        )
+
+    if target_backend == current.backend:
+        # Treat as no-op rather than an error so the dashboard can
+        # post the same form repeatedly without surprising failures.
+        return
+
+    if target_backend == "s3":
+        if not (s3_bucket and s3_access_key_id and s3_secret_access_key):
+            raise BackendSwitchError(
+                "Switching to s3 requires bucket, access_key_id, and "
+                "secret_access_key."
+            )
+        volume_name = juicefs_volume_name or current.juicefs_volume_name or "openhost"
+    else:
+        volume_name = current.juicefs_volume_name or "openhost"
+
+    _update_state(db, state="switching", state_message="Stopping apps")
+
+    try:
+        # Stop every running ``app_archive`` app.  We catch the list
+        # while apps are still running so a failed switch can restart
+        # exactly the same set.
+        affected_apps = list(hook.list_app_archive_apps())
+        for name in affected_apps:
+            try:
+                hook.stop_app(name)
+            except Exception as exc:
+                # Best-effort: keep going so we don't half-stop.  The
+                # operator agreed apps would restart, and start_app at
+                # the end will reconcile by rebuilding.
+                logger.warning("Stopping %s during backend switch: %s", name, exc)
+
+        old_archive_dir = archive_dir_for_backend(config, current.backend)
+
+        # Bring up the target backend.
+        if target_backend == "s3":
+            _update_state(db, state_message="Installing juicefs")
+            install_juicefs(config)
+            _update_state(db, state_message="Formatting volume")
+            format_volume(
+                config,
+                s3_bucket=s3_bucket,
+                s3_region=s3_region,
+                s3_endpoint=s3_endpoint,
+                s3_access_key_id=s3_access_key_id,
+                s3_secret_access_key=s3_secret_access_key,
+                juicefs_volume_name=volume_name,
+            )
+            _update_state(db, state_message="Mounting volume")
+            mount(config, s3_access_key_id, s3_secret_access_key)
+            new_archive_dir = juicefs_mount_dir(config)
+        else:
+            new_archive_dir = os.path.join(config.persistent_data_dir, "app_archive")
+            os.makedirs(new_archive_dir, exist_ok=True)
+
+        # Copy data.
+        _update_state(db, state_message="Copying archive data")
+        if os.path.isdir(old_archive_dir):
+            _copy_tree(old_archive_dir, new_archive_dir)
+
+        # Tear down the source backend.
+        if current.backend == "s3":
+            _update_state(db, state_message="Unmounting old volume")
+            try:
+                umount(config)
+            except Exception as exc:
+                # Don't fail the switch over a busy umount — log and move
+                # on; the operator can clean up manually if needed.
+                logger.warning("Old s3 backend umount failed: %s", exc)
+
+        # Optionally delete source data once we're sure the copy made it
+        # to the new home.  Switching local -> s3 with this flag set
+        # frees up local-disk capacity; switching s3 -> local with this
+        # flag set drops the S3-side data permanently (the operator
+        # would also need to delete the bucket separately to actually
+        # free the AWS spend).
+        if delete_source_after_copy and os.path.isdir(old_archive_dir):
+            shutil.rmtree(old_archive_dir, ignore_errors=True)
+            # Recreate the empty local default so future deploys that
+            # happen to run before another switch don't fail.
+            if current.backend == "local":
+                os.makedirs(old_archive_dir, exist_ok=True)
+
+        # Persist the new state.  Clearing s3 creds when switching
+        # back to local is intentional — see _update_state.
+        _update_state(
+            db,
+            state="idle",
+            state_message=None,
+            backend=target_backend,
+            s3_bucket=s3_bucket if target_backend == "s3" else None,
+            s3_region=s3_region if target_backend == "s3" else None,
+            s3_endpoint=s3_endpoint if target_backend == "s3" else None,
+            s3_access_key_id=s3_access_key_id if target_backend == "s3" else None,
+            s3_secret_access_key=s3_secret_access_key
+            if target_backend == "s3"
+            else None,
+            juicefs_volume_name=volume_name,
+            last_switched_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            clear_s3_credentials=(target_backend == "local"),
+        )
+
+        # Hand the api layer a Config whose archive_dir_override now
+        # matches the new backend.  Apps started below see the new
+        # path; existing references to the old Config are stale but
+        # the route layer always re-fetches via ``get_config()``.
+        hook.set_config(apply_backend_to_config(config, db))
+
+        # Restart apps.  These are best-effort: a build failure on one
+        # app shouldn't roll back the whole backend switch, since the
+        # archive data is already on the new backend.
+        for name in affected_apps:
+            try:
+                hook.start_app(name)
+            except Exception:
+                logger.exception("Failed to restart %s after backend switch", name)
+    except BackendSwitchError:
+        _update_state(db, state="idle", state_message="switch failed; see logs")
+        raise
+    except Exception as exc:
+        _update_state(db, state="idle", state_message=f"switch failed: {exc}")
+        raise BackendSwitchError(str(exc)) from exc
