@@ -26,13 +26,14 @@
       - uidmap
       # passt provides `pasta`, the default rootless network backend.
       - passt
-      # containers-common provides /etc/containers/policy.json (image
-      # signature policy), default registries.conf, storage.conf, etc.
-      # The conda-forge containers-common installs equivalents under
-      # the pixi env prefix, but podman searches /etc and ~/.config
-      # at runtime — without this, container builds fail with
-      # "no policy.json file found".
-      - containers-common
+      # golang-github-containers-common provides /etc/containers/
+      # policy.json (image signature policy), default registries.conf,
+      # storage.conf, etc.  The conda-forge containers-common installs
+      # equivalents under the pixi env prefix, but podman searches /etc
+      # and ~/.config at runtime — without this, container builds fail
+      # with "no policy.json file found".  (Debian/Ubuntu ship it under
+      # this name; upstream calls it just "containers-common".)
+      - golang-github-containers-common
     state: present
     update_cache: yes
 
