@@ -45,6 +45,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from compute_space.config import Config
@@ -160,12 +161,12 @@ def install_juicefs(config: Config) -> None:
         member = next((m for m in tar.getmembers() if m.name == "juicefs"), None)
         if member is None:
             raise RuntimeError("JuiceFS tarball missing the ``juicefs`` binary")
-        f = tar.extractfile(member)
-        if f is None:
-            raise RuntimeError("JuiceFS tarball entry was unreadable")
         binary_path = _juicefs_binary(config)
-        with open(binary_path, "wb") as out:
-            shutil.copyfileobj(f, out)
+        with tar.extractfile(member) as f:
+            if f is None:
+                raise RuntimeError("JuiceFS tarball entry was unreadable")
+            with open(binary_path, "wb") as out:
+                shutil.copyfileobj(f, out)
     os.chmod(_juicefs_binary(config), 0o750)
     logger.info("JuiceFS installed at %s", _juicefs_binary(config))
 
@@ -207,18 +208,18 @@ def format_volume(
         "format",
         "--storage", "s3",
         "--bucket", bucket_url,
-        "--access-key", s3_access_key_id,
-        "--secret-key", s3_secret_access_key,
         _format_meta_dsn(config),
         juicefs_volume_name,
     ]
+    # juicefs format reads ACCESS_KEY / SECRET_KEY from env when the
+    # --access-key / --secret-key flags aren't passed.  Using env
+    # keeps the secret out of ``ps`` and any process-listing tooling
+    # that would otherwise pick it up.
+    env = os.environ.copy()
+    env["ACCESS_KEY"] = s3_access_key_id
+    env["SECRET_KEY"] = s3_secret_access_key
     logger.info("Running juicefs format against %s", bucket_url)
-    # We pass creds on argv because juicefs format reads --secret-key
-    # only that way; ps would briefly show them but format runs for
-    # under a second on an existing volume and a few seconds on a new
-    # one.  The mount path doesn't have this issue because we use the
-    # ACCESS_KEY/SECRET_KEY env vars instead.
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(
             f"juicefs format failed (exit {result.returncode}): "
@@ -289,15 +290,18 @@ def mount(
             mount_point,
         ]
         logger.info("Starting juicefs mount at %s", mount_point)
+        # ``stdout`` and ``stderr`` go to DEVNULL because juicefs
+        # mount is long-lived and will fill a 64 KiB pipe buffer if
+        # we don't continuously drain it, which would freeze the
+        # mount.  juicefs already writes its own log file; the bits
+        # we'd lose to DEVNULL are duplicated there.
         _mount_proc = subprocess.Popen(
             cmd,
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        # Wait up to 15 s for the mount to register in mountinfo.  If
-        # juicefs exits before then, the Popen.poll picks up the exit
-        # code and we surface the captured stderr.
+        # Wait up to 15 s for the mount to register in mountinfo.
         deadline = time.time() + 15
         while time.time() < deadline:
             if is_mounted(mount_point):
@@ -305,12 +309,28 @@ def mount(
                 return
             rc = _mount_proc.poll()
             if rc is not None:
-                stderr = (_mount_proc.stderr.read() or b"").decode(errors="replace")
+                # Process exited without mounting.  Reap it and
+                # surface the failure.
                 _mount_proc = None
                 raise RuntimeError(
-                    f"juicefs mount exited early (rc={rc}): {stderr.strip()}"
+                    f"juicefs mount exited early (rc={rc}); check the juicefs log at "
+                    f"{config.openhost_data_path / 'juicefs.log'}"
                 )
             time.sleep(0.2)
+        # Timeout: the child is still alive but hasn't registered a
+        # mount.  Kill it before raising so we don't leak a process
+        # that holds the mount-point lock and prevents a retry.
+        try:
+            _mount_proc.terminate()
+            try:
+                _mount_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _mount_proc.kill()
+                _mount_proc.wait(timeout=5)
+        except Exception:
+            logger.exception("Failed to terminate stuck juicefs mount process")
+        finally:
+            _mount_proc = None
         raise RuntimeError(
             f"juicefs mount did not become ready within 15s at {mount_point}"
         )
@@ -637,10 +657,10 @@ class AppHook:
     so subsequent requests see the new path.
     """
 
-    list_app_archive_apps: "callable"  # () -> list[str]
-    stop_app: "callable"  # (app_name: str) -> None
-    start_app: "callable"  # (app_name: str) -> None
-    set_config: "callable"  # (Config) -> None
+    list_app_archive_apps: Callable[[], list[str]]
+    stop_app: Callable[[str], None]
+    start_app: Callable[[str], None]
+    set_config: Callable[[Config], None]
 
 
 class BackendSwitchError(Exception):
@@ -713,43 +733,66 @@ def switch_backend(
     if target_backend not in ("local", "s3"):
         raise BackendSwitchError(f"Unknown target backend {target_backend!r}")
 
-    current = read_state(db)
-    if current.state != "idle":
-        raise BackendSwitchError(
-            f"Archive backend is already in state {current.state!r}; "
-            "wait for the in-flight switch to finish before starting a new one."
-        )
-
-    if target_backend == current.backend:
-        # Treat as no-op rather than an error so the dashboard can
-        # post the same form repeatedly without surprising failures.
-        return
-
     if target_backend == "s3":
         if not (s3_bucket and s3_access_key_id and s3_secret_access_key):
             raise BackendSwitchError(
                 "Switching to s3 requires bucket, access_key_id, and "
                 "secret_access_key."
             )
+
+    # Atomically claim the switching slot.  Two concurrent POSTs
+    # both passing the read_state check would otherwise enter the
+    # flow side-by-side and step on each other — overlapping
+    # stops/copies/mounts/unmounts.  The single-row UPDATE-WHERE
+    # only succeeds for one caller; the loser raises.  rowcount==0
+    # means somebody else got it (or the row is missing, which
+    # shouldn't happen because the v4 migration seeds it).
+    cur = db.execute(
+        "UPDATE archive_backend SET state='switching', state_message='Starting' "
+        "WHERE id=1 AND state='idle'"
+    )
+    db.commit()
+    if cur.rowcount == 0:
+        raise BackendSwitchError(
+            "Archive backend is already in state 'switching'; "
+            "wait for the in-flight switch to finish before starting a new one."
+        )
+    current = read_state(db)
+    # current.state is now 'switching' but its other fields (backend,
+    # creds, etc.) reflect the pre-switch state, which is what we want.
+    current = BackendState(**{**current.__dict__, "state": "idle"})
+
+    if target_backend == current.backend:
+        # No-op.  Release the lock and return.  This keeps the
+        # dashboard's idempotent re-saves from surprising failures.
+        _update_state(db, state="idle", state_message=None)
+        return
+
+    if target_backend == "s3":
         volume_name = juicefs_volume_name or current.juicefs_volume_name or "openhost"
     else:
         volume_name = current.juicefs_volume_name or "openhost"
 
-    _update_state(db, state="switching", state_message="Stopping apps")
+    _update_state(db, state_message="Stopping apps")
 
+    affected_apps: list[str] = []
     try:
         # Stop every running ``app_archive`` app.  We catch the list
         # while apps are still running so a failed switch can restart
-        # exactly the same set.
+        # exactly the same set.  ``stop_app`` failures are fatal:
+        # if an app isn't actually stopped, it's still writing to the
+        # source archive while we try to copy from it, violating
+        # the copy's consistency guarantee.  Better to abort.
         affected_apps = list(hook.list_app_archive_apps())
         for name in affected_apps:
             try:
                 hook.stop_app(name)
             except Exception as exc:
-                # Best-effort: keep going so we don't half-stop.  The
-                # operator agreed apps would restart, and start_app at
-                # the end will reconcile by rebuilding.
-                logger.warning("Stopping %s during backend switch: %s", name, exc)
+                raise BackendSwitchError(
+                    f"Failed to stop {name} for backend switch — refusing to "
+                    f"continue because in-flight writes from a still-running "
+                    f"app would corrupt the data copy.  Original error: {exc}"
+                ) from exc
 
         old_archive_dir = archive_dir_for_backend(config, current.backend)
 
@@ -774,33 +817,71 @@ def switch_backend(
             new_archive_dir = os.path.join(config.persistent_data_dir, "app_archive")
             os.makedirs(new_archive_dir, exist_ok=True)
 
-        # Copy data.
+        # Copy data.  ``_copy_tree`` doesn't delete entries that exist
+        # in the destination but not in the source, so a switch from
+        # an empty archive doesn't silently retain whatever was there
+        # from a previous switch — the destination is wiped first.
+        # On local->s3 the destination is freshly-formatted JuiceFS
+        # so it's already empty; on s3->local it might have stale
+        # content from before the previous local->s3 switch.
         _update_state(db, state_message="Copying archive data")
+        if current.backend == "local" and target_backend == "s3":
+            # JuiceFS just got formatted — destination is empty, no
+            # need to wipe.
+            pass
+        elif os.path.isdir(new_archive_dir):
+            for entry in list(os.scandir(new_archive_dir)):
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path, ignore_errors=True)
+                else:
+                    try:
+                        os.unlink(entry.path)
+                    except OSError as exc:
+                        logger.warning(
+                            "Failed to remove stale entry %s before copy: %s",
+                            entry.path,
+                            exc,
+                        )
         if os.path.isdir(old_archive_dir):
             _copy_tree(old_archive_dir, new_archive_dir)
 
-        # Tear down the source backend.
+        # Tear down the source backend.  A failed umount is fatal:
+        # if we left the JuiceFS mount up while ``backend='local'``
+        # in the DB, ``attach_on_startup`` on the next boot would
+        # see backend=local and skip the mount, leaving an orphaned
+        # FUSE process.  Worse, if delete_source_after_copy is set
+        # we'd be about to ``rmtree`` the still-mounted path —
+        # JuiceFS would dutifully delete every chunk in S3.  Bail.
         if current.backend == "s3":
             _update_state(db, state_message="Unmounting old volume")
             try:
                 umount(config)
             except Exception as exc:
-                # Don't fail the switch over a busy umount — log and move
-                # on; the operator can clean up manually if needed.
-                logger.warning("Old s3 backend umount failed: %s", exc)
+                raise BackendSwitchError(
+                    f"Failed to unmount the old S3 backend — refusing to "
+                    f"continue because the next steps could destroy live "
+                    f"data.  Original error: {exc}"
+                ) from exc
 
         # Optionally delete source data once we're sure the copy made it
-        # to the new home.  Switching local -> s3 with this flag set
-        # frees up local-disk capacity; switching s3 -> local with this
-        # flag set drops the S3-side data permanently (the operator
-        # would also need to delete the bucket separately to actually
-        # free the AWS spend).
+        # to the new home AND any source mount is torn down (so we're
+        # not deleting through a still-live FUSE filesystem).
+        # Errors are logged rather than swallowed so the operator can
+        # see why disk space wasn't freed when they expected it.
         if delete_source_after_copy and os.path.isdir(old_archive_dir):
-            shutil.rmtree(old_archive_dir, ignore_errors=True)
-            # Recreate the empty local default so future deploys that
-            # happen to run before another switch don't fail.
-            if current.backend == "local":
-                os.makedirs(old_archive_dir, exist_ok=True)
+            try:
+                shutil.rmtree(old_archive_dir)
+            except OSError as exc:
+                logger.warning(
+                    "delete_source_after_copy: rmtree(%s) failed: %s",
+                    old_archive_dir,
+                    exc,
+                )
+            else:
+                # Recreate the empty local default so future deploys
+                # that happen to run before another switch don't fail.
+                if current.backend == "local":
+                    os.makedirs(old_archive_dir, exist_ok=True)
 
         # Persist the new state.  Clearing s3 creds when switching
         # back to local is intentional — see _update_state.
@@ -826,18 +907,24 @@ def switch_backend(
         # path; existing references to the old Config are stale but
         # the route layer always re-fetches via ``get_config()``.
         hook.set_config(apply_backend_to_config(config, db))
-
-        # Restart apps.  These are best-effort: a build failure on one
-        # app shouldn't roll back the whole backend switch, since the
-        # archive data is already on the new backend.
-        for name in affected_apps:
-            try:
-                hook.start_app(name)
-            except Exception:
-                logger.exception("Failed to restart %s after backend switch", name)
     except BackendSwitchError:
         _update_state(db, state="idle", state_message="switch failed; see logs")
         raise
     except Exception as exc:
         _update_state(db, state="idle", state_message=f"switch failed: {exc}")
         raise BackendSwitchError(str(exc)) from exc
+    finally:
+        # Always restart the apps we stopped, success or failure.
+        # Without this, a failed switch leaves them in ``stopped``
+        # forever — operators retrying the switch would find the
+        # affected_apps list empty (because the apps are no longer
+        # running) and the apps would be permanently orphaned.
+        # On a failed switch, restarts may themselves fail (e.g.
+        # if the new backend is broken); those failures bubble up
+        # as DB ``error_message`` per-app, which is the right
+        # operator-visible signal.
+        for name in affected_apps:
+            try:
+                hook.start_app(name)
+            except Exception:
+                logger.exception("Failed to restart %s after backend switch", name)

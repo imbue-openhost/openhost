@@ -17,6 +17,8 @@ immediately with ``status: "switching"`` and the dashboard polls
 
 from __future__ import annotations
 
+import asyncio
+import re
 import sqlite3
 import threading
 from dataclasses import asdict
@@ -74,10 +76,21 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
     """
     config = app.openhost_config
 
+    # Match TOML's ``key = true`` allowing whitespace + a value of
+    # ``true`` (the spec is case-sensitive but operators sometimes
+    # write True/TRUE; match those too to avoid false negatives that
+    # would leave an opted-in app running during the switch).  Built
+    # outside the closure so we don't recompile per call.
+    _archive_re = re.compile(r"(?m)^\s*app_archive\s*=\s*[Tt][Rr][Uu][Ee]\b")
+    _aad_re = re.compile(r"(?m)^\s*access_all_data\s*=\s*[Tt][Rr][Uu][Ee]\b")
+
     def list_archive_apps() -> list[str]:
-        # Read straight from the manifest_raw column rather than
-        # parsing every manifest live — simpler, fast enough, and
-        # robust to schema-format drift in the manifest parser.
+        # Read manifest_raw and look for a real ``app_archive = true``
+        # (or ``access_all_data = true``) assignment.  The earlier
+        # ``"app_archive" in raw and "true" in raw`` heuristic
+        # false-matched manifests that had ``app_archive = false``
+        # alongside ``app_data = true``, causing unrelated apps to
+        # be needlessly restarted.
         db = sqlite3.connect(config.db_path)
         try:
             rows = db.execute(
@@ -89,12 +102,7 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
         names: list[str] = []
         for name, manifest_raw, _status in rows:
             raw = manifest_raw or ""
-            # Cheap textual heuristic — the manifest parser is the
-            # canonical source of truth, but for the purposes of
-            # "should we stop this app for the switch?" matching the
-            # raw text is fine and avoids a hard dependency on the
-            # manifest module from the api layer.
-            if "app_archive" in raw and "true" in raw or "access_all_data" in raw and "true" in raw:
+            if _archive_re.search(raw) or _aad_re.search(raw):
                 names.append(name)
         return names
 
@@ -186,12 +194,16 @@ async def test_connection() -> ResponseReturnValue:
         return jsonify(
             {"ok": False, "error": "bucket, access_key_id, and secret_access_key are required"}
         ), 400
-    error = archive_backend.test_s3_credentials(
-        s3_bucket=bucket,
-        s3_region=region,
-        s3_endpoint=endpoint,
-        s3_access_key_id=access_key,
-        s3_secret_access_key=secret_key,
+    # head_bucket can take seconds (DNS + TLS + HTTP round-trip);
+    # run it on a worker thread so the asyncio event loop stays
+    # responsive to other requests.
+    error = await asyncio.to_thread(
+        archive_backend.test_s3_credentials,
+        bucket,
+        region,
+        endpoint,
+        access_key,
+        secret_key,
     )
     if error:
         return jsonify({"ok": False, "error": error}), 400

@@ -267,6 +267,55 @@ async def test_test_connection_surfaces_errors(app):
 
 
 @pytest.mark.asyncio
+async def test_list_archive_apps_heuristic_precision(app, cfg):
+    """The heuristic that decides which apps to stop during a switch
+    must match exactly ``app_archive = true`` (or
+    ``access_all_data = true``), not the substring "true" anywhere
+    in the manifest.  Without this, an app with
+    ``app_archive = false`` plus ``app_data = true`` would be
+    erroneously stopped — which means a routine s3 backend switch
+    would needlessly bounce every app on the zone that happened to
+    have any boolean opt-in.
+    """
+    # Seed three apps with manifests covering the relevant cases.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.executemany(
+            "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES (?, '1.0', ?, ?, 'running', ?)",
+            [
+                # Should match: explicit app_archive = true.
+                ("real-archiver", "/r/a", 19501, "[data]\napp_archive = true\n"),
+                # Should match: access_all_data = true.
+                (
+                    "all-access",
+                    "/r/aa",
+                    19502,
+                    "[data]\naccess_all_data = true\n",
+                ),
+                # Should NOT match: app_archive=false with a different
+                # boolean=true elsewhere — the old substring heuristic
+                # got this wrong.
+                (
+                    "innocent",
+                    "/r/i",
+                    19503,
+                    "[data]\napp_archive = false\napp_data = true\n",
+                ),
+                # Should NOT match: no archive/access fields at all.
+                ("plain", "/r/p", 19504, "[data]\napp_data = true\n"),
+            ],
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    hook = routes._build_hook(app)
+    matched = sorted(hook.list_app_archive_apps())
+    assert matched == ["all-access", "real-archiver"], matched
+
+
+@pytest.mark.asyncio
 async def test_test_connection_succeeds(app):
     client = app.test_client()
     with mock.patch.object(archive_backend, "test_s3_credentials", return_value=None):

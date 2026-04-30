@@ -314,6 +314,43 @@ def test_switch_refuses_when_already_switching(cfg, db):
         )
 
 
+def test_switch_state_transition_is_atomic(cfg, db):
+    """Two concurrent switch_backend calls must not both proceed.
+
+    Without the atomic UPDATE-WHERE-state='idle' transition, a
+    read_state-then-update sequence would let two callers both observe
+    'idle' and both enter the flow, stepping on each other's stops/
+    copies/mounts.  We can't easily exercise true concurrency in a
+    unit test, but we CAN exercise the symmetrical case: once one
+    caller has flipped the row to 'switching', a second call must
+    raise rather than silently proceed.
+
+    Also: after a successful no-op (target == current), the second
+    call must NOT see 'switching' — the no-op path releases the
+    lock cleanly.
+    """
+    hook, _ = _make_hook()
+    # No-op: target == current (both 'local'); should release lock.
+    switch_backend(cfg, db, hook, target_backend="local")
+    state = read_state(db)
+    assert state.state == "idle"
+
+    # Now manually wedge the row in 'switching' state, simulating an
+    # in-flight switch from another process; the second call refuses.
+    db.execute("UPDATE archive_backend SET state='switching'")
+    db.commit()
+    with pytest.raises(BackendSwitchError, match="already in state"):
+        switch_backend(
+            cfg,
+            db,
+            hook,
+            target_backend="s3",
+            s3_bucket="b",
+            s3_access_key_id="a",
+            s3_secret_access_key="s",
+        )
+
+
 def test_switch_failure_during_format_recovers_state(cfg, db):
     """If the format step fails, the DB state must end up back at
     'idle' (with an error message) rather than wedged in 'switching'.
@@ -345,8 +382,9 @@ def test_switch_failure_during_format_recovers_state(cfg, db):
     # The backend stays at the original value (didn't flip to s3) so
     # subsequent reads see the source-of-truth state.
     assert state.backend == "local"
-    # Apps got stopped but never re-started — the operator needs to
-    # re-trigger a switch (or restart the apps manually).  Flipping
-    # them back automatically would mask the error.
+    # Apps got stopped AND restarted — even on failure, the switch
+    # always restarts what it stopped, so the operator's retry isn't
+    # left with permanently-orphaned 'stopped' apps that the next
+    # ``list_app_archive_apps`` would no longer pick up.
     assert calls["stopped"] == ["myapp"]
-    assert calls["started"] == []
+    assert calls["started"] == ["myapp"]
