@@ -84,6 +84,32 @@
     dest: /etc/containers/registries.conf.d/00-openhost.conf
     mode: "0644"
 
+# Apt's `containers-common` writes /etc/containers/policy.json with a
+# permissive default; the conda-forge build doesn't ship one to /etc,
+# so podman from the pixi env on a fresh cloud image fails container
+# builds with "no policy.json file found".  Write the standard
+# permissive policy ourselves — equivalent to what Ubuntu's apt
+# install would have produced.
+- name: Ensure /etc/containers exists
+  file:
+    path: /etc/containers
+    state: directory
+    mode: "0755"
+
+- name: Write default container image signature policy
+  copy:
+    content: |
+      {
+          "default": [{"type": "insecureAcceptAnything"}],
+          "transports": {
+              "docker-daemon": {
+                  "": [{"type": "insecureAcceptAnything"}]
+              }
+          }
+      }
+    dest: /etc/containers/policy.json
+    mode: "0644"
+
 # Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
 # as ext2/ext3 by stat -f -c '%T'), xfs, btrfs, tmpfs.  ZFS < 2.2 and
 # certain FUSE filesystems don't support it.
