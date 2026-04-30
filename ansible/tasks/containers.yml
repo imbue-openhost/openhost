@@ -126,13 +126,29 @@
       - _host_primary_ip.stdout | length > 0
     fail_msg: "Could not detect host primary IPv4 address for host.containers.internal"
 
-- name: Configure podman containers.conf
+- name: Ensure host user containers config dir exists
+  file:
+    path: /home/host/.config/containers
+    state: directory
+    owner: host
+    group: host
+    mode: "0755"
+
+# We write at the user level rather than /etc/containers/containers.conf
+# because the conda-forge containers-common (loaded as part of pixi's
+# podman install) ships a containers.conf at $PIXI_PREFIX/share that
+# was observed to win the merge over /etc on these VMs.  The user-
+# level file is read last in the lookup chain, so its values always
+# take precedence.  Owned by host:host so rootless podman reads it.
+- name: Configure host user podman containers.conf
   copy:
     content: |
       # Managed by OpenHost; do not edit by hand.
       [containers]
       host_containers_internal_ip = "{{ _host_primary_ip.stdout }}"
-    dest: /etc/containers/containers.conf
+    dest: /home/host/.config/containers/containers.conf
+    owner: host
+    group: host
     mode: "0644"
 
 # Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
