@@ -247,10 +247,16 @@ async def post_archive_backend() -> ResponseReturnValue:
 
     delete_source = (form.get("delete_source_after_copy") or "").strip().lower() in ("1", "true", "yes")
 
-    # Refuse if a switch is already running so two concurrent POSTs
-    # don't fight.  We rely on the same DB-level state check inside
-    # switch_backend, but rejecting here gives a cleaner 409 vs the
-    # 500 we'd otherwise raise.
+    # Best-effort fast-fail when a switch is obviously already in
+    # flight, so the operator's double-click gets a clean 409 instead
+    # of a 202 followed by a state_message saying the worker
+    # collided with itself.  This is racy by construction (two POSTs
+    # can both observe ``state='idle'`` and both pass) — the
+    # authoritative gate is the atomic UPDATE-WHERE inside
+    # switch_backend, which is the source of truth.  The race
+    # window for the duplicate-202 case is narrow and the worker's
+    # state_message records the loser's error, so the operator can
+    # still see what happened.
     db = get_db()
     state = archive_backend.read_state(db)
     if state.state == "switching":

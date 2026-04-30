@@ -464,13 +464,15 @@ def _update_state(
     """Update the single archive_backend row.
 
     ``None`` means "don't update this field" rather than "set to NULL"
-    so callers can pass only the fields they care about.  The two
-    exceptions are deliberate:
+    so callers can pass only the fields they care about.  Two
+    deliberate deviations:
 
-    - When ``state`` is passed, ``state_message`` is also written
-      (to ``None`` if the caller didn't supply one).  Stale switch-
-      step messages from a prior transition would otherwise linger
-      on the dashboard until the next failure rewrote them.
+    - ``state_message`` writes whenever EITHER ``state`` OR
+      ``state_message`` is passed.  Combined with the "None means
+      skip" rule, this means ``_update_state(db, state='idle')``
+      clears any stale message left by a prior switch step,
+      and ``_update_state(db, state_message='Stopping apps')``
+      writes the message without changing state.
     - ``clear_s3_credentials=True`` explicitly NULLs the access key
       and secret access key columns.  This is how the s3->local
       transition drops the secrets it no longer needs.
