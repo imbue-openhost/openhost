@@ -97,7 +97,7 @@ def _check_port(port: int) -> _Check:
 
 
 def _check_router_code() -> _Check:
-    main_py = COMPUTE_SPACE_PACKAGE_DIR / "compute_space" / "__main__.py"
+    main_py = COMPUTE_SPACE_PACKAGE_DIR / "src" / "compute_space" / "__main__.py"
     if main_py.is_file():
         return _Check("Router code", True, str(COMPUTE_SPACE_PACKAGE_DIR))
     return _Check("Router code", False, f"__main__.py not found in {COMPUTE_SPACE_PACKAGE_DIR}")

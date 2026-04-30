@@ -82,7 +82,8 @@ class Config:
 
     @property
     def openhost_repo_path(self) -> Path:
-        return Path(__file__).parent.parent.parent
+        # compute_space/src/compute_space/config.py -> openhost repo root
+        return Path(__file__).resolve().parent.parent.parent.parent
 
     @property
     def db_path(self) -> str:
