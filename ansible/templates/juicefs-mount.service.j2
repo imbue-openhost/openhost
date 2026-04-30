@@ -1,0 +1,38 @@
+[Unit]
+Description=JuiceFS mount for OpenHost app_archive tier
+# The mount must be up before openhost-core starts any apps; the
+# ordering is set on openhost.service via After=juicefs-mount.service
+# (see openhost.service.j2).  Failing here surfaces as a refusal to
+# start the openhost service rather than apps silently writing to a
+# local-disk shadow path.
+After=network-online.target
+Wants=network-online.target
+Before=openhost.service
+RequiresMountsFor=/var/lib/juicefs
+
+[Service]
+Type=forking
+User=host
+Group=host
+# Secrets-only env file (0640 root:host).  ACCESS_KEY/SECRET_KEY are
+# NOT passed on argv, so ``ps`` doesn't leak them.
+EnvironmentFile=/etc/openhost/juicefs/s3.env
+# JuiceFS reads ACCESS_KEY/SECRET_KEY from environment when --access-key
+# isn't passed; ``mount`` itself has no creds-on-argv option that's
+# safer than the env path, so this is the canonical pattern.
+ExecStart=/usr/local/bin/juicefs mount \
+    --background \
+    --log /var/log/juicefs-mount.log \
+    --no-usage-report \
+    "sqlite3:///var/lib/juicefs/meta.db" \
+    /data/app_archive_juicefs
+ExecStop=/usr/local/bin/juicefs umount /data/app_archive_juicefs || /bin/umount -l /data/app_archive_juicefs
+# A failed mount must NOT silently fall through to local disk: if the
+# mount drops, apps that wrote to /data/app_archive_juicefs/<app>/
+# would start hitting the underlying empty mount point.  Restart loops
+# would surface the issue but the safer behaviour is fail-loud.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

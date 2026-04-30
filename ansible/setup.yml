@@ -47,4 +47,9 @@
   tasks:
     - import_tasks: tasks/sync_code.yml
     - import_tasks: tasks/pixi.yml
+    # JuiceFS must be installed + mounted BEFORE the openhost service
+    # is enabled, since openhost.service has Requires=juicefs-mount.service
+    # when juicefs_enabled is true.
+    - import_tasks: tasks/juicefs.yml
+      when: juicefs_enabled | default(false) | bool
     - import_tasks: tasks/setup_openhost_service.yml
