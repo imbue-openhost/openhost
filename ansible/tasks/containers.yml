@@ -5,14 +5,17 @@
 # host-wide config that podman reads from /etc/containers.
 # Runs with become: yes.
 
-# Hosts provisioned before podman moved to pixi have an apt-installed
-# /usr/bin/podman.  The systemd unit's PATH puts the pixi env first so
-# this isn't strictly hazardous, but leaving two copies invites drift
-# (different versions, different config search paths for interactive
-# `podman` invocations).  Remove it idempotently — no-op on fresh hosts.
-- name: Remove apt-installed podman (now managed by pixi)
+# Hosts provisioned before podman moved to pixi have apt-installed
+# /usr/bin/podman and /usr/bin/crun.  The systemd unit's PATH puts
+# the pixi env first so this isn't strictly hazardous, but leaving
+# two copies invites drift (different versions, different config
+# search paths for interactive invocations).  Remove idempotently —
+# no-op on fresh hosts.
+- name: Remove apt-installed podman + crun (now managed by pixi)
   apt:
-    name: podman
+    name:
+      - podman
+      - crun
     state: absent
 
 - name: Install rootless container support packages
