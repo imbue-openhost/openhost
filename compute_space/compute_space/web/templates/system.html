@@ -1,28 +1,61 @@
 {% extends "layout.html" %}
 {% block title_suffix %} - System{% endblock %}
 {% block content %}
-<h2>System</h2>
+<h2>System <span id="security-headline" style="font-size:0.7em;font-weight:normal;"></span></h2>
 
-<div id="security-status" style="margin-bottom: 1em;"></div>
-<div id="storage-status" style="margin-bottom: 1em;"></div>
+<h3>Security Audit</h3>
+<table id="security-table">
+  <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+  <tbody id="security-body">
+    <tr><td colspan="3" style="color:#888;">Loading&hellip;</td></tr>
+  </tbody>
+</table>
 
-<h3 style="margin-top: 1.5em;">Maintenance</h3>
-<div style="margin-bottom: 1em; display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
-  <button class="btn" onclick="restartRouter()">Restart Router</button>
-  <span id="restart-msg" style="color: #d97706;"></span>
-  <span style="color: #ccc;">|</span>
-  <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
-  <span id="drop-build-cache-msg" style="color: #d97706;"></span>
-  <span style="color: #ccc;">|</span>
-  <span id="ssh-toggle">
-    <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
-    <span id="ssh-status" style="font-size: 0.9em; color: #6b7280;"></span>
-  </span>
-</div>
+<h3>Listening Ports</h3>
+<table id="ports-table">
+  <thead><tr><th>Port</th><th>Address</th><th>Classification</th><th>Detail</th></tr></thead>
+  <tbody id="ports-body">
+    <tr><td colspan="4" style="color:#888;">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+
+<h3>Storage</h3>
+<table id="storage-table">
+  <tbody id="storage-body">
+    <tr><td colspan="2" style="color:#888;">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+<div id="storage-guard-row" style="margin-bottom:1em;"></div>
+
+<h3>Maintenance</h3>
+<table>
+  <tr>
+    <th style="width:14em;">Restart router</th>
+    <td>
+      <button class="btn" onclick="restartRouter()">Restart Router</button>
+      <span id="restart-msg" style="color:#d97706;margin-left:0.5em;"></span>
+    </td>
+  </tr>
+  <tr>
+    <th>Build cache</th>
+    <td>
+      <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
+      <span id="drop-build-cache-msg" style="color:#d97706;margin-left:0.5em;"></span>
+    </td>
+  </tr>
+  <tr>
+    <th>SSH</th>
+    <td>
+      <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
+      <span id="ssh-status" style="margin-left:0.5em;color:#6b7280;"></span>
+    </td>
+  </tr>
+</table>
 
 <script id="page-config" type="application/json">
 {
   "securityAuditUrl": "{{ url_for('api_system.security_audit') }}",
+  "listeningPortsUrl": "{{ url_for('api_system.listening_ports') }}",
   "storageStatusUrl": "{{ url_for('api_system.api_storage_status') }}",
   "restartRouterUrl": "{{ url_for('api_system.restart_router') }}",
   "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",

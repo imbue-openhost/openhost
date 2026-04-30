@@ -1,21 +1,10 @@
 var config = JSON.parse(document.getElementById('page-config').textContent);
 
-// ─── Security Audit ───
-
-fetch(config.securityAuditUrl).then(function(r) { return r.json(); }).then(function(data) {
-  var el = document.getElementById('security-status');
-  if (data.secure) {
-    el.innerHTML = '<div style="background: #d4edda; border: 1px solid #28a745; padding: 0.8em 1em; border-radius: 4px;">'
-      + '<strong>&#x2705; Security audit passed</strong> &mdash; all checks OK</div>';
-  } else {
-    var failed = Object.entries(data.checks).filter(function(e) { return !e[1].ok; });
-    var details = failed.map(function(e) { return '<li><strong>' + e[0] + '</strong>: ' + e[1].detail + '</li>'; }).join('');
-    el.innerHTML = '<div style="background: #f8d7da; border: 1px solid #dc3545; padding: 0.8em 1em; border-radius: 4px;">'
-      + '<strong>&#x26A0;&#xFE0F; Security audit failed</strong><ul style="margin: 0.5em 0 0 1em;">' + details + '</ul></div>';
-  }
-});
-
-// ─── Storage Status ───
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = (s == null) ? '' : String(s);
+  return d.innerHTML;
+}
 
 function formatBytes(bytes) {
   if (bytes >= 1099511627776) return (bytes / 1099511627776).toFixed(1) + ' TiB';
@@ -24,6 +13,65 @@ function formatBytes(bytes) {
   if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KiB';
   return bytes + ' B';
 }
+
+// ─── Security Audit ───
+
+function updateSecurityAudit() {
+  fetch(config.securityAuditUrl, {credentials: 'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var headline = document.getElementById('security-headline');
+      var body = document.getElementById('security-body');
+
+      if (data.secure) {
+        headline.innerHTML = '<span class="status-running">&#x2705; passing</span>';
+      } else {
+        headline.innerHTML = '<span class="status-error">&#x26A0;&#xFE0F; failing</span>';
+      }
+
+      var rows = '';
+      Object.keys(data.checks).sort().forEach(function(name) {
+        var c = data.checks[name];
+        var statusCls = c.ok ? 'status-running' : 'status-error';
+        var statusText = c.ok ? 'OK' : 'FAIL';
+        rows += '<tr><td><code>' + escHtml(name) + '</code></td>'
+          + '<td class="' + statusCls + '">' + statusText + '</td>'
+          + '<td>' + escHtml(c.detail) + '</td></tr>';
+      });
+      body.innerHTML = rows || '<tr><td colspan="3" style="color:#888;">No checks reported.</td></tr>';
+    });
+}
+
+// ─── Listening Ports ───
+
+function updateListeningPorts() {
+  fetch(config.listeningPortsUrl, {credentials: 'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var body = document.getElementById('ports-body');
+      var ports = (data && data.ports) || [];
+      if (!ports.length) {
+        body.innerHTML = '<tr><td colspan="4" class="error">Could not enumerate listening ports.</td></tr>';
+        return;
+      }
+      body.innerHTML = ports.map(function(p) {
+        var cls = '';
+        var label = escHtml(p.label);
+        if (p.classification === 'unexpected') {
+          cls = ' class="status-error"';
+          label = '<strong>' + label + '</strong>';
+        } else if (p.classification === 'secure') {
+          cls = ' class="status-running"';
+        }
+        return '<tr><td><code>' + escHtml(p.port) + '</code></td>'
+          + '<td><code>' + escHtml(p.address) + '</code></td>'
+          + '<td' + cls + '>' + escHtml(p.classification) + '</td>'
+          + '<td>' + label + '</td></tr>';
+      }).join('');
+    });
+}
+
+// ─── Storage Status ───
 
 function toggleStorageGuard(pause) {
   var fd = new FormData();
@@ -36,61 +84,52 @@ function updateStorageStatus() {
   fetch(config.storageStatusUrl, {credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      var el = document.getElementById('storage-status');
       var disk = data.disk || {};
       var hasMinFree = data.storage_min_free_bytes != null;
-      var isLow = data.storage_low || false;
-      var guardPaused = data.guard_paused || false;
+      var isLow = !!data.storage_low;
+      var guardPaused = !!data.guard_paused;
 
-      var body = 'Disk free: ' + formatBytes(disk.free_bytes || 0)
-        + ' / ' + formatBytes(disk.total_bytes || 0);
-
+      var rows = '';
+      var freeText = formatBytes(disk.free_bytes || 0) + ' / ' + formatBytes(disk.total_bytes || 0);
       if (hasMinFree) {
-        body += ' (min ' + formatBytes(data.storage_min_free_bytes) + ' required)';
+        freeText += ' (min ' + formatBytes(data.storage_min_free_bytes) + ' required)';
       }
+      var freeCls = (hasMinFree && isLow) ? ' class="status-error"' : '';
+      rows += '<tr><th style="width:14em;">Disk free</th><td' + freeCls + '>' + escHtml(freeText) + '</td></tr>';
+      rows += '<tr><th>OpenHost data</th><td>' + escHtml(formatBytes(data.openhost_data_used_bytes || 0)) + '</td></tr>';
+      rows += '<tr><th>App data</th><td>' + escHtml(formatBytes(data.app_data_used_bytes || 0)) + '</td></tr>';
 
-      body += '<br>OpenHost data: ' + formatBytes(data.openhost_data_used_bytes || 0)
-        + ' &middot; App data: ' + formatBytes(data.app_data_used_bytes || 0);
-
-      // Per-app usage breakdown
       var perApp = data.per_app || {};
       var appNames = Object.keys(perApp).sort();
       if (appNames.length > 0) {
-        body += '<br><span style="font-size:0.9em;">Per app: ';
-        body += appNames.map(function(name) { return name + '&nbsp;' + formatBytes(perApp[name]); }).join(' &middot; ');
-        body += '</span>';
+        var perAppHtml = appNames.map(function(name) {
+          return escHtml(name) + ' ' + escHtml(formatBytes(perApp[name]));
+        }).join(' &middot; ');
+        rows += '<tr><th>Per app</th><td>' + perAppHtml + '</td></tr>';
       }
 
-      // Guard toggle (only when min-free threshold is configured)
-      var guardHtml = '';
       if (hasMinFree) {
-        if (guardPaused) {
-          guardHtml = '<div style="margin-top:0.5em;padding:0.4em 0.6em;background:#fff3cd;border:1px solid #ffc107;border-radius:3px;font-size:0.9em;">'
-            + 'Storage guard paused &mdash; apps will not be stopped for low storage. '
-            + '<button class="btn" onclick="toggleStorageGuard(false)" style="font-size:0.85em;">Resume Guard</button></div>';
-        } else if (isLow) {
-          guardHtml = '<div style="margin-top:0.5em;font-size:0.9em;">'
-            + '<button class="btn" onclick="toggleStorageGuard(true)" style="font-size:0.85em;">Pause Guard</button> '
-            + 'Pause to restart an app and clean up data.</div>';
-        }
+        var guardText = guardPaused ? 'Paused' : (isLow ? 'Active (low storage)' : 'Active');
+        var guardCls = (guardPaused || isLow) ? ' class="status-error"' : '';
+        rows += '<tr><th>Storage guard</th><td' + guardCls + '>' + escHtml(guardText) + '</td></tr>';
       }
+      document.getElementById('storage-body').innerHTML = rows;
 
-      if (!isLow) {
-        el.innerHTML = '<div style="background:#e8f5e9;border:1px solid #43a047;padding:0.8em 1em;border-radius:4px;">'
-          + '<strong>&#x1F4BE; Storage</strong><div style="margin-top:0.35em;">' + body + '</div>'
-          + guardHtml + '</div>';
+      // Guard toggle button (separate row below the table for clarity)
+      var guardRow = document.getElementById('storage-guard-row');
+      if (hasMinFree && guardPaused) {
+        guardRow.innerHTML = '<button class="btn" onclick="toggleStorageGuard(false)">Resume Guard</button>'
+          + ' <span style="color:#6b7280;font-size:0.9em;">Apps will not be stopped while paused.</span>';
+      } else if (hasMinFree && isLow) {
+        guardRow.innerHTML = '<button class="btn" onclick="toggleStorageGuard(true)">Pause Guard</button>'
+          + ' <span style="color:#6b7280;font-size:0.9em;">Pause to start an app for cleanup.</span>';
       } else {
-        el.innerHTML = '<div style="background:#fff8e1;border:1px solid #f59e0b;padding:0.8em 1em;border-radius:4px;">'
-          + '<strong>&#x26A0;&#xFE0F; Storage low</strong><div style="margin-top:0.35em;">' + body + '</div>'
-          + guardHtml + '</div>';
+        guardRow.innerHTML = '';
       }
     });
 }
 
-updateStorageStatus();
-setInterval(updateStorageStatus, 5000);
-
-// ─── Router Restart ───
+// ─── Router restart / build cache ───
 
 function restartRouter() {
   if (confirm('Restart the router service? All apps will briefly go offline.')) {
@@ -152,11 +191,12 @@ function updateSshStatus() {
         btn.textContent = 'Disable SSH';
         btn.className = 'btn btn-danger';
         status.textContent = 'SSH active';
-        status.style.color = '#dc3545';
+        status.className = 'status-error';
       } else {
         btn.textContent = 'Enable SSH';
         btn.className = 'btn';
         status.textContent = 'SSH disabled';
+        status.className = '';
         status.style.color = '#6b7280';
       }
     });
@@ -168,8 +208,24 @@ function toggleSsh() {
   btn.textContent = '...';
   fetch(config.toggleSshUrl, {method: 'POST', credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
-    .then(function() { updateSshStatus(); });
+    .then(function() {
+      // Re-run the audit and ports too — SSH state affects both.
+      updateSshStatus();
+      updateSecurityAudit();
+      updateListeningPorts();
+    });
 }
+
+// ─── Init ───
+
+updateSecurityAudit();
+setInterval(updateSecurityAudit, 10000);
+
+updateListeningPorts();
+setInterval(updateListeningPorts, 10000);
+
+updateStorageStatus();
+setInterval(updateStorageStatus, 5000);
 
 updateSshStatus();
 setInterval(updateSshStatus, 5000);

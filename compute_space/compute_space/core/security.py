@@ -24,8 +24,24 @@ class AuditResult(TypedDict):
     checks: dict[str, CheckResult]
 
 
+class ListeningPort(TypedDict):
+    """A single TCP listening port, classified for the System page port table."""
+
+    port: int
+    address: str  # e.g. "0.0.0.0:443" or "127.0.0.1:9001"
+    # One of "secure" (53/80/443), "app_range" (9000-9999),
+    # "allocated" (explicit DB port mapping), or "unexpected".
+    classification: str
+    # Human-readable label for the row (e.g. "HTTPS", "App range", app name).
+    label: str
+
+
 # Ports that should be listening in a secure VM
-_SECURE_PORTS: set[int] = {53, 80, 443}  # CoreDNS, ACME HTTP-01, HTTPS
+_SECURE_PORTS: dict[int, str] = {
+    53: "CoreDNS",
+    80: "ACME HTTP-01",
+    443: "HTTPS",
+}
 
 
 def is_sshd_active() -> bool:
@@ -116,8 +132,16 @@ def _check_tls_active() -> CheckResult:
         return {"ok": False, "detail": f"Could not check: {e}"}
 
 
-def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
-    """Only expected ports are listening."""
+def list_listening_ports(db: sqlite3.Connection | None = None) -> list[ListeningPort]:
+    """Return every TCP port the VM is listening on, classified.
+
+    Used by the audit's ``no_unexpected_ports`` check and by the System page's
+    listening-ports table.
+
+    Each entry is unique by ``(port, address)`` and is sorted by port. If
+    ``ss`` cannot be invoked, returns an empty list — callers should handle
+    this case (the audit check below treats it as a failure).
+    """
     try:
         result = subprocess.run(
             ["ss", "-tlnH"],
@@ -125,41 +149,65 @@ def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckRes
             text=True,
             timeout=5,
         )
-        listening_ports = set()
-        for line in result.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                addr = parts[3]
-                port_str = addr.rsplit(":", 1)[-1]
-                try:
-                    listening_ports.add(int(port_str))
-                except ValueError:
-                    pass
+    except Exception:
+        return []
 
-        # Build dynamic whitelist from DB port mappings
-        allocated_ports: set[int] = set()
-        if db is not None:
-            rows = db.execute("SELECT host_port FROM app_port_mappings").fetchall()
-            allocated_ports = {row["host_port"] for row in rows}
+    # Build dynamic whitelist from DB port mappings, mapped to app names so
+    # the System page can show which app reserved a port.
+    app_by_port: dict[int, str] = {}
+    if db is not None:
+        rows = db.execute("SELECT host_port, app_name FROM app_port_mappings").fetchall()
+        app_by_port = {row["host_port"]: row["app_name"] for row in rows}
 
-        unexpected = set()
-        for port in listening_ports:
-            if port in _SECURE_PORTS:
-                continue
-            if 9000 <= port <= 9999:
-                continue  # app ports range
-            if port in allocated_ports:
-                continue  # explicitly allocated port mapping
-            unexpected.add(port)
+    seen: set[tuple[int, str]] = set()
+    ports: list[ListeningPort] = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        addr = parts[3]
+        port_str = addr.rsplit(":", 1)[-1]
+        try:
+            port = int(port_str)
+        except ValueError:
+            continue
+        key = (port, addr)
+        if key in seen:
+            continue
+        seen.add(key)
 
-        if unexpected:
-            return {
-                "ok": False,
-                "detail": f"Unexpected listening ports: {sorted(unexpected)}",
-            }
+        if port in _SECURE_PORTS:
+            classification, label = "secure", _SECURE_PORTS[port]
+        elif port in app_by_port:
+            classification, label = "allocated", f"App: {app_by_port[port]}"
+        elif 9000 <= port <= 9999:
+            classification, label = "app_range", "App range (9000-9999)"
+        else:
+            classification, label = "unexpected", "Unexpected"
+
+        ports.append(
+            {"port": port, "address": addr, "classification": classification, "label": label},
+        )
+
+    ports.sort(key=lambda p: (p["port"], p["address"]))
+    return ports
+
+
+def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
+    """Only expected ports are listening."""
+    ports = list_listening_ports(db=db)
+    if not ports:
+        # ``ss`` failed or returned nothing; surface that instead of silently passing.
+        return {"ok": False, "detail": "Could not enumerate listening ports"}
+
+    unexpected = sorted({p["port"] for p in ports if p["classification"] == "unexpected"})
+    if unexpected:
         return {
-            "ok": True,
-            "detail": f"Only expected ports listening: {sorted(listening_ports)}",
+            "ok": False,
+            "detail": f"Unexpected listening ports: {unexpected}",
         }
-    except Exception as e:
-        return {"ok": False, "detail": f"Could not check ports: {e}"}
+    all_ports = sorted({p["port"] for p in ports})
+    return {
+        "ok": True,
+        "detail": f"Only expected ports listening: {all_ports}",
+    }

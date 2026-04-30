@@ -15,6 +15,7 @@ from compute_space.config import get_config
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.logging import get_log_path
 from compute_space.core.security import is_sshd_active
+from compute_space.core.security import list_listening_ports
 from compute_space.core.security import run_audit
 from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
@@ -127,6 +128,13 @@ def health() -> ResponseReturnValue:
 @login_required
 def security_audit() -> Response:
     return jsonify(run_audit(db=get_db()))
+
+
+@api_system_bp.route("/api/listening-ports")
+@login_required
+def listening_ports() -> Response:
+    """Return every TCP port the VM is listening on, with classification."""
+    return jsonify({"ports": list_listening_ports(db=get_db())})
 
 
 @api_system_bp.route("/api/storage-status")
