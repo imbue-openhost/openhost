@@ -413,6 +413,24 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     form = await request.form
     keep_data = form.get("keep_data") == "1"
 
+    # Refuse the destructive remove path if the archive backend's
+    # mount is dead and the app uses archive — otherwise the rmtree
+    # in deprovision_data would only delete the empty mountpoint
+    # directory on local disk, leaving the real archive bytes still
+    # in S3 while the app's DB row goes away.  Operators would think
+    # they cleaned up; they didn't.  The keep_data path is fine
+    # because it doesn't touch the archive tier.
+    if not keep_data and not archive_backend.is_archive_dir_healthy(config, db):
+        if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+            return jsonify({
+                "error": "Archive backend is not healthy; refusing to "
+                         "remove an archive-using app's data because the "
+                         "S3-side bytes wouldn't actually be deleted.  "
+                         "Either restore the archive mount and retry, or "
+                         "use keep_data=1 to remove the app while leaving "
+                         "its data in place."
+            }), 503
+
     await asyncio.to_thread(stop_app_process, app_row)
     await asyncio.to_thread(remove_image, app_row["name"])
 

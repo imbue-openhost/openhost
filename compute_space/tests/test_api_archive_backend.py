@@ -316,6 +316,93 @@ async def test_list_archive_apps_heuristic_precision(app, cfg):
 
 
 @pytest.mark.asyncio
+async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
+    """An archive-using app cannot be reloaded while the operator-
+    configured archive backend is unhealthy.  Without this guard, the
+    next provision_data would write to the underlying empty mount-
+    point on local disk and lose those writes once the mount came
+    back.
+    """
+    import compute_space.web.routes.api.apps as apps_routes
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        # Mark the backend s3 with a missing mount, and seed an
+        # archive-using app row.
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+            "s3_access_key_id='a', s3_secret_access_key='s'"
+        )
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES ('archived', '1.0', '/r/archived', 19601, 'running', "
+            "'[data]\napp_archive = true\n')"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    test_app = Quart(__name__)
+    test_app.config["DB_PATH"] = cfg.db_path
+    test_app.openhost_config = cfg  # type: ignore[attr-defined]
+    test_app.add_url_rule(
+        "/reload_app/<app_name>",
+        view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+    )
+    client = test_app.test_client()
+    resp = await client.post("/reload_app/archived")
+    assert resp.status_code == 503
+    body = await resp.get_json()
+    assert "Archive backend is not healthy" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
+    """An app that doesn't use the archive tier must still be
+    reloadable when the archive backend is unhealthy — the precheck
+    is targeted, not a blanket lock-out.
+    """
+    import compute_space.web.routes.api.apps as apps_routes
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+            "s3_access_key_id='a', s3_secret_access_key='s'"
+        )
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES ('plain', '1.0', '/r/plain', 19602, 'running', "
+            "'[data]\napp_data = true\n')"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    test_app = Quart(__name__)
+    test_app.config["DB_PATH"] = cfg.db_path
+    test_app.openhost_config = cfg  # type: ignore[attr-defined]
+    test_app.add_url_rule(
+        "/reload_app/<app_name>",
+        view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+    )
+    client = test_app.test_client()
+    # We can't exercise the full reload flow without podman, so
+    # we just verify the precheck DOESN'T return 503 — the call
+    # may still fail later for unrelated reasons (which is fine
+    # for this test's purposes).
+    with mock.patch(
+        "compute_space.web.routes.api.apps.stop_app_process"
+    ), mock.patch(
+        "compute_space.web.routes.api.apps.reload_app_background"
+    ):
+        resp = await client.post("/reload_app/plain")
+        assert resp.status_code != 503, await resp.get_data(as_text=True)
+
+
+@pytest.mark.asyncio
 async def test_test_connection_succeeds(app):
     client = app.test_client()
     with mock.patch.object(archive_backend, "test_s3_credentials", return_value=None):

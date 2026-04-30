@@ -756,8 +756,15 @@ def _copy_tree(src: str, dst: str) -> None:
             # place either way.
             target = os.readlink(s)
             try:
-                if os.path.lexists(d):
+                if os.path.islink(d) or (os.path.lexists(d) and not os.path.isdir(d)):
+                    # File or symlink at the destination — replace it.
                     os.unlink(d)
+                elif os.path.isdir(d) and not os.path.islink(d):
+                    # Real directory at the destination — rmtree to
+                    # make way for the symlink.  ``os.unlink`` would
+                    # IsADirectoryError here and the symlink would be
+                    # silently lost.
+                    shutil.rmtree(d)
                 os.symlink(target, d)
             except OSError as exc:
                 logger.warning("Failed to recreate symlink %s -> %s: %s", d, target, exc)
@@ -1063,24 +1070,47 @@ def switch_backend(
         _migrate_archive_data(db, plan, old_archive_dir, new_archive_dir)
         teardown_warning = _tear_down_source(config, db, plan, old_archive_dir)
 
-        # Persist the new state.  Clearing s3 creds when switching
-        # back to local is intentional — see _update_state.
-        _update_state(
-            db,
-            state="idle",
-            state_message=teardown_warning,
-            backend=target_backend,
-            s3_bucket=s3_bucket if target_backend == "s3" else None,
-            s3_region=s3_region if target_backend == "s3" else None,
-            s3_endpoint=s3_endpoint if target_backend == "s3" else None,
-            s3_access_key_id=s3_access_key_id if target_backend == "s3" else None,
-            s3_secret_access_key=s3_secret_access_key
-            if target_backend == "s3"
-            else None,
-            juicefs_volume_name=volume_name,
-            last_switched_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            clear_s3_credentials=(target_backend == "local"),
-        )
+        # Persist the new state.  We bypass _update_state for the s3
+        # fields here because we need to write them to the EXACT
+        # values the operator submitted — including None for region/
+        # endpoint when they're switching to a new bucket without
+        # specifying those.  _update_state's "None means skip" rule
+        # would otherwise let stale region/endpoint values from a
+        # previous s3 switch silently persist and route the next
+        # mount to the wrong AWS endpoint.
+        if target_backend == "s3":
+            db.execute(
+                "UPDATE archive_backend SET state='idle', state_message=?, "
+                "backend='s3', s3_bucket=?, s3_region=?, s3_endpoint=?, "
+                "s3_access_key_id=?, s3_secret_access_key=?, "
+                "juicefs_volume_name=?, last_switched_at=? WHERE id=1",
+                (
+                    teardown_warning,
+                    s3_bucket,
+                    s3_region,
+                    s3_endpoint,
+                    s3_access_key_id,
+                    s3_secret_access_key,
+                    volume_name,
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                ),
+            )
+        else:
+            # Switching to local: clear creds (sensitive — drop) but
+            # keep bucket/region/endpoint so the operator's next switch
+            # back to s3 form is pre-filled with their last config.
+            db.execute(
+                "UPDATE archive_backend SET state='idle', state_message=?, "
+                "backend='local', s3_access_key_id=NULL, "
+                "s3_secret_access_key=NULL, juicefs_volume_name=?, "
+                "last_switched_at=? WHERE id=1",
+                (
+                    teardown_warning,
+                    volume_name,
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                ),
+            )
+        db.commit()
 
         # Hand the api layer a Config whose archive_dir_override now
         # matches the new backend.  Apps started below see the new
