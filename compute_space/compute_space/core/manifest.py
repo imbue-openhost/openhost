@@ -125,13 +125,14 @@ class AppManifest:
     app_temp_data: bool = False
     # ``app_archive`` opts the app into an additional bind mount at
     # ``/data/app_archive/<name>/`` whose host backing is operator-
-    # selected: a JuiceFS-on-S3 mount when the operator has configured
-    # one, otherwise a local-disk subdirectory under
-    # ``persistent_data_dir``.  The app sees the same POSIX path either
-    # way.  Intended for bulk content (videos, photos, attachments) —
-    # things that need elastic storage but tolerate the higher latency
-    # of a network FS.  ``app_data`` remains the right place for
-    # SQLite, working state, and anything that requires strict POSIX
+    # configurable from the dashboard: defaults to a local-disk
+    # subdirectory under ``persistent_data_dir``, switchable to a
+    # JuiceFS-on-S3 mount by the operator at runtime.  The app sees
+    # the same POSIX path either way.  Intended for bulk content
+    # (videos, photos, attachments) — things that need elastic
+    # storage but tolerate the higher latency of a network FS.
+    # ``app_data`` remains the right place for SQLite, working
+    # state, and anything that requires strict POSIX
     # consistency (close-to-open semantics over a network FS would
     # corrupt SQLite WAL).
     app_archive: bool = False

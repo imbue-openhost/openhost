@@ -9,9 +9,3 @@ public_ip = "{{ public_ip | default(inventory_hostname) }}"
 start_caddy = true
 data_root_dir = "/home/host/.openhost/local_compute_space"
 apps_dir_override = "/home/host/openhost/apps"
-{% if juicefs_enabled | default(false) | bool %}
-# JuiceFS-backed app_archive tier.  Apps that opt into ``[data]
-# app_archive`` get bind-mounts under this path instead of local
-# disk.  See ansible/tasks/juicefs.yml for the mount setup.
-archive_dir_override = "/data/app_archive_juicefs"
-{% endif %}

@@ -8,17 +8,8 @@ Description=OpenHost Compute Space
 # actually running. ``host_uid`` is resolved dynamically by ansible
 # from the host user's actual UID, since the user is created without
 # a hardcoded UID and the value differs across cloud providers.
-After=network-online.target user@{{ host_uid }}.service{% if juicefs_enabled | default(false) | bool %} juicefs-mount.service{% endif %}
-
+After=network-online.target user@{{ host_uid }}.service
 Wants=network-online.target user@{{ host_uid }}.service
-{% if juicefs_enabled | default(false) | bool %}
-# When the app_archive tier is JuiceFS-backed, the mount must be live
-# before openhost starts any apps; otherwise apps that opt into
-# app_archive write to the underlying empty mount-point, which gets
-# shadowed once the mount comes up.  Requires= forces openhost to
-# fail-loud if the mount is dead.
-Requires=juicefs-mount.service
-{% endif %}
 
 [Service]
 Type=simple

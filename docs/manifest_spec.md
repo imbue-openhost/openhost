@@ -57,7 +57,7 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 |-------|------|----------|---------|-------------|
 | `app_data` | boolean | no | false | Request access to permanent filesystem directory (backed up) |
 | `app_temp_data` | boolean | no | false | Request access to temporary filesystem directory (not backed up) |
-| `app_archive` | boolean | no | false | Request access to elastic archive directory for bulk content. Backed by local disk by default; can be operator-configured to point at a JuiceFS-on-S3 mount. Requires `app_data` (or `sqlite`, or `access_all_data`) — see Data Directory Structure below for the rationale. |
+| `app_archive` | boolean | no | false | Request access to the elastic archive directory for bulk content. Backed by local disk by default; the operator can switch to S3-backed storage from the dashboard. Requires `app_data` (or `sqlite`, or `access_all_data`) — see Data Directory Structure below for the rationale. |
 | `sqlite` | string[] | no | [] | SQLite database names to provision (implicitly enables `app_data`) |
 | `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory |
 | `access_all_data` | boolean | no | false | Full access to permanent data, temp data, archive, and vm data |
@@ -68,10 +68,10 @@ Apps have three storage areas, each with different durability + size + latency t
 
 - **Permanent data** (`/data/app_data/{app_name}/`) — local disk. Small, fast, backed up. Enabled by `app_data = true` or by requesting `sqlite` entries. **SQLite databases must live here**, not in `app_archive`: the archive tier may be backed by a network FS with close-to-open consistency that corrupts SQLite WAL.
 - **Temporary data** (`/data/app_temp_data/{app_name}/`) — local disk scratch. Not backed up, recreatable. Enabled by `app_temp_data = true`.
-- **Archive data** (`/data/app_archive/{app_name}/`) — elastic, optionally backed by JuiceFS-on-S3. Large, higher-latency on uncached reads, durability tied to the operator's S3 provider SLA. Intended for bulk content (videos, photos, attachments) — anything that needs near-unlimited capacity but tolerates network-FS latency. Enabled by `app_archive = true`. Requires the local-data tier (`app_data`, `sqlite`, or `access_all_data`) so working state has somewhere safe to live.
+- **Archive data** (`/data/app_archive/{app_name}/`) — elastic. Default backend is local disk; operator can switch to S3-backed storage (via JuiceFS) from the dashboard. Large, higher-latency on uncached reads when on the S3 backend, durability tied to the operator's S3 provider SLA. Intended for bulk content (videos, photos, attachments) — anything that needs near-unlimited capacity but tolerates network-FS latency. Enabled by `app_archive = true`. Requires the local-data tier (`app_data`, `sqlite`, or `access_all_data`) so working state has somewhere safe to live regardless of which backend the operator picks.
 - **VM data** (`/data/vm_data/`) — router database and VM-level shared data. Only accessible if `access_vm_data = true`.
 
-The archive tier is operator-configured at the host level. When the operator hasn't set up an external backing (e.g. JuiceFS), the archive falls back to a local-disk subdirectory under `persistent_data_dir/app_archive/`. Apps see the same in-container path either way; only the backing changes.
+The archive tier's backend is operator-configurable from the dashboard. Default is local disk under `persistent_data_dir/app_archive/`. Switching to S3-backed storage routes archive bytes through a JuiceFS mount of an operator-supplied bucket; apps see the same in-container path either way and don't need to know which backend is active.
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, the storage guard stops running apps until space is freed.
 

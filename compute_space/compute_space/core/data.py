@@ -92,9 +92,9 @@ def provision_data(
     ``archive_dir`` is the host-side root for the ``app_archive`` tier.
     Apps that opt in get a per-app subdirectory under it bind-mounted
     into the container at ``/data/app_archive/<name>/``.  The backing
-    is operator-selected at the host config level (defaults to local
-    disk under ``persistent_data_dir/app_archive``; can point at a
-    JuiceFS-on-S3 mount, etc.).
+    is operator-selected from the dashboard: defaults to local disk
+    under ``persistent_data_dir/app_archive``, switches to a JuiceFS
+    mount path when the operator picks the S3 backend.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -125,27 +125,23 @@ def provision_data(
 
     if manifest.app_archive or manifest.access_all_data:
         # ``archive_dir`` itself must already exist by the time we
-        # provision an app.  For the local-fallback path it was
-        # created by ``Config.make_all_dirs``; for an operator-
-        # overridden path (e.g. a JuiceFS mount) it was created by
-        # ansible during host setup and the mount must already be
-        # attached.
+        # provision an app.  On the local-disk default it was created
+        # by ``Config.make_all_dirs``; on the S3 backend it was
+        # created by the storage-management code that set up the
+        # JuiceFS mount.
         #
         # We deliberately do NOT use ``os.makedirs(app_archive_dir,
-        # exist_ok=True)`` here — that would silently create the
-        # override path on local disk if the JuiceFS mount hasn't
-        # come up yet, and apps would then write to a local-disk
-        # ghost path that gets shadowed once JuiceFS attaches,
-        # losing those writes.  Instead, refuse to provision if the
-        # archive root doesn't exist; the systemd unit ordering
-        # makes openhost-core boot-fail when the mount fails, so
-        # this branch should only fire on a misconfigured zone.
+        # exist_ok=True)`` on a missing override here — that would
+        # silently create a local-disk path that the JuiceFS mount
+        # then shadows once it comes back up, losing whatever apps
+        # wrote in the meantime.  Refuse to provision instead so the
+        # operator-visible failure is loud rather than silent.
         if not os.path.isdir(archive_dir):
             raise RuntimeError(
                 f"archive_dir {archive_dir!r} does not exist or is not a "
-                f"directory.  If JuiceFS is configured, check that the "
-                f"mount is attached; otherwise check that "
-                f"Config.make_all_dirs() ran on startup."
+                f"directory.  If the S3 backend is configured, check "
+                f"that ``juicefs-mount`` is healthy; otherwise check "
+                f"that ``Config.make_all_dirs()`` ran on startup."
             )
         # mkdir only the per-app leaf, not parents — exist_ok=True
         # for redeploy idempotency.  ``os.mkdir`` would fail if

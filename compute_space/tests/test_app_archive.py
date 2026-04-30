@@ -132,16 +132,14 @@ def test_provision_data_archive_subdir_under_access_all_data(tmp_path) -> None:
 
 def test_provision_data_refuses_when_archive_dir_missing(tmp_path) -> None:
     """When the configured archive root doesn't exist as a directory
-    (e.g. an operator-overridden JuiceFS mount that isn't attached
-    yet), provisioning must fail loudly rather than silently
-    creating a local-disk ghost path that gets shadowed when the
-    mount eventually attaches.
+    (e.g. the S3 backend's JuiceFS mount has dropped), provisioning
+    must fail loudly rather than silently creating a local-disk ghost
+    path that gets shadowed when the mount eventually attaches.
 
-    This is the load-bearing invariant on the operator-side
-    JuiceFS-mount-failure path: systemd ordering makes openhost-
-    core boot-fail when the mount fails, but if the operator
-    bypasses that ordering somehow, this guard turns the failure
-    into a clean error message instead of silent data loss.
+    This is the load-bearing invariant on the mount-failure path: if
+    the operator's S3 backend is down, apps that opt into app_archive
+    must surface a clean error rather than silently writing to a
+    local path that JuiceFS then shadows on the next mount.
     """
     data_dir = tmp_path / "persistent"
     temp_dir = tmp_path / "temp"
@@ -361,11 +359,11 @@ def test_config_make_all_dirs_does_not_create_overridden_archive_dir(
     tmp_path,
 ) -> None:
     """When ``archive_dir_override`` points at an external mount
-    (e.g. JuiceFS), the operator-side ansible role is responsible
-    for creating it.  Trying to mkdir an external mount path that
-    isn't yet mounted would either fail or — worse — succeed by
-    creating a local-disk path that shadows the mount when it
-    eventually attaches.  Don't.
+    (e.g. the S3 backend's JuiceFS mount), the storage-management
+    code that set up the backend is responsible for creating it.
+    Trying to mkdir an external mount path that isn't yet mounted
+    would either fail or — worse — succeed by creating a local-disk
+    path that shadows the mount when it eventually attaches.  Don't.
     """
     override = tmp_path / "external" / "archive"
     # Note: do NOT mkdir(override) — we're asserting that

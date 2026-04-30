@@ -39,11 +39,12 @@ class Config:
     # Optional override for where ``app_archive`` bind mounts are
     # backed.  When unset, the archive tier defaults to a local-disk
     # subdirectory under ``persistent_data_dir`` — same backing as
-    # ``app_data``, just a separate dir.  When the operator sets up
-    # JuiceFS (or any other host-mounted POSIX filesystem) and points
-    # this at the mount path, every app that opts into ``app_archive``
-    # gets bind-mounts into that filesystem instead.  The app sees the
-    # same in-container path either way; only the backing changes.
+    # ``app_data``, just a separate dir.  When the operator switches
+    # the archive backend to S3 from the dashboard, this gets set to
+    # the JuiceFS mount path that the storage-management code created;
+    # every app that opts into ``app_archive`` then gets bind-mounts
+    # into that filesystem.  The app sees the same in-container path
+    # either way; only the backing changes.
     archive_dir_override: str | None
 
     # Minimum free disk space in MB (0 = no enforcement)
@@ -81,12 +82,12 @@ class Config:
     @property
     def app_archive_dir(self) -> str:
         # Where every app's ``/data/app_archive/<name>/`` bind-mount
-        # source lives.  Operator override (e.g. a JuiceFS mount path)
-        # takes priority; otherwise we fall back to a local-disk
-        # subdirectory of ``persistent_data_dir`` so apps that opt
-        # into ``app_archive`` work even on instances with no
-        # JuiceFS configured — they just don't get the elastic-S3
-        # benefit.
+        # source lives.  ``archive_dir_override`` (set by the dashboard
+        # when the operator switches to the S3 backend) takes priority;
+        # otherwise we use the local-disk default under
+        # ``persistent_data_dir`` so apps that opt into ``app_archive``
+        # work out of the box on a fresh zone — the operator picks the
+        # backend later.
         if self.archive_dir_override:
             return self.archive_dir_override
         return os.path.join(self.persistent_data_dir, "app_archive")
@@ -145,10 +146,10 @@ class Config:
         os.makedirs(self.persistent_data_dir, exist_ok=True)
         os.makedirs(self.temporary_data_dir, exist_ok=True)
         # ``app_archive_dir`` may resolve to an external mount the
-        # operator already set up (e.g. JuiceFS); we don't try to
-        # mkdir it in that case because we likely lack permission and
-        # the mount itself was already created by ansible.  Only
-        # create it when it's pointing at the local fallback.
+        # storage-management code set up (e.g. JuiceFS for the S3
+        # backend); we don't try to mkdir it in that case because the
+        # mount itself is created by the backend-switch flow.  Only
+        # mkdir when it's pointing at the local-disk default.
         if not self.archive_dir_override:
             os.makedirs(self.app_archive_dir, exist_ok=True)
         os.makedirs(self.apps_dir, exist_ok=True)
