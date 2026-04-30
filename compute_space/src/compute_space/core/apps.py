@@ -187,8 +187,8 @@ def validate_manifest(manifest: AppManifest, db: sqlite3.Connection, app_name: s
     if app_name is None:
         app_name = manifest.name
 
-    if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", app_name):
-        return "App name must be lowercase alphanumeric (hyphens allowed, not at start/end)"
+    if not re.match(r"^[a-z0-9]([a-z0-9-_]*[a-z0-9])?$", app_name):
+        return "App name must be lowercase alphanumeric (hyphens and underscores allowed, not at start/end)"
 
     if f"/{app_name}" in RESERVED_PATHS:
         return f"App name '{app_name}' conflicts with a reserved path"

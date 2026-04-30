@@ -27,7 +27,7 @@ from secrets_v1.oauth import start_device_flow
 
 app = Quart(__name__)
 
-DB_PATH = os.environ.get("OPENHOST_SQLITE_MAIN", "/data/app_data/secrets/sqlite/main.db")
+DB_PATH = os.environ.get("OPENHOST_SQLITE_main")
 
 
 def get_db():
