@@ -52,6 +52,24 @@ def _rmtree_force(path: str) -> None:
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
+# Match TOML's ``key = true`` allowing whitespace + a value of true.
+# Used by ``reload_app`` to decide whether to enforce the archive-
+# backend health check.  Substring matching ("app_archive" in raw +
+# "true" in raw) false-matches manifests with ``app_archive = false``
+# alongside any other ``= true`` field.
+_MANIFEST_USES_ARCHIVE_RE = re.compile(
+    r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b"
+)
+
+
+def _manifest_uses_archive(manifest_raw: str) -> bool:
+    """Return True iff the (raw TOML) manifest opts the app into the
+    archive tier — either via ``app_archive = true`` or via
+    ``access_all_data = true``.
+    """
+    return bool(_MANIFEST_USES_ARCHIVE_RE.search(manifest_raw))
+
+
 api_apps_bp = Blueprint("api_apps", __name__)
 
 
@@ -289,8 +307,7 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     # losing those writes.  Apps that don't use archive aren't
     # affected; cheap precheck for everyone.
     if not archive_backend.is_archive_dir_healthy(config, db):
-        manifest_raw = (app_row["manifest_raw"] or "")
-        if "app_archive" in manifest_raw or "access_all_data" in manifest_raw:
+        if _manifest_uses_archive(app_row["manifest_raw"] or ""):
             return jsonify({
                 "error": "Archive backend is not healthy; refusing to "
                          "reload an archive-using app until the "

@@ -542,6 +542,73 @@ def test_umount_failed_subprocess_clears_proc_handle(cfg, monkeypatch):
     assert archive_backend._mount_proc is None
 
 
+def test_install_juicefs_extracts_binary_on_sha256_match(cfg, monkeypatch):
+    """Happy path: build a tiny valid tarball containing a fake
+    ``juicefs`` binary, set the pinned sha256 to its actual hash,
+    point urlopen at it, and verify the binary is extracted with
+    the expected path + executable bit set.
+    """
+    import hashlib as _hashlib
+    import io as _io
+    import tarfile as _tarfile
+
+    fake_binary = b"#!/bin/sh\necho fake juicefs\n"
+    buf = _io.BytesIO()
+    with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = _tarfile.TarInfo(name="juicefs")
+        info.size = len(fake_binary)
+        info.mode = 0o755
+        tar.addfile(info, _io.BytesIO(fake_binary))
+    tarball_bytes = buf.getvalue()
+    real_sha = _hashlib.sha256(tarball_bytes).hexdigest()
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    arch_key = archive_backend._arch()
+    monkeypatch.setitem(archive_backend.JUICEFS_SHA256, arch_key, real_sha)
+    monkeypatch.setattr(
+        archive_backend.urllib.request,
+        "urlopen",
+        lambda url, timeout=120: _FakeResp(tarball_bytes),
+    )
+    archive_backend.install_juicefs(cfg)
+    binary_path = archive_backend._juicefs_binary(cfg)
+    assert os.path.isfile(binary_path)
+    # Permissions are 0o750 (chmod after extract).
+    assert oct(os.stat(binary_path).st_mode & 0o777) == oct(0o750)
+    # Idempotent: a second call short-circuits via is_juicefs_installed.
+    archive_backend.install_juicefs(cfg)
+
+
+def test_copy_tree_skips_non_regular_entries(tmp_path):
+    """FIFOs / sockets / device nodes that an operator inexplicably
+    stuck under app_archive must be skipped with a warning, not
+    abort the whole switch with an error.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "regular.txt").write_text("ok")
+    fifo_path = src / "fifo"
+    os.mkfifo(fifo_path)
+    dst = tmp_path / "dst"
+
+    archive_backend._copy_tree(str(src), str(dst))
+
+    assert (dst / "regular.txt").read_text() == "ok"
+    assert not (dst / "fifo").exists()
+
+
 def test_install_juicefs_rejects_sha256_mismatch(cfg, tmp_path, monkeypatch):
     """The sha256 verify is the primary defence against a compromised
     release.  A mismatched tarball must abort install with a clear
