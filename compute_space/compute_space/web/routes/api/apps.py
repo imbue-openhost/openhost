@@ -52,22 +52,11 @@ def _rmtree_force(path: str) -> None:
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
-# Match TOML's ``key = true`` allowing whitespace + a value of true.
-# Used by ``reload_app`` to decide whether to enforce the archive-
-# backend health check.  Substring matching ("app_archive" in raw +
-# "true" in raw) false-matches manifests with ``app_archive = false``
-# alongside any other ``= true`` field.
-_MANIFEST_USES_ARCHIVE_RE = re.compile(
-    r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b"
-)
-
-
-def _manifest_uses_archive(manifest_raw: str) -> bool:
-    """Return True iff the (raw TOML) manifest opts the app into the
-    archive tier — either via ``app_archive = true`` or via
-    ``access_all_data = true``.
-    """
-    return bool(_MANIFEST_USES_ARCHIVE_RE.search(manifest_raw))
+# Re-exported alias of the shared helper in core.archive_backend.
+# The route file uses it to gate the reload-flow archive-health
+# check, in lockstep with the same rule applied by the dashboard
+# switch flow when enumerating affected apps.
+_manifest_uses_archive = archive_backend.manifest_uses_archive
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -582,6 +571,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
         # ``running`` state will reconcile via the supervisor's
         # crashed-app path on the next health-check tick rather than
         # leaving a permanently-stuck ``stopped`` row.
+        rollback_db_error: str | None = None
         try:
             db.execute(
                 "UPDATE apps SET status = ?, container_id = ? WHERE name = ?",
@@ -590,7 +580,21 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
             db.commit()
         except sqlite3.Error as db_exc:
             logger.error("Failed to restore status during rename rollback: %s", db_exc)
-        return jsonify({"error": f"Failed to rename app data directories: {rename_error}"}), 500
+            rollback_db_error = str(db_exc)
+        error_message = f"Failed to rename app data directories: {rename_error}"
+        if rollback_db_error is not None:
+            # Surface BOTH errors — the operator needs to know that
+            # the app's DB row may be stuck at ``stopped`` even though
+            # the on-disk rollback succeeded.  Without this, the
+            # 500 response only mentions the rename failure and the
+            # operator has no signal to look in the logs for the
+            # secondary DB error.
+            error_message += (
+                f"; additionally, the DB-status rollback failed: "
+                f"{rollback_db_error}.  Check the apps table; the row "
+                f"for {app_name!r} may be stuck at status='stopped'."
+            )
+        return jsonify({"error": error_message}), 500
 
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute(

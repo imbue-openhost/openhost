@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import sqlite3
 import threading
 
@@ -65,21 +64,12 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
     """
     config = app.openhost_config
 
-    # Match TOML's ``key = true`` allowing whitespace + a value of
-    # ``true`` (the spec is case-sensitive but operators sometimes
-    # write True/TRUE; match those too to avoid false negatives that
-    # would leave an opted-in app running during the switch).  Built
-    # outside the closure so we don't recompile per call.
-    _archive_re = re.compile(r"(?m)^\s*app_archive\s*=\s*[Tt][Rr][Uu][Ee]\b")
-    _aad_re = re.compile(r"(?m)^\s*access_all_data\s*=\s*[Tt][Rr][Uu][Ee]\b")
-
     def list_archive_apps() -> list[str]:
         # Read manifest_raw and look for a real ``app_archive = true``
-        # (or ``access_all_data = true``) assignment.  The earlier
-        # ``"app_archive" in raw and "true" in raw`` heuristic
-        # false-matched manifests that had ``app_archive = false``
-        # alongside ``app_data = true``, causing unrelated apps to
-        # be needlessly restarted.
+        # (or ``access_all_data = true``) assignment.  Uses the
+        # shared ``manifest_uses_archive`` helper so route-level
+        # gating (``rename_app`` / ``reload_app``) and switch-flow
+        # enumeration agree on what counts.
         db = sqlite3.connect(config.db_path)
         try:
             rows = db.execute(
@@ -88,12 +78,11 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
             ).fetchall()
         finally:
             db.close()
-        names: list[str] = []
-        for name, manifest_raw, _status in rows:
-            raw = manifest_raw or ""
-            if _archive_re.search(raw) or _aad_re.search(raw):
-                names.append(name)
-        return names
+        return [
+            name
+            for name, manifest_raw, _status in rows
+            if archive_backend.manifest_uses_archive(manifest_raw or "")
+        ]
 
     def stop_app(name: str) -> None:
         db = sqlite3.connect(config.db_path)

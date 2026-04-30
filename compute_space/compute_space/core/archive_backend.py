@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -521,6 +522,25 @@ def _update_state(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+# Match TOML's ``key = true`` allowing whitespace + a value of true.
+# Used by the api routes (rename/reload/add) and by the switch-flow's
+# affected-app enumeration to decide which apps "use" the archive
+# tier.  Substring matching ("app_archive" in raw + "true" in raw)
+# false-matches manifests with ``app_archive = false`` alongside any
+# other ``= true`` field, so we anchor on TOML key=value shape.
+_MANIFEST_USES_ARCHIVE_RE = re.compile(
+    r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b"
+)
+
+
+def manifest_uses_archive(manifest_raw: str) -> bool:
+    """Return True iff the (raw TOML) manifest opts the app into the
+    archive tier — either via ``app_archive = true`` or via
+    ``access_all_data = true``.
+    """
+    return bool(_MANIFEST_USES_ARCHIVE_RE.search(manifest_raw))
 
 
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
