@@ -136,6 +136,12 @@ def provision_data(
         # then shadows once it comes back up, losing whatever apps
         # wrote in the meantime.  Refuse to provision instead so the
         # operator-visible failure is loud rather than silent.
+        #
+        # The "is the override path actually a live mount" check
+        # belongs in the route layer (deploy / reload / rename),
+        # because only the route layer has access to the
+        # archive_backend DB row that says which backend is active.
+        # Here we just sanity-check that the path is a directory.
         if not os.path.isdir(archive_dir):
             raise RuntimeError(
                 f"archive_dir {archive_dir!r} does not exist or is not a "

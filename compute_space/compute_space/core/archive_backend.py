@@ -523,6 +523,26 @@ def _update_state(
 # ---------------------------------------------------------------------------
 
 
+def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
+    """Return True iff the currently-configured archive backing is
+    actually live on the host.
+
+    For ``local``: the per-zone fallback dir under
+    ``persistent_data_dir/app_archive/`` simply needs to exist as a
+    directory.
+    For ``s3``: the JuiceFS mount point must be a live mount, NOT
+    just a directory.  ``os.path.isdir`` would return True for the
+    underlying empty mount-point even when JuiceFS has dropped,
+    silently letting writes go to local disk where they get
+    shadowed if the mount comes back; ``is_mounted`` reads
+    /proc/self/mountinfo and returns True only when the FS is up.
+    """
+    state = read_state(db)
+    if state.backend == "s3":
+        return is_mounted(juicefs_mount_dir(config))
+    return os.path.isdir(os.path.join(config.persistent_data_dir, "app_archive"))
+
+
 def archive_dir_for_backend(config: Config, backend: str) -> str:
     """Return the host-side archive root for ``backend``.
 
@@ -787,15 +807,31 @@ def _migrate_archive_data(
     """Wipe stale entries in the destination, then copy source -> destination.
 
     The wipe ensures a switch from an empty source doesn't silently
-    leave whatever was there from a previous switch.  Skipped when
-    going local -> s3 because the freshly-formatted JuiceFS volume is
-    already empty.
+    leave whatever was there from a previous switch.
+
+    For the s3 -> local direction, we additionally require that the
+    source JuiceFS mount is actually live before copying — otherwise
+    we'd wipe the destination and copy from an effectively empty
+    source, silently dropping every byte the operator had on S3.
     """
+    if plan.current.backend == "s3" and not is_mounted(old_archive_dir):
+        raise BackendSwitchError(
+            f"Source JuiceFS mount at {old_archive_dir!r} is not live; "
+            f"refusing to copy from it because the result would be a "
+            f"silent data loss (we'd copy from an empty mount-point and "
+            f"wipe the destination).  Investigate the mount status and "
+            f"retry the switch."
+        )
     _update_state(db, state_message="Copying archive data")
-    if plan.current.backend == "local" and plan.target_backend == "s3":
-        # JuiceFS just got formatted — destination is empty.
-        pass
-    elif os.path.isdir(new_archive_dir):
+    # Wipe the destination unconditionally before copy.  Earlier
+    # versions of this code skipped the wipe on local->s3 on the
+    # assumption that a freshly-formatted JuiceFS volume was always
+    # empty.  ``format_volume`` is non-destructive on an existing
+    # volume though, so a local->s3->local->s3 cycle would leave
+    # stale per-app dirs in the JuiceFS bucket on the second
+    # local->s3.  Wipe to keep the destination consistent with the
+    # source after the copy.
+    if os.path.isdir(new_archive_dir):
         for entry in list(os.scandir(new_archive_dir)):
             try:
                 if entry.is_dir(follow_symlinks=False):
@@ -803,8 +839,8 @@ def _migrate_archive_data(
                 else:
                     os.unlink(entry.path)
             except OSError as exc:
-                # Log but don't abort — the new copy will overlay any
-                # partially-removed dir, and the operator gets a
+                # Log but don't abort — the new copy will overlay
+                # any partially-removed dir, and the operator gets a
                 # visible warning rather than a silent retain.
                 logger.warning(
                     "Failed to remove stale entry %s before copy: %s",

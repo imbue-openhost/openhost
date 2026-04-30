@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -355,7 +356,13 @@ def test_switch_s3_to_local_clears_credentials(cfg, db):
     dst.mkdir(parents=True, exist_ok=True)
 
     hook, _ = _make_hook()
-    with mock.patch.object(archive_backend, "umount"):
+    # The s3->local migration verifies the source mount is live
+    # before copying (otherwise we'd wipe the destination and copy
+    # from an empty mount-point); pretend it is.
+    with (
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "is_mounted", return_value=True),
+    ):
         switch_backend(cfg, db, hook, target_backend="local")
 
     state = read_state(db)
@@ -367,6 +374,31 @@ def test_switch_s3_to_local_clears_credentials(cfg, db):
     assert state.s3_access_key_id is None
     assert state.s3_secret_access_key is None
     assert (dst / "marker").read_text() == "x"
+
+
+def test_switch_s3_to_local_refuses_when_source_mount_dead(cfg, db):
+    """If the JuiceFS mount has dropped, an s3->local migration must
+    refuse rather than wipe the destination and copy from the empty
+    underlying mount-point — that would silently lose every byte
+    the operator had on S3.
+    """
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+        "s3_access_key_id='a', s3_secret_access_key='s'"
+    )
+    db.commit()
+    src = juicefs_mount_dir(cfg)
+    os.makedirs(src, exist_ok=True)
+    hook, calls = _make_hook(archive_apps=[])
+    # ``is_mounted`` returns False (default) so the migration refuses.
+    with mock.patch.object(archive_backend, "umount"):
+        with pytest.raises(BackendSwitchError, match="not live"):
+            switch_backend(cfg, db, hook, target_backend="local")
+    state = read_state(db)
+    assert state.state == "idle"
+    assert "not live" in (state.state_message or "")
+    # Backend stayed at s3 — we didn't commit the rollback.
+    assert state.backend == "s3"
 
 
 def test_switch_refuses_when_already_switching(cfg, db):
@@ -424,6 +456,42 @@ def test_switch_state_transition_is_atomic(cfg, db):
             s3_access_key_id="a",
             s3_secret_access_key="s",
         )
+
+
+def test_umount_when_not_mounted_is_noop(cfg):
+    """Calling umount with no live mount and no supervised process
+    must succeed (idempotent).  An operator who clicks 'switch to
+    local' with the mount already dead expects this rather than an
+    error.
+    """
+    # No process to reap; is_mounted defaults False because nothing
+    # is actually mounted at the test path.  Just call and assert
+    # no exception.
+    archive_backend.umount(cfg)
+
+
+def test_umount_failed_subprocess_clears_proc_handle(cfg, monkeypatch):
+    """A failed ``juicefs umount`` invocation must NULL _mount_proc
+    so a retry doesn't inherit a stale handle pointing at a process
+    whose state is unknown.
+    """
+    fake_proc = mock.Mock()
+    fake_proc.poll.return_value = None
+    fake_proc.wait.return_value = 0
+    monkeypatch.setattr(archive_backend, "_mount_proc", fake_proc)
+    # Pretend the mount IS live so the umount path runs.
+    monkeypatch.setattr(archive_backend, "is_mounted", lambda _path: True)
+
+    failure = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr="device busy"
+    )
+    monkeypatch.setattr(archive_backend.subprocess, "run", lambda *a, **kw: failure)
+
+    with pytest.raises(RuntimeError, match="device busy"):
+        archive_backend.umount(cfg)
+    # Even though the umount raised, the global was cleared so a
+    # subsequent retry doesn't hang onto the stale handle.
+    assert archive_backend._mount_proc is None
 
 
 def test_install_juicefs_rejects_sha256_mismatch(cfg, tmp_path, monkeypatch):
