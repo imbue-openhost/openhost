@@ -31,6 +31,13 @@ always run tests with -x to fail quickly.
 - **all lightweight tests**: `uv run --group dev pytest -x` (from project root)
 - **everything**: `uv run --group dev pytest -x --run-containers`
 - **compute_space tests**: `uv run --group dev pytest -x compute_space/tests/`
+- **e2e against existing instance**: `uv run --group dev pytest -x tests/test_e2e.py --use-existing-instance NAME`
+
+`NAME` is an `oh` CLI hostname or alias (see `oh instance list`). this will:
+1. check that all local commits are pushed
+2. sync the instance to the current commit (set_remote + restart)
+3. run the full e2e suite with unique app names per run
+4. clean up test apps and restore the instance to its prior remote/ref
 
 ## package manager
 
