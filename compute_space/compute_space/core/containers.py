@@ -212,11 +212,17 @@ def run_container(
 
     ``archive_dir`` is the host-side root for the ``app_archive`` tier;
     its backing is operator-selected (local disk by default; can be a
-    JuiceFS mount path).  Apps that opt into ``[data] app_archive``
-    get a per-app subdir bind-mounted from there into
-    ``/data/app_archive/<name>/`` inside the container.  The
-    in-container path is the same regardless of backing so apps don't
-    have to know whether their archive tier is on local disk or on S3.
+    JuiceFS mount path).  The in-container path is the same regardless
+    of backing so apps don't have to know whether their archive tier
+    is on local disk or on S3.
+
+    Mount topology depends on the manifest opt-ins:
+      - ``[data] app_archive = true``: a per-app subdir is bind-mounted
+        from ``archive_dir/<name>/`` into ``/data/app_archive/<name>/``.
+      - ``[data] access_all_data = true``: the WHOLE ``archive_dir`` is
+        bind-mounted into ``/data/app_archive/`` (mirroring how
+        ``app_data`` and ``app_temp_data`` are handled — the
+        all-access app gets every app's archive).
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)

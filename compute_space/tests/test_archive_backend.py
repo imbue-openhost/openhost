@@ -132,6 +132,54 @@ def test_archive_dir_for_backend(cfg):
     assert archive_dir_for_backend(cfg, "s3") == juicefs_mount_dir(cfg)
 
 
+def test_is_archive_dir_healthy_local(cfg, db):
+    """For the local backend the check just verifies the directory
+    exists.  Make_all_dirs (run by _make_test_config) creates it."""
+    assert archive_backend.is_archive_dir_healthy(cfg, db) is True
+
+
+def test_is_archive_dir_healthy_s3_uses_is_mounted(cfg, db):
+    """For the s3 backend the check distinguishes 'directory exists'
+    (which would be True for a dead mount) from 'mount is live'.
+    Without this distinction, ``provision_data`` would silently
+    accept writes that go to the underlying empty mount-point.
+    """
+    db.execute("UPDATE archive_backend SET backend='s3'")
+    db.commit()
+    # is_mounted returns False by default (path isn't in our mount
+    # table); the function must return False even though the dir
+    # was created.
+    os.makedirs(juicefs_mount_dir(cfg), exist_ok=True)
+    assert archive_backend.is_archive_dir_healthy(cfg, db) is False
+    # When is_mounted reports True, the function returns True.
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        assert archive_backend.is_archive_dir_healthy(cfg, db) is True
+
+
+def test_copy_tree_preserves_symlinks(tmp_path):
+    """Symlinks in the source must be recreated as symlinks at the
+    destination, not followed.  Following would expand a symlink to
+    a large dir into N copies AND raise IsADirectoryError on a
+    symlink to a directory once shutil.copy2 is reached.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    real = src / "real"
+    real.mkdir()
+    (real / "file.txt").write_text("content")
+    (src / "link-to-real").symlink_to("real")  # relative link
+    dst = tmp_path / "dst"
+
+    archive_backend._copy_tree(str(src), str(dst))
+
+    # Real dir + file copied verbatim.
+    assert (dst / "real" / "file.txt").read_text() == "content"
+    # Symlink preserved AS a symlink (not expanded into a copy of real).
+    link_at_dst = dst / "link-to-real"
+    assert link_at_dst.is_symlink()
+    assert os.readlink(link_at_dst) == "real"
+
+
 # ---------------------------------------------------------------------------
 # attach_on_startup
 # ---------------------------------------------------------------------------
