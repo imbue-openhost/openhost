@@ -144,7 +144,7 @@ The `oauth.js` library handles the popup lifecycle, postMessage communication, a
 
 ## Adding a new provider
 
-Add an entry to `PROVIDERS` in `apps/secrets/oauth.py` with either `"flow": "auth_code"` or `"flow": "device"`:
+Add an entry to `PROVIDERS` in `apps/secrets_v1/src/secrets_v1/oauth.py` with either `"flow": "auth_code"` or `"flow": "device"`:
 
 ```python
 # Auth code flow provider
@@ -179,10 +179,10 @@ If the provider has a non-standard revocation API (like GitHub), add a case in t
 
 ## Files
 
-- `apps/secrets/oauth.py` — provider configs, auth URL builder, code exchange, device flow, token refresh, revocation, identity resolution
-- `apps/secrets/app.py` — `/_service/oauth/token` endpoint, `/_service/oauth/accounts` endpoint, `/oauth/callback` handler, `/oauth/device` page, dashboard APIs
-- `apps/secrets/schema.sql` — `oauth_tokens` table (keyed by provider, scopes, account)
-- `apps/secrets/templates/oauth_device.html` — device flow authorization page (shows code + verification link)
+- `apps/secrets_v1/src/secrets_v1/oauth.py` — provider configs, auth URL builder, code exchange, device flow, token refresh, revocation, identity resolution
+- `apps/secrets_v1/src/secrets_v1/app.py` — `/_service/oauth/token` endpoint, `/_service/oauth/accounts` endpoint, `/oauth/callback` handler, `/oauth/device` page, dashboard APIs
+- `apps/secrets_v1/src/secrets_v1/schema.sql` — `oauth_tokens` table (keyed by provider, scopes, account)
+- `apps/secrets_v1/src/secrets_v1/templates/oauth_device.html` — device flow authorization page (shows code + verification link)
 - `compute_space/compute_space/web/routes/services.py` — service proxy with permission checking, browser auth (CORS), auto-permission-request flow for OAuth, `/_oauth/continue` endpoint
 - `apps/oauth_demo/` — example app with two demo modes:
   - `server_demo.py` — server-side OAuth with full-page redirects

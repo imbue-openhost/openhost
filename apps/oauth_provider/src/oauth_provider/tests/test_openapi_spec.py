@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
-SPEC_PATH = Path(__file__).resolve().parents[3] / "services" / "oauth" / "openapi.yaml"
+SPEC_PATH = Path(__file__).resolve().parents[5] / "services" / "oauth" / "openapi.yaml"
 SVC_PREFIX = "/oauth_service"
 
 

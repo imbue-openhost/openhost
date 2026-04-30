@@ -13,18 +13,17 @@ from quart import jsonify
 from quart import redirect
 from quart import render_template
 from quart import request
-
-from oauth import PROVIDERS
-from oauth import active_device_flows
-from oauth import build_auth_url
-from oauth import create_device_flow
-from oauth import exchange_code
-from oauth import fetch_account_identity
-from oauth import normalize_scopes
-from oauth import pending_auth_flows
-from oauth import refresh_access_token
-from oauth import revoke_token
-from oauth import start_device_flow
+from secrets_v1.oauth import PROVIDERS
+from secrets_v1.oauth import active_device_flows
+from secrets_v1.oauth import build_auth_url
+from secrets_v1.oauth import create_device_flow
+from secrets_v1.oauth import exchange_code
+from secrets_v1.oauth import fetch_account_identity
+from secrets_v1.oauth import normalize_scopes
+from secrets_v1.oauth import pending_auth_flows
+from secrets_v1.oauth import refresh_access_token
+from secrets_v1.oauth import revoke_token
+from secrets_v1.oauth import start_device_flow
 
 app = Quart(__name__)
 

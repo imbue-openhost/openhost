@@ -6,15 +6,15 @@ from litestar import Router
 from litestar import delete
 from litestar import get
 
-from oauth.core.credentials import CredentialsNotAvailable
-from oauth.core.credentials import get_provider_creds
-from oauth.core.models import CredentialsRequiredResponse
-from oauth.core.models import OkResponse
-from oauth.core.models import TokenListResponse
-from oauth.core.providers import revoke_token
-from oauth.core.tokens import get_token_by_id
-from oauth.core.tokens import list_all_tokens
-from oauth.core.tokens import remove_token_by_id
+from oauth_provider.core.credentials import CredentialsNotAvailable
+from oauth_provider.core.credentials import get_provider_creds
+from oauth_provider.core.models import CredentialsRequiredResponse
+from oauth_provider.core.models import OkResponse
+from oauth_provider.core.models import TokenListResponse
+from oauth_provider.core.providers import revoke_token
+from oauth_provider.core.tokens import get_token_by_id
+from oauth_provider.core.tokens import list_all_tokens
+from oauth_provider.core.tokens import remove_token_by_id
 
 
 @get("/api/tokens")

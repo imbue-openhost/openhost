@@ -5,14 +5,14 @@ from urllib.parse import urlencode
 import httpx
 from litestar import Request
 
-from oauth.core.config import APP_NAME
-from oauth.core.config import APP_TOKEN
-from oauth.core.config import ROUTER_URL
-from oauth.core.config import ZONE_DOMAIN
-from oauth.core.models import GrantPayload
-from oauth.core.models import OAuthGrant
-from oauth.core.models import PermissionDeniedResponse
-from oauth.core.models import RequiredGrant
+from oauth_provider.core.config import APP_NAME
+from oauth_provider.core.config import APP_TOKEN
+from oauth_provider.core.config import ROUTER_URL
+from oauth_provider.core.config import ZONE_DOMAIN
+from oauth_provider.core.models import GrantPayload
+from oauth_provider.core.models import OAuthGrant
+from oauth_provider.core.models import PermissionDeniedResponse
+from oauth_provider.core.models import RequiredGrant
 
 
 def parse_oauth_v2_grants(request: Request[Any, Any, Any]) -> list[OAuthGrant]:

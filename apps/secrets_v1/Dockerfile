@@ -3,10 +3,9 @@ FROM python:3.12-alpine
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY pyproject.toml .
-RUN uv sync
 COPY . .
+RUN uv sync
 
 EXPOSE 8080
 
-CMD ["uv", "run", "hypercorn", "-b", "0.0.0.0:8080", "app:app"]
+CMD ["uv", "run", "hypercorn", "-b", "0.0.0.0:8080", "secrets_v1.app:app"]

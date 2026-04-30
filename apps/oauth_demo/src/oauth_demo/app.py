@@ -1,18 +1,17 @@
-from client_demo import client_bp
+from oauth_demo.client_demo import client_bp
+from oauth_demo.oauth import SCOPE_MAP
+from oauth_demo.oauth import AuthRedirectRequired
+from oauth_demo.oauth import OAuthError
+from oauth_demo.oauth import OAuthServiceUnavailable
+from oauth_demo.oauth import get_accounts
+from oauth_demo.oauth import get_oauth_token
+from oauth_demo.oauth import set_mock_oauth_url
+from oauth_demo.oauth import set_mock_provider_api_url
+from oauth_demo.server_demo import server_bp
 from quart import Quart
 from quart import jsonify
 from quart import render_template
 from quart import request
-from server_demo import server_bp
-
-from oauth import SCOPE_MAP
-from oauth import AuthRedirectRequired
-from oauth import OAuthError
-from oauth import OAuthServiceUnavailable
-from oauth import get_accounts
-from oauth import get_oauth_token
-from oauth import set_mock_oauth_url
-from oauth import set_mock_provider_api_url
 
 app = Quart(__name__)
 app.register_blueprint(client_bp)

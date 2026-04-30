@@ -5,7 +5,7 @@ from schemathesis.checks import CHECKS
 from schemathesis.checks import load_all_checks
 from schemathesis.openapi import from_path
 
-SPEC_PATH = Path(__file__).resolve().parents[3] / "services" / "oauth" / "openapi.yaml"
+SPEC_PATH = Path(__file__).resolve().parents[5] / "services" / "oauth" / "openapi.yaml"
 
 load_all_checks()
 positive_data_acceptance = CHECKS.get_one("positive_data_acceptance")
