@@ -56,9 +56,10 @@ def _juicefs_binary(config: Config) -> str:
 
 
 def _juicefs_meta_db(config: Config) -> str:
-    """SQLite metadata DB for JuiceFS.  Lives under persistent_data_dir
-    so the existing backup flow picks it up — that's what lets a fresh
-    VM with the same S3 bucket reattach via the metadata.
+    """SQLite metadata DB for JuiceFS.  Lives under
+    ``persistent_data_dir/openhost/`` so the existing backup flow
+    picks it up — that's what lets a fresh VM with the same S3
+    bucket reattach via the metadata.
     """
     return os.path.join(config.openhost_data_path, "juicefs-meta.db")
 
@@ -693,19 +694,39 @@ def _copy_tree(src: str, dst: str) -> None:
     """Recursively copy every entry under ``src`` into ``dst``.  Used by
     the migrate phase of a backend switch.
 
-    Doesn't use ``shutil.copytree(dirs_exist_ok=True)`` directly because
-    we want to preserve mtimes (so app code that uses mtime as a cache
-    key isn't surprised by the switch) and we want clear error messages
-    on per-file failures.
+    Symlinks are recreated as symlinks (not followed) so we don't
+    expand a symlink-to-a-large-dir into N copies of the data and
+    so that inter-app references the operator may have set up
+    survive the switch.  Sockets, FIFOs, and devices that the
+    operator inexplicably stuck under app_archive are skipped with
+    a warning rather than aborting the whole switch.
     """
     os.makedirs(dst, exist_ok=True)
     for entry in os.scandir(src):
         s = entry.path
         d = os.path.join(dst, entry.name)
-        if entry.is_dir(follow_symlinks=False):
+        if entry.is_symlink():
+            # Recreate the symlink at the destination.  ``os.readlink``
+            # returns the target verbatim — we don't try to rewrite
+            # paths because the source and destination archive trees
+            # have the same per-app subdir layout, so relative links
+            # stay valid.  An absolute link would point at the same
+            # place either way.
+            target = os.readlink(s)
+            try:
+                if os.path.lexists(d):
+                    os.unlink(d)
+                os.symlink(target, d)
+            except OSError as exc:
+                logger.warning("Failed to recreate symlink %s -> %s: %s", d, target, exc)
+        elif entry.is_dir(follow_symlinks=False):
             _copy_tree(s, d)
-        else:
+        elif entry.is_file(follow_symlinks=False):
             shutil.copy2(s, d)
+        else:
+            logger.warning(
+                "Skipping non-regular entry %s during archive backend switch", s
+            )
 
 
 def switch_backend(
@@ -955,18 +976,6 @@ def switch_backend(
         # the route layer always re-fetches via ``get_config()``.
         hook.set_config(apply_backend_to_config(config, db))
         new_mount_active = False  # state now matches the live mount
-    except BackendSwitchError as exc:
-        _update_state(db, state="idle", state_message=f"switch failed: {exc}")
-        if new_mount_active:
-            try:
-                umount(config)
-            except Exception:
-                logger.exception(
-                    "Failed to umount JuiceFS during switch rollback; the "
-                    "FUSE process is orphaned and the operator may need to "
-                    "umount it manually."
-                )
-        raise
     except Exception as exc:
         _update_state(db, state="idle", state_message=f"switch failed: {exc}")
         if new_mount_active:
@@ -978,6 +987,12 @@ def switch_backend(
                     "FUSE process is orphaned and the operator may need to "
                     "umount it manually."
                 )
+        # Wrap non-BackendSwitchError failures so the api layer always
+        # gets the same exception type.  Pre-existing BackendSwitchError
+        # passes through (its __cause__ + message are already shaped
+        # for the operator).
+        if isinstance(exc, BackendSwitchError):
+            raise
         raise BackendSwitchError(str(exc)) from exc
     finally:
         # Always restart the apps we successfully stopped, success or

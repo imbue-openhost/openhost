@@ -210,6 +210,41 @@ async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rename_refuses_when_archive_parent_missing(tmp_path: Path) -> None:
+    """If the archive backend's parent dir is missing — the symptom
+    of a JuiceFS mount that's transiently dead — rename_app must
+    refuse rather than silently renaming the other tiers and
+    orphaning the archive subdir under the old name.
+    """
+    cfg = _make_test_config(tmp_path, port=20299)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_row(cfg.db_path, "old-name", status="running")
+    _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
+
+    # Simulate the mount drop by removing the archive parent itself
+    # (this models JuiceFS being unhealthy — the mount point exists
+    # in the parent FS but isn't a directory anymore).
+    import shutil as _shutil  # local import: not used in main scope
+
+    _shutil.rmtree(cfg.app_archive_dir)
+
+    status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
+    assert status == 500, payload
+    assert "JuiceFS" in (payload or {}).get("error", "") or "Storage parent" in (
+        payload or {}
+    ).get("error", ""), payload
+
+    # No tier got renamed because we refused at the precheck.
+    parents_present = {
+        "app_data": Path(cfg.persistent_data_dir) / "app_data",
+        "app_temp_data": Path(cfg.temporary_data_dir) / "app_temp_data",
+    }
+    for tier, parent in parents_present.items():
+        assert (parent / "old-name").exists(), tier
+        assert not (parent / "new-name").exists(), tier
+
+
+@pytest.mark.asyncio
 async def test_rename_rollback_continues_when_a_rollback_rename_itself_fails(
     tmp_path: Path,
 ) -> None:

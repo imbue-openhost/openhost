@@ -425,6 +425,21 @@ def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> st
         os.path.join(config.temporary_data_dir, "app_temp_data"),
         config.app_archive_dir,
     ]
+    # Refuse the rename if any parent storage dir is missing — this
+    # is the symptom of a JuiceFS mount that's transiently dead, and
+    # silently proceeding would rename app_data/app_temp_data while
+    # leaving the archive subdir under the old name.  The DB then
+    # points at the new name; the next provision_data creates a
+    # fresh empty archive subdir; the old archive contents are
+    # silently abandoned.
+    for parent in rename_parents:
+        if not os.path.isdir(parent):
+            return (
+                f"Storage parent {parent!r} is not a directory; "
+                f"refusing to rename so app_archive contents aren't "
+                f"orphaned.  If the archive backend is S3, check that "
+                f"the JuiceFS mount is live."
+            )
     renamed: list[tuple[str, str]] = []
     try:
         for parent in rename_parents:
