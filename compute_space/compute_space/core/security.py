@@ -29,15 +29,15 @@ class ListeningPort(TypedDict):
 
     port: int
     address: str  # e.g. "0.0.0.0:443" or "127.0.0.1:9001"
-    # One of "secure" (53/80/443), "app_range" (9000-9999),
+    # One of "secure" (53/80/443/router), "app_range" (9000-9999),
     # "allocated" (explicit DB port mapping), or "unexpected".
     classification: str
     # Human-readable label for the row (e.g. "HTTPS", "App range", app name).
     label: str
 
 
-# Ports that should be listening in a secure VM
-_SECURE_PORTS: dict[int, str] = {
+# Public-facing ports that should be listening on a healthy VM.
+_PUBLIC_SECURE_PORTS: dict[int, str] = {
     53: "CoreDNS",
     80: "ACME HTTP-01",
     443: "HTTPS",
@@ -132,6 +132,25 @@ def _check_tls_active() -> CheckResult:
         return {"ok": False, "detail": f"Could not check: {e}"}
 
 
+def _secure_ports() -> dict[int, str]:
+    """Return the static-secure-port → label map, including the configured router port.
+
+    The router's HTTP listener (``Config.port``, default 8080) is loopback to
+    Caddy in production but binds ``0.0.0.0`` for simplicity — it should
+    therefore be reported as expected, not flagged.
+    """
+    secure: dict[int, str] = dict(_PUBLIC_SECURE_PORTS)
+    try:
+        from compute_space.config import get_config  # noqa: PLC0415 — avoid import cycle at module load
+
+        secure[get_config().port] = "Router (compute_space)"
+    except Exception:
+        # If the config isn't available (e.g. unit-testing the helper directly),
+        # fall back to the public-only set.
+        pass
+    return secure
+
+
 def list_listening_ports(db: sqlite3.Connection | None = None) -> list[ListeningPort]:
     """Return every TCP port the VM is listening on, classified.
 
@@ -159,6 +178,8 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
         rows = db.execute("SELECT host_port, app_name FROM app_port_mappings").fetchall()
         app_by_port = {row["host_port"]: row["app_name"] for row in rows}
 
+    secure_ports = _secure_ports()
+
     seen: set[tuple[int, str]] = set()
     ports: list[ListeningPort] = []
     for line in result.stdout.splitlines():
@@ -176,8 +197,8 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
             continue
         seen.add(key)
 
-        if port in _SECURE_PORTS:
-            classification, label = "secure", _SECURE_PORTS[port]
+        if port in secure_ports:
+            classification, label = "secure", secure_ports[port]
         elif port in app_by_port:
             classification, label = "allocated", f"App: {app_by_port[port]}"
         elif 9000 <= port <= 9999:
