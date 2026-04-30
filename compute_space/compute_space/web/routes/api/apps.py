@@ -15,6 +15,7 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import Config
 from compute_space.config import get_config
+from compute_space.core import archive_backend
 from compute_space.core.apps import RESERVED_PATHS
 from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
@@ -153,6 +154,19 @@ async def api_add_app() -> ResponseReturnValue:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
+    # Refuse archive-using deploys if the archive backend's mount
+    # is unhealthy; ``provision_data`` would otherwise write to the
+    # underlying empty mount-point and lose those writes once the
+    # mount came back.
+    if (manifest.app_archive or manifest.access_all_data) and not archive_backend.is_archive_dir_healthy(config, db):
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        return jsonify({
+            "error": "Archive backend is not healthy; refusing to deploy "
+                     "an archive-using app until the operator-configured "
+                     "archive mount is live again (see the dashboard's "
+                     "Archive backend panel)."
+        }), 503
+
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
     if os.path.exists(final_dir):
         _rmtree_force(final_dir)
@@ -267,6 +281,22 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+
+    # Refuse the reload if the archive backend's mount is dead and
+    # this app uses app_archive — otherwise ``provision_data`` would
+    # try to write to the underlying empty mount-point on local disk,
+    # which the mount would shadow once it came back, silently
+    # losing those writes.  Apps that don't use archive aren't
+    # affected; cheap precheck for everyone.
+    if not archive_backend.is_archive_dir_healthy(config, db):
+        manifest_raw = (app_row["manifest_raw"] or "")
+        if "app_archive" in manifest_raw or "access_all_data" in manifest_raw:
+            return jsonify({
+                "error": "Archive backend is not healthy; refusing to "
+                         "reload an archive-using app until the "
+                         "operator-configured archive mount is live "
+                         "again (see the dashboard's Archive backend panel)."
+            }), 503
 
     form = await request.form if request.method == "POST" else {}
     update = form.get("update") == "1"
@@ -482,6 +512,18 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+
+    # Refuse the rename if the archive backend's mount is dead.
+    # ``_rename_app_storage_dirs`` would otherwise silently skip the
+    # archive tier (its underlying mount-point dir exists; the per-
+    # app subdir doesn't) while renaming the other tiers, leaving
+    # the archive contents orphaned under the old name in S3.
+    if not archive_backend.is_archive_dir_healthy(config, db):
+        return jsonify({
+            "error": "Archive backend is not healthy; refusing to rename "
+                     "until the operator-configured archive mount is live "
+                     "again (see the dashboard's Archive backend panel)."
+        }), 503
 
     if new_name == app_name:
         return jsonify({"ok": True, "name": new_name})

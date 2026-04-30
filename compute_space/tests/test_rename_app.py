@@ -229,10 +229,13 @@ async def test_rename_refuses_when_archive_parent_missing(tmp_path: Path) -> Non
     _shutil.rmtree(cfg.app_archive_dir)
 
     status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
-    assert status == 500, payload
-    assert "JuiceFS" in (payload or {}).get("error", "") or "Storage parent" in (
-        payload or {}
-    ).get("error", ""), payload
+    # 503 = the route layer's archive_backend.is_archive_dir_healthy
+    # check rejected the rename because the local-default archive
+    # parent is missing.  An earlier 500 from _rename_app_storage_dirs
+    # would also have been valid; the route-layer 503 is preferred
+    # because it surfaces the operator-actionable cause more directly.
+    assert status == 503, payload
+    assert "Archive backend" in (payload or {}).get("error", ""), payload
 
     # No tier got renamed because we refused at the precheck.
     parents_present = {

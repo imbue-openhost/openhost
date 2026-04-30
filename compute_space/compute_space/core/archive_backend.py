@@ -853,8 +853,14 @@ def _migrate_archive_data(
 
 def _tear_down_source(
     config: Config, db: sqlite3.Connection, plan: _SwitchPlan, old_archive_dir: str
-) -> None:
+) -> str | None:
     """Umount the old s3 mount (if any) and optionally delete source-side data.
+
+    Returns a non-fatal warning string if delete_source_after_copy
+    was requested but the rmtree failed; ``switch_backend`` surfaces
+    that via ``state_message`` so the operator's dashboard sees the
+    'switch succeeded but old data wasn't actually freed' case
+    instead of a green checkmark.
 
     A failed umount is fatal: leaving the JuiceFS mount up while the
     DB says backend=local would orphan the FUSE process; worse, if
@@ -877,6 +883,7 @@ def _tear_down_source(
     # new home AND any source mount is torn down.  Only frees space on
     # the LOCAL backend; on s3->local the rmtree here removes the
     # empty FUSE mount-point dir on local disk but doesn't touch S3.
+    warning: str | None = None
     if plan.delete_source_after_copy and os.path.isdir(old_archive_dir):
         try:
             shutil.rmtree(old_archive_dir)
@@ -886,11 +893,17 @@ def _tear_down_source(
                 old_archive_dir,
                 exc,
             )
+            warning = (
+                f"switch succeeded, but delete_source_after_copy failed "
+                f"to remove {old_archive_dir!r}: {exc}.  Operator may "
+                f"need to remove it manually to reclaim disk space."
+            )
         else:
             # Recreate the empty local default so future deploys that
             # happen to run before another switch don't fail.
             if plan.current.backend == "local":
                 os.makedirs(old_archive_dir, exist_ok=True)
+    return warning
 
 
 def switch_backend(
@@ -1028,14 +1041,14 @@ def switch_backend(
         )
         new_archive_dir, new_mount_active = _bring_up_target(config, db, plan)
         _migrate_archive_data(db, plan, old_archive_dir, new_archive_dir)
-        _tear_down_source(config, db, plan, old_archive_dir)
+        teardown_warning = _tear_down_source(config, db, plan, old_archive_dir)
 
         # Persist the new state.  Clearing s3 creds when switching
         # back to local is intentional — see _update_state.
         _update_state(
             db,
             state="idle",
-            state_message=None,
+            state_message=teardown_warning,
             backend=target_backend,
             s3_bucket=s3_bucket if target_backend == "s3" else None,
             s3_region=s3_region if target_backend == "s3" else None,
