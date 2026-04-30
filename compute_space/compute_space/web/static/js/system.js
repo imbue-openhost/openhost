@@ -24,9 +24,9 @@ function updateSecurityAudit() {
       var body = document.getElementById('security-body');
 
       if (data.secure) {
-        headline.innerHTML = '<span class="status-running">&#x2705; passing</span>';
+        headline.innerHTML = '<span class="status-running">passing</span>';
       } else {
-        headline.innerHTML = '<span class="status-error">&#x26A0;&#xFE0F; failing</span>';
+        headline.innerHTML = '<span class="status-error">failing</span>';
       }
 
       var rows = '';
