@@ -14,32 +14,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: pip install pre-commit
-      - run: uv run --group dev pre-commit run -a
+      - uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: dev
+      - run: pixi run -e dev pre-commit run -a
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv run --group dev pytest -v
+      - uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: dev
+      - run: pixi run -e dev pytest -v
 
   # Runs full unit test suite, including containerized tests.
   test-containers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - name: Install rootless podman runtime
+      - uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: dev
+      # Podman itself ships with the pixi env (conda-forge).  Only the
+      # system-only bits (setuid newuidmap/newgidmap, pasta) come from apt,
+      # mirroring ansible/tasks/containers.yml.
+      - name: Install rootless container support packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            podman crun passt slirp4netns netavark aardvark-dns \
-            uidmap fuse-overlayfs
+          sudo apt-get install -y uidmap passt
       - name: Verify rootless podman works
         run: |
-          podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
+          pixi run -e dev podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
       - name: Run all tests, including containerized tests
         run: |
-          uv run --group dev pytest --run-containers -v
+          pixi run -e dev pytest --run-containers -v

@@ -106,17 +106,17 @@ jobs:
           chmod +x tests/e2e-setup.sh
           tests/e2e-setup.sh
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          environments: dev
 
-      - name: Install test dependencies
-        run: |
-          uv sync --group dev
-          uv run playwright install --with-deps chromium
+      - name: Install playwright browsers
+        run: pixi run -e dev playwright install --with-deps chromium
 
       - name: Run E2E tests
         run: |
           source "$E2E_ENV_FILE"
-          uv run pytest tests/test_e2e.py -v -s --timeout=600
+          pixi run -e dev pytest tests/test_e2e.py -v -s --timeout=600
 
       - name: Dump logs on failure
         if: failure()
