@@ -26,6 +26,13 @@
       - uidmap
       # passt provides `pasta`, the default rootless network backend.
       - passt
+      # containers-common provides /etc/containers/policy.json (image
+      # signature policy), default registries.conf, storage.conf, etc.
+      # The conda-forge containers-common installs equivalents under
+      # the pixi env prefix, but podman searches /etc and ~/.config
+      # at runtime — without this, container builds fail with
+      # "no policy.json file found".
+      - containers-common
     state: present
     update_cache: yes
 
@@ -82,32 +89,6 @@
       # Managed by OpenHost; do not edit by hand.
       unqualified-search-registries = ["docker.io"]
     dest: /etc/containers/registries.conf.d/00-openhost.conf
-    mode: "0644"
-
-# Apt's `containers-common` writes /etc/containers/policy.json with a
-# permissive default; the conda-forge build doesn't ship one to /etc,
-# so podman from the pixi env on a fresh cloud image fails container
-# builds with "no policy.json file found".  Write the standard
-# permissive policy ourselves — equivalent to what Ubuntu's apt
-# install would have produced.
-- name: Ensure /etc/containers exists
-  file:
-    path: /etc/containers
-    state: directory
-    mode: "0755"
-
-- name: Write default container image signature policy
-  copy:
-    content: |
-      {
-          "default": [{"type": "insecureAcceptAnything"}],
-          "transports": {
-              "docker-daemon": {
-                  "": [{"type": "insecureAcceptAnything"}]
-              }
-          }
-      }
-    dest: /etc/containers/policy.json
     mode: "0644"
 
 # Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
