@@ -1078,6 +1078,7 @@ def switch_backend(
         # would otherwise let stale region/endpoint values from a
         # previous s3 switch silently persist and route the next
         # mount to the wrong AWS endpoint.
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         if target_backend == "s3":
             db.execute(
                 "UPDATE archive_backend SET state='idle', state_message=?, "
@@ -1092,7 +1093,7 @@ def switch_backend(
                     s3_access_key_id,
                     s3_secret_access_key,
                     volume_name,
-                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    now_iso,
                 ),
             )
         else:
@@ -1107,7 +1108,7 @@ def switch_backend(
                 (
                     teardown_warning,
                     volume_name,
-                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    now_iso,
                 ),
             )
         db.commit()

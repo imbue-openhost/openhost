@@ -10,6 +10,7 @@ dependencies = [
     "argon2-cffi",
     "attrs",
     "bcrypt",
+    "boto3",
     "cattrs",
     "cryptography",
     "GitPython",
