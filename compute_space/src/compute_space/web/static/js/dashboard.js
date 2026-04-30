@@ -175,11 +175,38 @@ updateSshStatus();
 setInterval(updateSshStatus, 5000);
 
 // ─── App List ───
+//
+// Action buttons are rendered server-side by the dashboard template;
+// the polling loop only refreshes the status column. Server-side
+// guards (409 on stop/reload/rename of a removing row) make any stray
+// click a safe no-op.
+
+function refreshApps() {
+  if (!config.apiAppsUrl) return;
+  fetch(config.apiAppsUrl)
+    .then(function(r) { return r.json(); })
+    .then(updateApps)
+    .catch(function() {});
+}
 
 function appAction(name, action, formData) {
   var opts = {method: 'POST', credentials: 'same-origin'};
   if (formData) { opts.body = formData; }
-  fetch(action + '/' + name, opts);
+  return fetch(action + '/' + name, opts)
+    .then(function(r) {
+      return r.json().then(function(d) { return {ok: r.ok, data: d}; },
+                          function() { return {ok: r.ok, data: {}}; });
+    })
+    .then(function(res) {
+      if (!res.ok || (res.data && res.data.error)) {
+        alert((res.data && res.data.error) || 'Request failed');
+      }
+      refreshApps();
+    })
+    .catch(function() {
+      alert('Request failed');
+      refreshApps();
+    });
 }
 
 function reloadAndUpdate(name) {
@@ -188,36 +215,24 @@ function reloadAndUpdate(name) {
   appAction(name, 'reload_app', fd);
 }
 
-function renderActions(name, status) {
-  var detailsLink = '<a href="app_detail/' + name + '">Details</a> ';
-  var btns = '';
-  btns = '<button class="btn" onclick="appAction(\'' + name + '\', \'reload_app\')">Reload</button> '
-       + '<button class="btn" onclick="reloadAndUpdate(\'' + name + '\')">Reload &amp; Update</button> '
-       + '<button class="btn btn-danger" onclick="if(confirm(\'Remove ' + name + ' and delete all data permanently?\')) appAction(\'' + name + '\', \'remove_app\')">Remove</button> ';
-  return detailsLink + btns;
-}
-
 function updateApps(data) {
   document.querySelectorAll('tr[data-app]').forEach(function(row) {
     var name = row.getAttribute('data-app');
     var info = data[name];
-    if (!info) { row.style.display = 'none'; return; }
+    if (!info) {
+      row.style.display = 'none';
+      return;
+    }
     row.style.display = '';
     var statusEl = row.querySelector('.app-status');
-    var actionsEl = row.querySelector('.app-actions');
-
     statusEl.className = 'app-status status-' + info.status;
     statusEl.textContent = info.status;
-
-    actionsEl.innerHTML = renderActions(name, info.status);
   });
 }
 
 if (config.apiAppsUrl) {
-  fetch(config.apiAppsUrl).then(function(r) { return r.json(); }).then(updateApps);
-  setInterval(function() {
-    fetch(config.apiAppsUrl).then(function(r) { return r.json(); }).then(updateApps);
-  }, 3000);
+  refreshApps();
+  setInterval(refreshApps, 3000);
 }
 
 // ─── API Tokens ───

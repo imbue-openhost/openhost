@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import shutil
+import sqlite3
 import threading
 
 import attr
@@ -19,15 +20,13 @@ from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import reload_app_background
+from compute_space.core.apps import remove_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
-from compute_space.core.containers import remove_image
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
-from compute_space.core.data import deprovision_data
-from compute_space.core.data import deprovision_temp_data
 from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
@@ -47,6 +46,17 @@ def _rmtree_force(path: str) -> None:
     data-dir deprovision, which swallows cleanup errors).
     """
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
+
+
+def _is_removing(app_row: sqlite3.Row | None) -> bool:
+    """True if the row is being torn down by remove_app_background.
+
+    Mutating routes (stop, reload, rename) refuse to touch a removing
+    row with 409. /remove_app itself uses an atomic UPDATE...WHERE
+    status != 'removing' instead of this helper to avoid a TOCTOU race
+    on concurrent removal requests.
+    """
+    return app_row is not None and app_row["status"] == "removing"
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -246,6 +256,8 @@ def stop_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+    if _is_removing(app_row):
+        return jsonify({"error": "App is being removed"}), 409
 
     stop_app_process(app_row)
     stop_container(f"openhost-{app_name}")
@@ -265,6 +277,8 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+    if _is_removing(app_row):
+        return jsonify({"error": "App is being removed"}), 409
 
     form = await request.form if request.method == "POST" else {}
     update = form.get("update") == "1"
@@ -366,6 +380,13 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
 @api_apps_bp.route("/remove_app/<app_name>", methods=["POST"])
 @login_required
 async def remove_app(app_name: str) -> ResponseReturnValue:
+    """Flip the row to ``status='removing'`` and run teardown in a thread.
+
+    Returns 202 immediately. The dashboard's /api/apps poll picks up
+    the new status and renders 'Removing…' until the row is deleted,
+    so reloading the page or opening a second tab still shows the
+    in-flight state.
+    """
     config = get_config()
     db = get_db()
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
@@ -375,22 +396,36 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     form = await request.form
     keep_data = form.get("keep_data") == "1"
 
-    await asyncio.to_thread(stop_app_process, app_row)
-    await asyncio.to_thread(remove_image, app_row["name"])
-
-    try:
-        if keep_data:
-            await asyncio.to_thread(deprovision_temp_data, app_name, config.temporary_data_dir)
-        else:
-            await asyncio.to_thread(deprovision_data, app_name, config.persistent_data_dir, config.temporary_data_dir)
-    except Exception as e:
-        logger.warning("Failed to deprovision data for %s: %s", app_name, e)
-
-    db.execute("DELETE FROM apps WHERE name = ?", (app_name,))
-    db.execute("DELETE FROM app_databases WHERE app_name = ?", (app_name,))
+    # Atomic claim: ``WHERE status != 'removing'`` makes concurrent
+    # POSTs safe — only the first one gets rowcount=1 and spawns a
+    # worker; later ones short-circuit to the already_removing branch.
+    cursor = db.execute(
+        "UPDATE apps SET status = 'removing', error_message = NULL WHERE name = ? AND status != 'removing'",
+        (app_name,),
+    )
     db.commit()
 
-    return jsonify({"ok": True})
+    if cursor.rowcount == 0:
+        return jsonify({"ok": True, "already_removing": True}), 202
+
+    try:
+        threading.Thread(
+            target=remove_app_background,
+            args=(app_name, keep_data, config),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        # Thread spawn failed (resource exhaustion). Roll the row back
+        # to 'error' so a retry can re-claim it via the atomic UPDATE.
+        logger.exception("Could not spawn remove worker for %s", app_name)
+        db.execute(
+            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
+            (f"Could not start removal worker: {e}", app_name),
+        )
+        db.commit()
+        return jsonify({"error": "Could not start removal worker; try again."}), 503
+
+    return jsonify({"ok": True}), 202
 
 
 @api_apps_bp.route("/rename_app/<app_name>", methods=["POST"])
@@ -414,6 +449,8 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
     if not app_row:
         return jsonify({"error": "App not found"}), 404
+    if _is_removing(app_row):
+        return jsonify({"error": "App is being removed"}), 409
 
     if new_name == app_name:
         return jsonify({"ok": True, "name": new_name})

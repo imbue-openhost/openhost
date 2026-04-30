@@ -18,7 +18,11 @@ import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
+from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
+from compute_space.core.containers import stop_app_process
+from compute_space.core.data import deprovision_data
+from compute_space.core.data import deprovision_temp_data
 from compute_space.core.data import provision_data
 from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.git_ops import parse_repo_url
@@ -727,5 +731,59 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
             (str(e), app_name),
         )
         db.commit()
+    finally:
+        db.close()
+
+
+def remove_app_background(app_name: str, keep_data: bool, config: Config) -> None:
+    """Tear an app down in a background thread.
+
+    Caller flips the row to ``status='removing'`` before spawning this.
+    Stop/remove/deprovision errors are logged and swallowed so the
+    final DELETE still runs and the row never gets stuck in 'removing'.
+    If anything escapes the inner handlers, the outer except flips the
+    row to 'error' so the operator can retry.
+    """
+    db = sqlite3.connect(config.db_path, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    # FK enforcement is per-connection and OFF by default; without it
+    # the final DELETE wouldn't cascade and child rows in app_tokens,
+    # permissions, etc. would be orphaned.
+    db.execute("PRAGMA foreign_keys = ON")
+    try:
+        app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+        if app_row is None:
+            return
+
+        try:
+            stop_app_process(app_row)
+        except Exception:
+            logger.exception("stop_app_process failed during remove of %s", app_name)
+        try:
+            remove_image(app_row["name"])
+        except Exception:
+            logger.exception("remove_image failed during remove of %s", app_name)
+        try:
+            if keep_data:
+                deprovision_temp_data(app_name, config.temporary_data_dir)
+            else:
+                deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
+        except Exception:
+            logger.exception("Failed to deprovision data for %s", app_name)
+
+        db.execute("DELETE FROM apps WHERE name = ?", (app_name,))
+        db.commit()
+        logger.info("Removed app %s (keep_data=%s)", app_name, keep_data)
+    except Exception:
+        logger.exception("remove_app_background failed for %s", app_name)
+        try:
+            db.execute(
+                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
+                ("Removal failed; retry from the dashboard. See server logs for details.", app_name),
+            )
+            db.commit()
+        except sqlite3.Error:
+            logger.exception("Could not record removal failure for %s", app_name)
     finally:
         db.close()
