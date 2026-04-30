@@ -1,25 +1,28 @@
 ---
-# Install rootless Podman for the `host` user.  Runs with become: yes.
+# Configure host-side rootless container runtime.  Podman itself is
+# installed via pixi (see pyproject.toml); this file installs the
+# system-only bits (setuid newuidmap/newgidmap, pasta) and writes
+# host-wide config that podman reads from /etc/containers.
+# Runs with become: yes.
 
-- name: Install podman and rootless networking tooling
+# Hosts provisioned before podman moved to pixi have an apt-installed
+# /usr/bin/podman.  The systemd unit's PATH puts the pixi env first so
+# this isn't strictly hazardous, but leaving two copies invites drift
+# (different versions, different config search paths for interactive
+# `podman` invocations).  Remove it idempotently — no-op on fresh hosts.
+- name: Remove apt-installed podman (now managed by pixi)
+  apt:
+    name: podman
+    state: absent
+
+- name: Install rootless container support packages
   apt:
     name:
-      # podman + its default OCI runtime
-      - podman
-      - crun
-      # Rootless networking backends.  passt provides `pasta` (preferred);
-      # slirp4netns is the fallback.  Install both for cross-version
-      # resilience.
-      - passt
-      - slirp4netns
-      # Rootless-friendly CNI replacement, needed for user-defined networks.
-      - netavark
-      - aardvark-dns
       # newuidmap/newgidmap for podman's rootless userns setup.
+      # Setuid root, so must come from apt — pixi can't ship these.
       - uidmap
-      # Rootless overlay fallback for kernels without native unprivileged
-      # overlay support.
-      - fuse-overlayfs
+      # passt provides `pasta`, the default rootless network backend.
+      - passt
     state: present
     update_cache: yes
 
@@ -88,20 +91,6 @@
       else entirely, e.g. ZFS or a FUSE filesystem.)
     success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
 
-- name: Verify podman works for host user
-  become: yes
-  become_user: host
-  command: podman info --format json
-  register: _podman_info
-  changed_when: false
-
-- name: Assert podman is running rootless
-  assert:
-    that:
-      - (_podman_info.stdout | from_json).host.security.rootless | bool
-    fail_msg: podman is not configured for rootless operation as the host user.
-    success_msg: "podman rootless for host user: OK"
-
 # /etc/openhost/runtime is read by compute_space.core.runtime_sentinel
 # and the dashboard update-check endpoint.  Bump runtime_version here
 # AND compute_space.core.runtime_sentinel.EXPECTED_RUNTIME_VERSION
@@ -116,7 +105,7 @@
 - name: Write host runtime sentinel
   copy:
     content: |
-      # Managed by ansible/tasks/podman.yml; do not edit by hand.
+      # Managed by ansible/tasks/containers.yml; do not edit by hand.
       runtime=podman
       runtime_version=1
     dest: /etc/openhost/runtime
