@@ -106,6 +106,18 @@
     group: host
     mode: "0750"
 
+# /var/log is root-owned, so the host user can't write juicefs's
+# mount log there directly.  Pre-create a dedicated subdir owned
+# by host so the systemd unit can write without sudo.
+- name: Create juicefs log dir
+  become: yes
+  file:
+    path: /var/log/juicefs
+    state: directory
+    owner: host
+    group: host
+    mode: "0750"
+
 - name: Create juicefs config dir
   become: yes
   file:
@@ -115,8 +127,9 @@
     group: host
     mode: "0750"
 
-# Secrets go to a 0600 EnvironmentFile read by the systemd unit;
-# they are NOT passed on the juicefs argv (which is visible in ps).
+# Secrets go to a 0640 root:host EnvironmentFile read by the systemd
+# unit (which runs as User=host so it needs group-read).  They are
+# NOT passed on the juicefs argv, which would be visible in ``ps``.
 - name: Write juicefs S3 credentials
   become: yes
   copy:

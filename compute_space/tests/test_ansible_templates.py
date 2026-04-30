@@ -228,6 +228,38 @@ def test_juicefs_mount_restart_on_failure(templates_env: Environment) -> None:
     assert "Restart=on-failure" in rendered
 
 
+def test_juicefs_mount_execstop_uses_shell(templates_env: Environment) -> None:
+    """systemd does NOT execute ExecStop= via a shell.  Earlier this unit
+    had ``... umount X || /bin/umount -l X`` directly on the line, which
+    would have been passed as literal argv to ``juicefs umount`` and
+    silently failed the lazy-umount fallback.  Pin the shell wrap.
+    """
+    rendered = templates_env.get_template("juicefs-mount.service.j2").render()
+    exec_stop = next(line for line in rendered.splitlines() if line.startswith("ExecStop="))
+    # Either /bin/sh or /bin/bash with -c is acceptable; the key
+    # invariant is "shell is in the loop", not "specific shell".
+    assert re.search(r"^ExecStop=/bin/(?:ba)?sh\s+-c\s+", exec_stop), exec_stop
+
+
+def test_juicefs_mount_log_path_is_host_writable(templates_env: Environment) -> None:
+    """juicefs writes to ``--log <path>`` from inside the unit running
+    as ``User=host``.  The path must NOT be a root-owned dir like
+    ``/var/log`` directly; the role pre-creates ``/var/log/juicefs``
+    owned by host, so the log path must be inside there (or under
+    /home/host).  Anything else will fail-to-start at first boot.
+    """
+    rendered = templates_env.get_template("juicefs-mount.service.j2").render()
+    log_path = re.search(r"--log\s+(\S+)", rendered)
+    assert log_path is not None, rendered
+    p = log_path.group(1)
+    # Accept either the host's home tree or a host-owned /var/log subdir.
+    acceptable = (
+        p.startswith("/home/host/")
+        or p.startswith("/var/log/juicefs/")
+    )
+    assert acceptable, f"juicefs --log path {p!r} must be writable by the host user"
+
+
 # ---------------------------------------------------------------------------
 # juicefs-meta-dump — daily timer + atomic rename
 # ---------------------------------------------------------------------------

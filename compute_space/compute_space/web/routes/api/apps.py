@@ -444,18 +444,42 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     # was there.
     #
     # ``config.app_archive_dir`` may resolve to a JuiceFS mount
-    # path; the rename is just a directory rename within the
-    # mount, which JuiceFS handles atomically via its metadata
-    # engine.
-    for parent in [
+    # path.  Each per-tier rename stays within its own parent dir
+    # (jfs->jfs or local->local), so cross-device EXDEV is not an
+    # issue, but a transient mount drop or permissions blip on the
+    # archive tier still could.  If anything fails, roll back the
+    # tiers we already renamed so the on-disk and DB state stay
+    # consistent — apps would otherwise come back up under the new
+    # name with their archive contents still under the old.
+    rename_parents = [
         os.path.join(config.persistent_data_dir, "app_data"),
         os.path.join(config.temporary_data_dir, "app_temp_data"),
         config.app_archive_dir,
-    ]:
-        old_dir = os.path.join(parent, app_name)
-        new_dir = os.path.join(parent, new_name)
-        if os.path.exists(old_dir) and not os.path.exists(new_dir):
-            os.rename(old_dir, new_dir)
+    ]
+    renamed: list[tuple[str, str]] = []
+    try:
+        for parent in rename_parents:
+            old_dir = os.path.join(parent, app_name)
+            new_dir = os.path.join(parent, new_name)
+            if os.path.exists(old_dir) and not os.path.exists(new_dir):
+                os.rename(old_dir, new_dir)
+                renamed.append((old_dir, new_dir))
+    except OSError as exc:
+        # Best-effort rollback.  If a rollback rename itself fails
+        # (e.g. the underlying filesystem is gone) we surface the
+        # original error and let the operator reconcile manually
+        # from the logs.
+        for old_dir, new_dir in reversed(renamed):
+            try:
+                os.rename(new_dir, old_dir)
+            except OSError as rollback_exc:
+                logger.error(
+                    "Rollback of partial rename %s -> %s failed: %s",
+                    new_dir,
+                    old_dir,
+                    rollback_exc,
+                )
+        return jsonify({"error": f"Failed to rename app data directories: {exc}"}), 500
 
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute(

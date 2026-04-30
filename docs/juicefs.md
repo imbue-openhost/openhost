@@ -52,8 +52,11 @@ The role:
 1. Installs the pinned JuiceFS binary (`v1.3.1`) with sha256 verify.
 2. `juicefs format` against your bucket, idempotent via a sentinel
    file at `/var/lib/juicefs/.formatted`.
-3. Installs `juicefs-mount.service` ordered before `openhost.service`
-   so apps never see an empty mount-point.
+3. Installs `juicefs-mount.service` and makes `openhost.service` a
+   hard `Requires=` dependent on it (not just ordered after).  If the
+   mount unit fails or dies, systemd refuses to start openhost; apps
+   can never silently write to the underlying empty mount-point and
+   have those writes get shadowed once the mount comes back.
 4. Installs `juicefs-meta-dump.service` + a 24h timer that dumps the
    metadata SQLite to a JSON inside `persistent_data_dir/openhost/`
    so the existing `openhost-backup` (restic) app picks it up.
@@ -81,7 +84,10 @@ timer.
 
 - Secrets live at `/etc/openhost/juicefs/s3.env` mode 0640 root:host;
   they are not visible in `ps`.
-- Mount logs land at `/var/log/juicefs-mount.log`.
+- Mount logs land at `/var/log/juicefs/mount.log`.  The role
+  pre-creates `/var/log/juicefs/` owned by `host` so the unit (which
+  runs as `host`) can write there directly.  `journalctl -u
+  juicefs-mount.service` shows the systemd-side stdout/stderr.
 - `juicefs status sqlite3:///var/lib/juicefs/meta.db` shows volume
   health.  Run as `host`.
 - Disabling JuiceFS later: re-run the playbook with

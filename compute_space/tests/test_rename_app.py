@@ -1,0 +1,206 @@
+"""Tests for the ``/rename_app/<app>`` endpoint, focused on the
+three-tier directory rename and the partial-failure rollback.
+
+The endpoint renames per-app subdirectories under three storage tiers
+(``app_data``, ``app_temp_data``, ``app_archive``) and then updates a
+small set of related DB rows.  When ``app_archive_dir`` resolves to a
+JuiceFS mount, a transient mount drop or permissions blip during the
+rename loop would otherwise leave the on-disk and DB state in an
+inconsistent state — the archive subdir abandoned under the old name
+while the rest of the world refers to the new one.
+
+These tests exercise the happy path plus the rollback, both directly
+against the route function (no live router process) so they stay
+fast and don't depend on podman.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from pathlib import Path
+from unittest import mock
+
+import pytest
+from quart import Quart
+
+import compute_space.web.routes.api.apps as apps_routes
+from compute_space.db.connection import init_db
+
+from .conftest import _FakeApp, _make_test_config
+
+
+async def _post_rename(
+    cfg, db_path: str, app_name: str, new_name: str
+) -> tuple[int, dict | None]:
+    """Drive the unwrapped rename_app route under a Quart context.
+
+    Uses ``app.test_client().post`` rather than ``test_request_context``
+    because the latter doesn't populate ``request.form`` from the
+    ``data=`` kwarg in this version of Quart, leaving the route to
+    400 with "Name is required" before we ever get to the rename
+    logic we're trying to exercise.
+    """
+    app = Quart(__name__)
+    app.config["DB_PATH"] = db_path
+    app.openhost_config = cfg  # type: ignore[attr-defined]
+    # Register the unwrapped view directly so the @login_required
+    # decorator doesn't bounce the request to /login.
+    app.add_url_rule(
+        f"/rename_app/{app_name}",
+        view_func=apps_routes.rename_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+        defaults={"app_name": app_name},
+    )
+    client = app.test_client()
+    with mock.patch.object(apps_routes, "stop_app_process"):
+        response = await client.post(
+            f"/rename_app/{app_name}", form={"name": new_name}
+        )
+    try:
+        payload = await response.get_json()
+    except Exception:
+        payload = None
+    return response.status_code, payload
+
+
+def _seed_app_row(db_path: str, name: str, port: int = 19500) -> None:
+    """Insert a minimal apps row that rename_app can target."""
+    db = sqlite3.connect(db_path)
+    try:
+        db.execute(
+            """INSERT INTO apps (name, version, repo_path, local_port, status)
+               VALUES (?, '1.0', ?, ?, 'stopped')""",
+            (name, f"/tmp/repo/{name}", port),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _make_per_app_dirs(cfg, app_name: str, tiers: list[str]) -> dict[str, Path]:
+    """Pre-create the per-app subdirs under each named tier and drop a
+    sentinel file in each so we can verify the rename moved the content
+    rather than just creating an empty new dir.
+    """
+    parents = {
+        "app_data": Path(cfg.persistent_data_dir) / "app_data",
+        "app_temp_data": Path(cfg.temporary_data_dir) / "app_temp_data",
+        "app_archive": Path(cfg.app_archive_dir),
+    }
+    out: dict[str, Path] = {}
+    for tier in tiers:
+        d = parents[tier] / app_name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "sentinel.txt").write_text(tier)
+        out[tier] = d
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rename_renames_all_three_tiers(tmp_path: Path) -> None:
+    """A rename must move app_data, app_temp_data, AND app_archive
+    subdirectories.  Forgetting the archive tier would orphan its
+    contents under the old name.
+    """
+    cfg = _make_test_config(tmp_path, port=20200)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_row(cfg.db_path, "old-name")
+    _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
+
+    status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
+    assert status == 200, payload
+
+    # Old subdirs gone, new subdirs present, sentinel content preserved
+    # so we know we actually moved (not recreated) each tier.
+    for tier, expected_marker in [
+        ("app_data", "app_data"),
+        ("app_temp_data", "app_temp_data"),
+        ("app_archive", "app_archive"),
+    ]:
+        if tier == "app_archive":
+            parent = Path(cfg.app_archive_dir)
+        elif tier == "app_data":
+            parent = Path(cfg.persistent_data_dir) / "app_data"
+        else:
+            parent = Path(cfg.temporary_data_dir) / "app_temp_data"
+        assert not (parent / "old-name").exists(), tier
+        assert (parent / "new-name" / "sentinel.txt").read_text() == expected_marker
+
+
+@pytest.mark.asyncio
+async def test_rename_skips_missing_tier_without_error(tmp_path: Path) -> None:
+    """An app that never opted into app_archive has no subdir under the
+    archive tier.  rename_app must skip it cleanly, not fail because
+    the source dir is missing.
+    """
+    cfg = _make_test_config(tmp_path, port=20201)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_row(cfg.db_path, "old-name")
+    # Only app_data + app_temp_data exist; app_archive subdir absent.
+    _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data"])
+
+    status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
+    assert status == 200, payload
+    # And no spurious archive subdir got created on the way through.
+    assert not (Path(cfg.app_archive_dir) / "new-name").exists()
+
+
+# ---------------------------------------------------------------------------
+# Partial-failure rollback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
+    """If the archive-tier rename fails partway through (e.g. the
+    JuiceFS mount went transiently unhealthy), the previously-renamed
+    app_data and app_temp_data directories must be rolled back so the
+    operator-visible state matches the DB (which still has the old
+    name on disk and in the rows).
+    """
+    cfg = _make_test_config(tmp_path, port=20202)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_row(cfg.db_path, "old-name")
+    _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
+
+    real_rename = os.rename
+    archive_root = os.path.realpath(cfg.app_archive_dir)
+
+    def flaky_rename(src: str, dst: str) -> None:
+        # Fail the archive-tier rename specifically; let the others go.
+        if os.path.realpath(os.path.dirname(src)) == archive_root:
+            raise OSError(28, "simulated transient mount failure")
+        real_rename(src, dst)
+
+    with mock.patch("os.rename", side_effect=flaky_rename):
+        status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
+
+    # Endpoint must surface the failure rather than swallowing it.
+    assert status == 500, payload
+
+    # All three old-name subdirs must be restored; no new-name subdirs
+    # in any tier.  Without the rollback, app_data/new-name and
+    # app_temp_data/new-name would have leaked through.
+    parents = {
+        "app_data": Path(cfg.persistent_data_dir) / "app_data",
+        "app_temp_data": Path(cfg.temporary_data_dir) / "app_temp_data",
+        "app_archive": Path(cfg.app_archive_dir),
+    }
+    for tier, parent in parents.items():
+        assert (parent / "old-name").exists(), f"{tier} not rolled back"
+        assert not (parent / "new-name").exists(), f"{tier} leaked partial rename"
+
+    # The DB row also stays under the old name so the dashboard doesn't
+    # point at a non-existent rename.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        rows = db.execute("SELECT name FROM apps").fetchall()
+    finally:
+        db.close()
+    assert [r[0] for r in rows] == ["old-name"], rows
