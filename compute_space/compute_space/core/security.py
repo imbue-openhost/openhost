@@ -1,14 +1,12 @@
 """Runtime security posture checks for the VM.
 
 Checks actual security posture regardless of config settings: TLS active,
-SSH disabled, no unexpected ports, code read-only.
-
-When SSH is enabled via the System page toggle, the audit will fail
-on ssh_disabled — this is intentional (SSH is a temporary debug tool).
+SSH password auth disabled, no unexpected ports.
 
 Results are exposed via /health and /api/security-audit endpoints.
 """
 
+import shutil
 import sqlite3
 import subprocess
 from typing import TypedDict
@@ -38,6 +36,7 @@ class ListeningPort(TypedDict):
 
 # Public-facing ports that should be listening on a healthy VM.
 _PUBLIC_SECURE_PORTS: dict[int, str] = {
+    22: "SSH",
     53: "CoreDNS",
     80: "ACME HTTP-01",
     443: "HTTPS",
@@ -77,7 +76,6 @@ def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
     """
     checks = {}
 
-    checks["ssh_disabled"] = _check_ssh_disabled()
     checks["ssh_password_disabled"] = _check_ssh_password_disabled()
     checks["tls_active"] = _check_tls_active()
     checks["no_unexpected_ports"] = _check_no_unexpected_ports(db=db)
@@ -86,18 +84,36 @@ def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
     return {"secure": secure, "checks": checks}
 
 
-def _check_ssh_disabled() -> CheckResult:
-    """SSH daemon is not running (no remote shell access to the VM)."""
-    if is_sshd_active():
-        return {"ok": False, "detail": "sshd is running — disable via System page toggle"}
-    return {"ok": True, "detail": "sshd is not running"}
+# sshd is typically installed in /usr/sbin, which isn't on the systemd unit's
+# stripped-down PATH.  Search common system locations explicitly.
+_SSHD_SEARCH_PATHS: tuple[str, ...] = (
+    "/usr/sbin/sshd",
+    "/usr/local/sbin/sshd",
+    "/sbin/sshd",
+)
+
+
+def _find_sshd_binary() -> str | None:
+    """Return an absolute path to the sshd binary, or None if not found."""
+    found = shutil.which("sshd")
+    if found:
+        return found
+    for path in _SSHD_SEARCH_PATHS:
+        if shutil.which(path):
+            return path
+    return None
 
 
 def _check_ssh_password_disabled() -> CheckResult:
     """SSH password authentication is disabled."""
+    sshd = _find_sshd_binary()
+    if sshd is None:
+        # No sshd installed at all → cannot authenticate over SSH at all,
+        # so password auth is effectively disabled.
+        return {"ok": True, "detail": "sshd is not installed"}
     try:
         result = subprocess.run(
-            ["sshd", "-T"],
+            [sshd, "-T"],
             capture_output=True,
             text=True,
             timeout=5,

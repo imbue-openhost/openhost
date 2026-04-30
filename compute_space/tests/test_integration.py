@@ -96,7 +96,7 @@ def test_pre_setup_security_audit(tmp_path):
         assert isinstance(security["secure"], bool)
         assert "checks" in security
 
-        expected_checks = {"ssh_disabled", "ssh_password_disabled", "tls_active", "no_unexpected_ports"}
+        expected_checks = {"ssh_password_disabled", "tls_active", "no_unexpected_ports"}
         assert set(security["checks"].keys()) == expected_checks
 
         for name, check in security["checks"].items():
@@ -170,7 +170,6 @@ class TestRouterCore:
         data = r.json()
         assert isinstance(data["secure"], bool)
         expected_checks = {
-            "ssh_disabled",
             "ssh_password_disabled",
             "tls_active",
             "no_unexpected_ports",
