@@ -1,14 +1,12 @@
 """Runtime security posture checks for the VM.
 
 Checks actual security posture regardless of config settings: TLS active,
-SSH disabled, no unexpected ports, code read-only.
-
-When SSH is enabled via the router dashboard toggle, the audit will fail
-on ssh_disabled — this is intentional (SSH is a temporary debug tool).
+SSH password auth disabled, no unexpected ports.
 
 Results are exposed via /health and /api/security-audit endpoints.
 """
 
+import shutil
 import sqlite3
 import subprocess
 from typing import TypedDict
@@ -24,8 +22,25 @@ class AuditResult(TypedDict):
     checks: dict[str, CheckResult]
 
 
-# Ports that should be listening in a secure VM
-_SECURE_PORTS: set[int] = {53, 80, 443}  # CoreDNS, ACME HTTP-01, HTTPS
+class ListeningPort(TypedDict):
+    """A single TCP listening port, classified for the System page port table."""
+
+    port: int
+    address: str  # e.g. "0.0.0.0:443" or "127.0.0.1:9001"
+    # One of "secure" (53/80/443/router), "app_range" (9000-9999),
+    # "allocated" (explicit DB port mapping), or "unexpected".
+    classification: str
+    # Human-readable label for the row (e.g. "HTTPS", "App range", app name).
+    label: str
+
+
+# Public-facing ports that should be listening on a healthy VM.
+_PUBLIC_SECURE_PORTS: dict[int, str] = {
+    22: "SSH",
+    53: "CoreDNS",
+    80: "ACME HTTP-01",
+    443: "HTTPS",
+}
 
 
 def is_sshd_active() -> bool:
@@ -61,7 +76,6 @@ def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
     """
     checks = {}
 
-    checks["ssh_disabled"] = _check_ssh_disabled()
     checks["ssh_password_disabled"] = _check_ssh_password_disabled()
     checks["tls_active"] = _check_tls_active()
     checks["no_unexpected_ports"] = _check_no_unexpected_ports(db=db)
@@ -70,18 +84,36 @@ def run_audit(db: sqlite3.Connection | None = None) -> AuditResult:
     return {"secure": secure, "checks": checks}
 
 
-def _check_ssh_disabled() -> CheckResult:
-    """SSH daemon is not running (no remote shell access to the VM)."""
-    if is_sshd_active():
-        return {"ok": False, "detail": "sshd is running — disable via dashboard toggle"}
-    return {"ok": True, "detail": "sshd is not running"}
+# sshd is typically installed in /usr/sbin, which isn't on the systemd unit's
+# stripped-down PATH.  Search common system locations explicitly.
+_SSHD_SEARCH_PATHS: tuple[str, ...] = (
+    "/usr/sbin/sshd",
+    "/usr/local/sbin/sshd",
+    "/sbin/sshd",
+)
+
+
+def _find_sshd_binary() -> str | None:
+    """Return an absolute path to the sshd binary, or None if not found."""
+    found = shutil.which("sshd")
+    if found:
+        return found
+    for path in _SSHD_SEARCH_PATHS:
+        if shutil.which(path):
+            return path
+    return None
 
 
 def _check_ssh_password_disabled() -> CheckResult:
     """SSH password authentication is disabled."""
+    sshd = _find_sshd_binary()
+    if sshd is None:
+        # No sshd installed at all → cannot authenticate over SSH at all,
+        # so password auth is effectively disabled.
+        return {"ok": True, "detail": "sshd is not installed"}
     try:
         result = subprocess.run(
-            ["sshd", "-T"],
+            [sshd, "-T"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -116,8 +148,35 @@ def _check_tls_active() -> CheckResult:
         return {"ok": False, "detail": f"Could not check: {e}"}
 
 
-def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
-    """Only expected ports are listening."""
+def _secure_ports() -> dict[int, str]:
+    """Return the static-secure-port → label map, including the configured router port.
+
+    The router's HTTP listener (``Config.port``, default 8080) is loopback to
+    Caddy in production but binds ``0.0.0.0`` for simplicity — it should
+    therefore be reported as expected, not flagged.
+    """
+    secure: dict[int, str] = dict(_PUBLIC_SECURE_PORTS)
+    try:
+        from compute_space.config import get_config  # noqa: PLC0415 — avoid import cycle at module load
+
+        secure[get_config().port] = "Router (compute_space)"
+    except Exception:
+        # If the config isn't available (e.g. unit-testing the helper directly),
+        # fall back to the public-only set.
+        pass
+    return secure
+
+
+def list_listening_ports(db: sqlite3.Connection | None = None) -> list[ListeningPort]:
+    """Return every TCP port the VM is listening on, classified.
+
+    Used by the audit's ``no_unexpected_ports`` check and by the System page's
+    listening-ports table.
+
+    Each entry is unique by ``(port, address)`` and is sorted by port. If
+    ``ss`` cannot be invoked, returns an empty list — callers should handle
+    this case (the audit check below treats it as a failure).
+    """
     try:
         result = subprocess.run(
             ["ss", "-tlnH"],
@@ -125,41 +184,67 @@ def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckRes
             text=True,
             timeout=5,
         )
-        listening_ports = set()
-        for line in result.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                addr = parts[3]
-                port_str = addr.rsplit(":", 1)[-1]
-                try:
-                    listening_ports.add(int(port_str))
-                except ValueError:
-                    pass
+    except Exception:
+        return []
 
-        # Build dynamic whitelist from DB port mappings
-        allocated_ports: set[int] = set()
-        if db is not None:
-            rows = db.execute("SELECT host_port FROM app_port_mappings").fetchall()
-            allocated_ports = {row["host_port"] for row in rows}
+    # Build dynamic whitelist from DB port mappings, mapped to app names so
+    # the System page can show which app reserved a port.
+    app_by_port: dict[int, str] = {}
+    if db is not None:
+        rows = db.execute("SELECT host_port, app_name FROM app_port_mappings").fetchall()
+        app_by_port = {row["host_port"]: row["app_name"] for row in rows}
 
-        unexpected = set()
-        for port in listening_ports:
-            if port in _SECURE_PORTS:
-                continue
-            if 9000 <= port <= 9999:
-                continue  # app ports range
-            if port in allocated_ports:
-                continue  # explicitly allocated port mapping
-            unexpected.add(port)
+    secure_ports = _secure_ports()
 
-        if unexpected:
-            return {
-                "ok": False,
-                "detail": f"Unexpected listening ports: {sorted(unexpected)}",
-            }
+    seen: set[tuple[int, str]] = set()
+    ports: list[ListeningPort] = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        addr = parts[3]
+        port_str = addr.rsplit(":", 1)[-1]
+        try:
+            port = int(port_str)
+        except ValueError:
+            continue
+        key = (port, addr)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if port in secure_ports:
+            classification, label = "secure", secure_ports[port]
+        elif port in app_by_port:
+            classification, label = "allocated", f"App: {app_by_port[port]}"
+        elif 9000 <= port <= 9999:
+            classification, label = "app_range", "App range (9000-9999)"
+        else:
+            classification, label = "unexpected", "Unexpected"
+
+        ports.append(
+            {"port": port, "address": addr, "classification": classification, "label": label},
+        )
+
+    ports.sort(key=lambda p: (p["port"], p["address"]))
+    return ports
+
+
+def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
+    """Only expected ports are listening."""
+    ports = list_listening_ports(db=db)
+    if not ports:
+        # ``ss`` failed or returned nothing; surface that instead of silently passing.
+        return {"ok": False, "detail": "Could not enumerate listening ports"}
+
+    unexpected = sorted({p["port"] for p in ports if p["classification"] == "unexpected"})
+    if unexpected:
         return {
-            "ok": True,
-            "detail": f"Only expected ports listening: {sorted(listening_ports)}",
+            "ok": False,
+            "detail": f"Unexpected listening ports: {unexpected}",
         }
-    except Exception as e:
-        return {"ok": False, "detail": f"Could not check ports: {e}"}
+    all_ports = sorted({p["port"] for p in ports})
+    return {
+        "ok": True,
+        "detail": f"Only expected ports listening: {all_ports}",
+    }

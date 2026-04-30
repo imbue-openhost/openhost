@@ -5,6 +5,7 @@ from typing import Any
 
 from quart import Quart
 from quart import Response
+from quart import current_app
 from quart import redirect
 from quart import request
 from quart import url_for
@@ -142,10 +143,29 @@ def create_app(config: Config | None = None) -> Quart:
         def app_url(app_name: str) -> str:
             return f"{proto}://{app_name}.{base_host}/"
 
+        def static_url(filename: str) -> str:
+            """Like ``url_for('static', ...)`` but cache-busted by file mtime.
+
+            Browsers aggressively cache static JS/CSS, so a deploy that ships a
+            new template + JS would otherwise leave returning visitors running
+            stale JS against new HTML (silently no-op'ing on missing element
+            ids).  Appending ``?v=<mtime>`` forces a fresh fetch whenever the
+            file changes.
+            """
+            base = url_for("static", filename=filename)
+            try:
+                static_root = Path(current_app.static_folder or "")
+                mtime = int((static_root / filename).stat().st_mtime)
+            except OSError:
+                return base
+            sep = "&" if "?" in base else "?"
+            return f"{base}{sep}v={mtime}"
+
         return {
             "zone_name": zone_name,
             "zone_domain": base_host,
             "app_url": app_url,
+            "static_url": static_url,
         }
 
     # Terminal cleanup

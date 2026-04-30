@@ -97,7 +97,7 @@ def test_pre_setup_security_audit(tmp_path):
         assert isinstance(security["secure"], bool)
         assert "checks" in security
 
-        expected_checks = {"ssh_disabled", "ssh_password_disabled", "tls_active", "no_unexpected_ports"}
+        expected_checks = {"ssh_password_disabled", "tls_active", "no_unexpected_ports"}
         assert set(security["checks"].keys()) == expected_checks
 
         for name, check in security["checks"].items():
@@ -171,7 +171,6 @@ class TestRouterCore:
         data = r.json()
         assert isinstance(data["secure"], bool)
         expected_checks = {
-            "ssh_disabled",
             "ssh_password_disabled",
             "tls_active",
             "no_unexpected_ports",
@@ -207,6 +206,51 @@ class TestRouterCore:
         r = admin_session.get(f"{base_url}/dashboard")
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
+        # Security audit, storage status, and SSH toggle live on the System page,
+        # not the dashboard.
+        for system_only_element in (
+            'id="security-table"',
+            'id="storage-table"',
+            'id="ports-table"',
+            'id="ssh-btn"',
+        ):
+            assert system_only_element not in r.text
+
+    def test_system_page_requires_auth(self, admin_session, config):
+        """Unauthenticated requests to /system/ redirect to /login."""
+        base_url = f"http://{config.host}:{config.port}"
+        r = requests.get(
+            f"{base_url}/system/",
+            allow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
+
+    def test_system_page_after_login(self, admin_session, config):
+        base_url = f"http://{config.host}:{config.port}"
+        r = admin_session.get(f"{base_url}/system/")
+        assert r.status_code == 200
+        # The System page hosts the security audit, listening ports, storage,
+        # and SSH controls.
+        assert 'id="security-table"' in r.text
+        assert 'id="ports-table"' in r.text
+        assert 'id="storage-table"' in r.text
+        assert 'id="ssh-btn"' in r.text
+
+    def test_listening_ports_endpoint(self, admin_session, config):
+        """GET /api/listening-ports returns a list of classified ports."""
+        base_url = f"http://{config.host}:{config.port}"
+        r = admin_session.get(f"{base_url}/api/listening-ports")
+        assert r.status_code == 200
+        data = r.json()
+        assert "ports" in data
+        assert isinstance(data["ports"], list)
+        # Each entry must have the expected shape.
+        for entry in data["ports"]:
+            assert isinstance(entry["port"], int)
+            assert isinstance(entry["address"], str)
+            assert entry["classification"] in {"secure", "app_range", "allocated", "unexpected"}
+            assert isinstance(entry["label"], str)
 
     def test_setup_returns_403_if_already_set_up(self, admin_session, config):
         """GET /setup returns 403 when owner already exists."""
