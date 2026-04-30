@@ -731,6 +731,132 @@ def _copy_tree(src: str, dst: str) -> None:
             )
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class _SwitchPlan:
+    """Internal plan derived from operator inputs + DB state.
+
+    Computed once at the top of ``switch_backend`` and passed to the
+    extracted helper phases so each phase reads what it needs without
+    rederiving it.
+    """
+
+    current: BackendState
+    target_backend: str
+    s3_bucket: str | None
+    s3_region: str | None
+    s3_endpoint: str | None
+    s3_access_key_id: str | None
+    s3_secret_access_key: str | None
+    volume_name: str
+    delete_source_after_copy: bool
+
+
+def _bring_up_target(config: Config, db: sqlite3.Connection, plan: _SwitchPlan) -> tuple[str, bool]:
+    """Install + format + mount the new backend; return (new_archive_dir, mount_active).
+
+    ``mount_active`` is True iff this call brought a new JuiceFS
+    mount up — used by the failure path to umount it again.
+    """
+    if plan.target_backend == "s3":
+        _update_state(db, state_message="Installing juicefs")
+        install_juicefs(config)
+        _update_state(db, state_message="Formatting volume")
+        format_volume(
+            config,
+            s3_bucket=plan.s3_bucket,
+            s3_region=plan.s3_region,
+            s3_endpoint=plan.s3_endpoint,
+            s3_access_key_id=plan.s3_access_key_id,
+            s3_secret_access_key=plan.s3_secret_access_key,
+            juicefs_volume_name=plan.volume_name,
+        )
+        _update_state(db, state_message="Mounting volume")
+        mount(config, plan.s3_access_key_id, plan.s3_secret_access_key)
+        return juicefs_mount_dir(config), True
+    new_archive_dir = os.path.join(config.persistent_data_dir, "app_archive")
+    os.makedirs(new_archive_dir, exist_ok=True)
+    return new_archive_dir, False
+
+
+def _migrate_archive_data(
+    db: sqlite3.Connection,
+    plan: _SwitchPlan,
+    old_archive_dir: str,
+    new_archive_dir: str,
+) -> None:
+    """Wipe stale entries in the destination, then copy source -> destination.
+
+    The wipe ensures a switch from an empty source doesn't silently
+    leave whatever was there from a previous switch.  Skipped when
+    going local -> s3 because the freshly-formatted JuiceFS volume is
+    already empty.
+    """
+    _update_state(db, state_message="Copying archive data")
+    if plan.current.backend == "local" and plan.target_backend == "s3":
+        # JuiceFS just got formatted — destination is empty.
+        pass
+    elif os.path.isdir(new_archive_dir):
+        for entry in list(os.scandir(new_archive_dir)):
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path)
+                else:
+                    os.unlink(entry.path)
+            except OSError as exc:
+                # Log but don't abort — the new copy will overlay any
+                # partially-removed dir, and the operator gets a
+                # visible warning rather than a silent retain.
+                logger.warning(
+                    "Failed to remove stale entry %s before copy: %s",
+                    entry.path,
+                    exc,
+                )
+    if os.path.isdir(old_archive_dir):
+        _copy_tree(old_archive_dir, new_archive_dir)
+
+
+def _tear_down_source(
+    config: Config, db: sqlite3.Connection, plan: _SwitchPlan, old_archive_dir: str
+) -> None:
+    """Umount the old s3 mount (if any) and optionally delete source-side data.
+
+    A failed umount is fatal: leaving the JuiceFS mount up while the
+    DB says backend=local would orphan the FUSE process; worse, if
+    delete_source_after_copy is set we'd be about to ``rmtree`` the
+    still-mounted path and JuiceFS would obediently delete every chunk
+    in S3.
+    """
+    if plan.current.backend == "s3":
+        _update_state(db, state_message="Unmounting old volume")
+        try:
+            umount(config)
+        except Exception as exc:
+            raise BackendSwitchError(
+                f"Failed to unmount the old S3 backend — refusing to "
+                f"continue because the next steps could destroy live "
+                f"data.  Original error: {exc}"
+            ) from exc
+
+    # Optionally delete source-side data once the copy made it to the
+    # new home AND any source mount is torn down.  Only frees space on
+    # the LOCAL backend; on s3->local the rmtree here removes the
+    # empty FUSE mount-point dir on local disk but doesn't touch S3.
+    if plan.delete_source_after_copy and os.path.isdir(old_archive_dir):
+        try:
+            shutil.rmtree(old_archive_dir)
+        except OSError as exc:
+            logger.warning(
+                "delete_source_after_copy: rmtree(%s) failed: %s",
+                old_archive_dir,
+                exc,
+            )
+        else:
+            # Recreate the empty local default so future deploys that
+            # happen to run before another switch don't fail.
+            if plan.current.backend == "local":
+                os.makedirs(old_archive_dir, exist_ok=True)
+
+
 def switch_backend(
     config: Config,
     db: sqlite3.Connection,
@@ -853,105 +979,20 @@ def switch_backend(
             stopped_apps.append(name)
 
         old_archive_dir = archive_dir_for_backend(config, current.backend)
-
-        # Bring up the target backend.
-        if target_backend == "s3":
-            _update_state(db, state_message="Installing juicefs")
-            install_juicefs(config)
-            _update_state(db, state_message="Formatting volume")
-            format_volume(
-                config,
-                s3_bucket=s3_bucket,
-                s3_region=s3_region,
-                s3_endpoint=s3_endpoint,
-                s3_access_key_id=s3_access_key_id,
-                s3_secret_access_key=s3_secret_access_key,
-                juicefs_volume_name=volume_name,
-            )
-            _update_state(db, state_message="Mounting volume")
-            mount(config, s3_access_key_id, s3_secret_access_key)
-            new_mount_active = True
-            new_archive_dir = juicefs_mount_dir(config)
-        else:
-            new_archive_dir = os.path.join(config.persistent_data_dir, "app_archive")
-            os.makedirs(new_archive_dir, exist_ok=True)
-
-        # Copy data.  ``_copy_tree`` doesn't delete entries that exist
-        # in the destination but not in the source, so a switch from
-        # an empty archive doesn't silently retain whatever was there
-        # from a previous switch — the destination is wiped first.
-        # On local->s3 the destination is freshly-formatted JuiceFS
-        # so it's already empty; on s3->local it might have stale
-        # content from before the previous local->s3 switch.
-        _update_state(db, state_message="Copying archive data")
-        if current.backend == "local" and target_backend == "s3":
-            # JuiceFS just got formatted — destination is empty, no
-            # need to wipe.
-            pass
-        elif os.path.isdir(new_archive_dir):
-            for entry in list(os.scandir(new_archive_dir)):
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        shutil.rmtree(entry.path)
-                    else:
-                        os.unlink(entry.path)
-                except OSError as exc:
-                    # Log but don't abort — the new copy will overlay
-                    # any partially-removed dir, and the operator gets
-                    # a visible warning rather than a silent retain.
-                    logger.warning(
-                        "Failed to remove stale entry %s before copy: %s",
-                        entry.path,
-                        exc,
-                    )
-        if os.path.isdir(old_archive_dir):
-            _copy_tree(old_archive_dir, new_archive_dir)
-
-        # Tear down the source backend.  A failed umount is fatal:
-        # if we left the JuiceFS mount up while ``backend='local'``
-        # in the DB, ``attach_on_startup`` on the next boot would
-        # see backend=local and skip the mount, leaving an orphaned
-        # FUSE process.  Worse, if delete_source_after_copy is set
-        # we'd be about to ``rmtree`` the still-mounted path —
-        # JuiceFS would dutifully delete every chunk in S3.  Bail.
-        if current.backend == "s3":
-            _update_state(db, state_message="Unmounting old volume")
-            try:
-                umount(config)
-            except Exception as exc:
-                raise BackendSwitchError(
-                    f"Failed to unmount the old S3 backend — refusing to "
-                    f"continue because the next steps could destroy live "
-                    f"data.  Original error: {exc}"
-                ) from exc
-            # We just umounted the previous s3 mount we'd been
-            # attached to before this switch.  The new s3 mount (if
-            # any) is now the only thing using the mount point.
-            # ``new_mount_active`` is unchanged.
-
-        # Optionally delete source-side data once the copy made it
-        # to the new home AND any source mount is torn down (so we're
-        # not deleting through a still-live FUSE filesystem).  This
-        # only frees space on the LOCAL backend; on s3->local the
-        # ``rmtree`` here removes the empty FUSE mount-point dir on
-        # local disk but doesn't touch the S3 bucket — operators have
-        # to delete that manually if they want to stop paying for it.
-        # Errors are logged rather than swallowed so the operator can
-        # see why disk space wasn't freed when they expected it.
-        if delete_source_after_copy and os.path.isdir(old_archive_dir):
-            try:
-                shutil.rmtree(old_archive_dir)
-            except OSError as exc:
-                logger.warning(
-                    "delete_source_after_copy: rmtree(%s) failed: %s",
-                    old_archive_dir,
-                    exc,
-                )
-            else:
-                # Recreate the empty local default so future deploys
-                # that happen to run before another switch don't fail.
-                if current.backend == "local":
-                    os.makedirs(old_archive_dir, exist_ok=True)
+        plan = _SwitchPlan(
+            current=current,
+            target_backend=target_backend,
+            s3_bucket=s3_bucket,
+            s3_region=s3_region,
+            s3_endpoint=s3_endpoint,
+            s3_access_key_id=s3_access_key_id,
+            s3_secret_access_key=s3_secret_access_key,
+            volume_name=volume_name,
+            delete_source_after_copy=delete_source_after_copy,
+        )
+        new_archive_dir, new_mount_active = _bring_up_target(config, db, plan)
+        _migrate_archive_data(db, plan, old_archive_dir, new_archive_dir)
+        _tear_down_source(config, db, plan, old_archive_dir)
 
         # Persist the new state.  Clearing s3 creds when switching
         # back to local is intentional — see _update_state.
