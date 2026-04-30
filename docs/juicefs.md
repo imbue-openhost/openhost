@@ -72,8 +72,13 @@ without the metadata you can't reattach.  The metadata-dump timer
 covers this:
 
 1. Provision a fresh openhost VM with `juicefs_enabled=true` and the
-   SAME S3 bucket + same volume name as before.  The format step
-   detects the existing volume in S3 and is a no-op.
+   SAME S3 bucket + same volume name as before.  The ansible role
+   re-runs `juicefs format` (the host-side sentinel file
+   `/var/lib/juicefs/.formatted` doesn't exist on the fresh VM).
+   `juicefs format` is non-destructive when invoked against an
+   already-formatted volume with the same arguments — it just
+   reattaches the local SQLite metadata to the existing S3 layout —
+   so this is safe to run on the recovery VM.
 2. Restore `juicefs-metadata-dump.json` from the most recent restic
    snapshot to its original path.
 3. `sudo -u host juicefs load sqlite3:///var/lib/juicefs/meta.db

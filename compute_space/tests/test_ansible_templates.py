@@ -229,10 +229,10 @@ def test_juicefs_mount_restart_on_failure(templates_env: Environment) -> None:
 
 
 def test_juicefs_mount_execstop_uses_shell(templates_env: Environment) -> None:
-    """systemd does NOT execute ExecStop= via a shell.  Earlier this unit
-    had ``... umount X || /bin/umount -l X`` directly on the line, which
-    would have been passed as literal argv to ``juicefs umount`` and
-    silently failed the lazy-umount fallback.  Pin the shell wrap.
+    """systemd does not execute ExecStop= via a shell, so a bare ``||``
+    would be passed as literal argv to ``juicefs umount`` and the
+    lazy-umount fallback would silently never run.  The shell wrapper
+    around the umount + fallback is therefore mandatory.
     """
     rendered = templates_env.get_template("juicefs-mount.service.j2").render()
     exec_stop = next(line for line in rendered.splitlines() if line.startswith("ExecStop="))

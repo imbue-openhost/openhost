@@ -207,3 +207,76 @@ async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
     finally:
         db.close()
     assert [(r[0], r[1]) for r in rows] == [("old-name", "running")], rows
+
+
+@pytest.mark.asyncio
+async def test_rename_rollback_continues_when_a_rollback_rename_itself_fails(
+    tmp_path: Path,
+) -> None:
+    """If a rollback rename ALSO fails (e.g. the underlying filesystem
+    is gone for both forward and reverse), the endpoint must still:
+
+    - Return 500 surfacing the *original* forward-rename failure (not
+      the rollback failure), so operators know the trigger.
+    - Continue rolling back the OTHER renamed tiers — a single bad
+      tier shouldn't abandon the rest as new-name when the operator-
+      visible state needs to be old-name.
+    - Restore the DB status field, since the on-disk + DB-status
+      consistency invariant the route promises is the same regardless
+      of how partial the on-disk rollback turned out.
+    """
+    cfg = _make_test_config(tmp_path, port=20203)
+    init_db(_FakeApp(cfg.db_path))
+    _seed_app_row(cfg.db_path, "old-name", status="running")
+    _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
+
+    real_rename = os.rename
+    archive_root = os.path.realpath(cfg.app_archive_dir)
+    app_temp_root = os.path.realpath(
+        str(Path(cfg.temporary_data_dir) / "app_temp_data")
+    )
+
+    def flaky_rename(src: str, dst: str) -> None:
+        parent = os.path.realpath(os.path.dirname(src))
+        # Forward rename of the archive tier fails (the trigger).
+        if parent == archive_root and os.path.basename(src) == "old-name":
+            raise OSError(28, "simulated transient archive mount failure")
+        # Rollback rename of app_temp_data also fails (the wrinkle).
+        if parent == app_temp_root and os.path.basename(src) == "new-name":
+            raise OSError(5, "simulated rollback rename failure")
+        real_rename(src, dst)
+
+    with mock.patch("os.rename", side_effect=flaky_rename):
+        status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
+
+    assert status == 500, payload
+    # The error surfaced must be the original archive-rename failure,
+    # not the rollback failure — operators need the trigger, not the
+    # downstream symptom.
+    assert "transient archive mount failure" in (payload or {}).get("error", ""), payload
+
+    # app_data successfully rolled back to old-name.  app_temp_data
+    # is the wedged tier — its forward rename succeeded but its
+    # rollback rename failed, so it sits at new-name.  This documents
+    # the limitation: the route is best-effort, and the operator log
+    # is the recovery path for cases where rollback also fails.
+    parents = _tier_parents(cfg)
+    assert (parents["app_data"] / "old-name").exists()
+    assert not (parents["app_data"] / "new-name").exists()
+    assert (parents["app_archive"] / "old-name").exists()
+    assert not (parents["app_archive"] / "new-name").exists()
+    # The wedged tier — explicitly assert this rather than glossing
+    # over it, so a future refactor that tries harder to rollback
+    # has a clear signal where to update the test.
+    assert (parents["app_temp_data"] / "new-name").exists()
+    assert not (parents["app_temp_data"] / "old-name").exists()
+
+    # The DB-status restore path runs regardless of partial rollback,
+    # because the operator's dashboard is the only signal they have
+    # without grepping logs.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        rows = db.execute("SELECT name, status FROM apps").fetchall()
+    finally:
+        db.close()
+    assert [(r[0], r[1]) for r in rows] == [("old-name", "running")], rows
