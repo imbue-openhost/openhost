@@ -13,9 +13,6 @@ These tests cover the manifest opt-in plumbing that flows from
 
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
 from compute_space.config import DefaultConfig
@@ -131,6 +128,68 @@ def test_provision_data_archive_subdir_under_access_all_data(tmp_path) -> None:
     # subdir must exist (env var stamped to the in-container path).
     assert (archive_dir / manifest.name).is_dir()
     assert env["OPENHOST_APP_ARCHIVE_DIR"] == str(archive_dir / manifest.name)
+
+
+def test_provision_data_refuses_when_archive_dir_missing(tmp_path) -> None:
+    """When the configured archive root doesn't exist as a directory
+    (e.g. an operator-overridden JuiceFS mount that isn't attached
+    yet), provisioning must fail loudly rather than silently
+    creating a local-disk ghost path that gets shadowed when the
+    mount eventually attaches.
+
+    This is the load-bearing invariant on the operator-side
+    JuiceFS-mount-failure path: systemd ordering makes openhost-
+    core boot-fail when the mount fails, but if the operator
+    bypasses that ordering somehow, this guard turns the failure
+    into a clean error message instead of silent data loss.
+    """
+    data_dir = tmp_path / "persistent"
+    temp_dir = tmp_path / "temp"
+    archive_dir = tmp_path / "doesnt-exist"  # NOT created
+    data_dir.mkdir()
+    temp_dir.mkdir()
+
+    manifest = _manifest(app_data=True, app_archive=True)
+    with pytest.raises(RuntimeError, match="archive_dir"):
+        provision_data(
+            manifest.name,
+            manifest,
+            str(data_dir),
+            str(temp_dir),
+            str(archive_dir),
+            my_openhost_redirect_domain="my.example.com",
+            zone_domain="example.com",
+            port=8080,
+        )
+
+
+def test_provision_data_does_not_fail_when_archive_dir_missing_and_no_archive_opt_in(
+    tmp_path,
+) -> None:
+    """Apps that don't ask for app_archive must NOT fail just
+    because the configured archive_dir doesn't exist.  The whole
+    point of the opt-in is that operators with no JuiceFS (and
+    therefore potentially with a fallback path that hasn't been
+    populated by Config.make_all_dirs yet) can still deploy
+    archive-free apps."""
+    data_dir = tmp_path / "persistent"
+    temp_dir = tmp_path / "temp"
+    archive_dir = tmp_path / "doesnt-exist"  # NOT created
+    data_dir.mkdir()
+    temp_dir.mkdir()
+
+    manifest = _manifest(app_data=True)  # no app_archive
+    # Must not raise.
+    provision_data(
+        manifest.name,
+        manifest,
+        str(data_dir),
+        str(temp_dir),
+        str(archive_dir),
+        my_openhost_redirect_domain="my.example.com",
+        zone_domain="example.com",
+        port=8080,
+    )
 
 
 def test_provision_data_archive_idempotent_on_redeploy(tmp_path) -> None:

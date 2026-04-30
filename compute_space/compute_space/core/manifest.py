@@ -309,13 +309,22 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     # its own would invite that corruption — every meaningful app
     # needs SOME local state (at least a sqlite session db, even if
     # the bulk content is archive-resident).
-    if data_section.get("app_archive") and not (
-        data_section.get("app_data") or data_section.get("sqlite")
-    ):
+    #
+    # ``access_all_data`` is the catch-all permission that grants
+    # every tier including the local-disk one, so it satisfies the
+    # invariant on its own — an access_all_data app gets app_data
+    # access regardless of whether the manifest names the field.
+    has_local_tier = (
+        data_section.get("app_data")
+        or data_section.get("sqlite")
+        or data_section.get("access_all_data")
+    )
+    if data_section.get("app_archive") and not has_local_tier:
         raise ValueError(
-            "[data].app_archive requires [data].app_data (or [data].sqlite). "
-            "The archive tier is for bulk content; working state and "
-            "embedded databases must live in the local-disk app_data tier."
+            "[data].app_archive requires [data].app_data (or [data].sqlite, "
+            "or [data].access_all_data).  The archive tier is for bulk "
+            "content; working state and embedded databases must live in "
+            "the local-disk app_data tier."
         )
 
     return AppManifest(

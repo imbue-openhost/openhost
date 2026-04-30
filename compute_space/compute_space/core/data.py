@@ -124,14 +124,34 @@ def provision_data(
         env_vars["OPENHOST_APP_TEMP_DIR"] = app_temp_dir
 
     if manifest.app_archive or manifest.access_all_data:
-        # When the archive root is operator-overridden (e.g. a JuiceFS
-        # mount), the directory itself was created by ansible at host
-        # setup time.  We still ``makedirs(..., exist_ok=True)`` for
-        # the per-app subdir — that's a normal mkdir on whatever FS
-        # backs the root, and works on JuiceFS the same way it works
-        # on local disk.  The parent ``archive_dir`` is NOT created
-        # here when it's operator-overridden; that's the operator's
-        # job and is handled in Config.make_all_dirs.
+        # ``archive_dir`` itself must already exist by the time we
+        # provision an app.  For the local-fallback path it was
+        # created by ``Config.make_all_dirs``; for an operator-
+        # overridden path (e.g. a JuiceFS mount) it was created by
+        # ansible during host setup and the mount must already be
+        # attached.
+        #
+        # We deliberately do NOT use ``os.makedirs(app_archive_dir,
+        # exist_ok=True)`` here — that would silently create the
+        # override path on local disk if the JuiceFS mount hasn't
+        # come up yet, and apps would then write to a local-disk
+        # ghost path that gets shadowed once JuiceFS attaches,
+        # losing those writes.  Instead, refuse to provision if the
+        # archive root doesn't exist; the systemd unit ordering
+        # makes openhost-core boot-fail when the mount fails, so
+        # this branch should only fire on a misconfigured zone.
+        if not os.path.isdir(archive_dir):
+            raise RuntimeError(
+                f"archive_dir {archive_dir!r} does not exist or is not a "
+                f"directory.  If JuiceFS is configured, check that the "
+                f"mount is attached; otherwise check that "
+                f"Config.make_all_dirs() ran on startup."
+            )
+        # mkdir only the per-app leaf, not parents — exist_ok=True
+        # for redeploy idempotency.  ``os.mkdir`` would fail if
+        # ``app_archive_dir`` already exists; we use ``makedirs``
+        # with the parent existence-check above guaranteeing the
+        # parent is real.
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
 

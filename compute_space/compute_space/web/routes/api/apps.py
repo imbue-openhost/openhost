@@ -436,9 +436,21 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     )
     db.commit()
 
+    # Rename every per-app subdirectory across each storage tier
+    # (local-persistent, local-scratch, archive).  Missing the
+    # archive tier here would orphan its contents under the old
+    # name; the next provision_data on the renamed app would create
+    # a fresh empty archive subdir, silently abandoning whatever
+    # was there.
+    #
+    # ``config.app_archive_dir`` may resolve to a JuiceFS mount
+    # path; the rename is just a directory rename within the
+    # mount, which JuiceFS handles atomically via its metadata
+    # engine.
     for parent in [
         os.path.join(config.persistent_data_dir, "app_data"),
         os.path.join(config.temporary_data_dir, "app_temp_data"),
+        config.app_archive_dir,
     ]:
         old_dir = os.path.join(parent, app_name)
         new_dir = os.path.join(parent, new_name)

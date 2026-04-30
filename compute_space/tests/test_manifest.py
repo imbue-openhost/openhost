@@ -601,3 +601,14 @@ class TestAppArchive:
         # apps that want the archive bind must opt in explicitly.
         assert manifest.app_archive is False
         assert manifest.access_all_data is True
+
+    def test_app_archive_with_access_all_data_and_no_app_data_accepted(self):
+        """access_all_data implies access to every tier including
+        the local-disk one, so it satisfies the 'app_archive needs
+        local state somewhere' invariant on its own.  An
+        access_all_data manifest that adds app_archive=true must NOT
+        be rejected for missing app_data."""
+        toml = MINIMAL + "\n[data]\naccess_all_data = true\napp_archive = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.access_all_data is True

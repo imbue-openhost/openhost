@@ -6,11 +6,13 @@
 - each user has a “disk” with folders etc like google drive.
 - there’s some standard structure for the folders
 - apps have permissions to subsets of this drive
-- each app has a permanent and temporary storage area.
-    - permanent is for stuff that needs backed up. it should be legible to users - standard file types. could be exported and imported into a different app relatively easily.
-        - examples: sqlite files. markdown notes. source jpegs for a photo library. etc.
-    - temporary is for app-specific stuff that the user doesn’t need to think about and can get recreated on-demand if needed. caches and whatnot.
-        - examples: low-res thumbnails generated from source photos.
+- each app has three storage areas with different durability + size + latency tradeoffs:
+    - **permanent data (`app_data`)** — local disk, small, fast, backed up, legible to users.  Standard file types, exportable, importable.  This is where SQLite databases and other embedded-DB stores live (LMDB, RocksDB, BoltDB) — the latency profile is right and the strict POSIX consistency keeps WAL fsyncs safe.
+        - examples: sqlite files. markdown notes. JSON config. small assets.
+    - **archive data (`app_archive`)** — operator-selected backing (local-disk fallback by default; can be configured to a JuiceFS-on-S3 mount).  Large, optionally elastic, durability tied to the operator's choice.  Higher latency than `app_data` on uncached reads.  Intended for bulk content the app would otherwise outgrow local disk for.
+        - examples: source jpegs / RAWs in a photo library, original video files, attachment uploads, large model weights.
+    - **temporary data (`app_temp_data`)** — local disk scratch, not backed up, recreatable on demand.
+        - examples: low-res thumbnails generated from source photos, transcoding work files, in-flight upload chunks.
 - there’s also a folder for router-level data, eg the sqlite database used by the router.
 - where do app build artifacts go? probably in app temp data?
 - folder structure (as seen inside containers, mounted at `/data/`)
@@ -19,9 +21,19 @@
             - app_name/
         - app_temp_data/
             - app_name/
+        - app_archive/
+            - app_name/
         - router_data/
             - router.db
-- regardless of permissions, apps should see the same folder structure, just only with folders they have access to. that way the structure doesn't change if the permissions change. without any special permissions, apps will just have basically `/data/app_data/APP_NAME` and `/data/app_temp_data/APP_NAME`.
+- regardless of permissions, apps should see the same folder structure, just only with folders they have access to. that way the structure doesn't change if the permissions change. without any special permissions, apps will just have basically `/data/app_data/APP_NAME` and `/data/app_temp_data/APP_NAME` (and `/data/app_archive/APP_NAME` if requested).
+
+### Why three tiers, not two
+
+`app_data` and `app_archive` look similar from the in-container perspective — both are POSIX directories the app reads/writes — but their host backings have different access patterns and constraints.
+
+`app_data` is local NVMe.  Microsecond random reads, fsync that means something, strict POSIX.  This is where SQLite WAL files have to live: a WAL needs shared-memory mappings the kernel propagates between processes on the same host, and it needs `fsync()` to actually durably commit.  A network FS that gives close-to-open consistency or that buffers writes in a daemon process would corrupt SQLite databases silently.
+
+`app_archive` is the layer where the bytes can spill to S3 (via JuiceFS or similar).  Tens-to-hundreds-of-ms first-touch reads, eventual durability, no shared-memory mmap.  Apps that put the wrong data here — SQLite, anything using `fcntl` advisory locks for correctness — will hit data loss or corruption.  The manifest validator rejects `app_archive = true` without `app_data` (or `sqlite`, or `access_all_data`) so apps always have somewhere safe to put their working state.
 
 ### API
 
@@ -30,8 +42,10 @@
 
 ### Where data actually lives
 
-- persistent data (app_data, router_data) lives in the configured data directory
-- temp data (app_temp_data) lives in a separate subdirectory on the same disk, so that backups can target only the persistent data
+- permanent data (`app_data`) lives on the host's local disk under `persistent_data_dir/app_data/<app>`
+- temp data (`app_temp_data`) lives on a separate subdirectory under `temporary_data_dir`, so that backups can target only the persistent data
+- archive data (`app_archive`) lives at the path the operator configures via `archive_dir_override` in `config.toml`.  When unset (the default), the archive tier falls back to a local-disk subdirectory under `persistent_data_dir/app_archive/`.  Operators who want elastic capacity can point `archive_dir_override` at a JuiceFS mount path and every app's archive bind transparently flows through to S3.
+- the JuiceFS metadata database itself is small and lives on the host's local disk, so a fresh VM restoring from backup has the metadata to reattach to the existing S3 bucket — see the JuiceFS docs for the disaster-recovery runbook.
 
 ### permissions
 
