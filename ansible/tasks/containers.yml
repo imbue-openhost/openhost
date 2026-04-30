@@ -42,15 +42,25 @@
 # binds on 0.0.0.0:<host_port>).  25 is chosen so SMTP-serving apps can
 # bind port 25 directly.  Must match
 # compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
-- name: Configure unprivileged port floor
+#
+# kernel.apparmor_restrict_unprivileged_userns=0: Ubuntu 24.04 blocks
+# unprivileged user namespaces unless the calling binary has an
+# AppArmor profile.  The apt podman package ships one; the
+# conda-forge build we now install via pixi does not, so podman's
+# rootless reexec fails with "failed to reexec: Permission denied"
+# until we lift the restriction.  We could ship a custom profile
+# instead, but the sysctl is simpler and the security trade-off is
+# small on a single-purpose host.
+- name: Configure podman-related sysctls
   copy:
     content: |
       # Managed by OpenHost; do not edit by hand.
       net.ipv4.ip_unprivileged_port_start = 25
+      kernel.apparmor_restrict_unprivileged_userns = 0
     dest: /etc/sysctl.d/90-openhost-podman.conf
     mode: "0644"
 
-- name: Apply unprivileged port sysctl
+- name: Apply podman sysctls
   command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
   changed_when: false
 

@@ -43,6 +43,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y uidmap passt
+      # Ubuntu 24.04 blocks unprivileged user namespaces unless the
+      # calling binary has an AppArmor profile; conda-forge podman has
+      # none, so its rootless reexec fails with "failed to reexec:
+      # Permission denied" until we lift the restriction.  Ansible
+      # writes the equivalent sysctl on production hosts (see
+      # ansible/tasks/containers.yml).
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Verify rootless podman works
         run: |
           pixi run -e dev podman info --format '{{.Host.Security.Rootless}}' | grep -qx true

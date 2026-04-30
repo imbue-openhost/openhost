@@ -10,10 +10,10 @@ from argparse import Namespace
 import pytest
 
 from self_host_cli.doctor import _check_container_runtime
+from self_host_cli.doctor import _check_pixi
 from self_host_cli.doctor import _check_port
 from self_host_cli.doctor import _check_python
 from self_host_cli.doctor import _check_router_code
-from self_host_cli.doctor import _check_uv
 from self_host_cli.doctor import run_doctor
 from self_host_cli.down import _cleanup_pidfile
 from self_host_cli.down import _is_alive
@@ -101,8 +101,8 @@ class TestDoctorChecks:
         c = _check_python()
         assert c.ok is True
 
-    def test_uv_check(self):
-        c = _check_uv()
+    def test_pixi_check(self):
+        c = _check_pixi()
         assert c.ok is True
 
     def test_router_code_present(self):

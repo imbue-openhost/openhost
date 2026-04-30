@@ -2,7 +2,7 @@
 
 Checks:
   - Python >= 3.12
-  - uv available
+  - pixi available
   - Rootless container runtime accessible (currently podman)
   - Required ports not in use
   - Router code present
@@ -35,11 +35,11 @@ def _check_python() -> _Check:
     return _Check("Python >= 3.12", ok, detail)
 
 
-def _check_uv() -> _Check:
-    path = shutil.which("uv")
+def _check_pixi() -> _Check:
+    path = shutil.which("pixi")
     if path:
-        return _Check("uv installed", True, path)
-    return _Check("uv installed", False, "uv not found on PATH")
+        return _Check("pixi installed", True, path)
+    return _Check("pixi installed", False, "pixi not found on PATH")
 
 
 def _check_container_runtime() -> _Check:
@@ -120,7 +120,7 @@ def run_doctor() -> bool:
     """Run all checks, print results, return True if all passed."""
     checks: list[_Check] = [
         _check_python(),
-        _check_uv(),
+        _check_pixi(),
         _check_container_runtime(),
         _check_port(8080),
         _check_router_code(),
