@@ -102,6 +102,39 @@
     dest: /etc/containers/registries.conf
     mode: "0644"
 
+# Podman's pasta network backend doesn't auto-detect the host IP for
+# host.containers.internal / host.docker.internal.  Without a value,
+# container start fails with "host containers internal IP address is
+# empty".  apt-installed podman defaulted to slirp4netns which had a
+# fixed gateway IP, so this never came up on the old setup.
+#
+# Detect the host's primary IPv4 (the address used to reach the
+# public internet) and write it to containers.conf.  This is the
+# address app containers should target for OPENHOST_ROUTER_URL etc.
+- name: Detect host primary IPv4 (for host.containers.internal)
+  shell: |
+    set -o pipefail
+    ip -4 -o route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}'
+  args:
+    executable: /bin/bash
+  register: _host_primary_ip
+  changed_when: false
+
+- name: Assert host primary IP was detected
+  assert:
+    that:
+      - _host_primary_ip.stdout | length > 0
+    fail_msg: "Could not detect host primary IPv4 address for host.containers.internal"
+
+- name: Configure podman containers.conf
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      [containers]
+      host_containers_internal_ip = "{{ _host_primary_ip.stdout }}"
+    dest: /etc/containers/containers.conf
+    mode: "0644"
+
 # Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
 # as ext2/ext3 by stat -f -c '%T'), xfs, btrfs, tmpfs.  ZFS < 2.2 and
 # certain FUSE filesystems don't support it.
