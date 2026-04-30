@@ -1,36 +1,5 @@
-"""Operator-controlled archive backend management.
-
-The ``app_archive`` storage tier has two backends:
-
-- ``local``: per-app subdirs under ``<persistent_data_dir>/app_archive/``.
-  This is the default; new zones come up in this state and apps that
-  opt into ``app_archive`` work immediately.
-
-- ``s3``: per-app subdirs under a JuiceFS mount whose object backing
-  is an operator-supplied S3 bucket.  Switched on from the dashboard;
-  no provisioning-time configuration required.
-
-The current backend + S3 connection params are persisted in the
-``archive_backend`` row (see ``compute_space/db/schema.sql``).  This
-module owns everything that turns a desired backend state into the
-right host-side filesystem reality:
-
-- downloading and verifying the JuiceFS binary,
-- formatting the JuiceFS volume against an S3 bucket (idempotent),
-- starting/stopping the JuiceFS mount (managed as a child process of
-  openhost-core, not via systemd, so we don't need a sudoers
-  carve-out — the mount lives under the host user's home dir),
-- running the switch-flow that copies data between backends and
-  flips ``Config.archive_dir_override`` in-process,
-- reattaching to the configured backend on openhost-core startup.
-
-The module is intended to be the single source of truth for the
-backend state.  The api layer reads via ``read_state`` and writes
-via ``switch_backend``; the rest of openhost-core gets the
-host-side path via ``Config.app_archive_dir``, which the api layer
-keeps in sync by calling ``apply_backend_to_config`` after every
-backend transition.
-"""
+"""Operator-controlled archive backend management.  See
+``docs/data.md`` for the operator-facing model."""
 
 from __future__ import annotations
 
@@ -45,10 +14,10 @@ import tarfile
 import threading
 import time
 import urllib.error
-import dataclasses
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+
+import attr
 
 from compute_space.config import Config
 from compute_space.core.logging import logger
@@ -405,7 +374,7 @@ def umount(config: Config) -> None:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@attr.s(auto_attribs=True, frozen=True)
 class BackendState:
     """Operator-visible archive backend state."""
 
@@ -620,10 +589,11 @@ def test_s3_credentials(
     failure.  Used by the dashboard's "Test connection" button before
     the operator commits to a backend switch.
 
-    Implementation: do a HEAD on the bucket using boto3 if available,
-    else fall back to a signed v4 PUT-of-zero-bytes attempt and discard
-    the result.  We import boto3 lazily because openhost-core doesn't
-    otherwise need it and we don't want to widen the dep tree.
+    Uses boto3's ``head_bucket`` to validate.  ``boto3`` is imported
+    lazily because openhost-core doesn't otherwise need it on every
+    code path; if it's not installed, we return a descriptive error
+    rather than running the check (an actual switch attempt would
+    surface any cred problem via JuiceFS regardless).
     """
     try:
         import boto3
@@ -661,7 +631,7 @@ def test_s3_credentials(
 # module stays unit-testable without standing up the whole web stack.
 # The api layer wires the real callbacks; tests pass fakes.
 
-@dataclass
+@attr.s(auto_attribs=True, frozen=True)
 class AppHook:
     """Callbacks the api layer hands to ``switch_backend`` so the
     archive-backend code stays decoupled from the apps/containers
@@ -775,6 +745,9 @@ def switch_backend(
         )
 
     affected_apps: list[str] = []
+    new_mount_active = False  # set when the s3 target is up; used by
+    # the failure path to umount it again so we don't orphan a
+    # FUSE process while the DB rolls back to the old backend.
     try:
         # ``read_state`` and the no-op short-circuit live INSIDE the
         # try/except so a transient sqlite read failure doesn't leave
@@ -784,7 +757,7 @@ def switch_backend(
         # current.state is now 'switching' but its other fields
         # (backend, creds, etc.) reflect the pre-switch state, which
         # is what we want.
-        current = dataclasses.replace(current, state="idle")
+        current = attr.evolve(current, state="idle")
 
         if target_backend == current.backend:
             # No-op.  Release the lock and return.  This keeps the
@@ -834,6 +807,7 @@ def switch_backend(
             )
             _update_state(db, state_message="Mounting volume")
             mount(config, s3_access_key_id, s3_secret_access_key)
+            new_mount_active = True
             new_archive_dir = juicefs_mount_dir(config)
         else:
             new_archive_dir = os.path.join(config.persistent_data_dir, "app_archive")
@@ -887,10 +861,18 @@ def switch_backend(
                     f"continue because the next steps could destroy live "
                     f"data.  Original error: {exc}"
                 ) from exc
+            # We just umounted the previous s3 mount we'd been
+            # attached to before this switch.  The new s3 mount (if
+            # any) is now the only thing using the mount point.
+            # ``new_mount_active`` is unchanged.
 
-        # Optionally delete source data once we're sure the copy made it
+        # Optionally delete source-side data once the copy made it
         # to the new home AND any source mount is torn down (so we're
-        # not deleting through a still-live FUSE filesystem).
+        # not deleting through a still-live FUSE filesystem).  This
+        # only frees space on the LOCAL backend; on s3->local the
+        # ``rmtree`` here removes the empty FUSE mount-point dir on
+        # local disk but doesn't touch the S3 bucket — operators have
+        # to delete that manually if they want to stop paying for it.
         # Errors are logged rather than swallowed so the operator can
         # see why disk space wasn't freed when they expected it.
         if delete_source_after_copy and os.path.isdir(old_archive_dir):
@@ -932,11 +914,30 @@ def switch_backend(
         # path; existing references to the old Config are stale but
         # the route layer always re-fetches via ``get_config()``.
         hook.set_config(apply_backend_to_config(config, db))
+        new_mount_active = False  # state now matches the live mount
     except BackendSwitchError as exc:
         _update_state(db, state="idle", state_message=f"switch failed: {exc}")
+        if new_mount_active:
+            try:
+                umount(config)
+            except Exception:
+                logger.exception(
+                    "Failed to umount JuiceFS during switch rollback; the "
+                    "FUSE process is orphaned and the operator may need to "
+                    "umount it manually."
+                )
         raise
     except Exception as exc:
         _update_state(db, state="idle", state_message=f"switch failed: {exc}")
+        if new_mount_active:
+            try:
+                umount(config)
+            except Exception:
+                logger.exception(
+                    "Failed to umount JuiceFS during switch rollback; the "
+                    "FUSE process is orphaned and the operator may need to "
+                    "umount it manually."
+                )
         raise BackendSwitchError(str(exc)) from exc
     finally:
         # Always restart the apps we stopped, success or failure.

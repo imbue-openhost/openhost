@@ -1,19 +1,4 @@
-"""HTTP API for the operator-controlled archive backend.
-
-Three endpoints, all owner-authenticated:
-
-- ``GET  /api/storage/archive_backend`` — current state.
-- ``POST /api/storage/archive_backend`` — switch backends.
-- ``POST /api/storage/archive_backend/test_connection`` — pre-flight
-  check used by the dashboard's "Test connection" button before the
-  operator commits to a switch.
-
-The backend-switch flow runs in a worker thread because it does
-file copies + (potentially) a JuiceFS download/format/mount, none
-of which should run on the asyncio event loop.  The endpoint returns
-immediately with ``status: "switching"`` and the dashboard polls
-``GET`` for the final state.
-"""
+"""HTTP API for the operator-controlled archive backend."""
 
 from __future__ import annotations
 
@@ -21,7 +6,8 @@ import asyncio
 import re
 import sqlite3
 import threading
-from dataclasses import asdict
+
+import attr
 
 from quart import Blueprint
 from quart import current_app
@@ -60,7 +46,7 @@ def _state_to_response(state: BackendState) -> dict:
     again after the operator entered it; including it in any 200
     response would risk it landing in HTTP access logs.
     """
-    out = asdict(state)
+    out = attr.asdict(state)
     out.pop("s3_secret_access_key", None)
     return out
 

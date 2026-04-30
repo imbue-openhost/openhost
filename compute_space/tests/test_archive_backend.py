@@ -295,6 +295,46 @@ def test_switch_local_to_s3_happy_path(cfg, db, tmp_path):
     assert (Path(target) / "myapp" / "marker.txt").read_text() == "hello"
 
 
+def test_switch_local_to_s3_with_delete_source_clears_local(cfg, db):
+    """When delete_source_after_copy is set on a local->s3 switch,
+    the local-disk archive directory is recursively removed once the
+    copy succeeds (and re-created empty so future deploys don't
+    fail before another switch).  This is how operators free local
+    disk after migrating to S3.
+    """
+    local_dir = Path(cfg.persistent_data_dir) / "app_archive" / "myapp"
+    local_dir.mkdir(parents=True)
+    (local_dir / "marker.txt").write_text("hello")
+
+    target = juicefs_mount_dir(cfg)
+    os.makedirs(target, exist_ok=True)
+
+    hook, _ = _make_hook(archive_apps=[])
+    with (
+        mock.patch.object(archive_backend, "install_juicefs"),
+        mock.patch.object(archive_backend, "format_volume"),
+        mock.patch.object(archive_backend, "mount"),
+    ):
+        switch_backend(
+            cfg,
+            db,
+            hook,
+            target_backend="s3",
+            s3_bucket="b",
+            s3_access_key_id="a",
+            s3_secret_access_key="s",
+            delete_source_after_copy=True,
+        )
+
+    # Source was deleted (per-app dir gone) but the local archive
+    # parent dir was recreated empty so the next deploy can mkdir
+    # under it without bumping into a missing parent.
+    assert not local_dir.exists()
+    assert (Path(cfg.persistent_data_dir) / "app_archive").is_dir()
+    # And the data made it to the new backend.
+    assert (Path(target) / "myapp" / "marker.txt").read_text() == "hello"
+
+
 def test_switch_s3_to_local_clears_credentials(cfg, db):
     """Switching back to local must drop the secret access key from
     the DB so it doesn't outlive its usefulness; the bucket/region
@@ -384,6 +424,37 @@ def test_switch_state_transition_is_atomic(cfg, db):
             s3_access_key_id="a",
             s3_secret_access_key="s",
         )
+
+
+def test_install_juicefs_rejects_sha256_mismatch(cfg, tmp_path, monkeypatch):
+    """The sha256 verify is the primary defence against a compromised
+    release.  A mismatched tarball must abort install with a clear
+    error rather than silently writing whatever we got to disk.
+    """
+    fake_bytes = b"definitely-not-juicefs"
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    monkeypatch.setattr(
+        archive_backend.urllib.request,
+        "urlopen",
+        lambda url, timeout=120: _FakeResp(fake_bytes),
+    )
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        archive_backend.install_juicefs(cfg)
+    # And nothing got written to disk on the way out.
+    assert not archive_backend.is_juicefs_installed(cfg)
 
 
 def test_switch_failure_during_format_recovers_state(cfg, db):
