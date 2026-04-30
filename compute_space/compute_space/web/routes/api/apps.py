@@ -13,6 +13,7 @@ from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
 
+from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.core.apps import RESERVED_PATHS
 from compute_space.core.apps import app_log_path
@@ -400,7 +401,7 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     return jsonify({"ok": True})
 
 
-def _rename_app_storage_dirs(config, old_name: str, new_name: str) -> str | None:
+def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> str | None:
     """Rename per-app subdirs across the three storage tiers, with
     best-effort rollback on partial failure.
 
