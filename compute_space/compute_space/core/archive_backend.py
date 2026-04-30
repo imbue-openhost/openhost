@@ -25,10 +25,11 @@ right host-side filesystem reality:
 - reattaching to the configured backend on openhost-core startup.
 
 The module is intended to be the single source of truth for the
-backend state — the dashboard / API layer reads and writes via
-``get_state`` / ``switch_backend``; the rest of openhost-core asks
-``current_archive_dir(config)`` rather than touching ``Config``
-fields directly.
+backend state.  The api layer reads via ``read_state`` and writes
+via ``switch_backend``; the rest of openhost-core gets the
+host-side path via ``Config.app_archive_dir``, which the api layer
+keeps in sync by calling ``apply_backend_to_config`` after every
+backend transition.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ import tarfile
 import threading
 import time
 import urllib.error
+import dataclasses
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -103,12 +105,10 @@ def juicefs_mount_dir(config: Config) -> str:
     return os.path.join(config.data_root_dir, "app_archive_juicefs")
 
 
-def juicefs_dump_path(config: Config) -> str:
-    """Where the daily metadata dump lands so the existing backup app
-    picks it up.  The dump is a JSON snapshot of every inode + chunk
-    pointer; restoring is ``juicefs format`` + ``juicefs load``.
-    """
-    return os.path.join(config.openhost_data_path, "juicefs-metadata-dump.json")
+# TODO: a daily ``juicefs dump`` to ``persistent_data_dir/openhost/`` so
+# the existing restic-based backup app picks the dump up — that's the
+# DR path for "fresh VM, same S3 bucket, get the metadata back".
+# Tracked separately because it cuts across the backup app boundary.
 
 
 def is_juicefs_installed(config: Config) -> bool:
@@ -161,12 +161,15 @@ def install_juicefs(config: Config) -> None:
         member = next((m for m in tar.getmembers() if m.name == "juicefs"), None)
         if member is None:
             raise RuntimeError("JuiceFS tarball missing the ``juicefs`` binary")
+        # ``extractfile`` returns None for non-regular tar entries;
+        # check before entering the context manager so we surface a
+        # clear RuntimeError instead of an AttributeError on __enter__.
+        f = tar.extractfile(member)
+        if f is None:
+            raise RuntimeError("JuiceFS tarball entry was unreadable")
         binary_path = _juicefs_binary(config)
-        with tar.extractfile(member) as f:
-            if f is None:
-                raise RuntimeError("JuiceFS tarball entry was unreadable")
-            with open(binary_path, "wb") as out:
-                shutil.copyfileobj(f, out)
+        with f, open(binary_path, "wb") as out:
+            shutil.copyfileobj(f, out)
     os.chmod(_juicefs_binary(config), 0o750)
     logger.info("JuiceFS installed at %s", _juicefs_binary(config))
 
@@ -259,12 +262,13 @@ def mount(
     s3_access_key_id: str,
     s3_secret_access_key: str,
 ) -> None:
-    """Start ``juicefs mount`` as a foregrounded child process so it
-    inherits openhost-core's lifecycle.  Idempotent: if the mount is
-    already up, no-ops.
+    """Start ``juicefs mount`` as a child process so it inherits
+    openhost-core's lifecycle.  Idempotent: if the mount is already
+    up, no-ops.
 
-    Running with ``--no-background`` rather than as a systemd unit
-    means we don't need root or a sudoers carve-out.  openhost.service
+    JuiceFS mount runs in the foreground by default (no flag needed);
+    we leave it that way rather than going through a systemd unit so
+    we don't need root or a sudoers carve-out.  openhost.service
     already restarts on crash; if openhost-core dies the mount goes
     with it, which is the right semantics — apps mid-archive-write
     would see the mount drop, the supervisor restarts everything, and
@@ -310,11 +314,12 @@ def mount(
             rc = _mount_proc.poll()
             if rc is not None:
                 # Process exited without mounting.  Reap it and
-                # surface the failure.
+                # surface the failure.  juicefs writes its own log to
+                # ~/.juicefs/juicefs.log by default; we don't override
+                # that, so check there for the underlying error.
                 _mount_proc = None
                 raise RuntimeError(
-                    f"juicefs mount exited early (rc={rc}); check the juicefs log at "
-                    f"{config.openhost_data_path / 'juicefs.log'}"
+                    f"juicefs mount exited early (rc={rc}); check ~/.juicefs/juicefs.log"
                 )
             time.sleep(0.2)
         # Timeout: the child is still alive but hasn't registered a
@@ -339,8 +344,14 @@ def mount(
 def umount(config: Config) -> None:
     """Unmount the JuiceFS mount and reap the supervised process.
 
-    Tries the clean ``juicefs umount`` first; falls back to a lazy
-    ``umount -l`` if the FS is busy.  Idempotent.
+    Calls ``juicefs umount`` once; if that fails (typically because
+    the FS is busy from a still-running container), surfaces an
+    error rather than swallowing the failure.  Lazy unmount via
+    ``umount -l`` would handle the busy case but it requires root,
+    which we deliberately don't have — the operator-facing dashboard
+    is supposed to stop affected apps before triggering a backend
+    switch, so the busy case shouldn't fire on the happy path.
+    Idempotent on already-unmounted state (returns cleanly).
     """
     global _mount_proc
     mount_point = juicefs_mount_dir(config)
@@ -353,27 +364,32 @@ def umount(config: Config) -> None:
                     _mount_proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     _mount_proc.kill()
+                    try:
+                        _mount_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # If even SIGKILL + 5 s wait doesn't reap it,
+                        # something is very wrong.  Drop the handle so
+                        # we don't reuse it and let the OS clean up.
+                        logger.error(
+                            "juicefs mount process did not exit after SIGKILL"
+                        )
             _mount_proc = None
             return
         cmd = [_juicefs_binary(config), "umount", mount_point]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            logger.warning(
-                "juicefs umount failed (rc=%d), falling back to lazy umount: %s",
-                result.returncode,
-                result.stderr.strip(),
-            )
-            # Lazy umount needs root; we don't have it.  But if the FS
-            # is busy because containers are still bind-mounted into it,
-            # the operator already accepted in the dashboard that apps
-            # would be stopped — by the time we get here there should
-            # be no containers using the path.  If it's still busy,
-            # surface an error rather than silently leaking.
+            # ``juicefs umount`` failure is typically a busy-FS
+            # (a container is still bind-mounted into the path).
+            # The dashboard's switch flow stops opted-in apps before
+            # triggering this, so the busy case shouldn't fire on the
+            # happy path.  Surface the error rather than silently
+            # leaking; clearing _mount_proc here means a retry
+            # doesn't inherit a stale handle.
+            _mount_proc = None
             raise RuntimeError(
-                f"juicefs umount of {mount_point} failed and lazy umount "
-                f"requires root; ensure all containers using the archive "
-                f"tier are stopped before switching backends.  Original: "
-                f"{result.stderr.strip()}"
+                f"juicefs umount of {mount_point} failed (rc={result.returncode}); "
+                f"ensure all containers using the archive tier are stopped "
+                f"before switching backends.  Original: {result.stderr.strip()}"
             )
         if _mount_proc is not None:
             try:
@@ -757,26 +773,32 @@ def switch_backend(
             "Archive backend is already in state 'switching'; "
             "wait for the in-flight switch to finish before starting a new one."
         )
-    current = read_state(db)
-    # current.state is now 'switching' but its other fields (backend,
-    # creds, etc.) reflect the pre-switch state, which is what we want.
-    current = BackendState(**{**current.__dict__, "state": "idle"})
-
-    if target_backend == current.backend:
-        # No-op.  Release the lock and return.  This keeps the
-        # dashboard's idempotent re-saves from surprising failures.
-        _update_state(db, state="idle", state_message=None)
-        return
-
-    if target_backend == "s3":
-        volume_name = juicefs_volume_name or current.juicefs_volume_name or "openhost"
-    else:
-        volume_name = current.juicefs_volume_name or "openhost"
-
-    _update_state(db, state_message="Stopping apps")
 
     affected_apps: list[str] = []
     try:
+        # ``read_state`` and the no-op short-circuit live INSIDE the
+        # try/except so a transient sqlite read failure doesn't leave
+        # the row permanently stuck in 'switching' — the finally
+        # clause and the except handlers will release the lock.
+        current = read_state(db)
+        # current.state is now 'switching' but its other fields
+        # (backend, creds, etc.) reflect the pre-switch state, which
+        # is what we want.
+        current = dataclasses.replace(current, state="idle")
+
+        if target_backend == current.backend:
+            # No-op.  Release the lock and return.  This keeps the
+            # dashboard's idempotent re-saves from surprising failures.
+            _update_state(db, state="idle", state_message=None)
+            return
+
+        if target_backend == "s3":
+            volume_name = juicefs_volume_name or current.juicefs_volume_name or "openhost"
+        else:
+            volume_name = current.juicefs_volume_name or "openhost"
+
+        _update_state(db, state_message="Stopping apps")
+
         # Stop every running ``app_archive`` app.  We catch the list
         # while apps are still running so a failed switch can restart
         # exactly the same set.  ``stop_app`` failures are fatal:
@@ -831,17 +853,20 @@ def switch_backend(
             pass
         elif os.path.isdir(new_archive_dir):
             for entry in list(os.scandir(new_archive_dir)):
-                if entry.is_dir(follow_symlinks=False):
-                    shutil.rmtree(entry.path, ignore_errors=True)
-                else:
-                    try:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        shutil.rmtree(entry.path)
+                    else:
                         os.unlink(entry.path)
-                    except OSError as exc:
-                        logger.warning(
-                            "Failed to remove stale entry %s before copy: %s",
-                            entry.path,
-                            exc,
-                        )
+                except OSError as exc:
+                    # Log but don't abort — the new copy will overlay
+                    # any partially-removed dir, and the operator gets
+                    # a visible warning rather than a silent retain.
+                    logger.warning(
+                        "Failed to remove stale entry %s before copy: %s",
+                        entry.path,
+                        exc,
+                    )
         if os.path.isdir(old_archive_dir):
             _copy_tree(old_archive_dir, new_archive_dir)
 
@@ -907,8 +932,8 @@ def switch_backend(
         # path; existing references to the old Config are stale but
         # the route layer always re-fetches via ``get_config()``.
         hook.set_config(apply_backend_to_config(config, db))
-    except BackendSwitchError:
-        _update_state(db, state="idle", state_message="switch failed; see logs")
+    except BackendSwitchError as exc:
+        _update_state(db, state="idle", state_message=f"switch failed: {exc}")
         raise
     except Exception as exc:
         _update_state(db, state="idle", state_message=f"switch failed: {exc}")

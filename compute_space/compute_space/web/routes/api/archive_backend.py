@@ -51,11 +51,14 @@ api_archive_backend_bp = Blueprint("api_archive_backend", __name__)
 # ---------------------------------------------------------------------------
 
 
-def _redact(state: BackendState) -> dict:
-    """Project the DB state to a JSON-safe shape with the secret access
-    key dropped.  The dashboard never needs to see the secret again
-    after the operator entered it (and a 200 response that includes it
-    would log it in any access log).
+def _state_to_response(state: BackendState) -> dict:
+    """Project the DB state to a JSON-safe shape that's safe to return
+    to the dashboard.
+
+    Drops ``s3_secret_access_key`` entirely (rather than masking with
+    e.g. ``****``) because the dashboard never needs to see the secret
+    again after the operator entered it; including it in any 200
+    response would risk it landing in HTTP access logs.
     """
     out = asdict(state)
     out.pop("s3_secret_access_key", None)
@@ -169,7 +172,7 @@ def get_archive_backend() -> ResponseReturnValue:
     state = archive_backend.read_state(db)
     return jsonify(
         {
-            **_redact(state),
+            **_state_to_response(state),
             "archive_dir": archive_backend.archive_dir_for_backend(config, state.backend),
         }
     )
@@ -282,7 +285,7 @@ async def post_archive_backend() -> ResponseReturnValue:
                 hook,
                 target_backend=target,
                 delete_source_after_copy=delete_source,
-                **{k: v for k, v in s3_kwargs.items() if v is not None},
+                **s3_kwargs,
             )
         except BackendSwitchError as exc:
             logger.warning("archive backend switch failed: %s", exc)

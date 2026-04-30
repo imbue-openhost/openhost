@@ -159,6 +159,41 @@ def test_attach_on_startup_clears_stale_switching_state(cfg, db):
     assert "interrupted" in (state.state_message or "")
 
 
+def test_attach_on_startup_s3_happy_path(cfg, db):
+    """When the persisted backend is s3 with valid creds, attach on
+    boot installs juicefs (if missing), mounts, and returns a Config
+    pointing at the JuiceFS mount.
+    """
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+        "s3_region='us-east-1', s3_access_key_id='AKIA', "
+        "s3_secret_access_key='hunter2'"
+    )
+    db.commit()
+    install_calls: list[None] = []
+    mount_calls: list[tuple[str, str]] = []
+
+    def fake_install(_cfg) -> None:
+        install_calls.append(None)
+
+    def fake_mount(_cfg, akid: str, secret: str) -> None:
+        mount_calls.append((akid, secret))
+
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=False),
+        mock.patch.object(archive_backend, "install_juicefs", side_effect=fake_install),
+        mock.patch.object(archive_backend, "mount", side_effect=fake_mount),
+    ):
+        new_cfg = archive_backend.attach_on_startup(cfg, db)
+
+    assert install_calls == [None]
+    assert mount_calls == [("AKIA", "hunter2")]
+    assert new_cfg.archive_dir_override == archive_backend.juicefs_mount_dir(cfg)
+    state = read_state(db)
+    assert state.state == "idle"
+    assert state.state_message is None
+
+
 def test_attach_on_startup_s3_missing_creds_records_error(cfg, db):
     """If somehow the row is in s3 state without creds, attach must
     not crash boot — record the error and let the operator fix it
