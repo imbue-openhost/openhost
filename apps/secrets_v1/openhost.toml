@@ -1,5 +1,5 @@
 [app]
-name = "secrets_v1"
+name = "secrets-v1"
 version = "0.1.0"
 description = "Manage environment variable secrets for other apps"
 
