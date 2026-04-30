@@ -77,7 +77,12 @@ covers this:
 2. Restore `juicefs-metadata-dump.json` from the most recent restic
    snapshot to its original path.
 3. `sudo -u host juicefs load sqlite3:///var/lib/juicefs/meta.db
-    /home/host/.openhost/local_compute_space/persistent_data/openhost/juicefs-metadata-dump.json`.
+    "$DUMP_DIR/juicefs-metadata-dump.json"` — where `$DUMP_DIR` is
+    the value of the `juicefs_dump_dir` ansible variable (default:
+    `/home/host/.openhost/local_compute_space/persistent_data/openhost`).
+    Confirm by reading the `ExecStart=` line of
+    `/etc/systemd/system/juicefs-meta-dump.service` on the new VM
+    and using the path baked into it.
 4. `sudo systemctl restart juicefs-mount.service openhost.service`.
 
 The dump runs every 24h (with up-to-15min jitter) so the worst-case
