@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import shutil
+import sqlite3
 import threading
 
 import attr
@@ -428,7 +429,9 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if conflict:
         return jsonify({"error": f"Name already in use by '{conflict['name']}'"}), 409
 
-    was_running = app_row["status"] in ("running", "starting", "building")
+    prior_status = app_row["status"]
+    prior_container_id = app_row["container_id"]
+    was_running = prior_status in ("running", "starting", "building")
     stop_app_process(app_row)
     db.execute(
         "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
@@ -479,6 +482,20 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
                     old_dir,
                     rollback_exc,
                 )
+        # Restore the prior status + container_id so the dashboard
+        # shows the app the same way it did before the failed rename.
+        # ``stop_app_process`` already terminated the process, so a
+        # ``running`` state will reconcile via the supervisor's
+        # crashed-app path on the next health-check tick rather than
+        # leaving a permanently-stuck ``stopped`` row.
+        try:
+            db.execute(
+                "UPDATE apps SET status = ?, container_id = ? WHERE name = ?",
+                (prior_status, prior_container_id, app_name),
+            )
+            db.commit()
+        except sqlite3.Error as db_exc:
+            logger.error("Failed to restore status during rename rollback: %s", db_exc)
         return jsonify({"error": f"Failed to rename app data directories: {exc}"}), 500
 
     db.execute("PRAGMA foreign_keys=OFF")

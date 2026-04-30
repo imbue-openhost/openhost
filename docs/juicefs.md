@@ -8,9 +8,13 @@ whichever backing the operator picked.
 
 Replaces the default local-disk backing for the `app_archive` tier
 with a [JuiceFS](https://juicefs.com/docs/community/introduction)
-mount, which puts every byte under `/data/app_archive/<app>/` on
-the operator's S3 bucket.  Apps see the same in-container path
-either way; only the host-side storage changes.
+mount.  Apps continue to see their archive at the unchanged
+in-container path `/data/app_archive/<app>/`; the host-side bind
+mount source moves from `<persistent_data_dir>/app_archive/<app>/`
+(local disk) to `/data/app_archive_juicefs/<app>/` (the JuiceFS
+mount), and JuiceFS in turn stores the bytes in the operator's S3
+bucket.  The app does not see and does not need to know about that
+indirection.
 
 This is useful when zone storage outgrows the local disk and the
 operator doesn't want to resize the VM.  For most zones the local

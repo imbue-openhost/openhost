@@ -64,18 +64,34 @@ async def _post_rename(
     return response.status_code, payload
 
 
-def _seed_app_row(db_path: str, name: str, port: int = 19500) -> None:
+def _seed_app_row(
+    db_path: str, name: str, port: int = 19500, status: str = "stopped"
+) -> None:
     """Insert a minimal apps row that rename_app can target."""
     db = sqlite3.connect(db_path)
     try:
         db.execute(
             """INSERT INTO apps (name, version, repo_path, local_port, status)
-               VALUES (?, '1.0', ?, ?, 'stopped')""",
-            (name, f"/tmp/repo/{name}", port),
+               VALUES (?, '1.0', ?, ?, ?)""",
+            (name, f"/tmp/repo/{name}", port, status),
         )
         db.commit()
     finally:
         db.close()
+
+
+def _tier_parents(cfg) -> dict[str, Path]:
+    """Single source of truth mapping tier name -> host-side parent dir.
+
+    Used both by the setup helper that creates the per-app subdirs
+    and by the assertions that verify their post-rename location, so
+    the two can't drift.
+    """
+    return {
+        "app_data": Path(cfg.persistent_data_dir) / "app_data",
+        "app_temp_data": Path(cfg.temporary_data_dir) / "app_temp_data",
+        "app_archive": Path(cfg.app_archive_dir),
+    }
 
 
 def _make_per_app_dirs(cfg, app_name: str, tiers: list[str]) -> dict[str, Path]:
@@ -83,11 +99,7 @@ def _make_per_app_dirs(cfg, app_name: str, tiers: list[str]) -> dict[str, Path]:
     sentinel file in each so we can verify the rename moved the content
     rather than just creating an empty new dir.
     """
-    parents = {
-        "app_data": Path(cfg.persistent_data_dir) / "app_data",
-        "app_temp_data": Path(cfg.temporary_data_dir) / "app_temp_data",
-        "app_archive": Path(cfg.app_archive_dir),
-    }
+    parents = _tier_parents(cfg)
     out: dict[str, Path] = {}
     for tier in tiers:
         d = parents[tier] / app_name
@@ -118,19 +130,10 @@ async def test_rename_renames_all_three_tiers(tmp_path: Path) -> None:
 
     # Old subdirs gone, new subdirs present, sentinel content preserved
     # so we know we actually moved (not recreated) each tier.
-    for tier, expected_marker in [
-        ("app_data", "app_data"),
-        ("app_temp_data", "app_temp_data"),
-        ("app_archive", "app_archive"),
-    ]:
-        if tier == "app_archive":
-            parent = Path(cfg.app_archive_dir)
-        elif tier == "app_data":
-            parent = Path(cfg.persistent_data_dir) / "app_data"
-        else:
-            parent = Path(cfg.temporary_data_dir) / "app_temp_data"
+    parents = _tier_parents(cfg)
+    for tier, parent in parents.items():
         assert not (parent / "old-name").exists(), tier
-        assert (parent / "new-name" / "sentinel.txt").read_text() == expected_marker
+        assert (parent / "new-name" / "sentinel.txt").read_text() == tier
 
 
 @pytest.mark.asyncio
@@ -166,7 +169,10 @@ async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
     """
     cfg = _make_test_config(tmp_path, port=20202)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_row(cfg.db_path, "old-name")
+    # Seed the row as ``running`` so the rollback assertion below
+    # actually catches the regression where the status field stays
+    # ``stopped`` after the failed rename.
+    _seed_app_row(cfg.db_path, "old-name", status="running")
     _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
 
     real_rename = os.rename
@@ -187,20 +193,17 @@ async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
     # All three old-name subdirs must be restored; no new-name subdirs
     # in any tier.  Without the rollback, app_data/new-name and
     # app_temp_data/new-name would have leaked through.
-    parents = {
-        "app_data": Path(cfg.persistent_data_dir) / "app_data",
-        "app_temp_data": Path(cfg.temporary_data_dir) / "app_temp_data",
-        "app_archive": Path(cfg.app_archive_dir),
-    }
-    for tier, parent in parents.items():
+    for tier, parent in _tier_parents(cfg).items():
         assert (parent / "old-name").exists(), f"{tier} not rolled back"
         assert not (parent / "new-name").exists(), f"{tier} leaked partial rename"
 
-    # The DB row also stays under the old name so the dashboard doesn't
-    # point at a non-existent rename.
+    # The DB row also stays under the old name AND keeps its prior
+    # status — without restoring status, an app that was running
+    # before the rename would be permanently stuck as ``stopped``
+    # in the DB even though the on-disk state was rolled back.
     db = sqlite3.connect(cfg.db_path)
     try:
-        rows = db.execute("SELECT name FROM apps").fetchall()
+        rows = db.execute("SELECT name, status FROM apps").fetchall()
     finally:
         db.close()
-    assert [r[0] for r in rows] == ["old-name"], rows
+    assert [(r[0], r[1]) for r in rows] == [("old-name", "running")], rows

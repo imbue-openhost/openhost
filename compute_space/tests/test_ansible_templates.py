@@ -268,13 +268,33 @@ def test_juicefs_mount_log_path_is_host_writable(templates_env: Environment) -> 
 def test_meta_dump_writes_under_persistent_data_dir(templates_env: Environment) -> None:
     """The dump must land under persistent_data_dir/openhost/ so the
     existing restic-based openhost-backup app picks it up.
+
+    With no override the default is the standard ansible-deployed
+    path, which is the case for the vast majority of zones.
     """
     rendered = templates_env.get_template("juicefs-meta-dump.service.j2").render()
-    expected_path = (
+    expected_default = (
         "/home/host/.openhost/local_compute_space/persistent_data/openhost/"
         "juicefs-metadata-dump.json"
     )
-    assert expected_path in rendered, rendered
+    assert expected_default in rendered, rendered
+
+
+def test_meta_dump_dump_dir_override_honoured(templates_env: Environment) -> None:
+    """Operators who override ``data_root_dir`` via the openhost config
+    must be able to point ``juicefs_dump_dir`` at the matching
+    persistent_data_dir/openhost/ subtree, otherwise the dump silently
+    lands in the wrong place and restic misses it.
+    """
+    rendered = templates_env.get_template("juicefs-meta-dump.service.j2").render(
+        juicefs_dump_dir="/srv/openhost/persistent_data/openhost",
+    )
+    assert (
+        "/srv/openhost/persistent_data/openhost/juicefs-metadata-dump.json" in rendered
+    ), rendered
+    # And the default path must be absent so we know the override
+    # actually replaced it everywhere.
+    assert "/home/host/.openhost" not in rendered, rendered
 
 
 def test_meta_dump_uses_atomic_rename(templates_env: Environment) -> None:

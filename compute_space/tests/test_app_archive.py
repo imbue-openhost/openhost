@@ -163,6 +163,33 @@ def test_provision_data_refuses_when_archive_dir_missing(tmp_path) -> None:
         )
 
 
+def test_provision_data_refuses_when_archive_dir_missing_via_access_all_data(tmp_path) -> None:
+    """The same guard must fire for ``access_all_data`` apps too —
+    they use the archive tier even though they don't set
+    ``app_archive=True`` directly.  Without this branch coverage a
+    refactor that splits the two could regress the guard for one
+    flag and leave the other silently broken.
+    """
+    data_dir = tmp_path / "persistent"
+    temp_dir = tmp_path / "temp"
+    archive_dir = tmp_path / "doesnt-exist"  # NOT created
+    data_dir.mkdir()
+    temp_dir.mkdir()
+
+    manifest = _manifest(access_all_data=True)
+    with pytest.raises(RuntimeError, match="archive_dir"):
+        provision_data(
+            manifest.name,
+            manifest,
+            str(data_dir),
+            str(temp_dir),
+            str(archive_dir),
+            my_openhost_redirect_domain="my.example.com",
+            zone_domain="example.com",
+            port=8080,
+        )
+
+
 def test_provision_data_does_not_fail_when_archive_dir_missing_and_no_archive_opt_in(
     tmp_path,
 ) -> None:
