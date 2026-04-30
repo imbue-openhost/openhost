@@ -400,6 +400,53 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     return jsonify({"ok": True})
 
 
+def _rename_app_storage_dirs(config, old_name: str, new_name: str) -> str | None:
+    """Rename per-app subdirs across the three storage tiers, with
+    best-effort rollback on partial failure.
+
+    Returns ``None`` on success, or an error message string on failure
+    (callers convert that to a 500 response).  Pure-sync helper so the
+    blocking ``os.rename`` calls — which can take tens-to-hundreds of
+    ms on a JuiceFS-backed archive tier — don't run on the asyncio
+    event loop.
+
+    Each per-tier rename stays within its own parent dir (jfs->jfs or
+    local->local), so cross-device EXDEV is not an issue, but a
+    transient mount drop or permissions blip on the archive tier
+    still could fail.  When that happens, undo the renames we already
+    did so the on-disk state matches what's still in the DB; if the
+    rollback rename itself ALSO fails, log it and continue — the
+    operator-visible state is wedged for that tier and only manual
+    reconciliation can fix it.
+    """
+    rename_parents = [
+        os.path.join(config.persistent_data_dir, "app_data"),
+        os.path.join(config.temporary_data_dir, "app_temp_data"),
+        config.app_archive_dir,
+    ]
+    renamed: list[tuple[str, str]] = []
+    try:
+        for parent in rename_parents:
+            old_dir = os.path.join(parent, old_name)
+            new_dir = os.path.join(parent, new_name)
+            if os.path.exists(old_dir) and not os.path.exists(new_dir):
+                os.rename(old_dir, new_dir)
+                renamed.append((old_dir, new_dir))
+    except OSError as exc:
+        for old_dir, new_dir in reversed(renamed):
+            try:
+                os.rename(new_dir, old_dir)
+            except OSError as rollback_exc:
+                logger.error(
+                    "Rollback of partial rename %s -> %s failed: %s",
+                    new_dir,
+                    old_dir,
+                    rollback_exc,
+                )
+        return str(exc)
+    return None
+
+
 @api_apps_bp.route("/rename_app/<app_name>", methods=["POST"])
 @login_required
 async def rename_app(app_name: str) -> ResponseReturnValue:
@@ -444,44 +491,18 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     # archive tier here would orphan its contents under the old
     # name; the next provision_data on the renamed app would create
     # a fresh empty archive subdir, silently abandoning whatever
-    # was there.
-    #
-    # ``config.app_archive_dir`` may resolve to a JuiceFS mount
-    # path.  Each per-tier rename stays within its own parent dir
-    # (jfs->jfs or local->local), so cross-device EXDEV is not an
-    # issue, but a transient mount drop or permissions blip on the
-    # archive tier still could.  If anything fails, roll back the
-    # tiers we already renamed so the on-disk and DB state stay
-    # consistent — apps would otherwise come back up under the new
-    # name with their archive contents still under the old.
-    rename_parents = [
-        os.path.join(config.persistent_data_dir, "app_data"),
-        os.path.join(config.temporary_data_dir, "app_temp_data"),
-        config.app_archive_dir,
-    ]
-    renamed: list[tuple[str, str]] = []
-    try:
-        for parent in rename_parents:
-            old_dir = os.path.join(parent, app_name)
-            new_dir = os.path.join(parent, new_name)
-            if os.path.exists(old_dir) and not os.path.exists(new_dir):
-                os.rename(old_dir, new_dir)
-                renamed.append((old_dir, new_dir))
-    except OSError as exc:
-        # Best-effort rollback.  If a rollback rename itself fails
-        # (e.g. the underlying filesystem is gone) we surface the
-        # original error and let the operator reconcile manually
-        # from the logs.
-        for old_dir, new_dir in reversed(renamed):
-            try:
-                os.rename(new_dir, old_dir)
-            except OSError as rollback_exc:
-                logger.error(
-                    "Rollback of partial rename %s -> %s failed: %s",
-                    new_dir,
-                    old_dir,
-                    rollback_exc,
-                )
+    # was there.  ``_rename_app_storage_dirs`` runs in a worker
+    # thread because ``config.app_archive_dir`` may resolve to a
+    # JuiceFS mount with tens-to-hundreds-of-ms rename latency,
+    # which would otherwise stall the event loop and block other
+    # requests for the duration of the rename.
+    rename_error = await asyncio.to_thread(
+        _rename_app_storage_dirs,
+        config,
+        app_name,
+        new_name,
+    )
+    if rename_error is not None:
         # Restore the prior status + container_id so the dashboard
         # shows the app the same way it did before the failed rename.
         # ``stop_app_process`` already terminated the process, so a
@@ -496,7 +517,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
             db.commit()
         except sqlite3.Error as db_exc:
             logger.error("Failed to restore status during rename rollback: %s", db_exc)
-        return jsonify({"error": f"Failed to rename app data directories: {exc}"}), 500
+        return jsonify({"error": f"Failed to rename app data directories: {rename_error}"}), 500
 
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute(
