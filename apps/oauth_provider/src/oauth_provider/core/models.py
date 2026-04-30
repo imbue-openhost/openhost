@@ -4,7 +4,7 @@ from typing import Any
 
 import attr
 
-from oauth.core.providers import PROVIDERS
+from oauth_provider.core.providers import PROVIDERS
 
 
 def _known_provider(_instance: Any, _attribute: attr.Attribute[str], value: str) -> None:

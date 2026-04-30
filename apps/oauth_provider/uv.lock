@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.12"
 
 [options]
-exclude-newer = "2026-04-17T23:38:45.948945Z"
+exclude-newer = "2026-04-23T00:44:25.144007Z"
 exclude-newer-span = "P1W"
 
 [[package]]
@@ -399,9 +399,9 @@ wheels = [
 ]
 
 [[package]]
-name = "oauth"
+name = "oauth-provider"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "attrs" },
     { name = "httpx" },

@@ -1,5 +1,5 @@
 [app]
-name = "oauth"
+name = "oauth-provider"
 version = "0.1.0"
 description = "OAuth token management — acquire, refresh, and store tokens for third-party APIs"
 

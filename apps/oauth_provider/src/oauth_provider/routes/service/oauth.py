@@ -7,28 +7,28 @@ from litestar import Response
 from litestar import Router
 from litestar import post
 
-import oauth.core.config as config
-from oauth.core.credentials import CredentialsNotAvailable
-from oauth.core.credentials import get_provider_creds
-from oauth.core.models import AccountsRequest
-from oauth.core.models import AccountsResponse
-from oauth.core.models import AuthRequiredResponse
-from oauth.core.models import CredentialsRequiredResponse
-from oauth.core.models import ErrorResponse
-from oauth.core.models import OkResponse
-from oauth.core.models import RevokeRequest
-from oauth.core.models import TokenRequest
-from oauth.core.models import TokenResponse
-from oauth.core.permissions import check_oauth_v2_permission
-from oauth.core.permissions import permission_denied_response
-from oauth.core.providers import PROVIDERS
-from oauth.core.providers import build_auth_url
-from oauth.core.providers import normalize_scopes
-from oauth.core.providers import pending_auth_flows
-from oauth.core.providers import revoke_token
-from oauth.core.tokens import find_and_remove_token
-from oauth.core.tokens import get_accounts
-from oauth.core.tokens import get_valid_token
+import oauth_provider.core.config as config
+from oauth_provider.core.credentials import CredentialsNotAvailable
+from oauth_provider.core.credentials import get_provider_creds
+from oauth_provider.core.models import AccountsRequest
+from oauth_provider.core.models import AccountsResponse
+from oauth_provider.core.models import AuthRequiredResponse
+from oauth_provider.core.models import CredentialsRequiredResponse
+from oauth_provider.core.models import ErrorResponse
+from oauth_provider.core.models import OkResponse
+from oauth_provider.core.models import RevokeRequest
+from oauth_provider.core.models import TokenRequest
+from oauth_provider.core.models import TokenResponse
+from oauth_provider.core.permissions import check_oauth_v2_permission
+from oauth_provider.core.permissions import permission_denied_response
+from oauth_provider.core.providers import PROVIDERS
+from oauth_provider.core.providers import build_auth_url
+from oauth_provider.core.providers import normalize_scopes
+from oauth_provider.core.providers import pending_auth_flows
+from oauth_provider.core.providers import revoke_token
+from oauth_provider.core.tokens import find_and_remove_token
+from oauth_provider.core.tokens import get_accounts
+from oauth_provider.core.tokens import get_valid_token
 
 
 @post("/oauth_service/token", status_code=200)

@@ -1,25 +1,24 @@
 """Server-side OAuth demo — redirect-based auth flow."""
 
 import httpx
+from oauth_demo.oauth import APP_NAME
+from oauth_demo.oauth import GITHUB_SCOPE
+from oauth_demo.oauth import GMAIL_SCOPE
+from oauth_demo.oauth import MOCK_SCOPE
+from oauth_demo.oauth import PROVIDERS
+from oauth_demo.oauth import SCOPE_MAP
+from oauth_demo.oauth import ZONE_DOMAIN
+from oauth_demo.oauth import AuthRedirectRequired
+from oauth_demo.oauth import OAuthError
+from oauth_demo.oauth import OAuthServiceUnavailable
+from oauth_demo.oauth import get_accounts
+from oauth_demo.oauth import get_mock_provider_api_url
+from oauth_demo.oauth import get_oauth_token
 from quart import Blueprint
 from quart import Response
 from quart import redirect
 from quart import render_template
 from quart import request
-
-from oauth import APP_NAME
-from oauth import GITHUB_SCOPE
-from oauth import GMAIL_SCOPE
-from oauth import MOCK_SCOPE
-from oauth import PROVIDERS
-from oauth import SCOPE_MAP
-from oauth import ZONE_DOMAIN
-from oauth import AuthRedirectRequired
-from oauth import OAuthError
-from oauth import OAuthServiceUnavailable
-from oauth import get_accounts
-from oauth import get_mock_provider_api_url
-from oauth import get_oauth_token
 
 server_bp = Blueprint("server", __name__, url_prefix="/server")
 

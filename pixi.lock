@@ -999,7 +999,7 @@ packages:
 - pypi: ./
   name: openhost
   version: 0.1.0
-  sha256: 9fcaed1139cb304ff715db28ac72f27962080818f6894ae4ae42a9941513ecad
+  sha256: d28c828e1923e9851a3180b0a3f4aa22799ef4cdab40bcf40c33a37ffa2a2356
   requires_dist:
   - pyjwt[crypto]
   - acme>=5.4.0

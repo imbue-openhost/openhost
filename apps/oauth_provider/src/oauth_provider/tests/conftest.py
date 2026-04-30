@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 OAUTH_APP_DIR = Path(__file__).resolve().parent.parent
-SPEC_PATH = Path(__file__).resolve().parents[3] / "services" / "oauth" / "openapi.yaml"
+SPEC_PATH = Path(__file__).resolve().parents[5] / "services" / "oauth" / "openapi.yaml"
 
 
 def _find_free_port() -> int:
@@ -37,7 +37,7 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 sys.path.insert(0, os.environ["APP_DIR"])
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-from oauth.app import app
+from oauth_provider.app import app
 
 cfg = Config()
 cfg.bind = [f'127.0.0.1:{os.environ["PORT"]}']

@@ -8,13 +8,13 @@ from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.exceptions import ClientException
 from litestar.template import TemplateConfig
 
-from oauth.db import init_db
-from oauth.routes.api.dashboard import router as api_dashboard_router
-from oauth.routes.api.device import router as api_device_router
-from oauth.routes.api.testing import router as testing_router
-from oauth.routes.pages.dashboard import router as pages_dashboard_router
-from oauth.routes.pages.oauth import router as pages_oauth_router
-from oauth.routes.service.oauth import router as service_router
+from oauth_provider.db import init_db
+from oauth_provider.routes.api.dashboard import router as api_dashboard_router
+from oauth_provider.routes.api.device import router as api_device_router
+from oauth_provider.routes.api.testing import router as testing_router
+from oauth_provider.routes.pages.dashboard import router as pages_dashboard_router
+from oauth_provider.routes.pages.oauth import router as pages_oauth_router
+from oauth_provider.routes.service.oauth import router as service_router
 
 
 def _on_startup(_app: Litestar) -> None:

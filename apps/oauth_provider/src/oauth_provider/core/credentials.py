@@ -2,9 +2,9 @@ import logging
 
 import httpx
 
-from oauth.core.config import APP_TOKEN
-from oauth.core.config import ROUTER_URL
-from oauth.core.providers import PROVIDERS
+from oauth_provider.core.config import APP_TOKEN
+from oauth_provider.core.config import ROUTER_URL
+from oauth_provider.core.providers import PROVIDERS
 
 log = logging.getLogger(__name__)
 

@@ -11,20 +11,20 @@ from litestar.params import Parameter
 from litestar.response import Redirect
 from litestar.response import Template
 
-import oauth.core.config as config
-from oauth.core.credentials import CredentialsNotAvailable
-from oauth.core.credentials import get_provider_creds
-from oauth.core.permissions import grant_app_scoped_permission
-from oauth.core.providers import PROVIDERS
-from oauth.core.providers import active_device_flows
-from oauth.core.providers import build_auth_url
-from oauth.core.providers import create_device_flow
-from oauth.core.providers import exchange_code
-from oauth.core.providers import fetch_account_identity
-from oauth.core.providers import normalize_scopes
-from oauth.core.providers import pending_auth_flows
-from oauth.core.providers import start_device_flow
-from oauth.core.tokens import store_token
+import oauth_provider.core.config as config
+from oauth_provider.core.credentials import CredentialsNotAvailable
+from oauth_provider.core.credentials import get_provider_creds
+from oauth_provider.core.permissions import grant_app_scoped_permission
+from oauth_provider.core.providers import PROVIDERS
+from oauth_provider.core.providers import active_device_flows
+from oauth_provider.core.providers import build_auth_url
+from oauth_provider.core.providers import create_device_flow
+from oauth_provider.core.providers import exchange_code
+from oauth_provider.core.providers import fetch_account_identity
+from oauth_provider.core.providers import normalize_scopes
+from oauth_provider.core.providers import pending_auth_flows
+from oauth_provider.core.providers import start_device_flow
+from oauth_provider.core.tokens import store_token
 
 
 @get("/grant")

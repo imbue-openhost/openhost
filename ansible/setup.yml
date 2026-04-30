@@ -48,3 +48,4 @@
     - import_tasks: tasks/sync_code.yml
     - import_tasks: tasks/pixi.yml
     - import_tasks: tasks/setup_openhost_service.yml
+    - import_tasks: tasks/restart_openhost_service.yml

@@ -1,10 +1,10 @@
 from litestar import Router
 from litestar import post
 
-import oauth.core.config as config
-import oauth.core.providers as providers_mod
-from oauth.core.models import MockProviderUrlData
-from oauth.core.models import OkResponse
+import oauth_provider.core.config as config
+import oauth_provider.core.providers as providers_mod
+from oauth_provider.core.models import MockProviderUrlData
+from oauth_provider.core.models import OkResponse
 
 
 @post("/test/set-mock-provider-url")

@@ -170,3 +170,6 @@ def hard_checkout_ref(repo_path: Path, ref: str) -> None:
     except IndexError:
         # Not a remote branch — treat as a commit hash, detached HEAD
         repo.git.checkout("-f", ref)
+    # checkout -f resets tracked files but leaves untracked files behind, which can
+    # shadow modules removed/renamed between revisions. Match origin/ref fully.
+    repo.git.clean("-fd")

@@ -3,13 +3,13 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 
-from oauth.core.credentials import get_provider_creds
-from oauth.core.models import StoredToken
-from oauth.core.models import TokenInfo
-from oauth.core.models import TokenResponse
-from oauth.core.providers import normalize_scopes
-from oauth.core.providers import refresh_access_token
-from oauth.db import get_db
+from oauth_provider.core.credentials import get_provider_creds
+from oauth_provider.core.models import StoredToken
+from oauth_provider.core.models import TokenInfo
+from oauth_provider.core.models import TokenResponse
+from oauth_provider.core.providers import normalize_scopes
+from oauth_provider.core.providers import refresh_access_token
+from oauth_provider.db import get_db
 
 
 def store_token(

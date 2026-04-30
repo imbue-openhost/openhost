@@ -1,13 +1,13 @@
 from litestar import Router
 from litestar import get
 
-import oauth.core.config as config
-from oauth.core.models import DevicePollResponse
-from oauth.core.permissions import grant_app_scoped_permission
-from oauth.core.providers import active_device_flows
-from oauth.core.providers import fetch_account_identity
-from oauth.core.providers import normalize_scopes
-from oauth.core.tokens import store_token
+import oauth_provider.core.config as config
+from oauth_provider.core.models import DevicePollResponse
+from oauth_provider.core.permissions import grant_app_scoped_permission
+from oauth_provider.core.providers import active_device_flows
+from oauth_provider.core.providers import fetch_account_identity
+from oauth_provider.core.providers import normalize_scopes
+from oauth_provider.core.tokens import store_token
 
 
 @get("/device/poll/{flow_id:str}")

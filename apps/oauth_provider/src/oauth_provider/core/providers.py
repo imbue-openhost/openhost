@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-import oauth.core.config as config
+import oauth_provider.core.config as config
 
 log = logging.getLogger(__name__)
 
