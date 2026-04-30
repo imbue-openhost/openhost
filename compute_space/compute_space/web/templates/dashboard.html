@@ -57,6 +57,6 @@
   "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}"
 }
 </script>
-<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script src="{{ static_url('js/dashboard.js') }}"></script>
 <script>document.getElementById('token-name').value = 'token-' + Math.random().toString(36).slice(2, 8);</script>
 {% endblock %}
