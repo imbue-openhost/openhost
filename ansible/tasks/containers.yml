@@ -75,21 +75,31 @@
   command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
   changed_when: false
 
-# Unlike Docker, podman has no default registry.  Drop-in file sets
-# docker.io as the short-name search registry so unqualified `FROM`
-# lines in app Dockerfiles resolve without operator intervention.
-- name: Ensure registries.conf.d directory exists
+# Unlike Docker, podman has no default registry.  Set docker.io as
+# the short-name search registry so unqualified `FROM` lines in app
+# Dockerfiles resolve without operator intervention.
+#
+# We overwrite /etc/containers/registries.conf rather than using a
+# drop-in because Ubuntu's apt golang-github-containers-common ships
+# its own drop-in (/etc/containers/registries.conf.d/shortnames.conf)
+# that we observed clobbering a `00-openhost.conf` drop-in's value
+# for unqualified-search-registries on the e2e VMs.  Writing the
+# main file directly sidesteps the merge order entirely; we keep
+# short-name-mode = permissive so unqualified pulls don't error out
+# on a missing alias.
+- name: Ensure /etc/containers exists
   file:
-    path: /etc/containers/registries.conf.d
+    path: /etc/containers
     state: directory
     mode: "0755"
 
-- name: Register docker.io as the default short-name search registry
+- name: Configure podman registries
   copy:
     content: |
       # Managed by OpenHost; do not edit by hand.
       unqualified-search-registries = ["docker.io"]
-    dest: /etc/containers/registries.conf.d/00-openhost.conf
+      short-name-mode = "permissive"
+    dest: /etc/containers/registries.conf
     mode: "0644"
 
 # Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
