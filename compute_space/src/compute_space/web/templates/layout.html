@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{% if zone_name %}{{ zone_name }}'s Private Compute Space{% else %}OpenHost{% endif %}{% block title_suffix %}{% endblock %}</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #ddd; padding: 0.5em 0.8em; text-align: left; }
+    th { background: #f5f5f5; }
+    input[type="text"], input[type="password"] { padding: 0.4em; width: 100%; box-sizing: border-box; }
+    button, input[type="submit"], .btn { padding: 0.4em 1em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; text-decoration: none; color: #222; display: inline-block; }
+    .btn-danger { background: #fee; border-color: #c00; color: #c00; }
+    .btn-primary { background: #e8f0fe; border-color: #36c; color: #36c; }
+    nav { display: flex; }
+    nav a { margin-right: 1.5em; }
+    nav .spacer { flex: 1; }
+    .error { color: #c00; }
+    .status-running { color: #080; font-weight: bold; }
+    .status-error { color: #c00; font-weight: bold; }
+    .status-stopped { color: #888; }
+    .status-building, .status-starting, .status-removing { color: #c80; }
+    .error-inline { background: #fff0f0; border: 1px solid #fcc; padding: 0.5em; margin-top: 0.3em; font-size: 0.85em; white-space: pre-wrap; word-break: break-word; max-height: 6em; overflow-y: auto; }
+    .log-output { background: #1e1e1e; color: #d4d4d4; padding: 1em; font-size: 0.85em; overflow-x: auto; max-height: 30em; overflow-y: auto; border-radius: 4px; }
+    .toast { position: fixed; bottom: 1.5em; right: 1.5em; background: #fff; border: 1px solid #ddd; border-left: 4px solid #c80; border-radius: 4px; padding: 1em 1.2em; box-shadow: 0 2px 8px rgba(0,0,0,0.15); max-width: 28em; z-index: 1000; }
+    .toast p { margin: 0 0 0.75em 0; }
+    .toast .toast-actions { display: flex; gap: 0.5em; }
+  </style>
+</head>
+<body>
+  <h1>{% if zone_name %}{{ zone_name }}'s Private Compute Space{% else %}OpenHost{% endif %}</h1>
+  <nav>
+    <a href="{{ url_for('apps.dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('apps.add_app') }}">Deploy App</a>
+    <a href="{{ url_for('pages_system.system_page') }}">System</a>
+    <a href="{{ url_for('pages_system.logs_page') }}">Logs</a>
+    <a href="{{ url_for('pages_system.terminal_page') }}">Terminal</a>
+    <a href="{{ url_for('pages_settings.settings_page') }}">Settings</a>
+    <span class="spacer"></span>
+  </nav>
+  <hr>
+  {% block content %}{% endblock %}
+</body>
+</html>

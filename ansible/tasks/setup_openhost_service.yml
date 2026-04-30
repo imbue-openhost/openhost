@@ -41,16 +41,8 @@
     daemon_reload: yes
   when: service_file.changed
 
-- name: Enable and start openhost service
+- name: Enable openhost service
   become: yes
   systemd:
     name: openhost
     enabled: yes
-    state: started
-
-- name: Restart openhost service if config changed
-  become: yes
-  systemd:
-    name: openhost
-    state: restarted
-  when: config_file.changed or service_file.changed
