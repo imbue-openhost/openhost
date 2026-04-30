@@ -45,7 +45,7 @@
 - permanent data (`app_data`) lives on the host's local disk under `persistent_data_dir/app_data/<app>`
 - temp data (`app_temp_data`) lives on a separate subdirectory under `temporary_data_dir`, so that backups can target only the persistent data
 - archive data (`app_archive`) lives at the path determined by the currently-configured archive backend.  Default backend is `local`, which writes to a subdirectory under `persistent_data_dir/app_archive/`.  Operators can switch to the `s3` backend from the dashboard, which routes archive bytes through a JuiceFS mount of an operator-supplied bucket; the operator-visible path the operator deals with on the host changes, but the in-container path apps see is always `/data/app_archive/<app>/`.
-- when on the `s3` backend, the JuiceFS metadata database itself is small and lives on the host's local disk; that file is included in the standard backup so a fresh VM restoring from backup has the metadata it needs to reattach to the existing S3 bucket.
+- when on the `s3` backend, the JuiceFS metadata database is small and lives on the host's local disk under `persistent_data_dir/openhost/`; the standard backup picks up that directory.  A planned but not-yet-implemented daily `juicefs dump` will write a JSON snapshot alongside the SQLite metadata file so a fresh VM restoring from backup has everything it needs to reattach to the existing S3 bucket via `juicefs format` + `juicefs load`.  Until that's wired up, recovery is "back up the SQLite metadata file directly" — see the JuiceFS upstream docs.
 
 ### permissions
 

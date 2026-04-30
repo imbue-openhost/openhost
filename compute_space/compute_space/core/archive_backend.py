@@ -345,28 +345,48 @@ def umount(config: Config) -> None:
             _mount_proc = None
             return
         cmd = [_juicefs_binary(config), "umount", mount_point]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            # ``juicefs umount`` failure is typically a busy-FS
-            # (a container is still bind-mounted into the path).
-            # The dashboard's switch flow stops opted-in apps before
-            # triggering this, so the busy case shouldn't fire on the
-            # happy path.  Surface the error rather than silently
-            # leaking; clearing _mount_proc here means a retry
-            # doesn't inherit a stale handle.
-            _mount_proc = None
-            raise RuntimeError(
-                f"juicefs umount of {mount_point} failed (rc={result.returncode}); "
-                f"ensure all containers using the archive tier are stopped "
-                f"before switching backends.  Original: {result.stderr.strip()}"
-            )
-        if _mount_proc is not None:
+        # Always clear ``_mount_proc`` on any exit path so a retry
+        # doesn't inherit a stale handle pointing at a process whose
+        # state is unknown.  Reaping (kill+wait) the supervised mount
+        # process happens inside the try/finally so a TimeoutExpired
+        # from subprocess.run still triggers the cleanup.
+        try:
             try:
-                _mount_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _mount_proc.kill()
-        _mount_proc = None
-        logger.info("juicefs unmounted from %s", mount_point)
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30
+                )
+            except subprocess.TimeoutExpired as exc:
+                # The juicefs umount binary itself hung.  Treat as a
+                # busy-FS failure and surface the error.
+                raise RuntimeError(
+                    f"juicefs umount of {mount_point} timed out after 30s"
+                ) from exc
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"juicefs umount of {mount_point} failed "
+                    f"(rc={result.returncode}); ensure all containers "
+                    f"using the archive tier are stopped before switching "
+                    f"backends.  Original: {result.stderr.strip()}"
+                )
+            logger.info("juicefs unmounted from %s", mount_point)
+        finally:
+            # Reap the supervised mount process.  juicefs umount tells
+            # the FUSE process to exit cleanly; wait briefly for it to
+            # do so, then SIGKILL + wait if it didn't.  Either way,
+            # null the global so a subsequent mount() doesn't think a
+            # stale handle is live.
+            if _mount_proc is not None:
+                try:
+                    _mount_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _mount_proc.kill()
+                    try:
+                        _mount_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        logger.error(
+                            "juicefs mount process did not exit after SIGKILL"
+                        )
+            _mount_proc = None
 
 
 # ---------------------------------------------------------------------------
@@ -440,8 +460,19 @@ def _update_state(
     last_switched_at: str | None = None,
     clear_s3_credentials: bool = False,
 ) -> None:
-    """Update the single archive_backend row; only applies the fields
-    explicitly passed (or that the caller asked to clear).
+    """Update the single archive_backend row.
+
+    ``None`` means "don't update this field" rather than "set to NULL"
+    so callers can pass only the fields they care about.  The two
+    exceptions are deliberate:
+
+    - When ``state`` is passed, ``state_message`` is also written
+      (to ``None`` if the caller didn't supply one).  Stale switch-
+      step messages from a prior transition would otherwise linger
+      on the dashboard until the next failure rewrote them.
+    - ``clear_s3_credentials=True`` explicitly NULLs the access key
+      and secret access key columns.  This is how the s3->local
+      transition drops the secrets it no longer needs.
     """
     fields: dict[str, object | None] = {}
     if state is not None:
@@ -744,7 +775,15 @@ def switch_backend(
             "wait for the in-flight switch to finish before starting a new one."
         )
 
+    # ``stopped_apps`` is the set we successfully stopped (and
+    # therefore must restart in the finally block).  ``affected_apps``
+    # is the candidate list — used only to decide what to try to
+    # stop.  Splitting them avoids the failure mode where a stop
+    # raised partway through the loop and the finally tried to start
+    # apps that were never stopped, producing spurious 'starting'
+    # transitions on apps that were already healthy.
     affected_apps: list[str] = []
+    stopped_apps: list[str] = []
     new_mount_active = False  # set when the s3 target is up; used by
     # the failure path to umount it again so we don't orphan a
     # FUSE process while the DB rolls back to the old backend.
@@ -788,6 +827,7 @@ def switch_backend(
                     f"continue because in-flight writes from a still-running "
                     f"app would corrupt the data copy.  Original error: {exc}"
                 ) from exc
+            stopped_apps.append(name)
 
         old_archive_dir = archive_dir_for_backend(config, current.backend)
 
@@ -940,16 +980,18 @@ def switch_backend(
                 )
         raise BackendSwitchError(str(exc)) from exc
     finally:
-        # Always restart the apps we stopped, success or failure.
-        # Without this, a failed switch leaves them in ``stopped``
-        # forever — operators retrying the switch would find the
-        # affected_apps list empty (because the apps are no longer
-        # running) and the apps would be permanently orphaned.
-        # On a failed switch, restarts may themselves fail (e.g.
-        # if the new backend is broken); those failures bubble up
-        # as DB ``error_message`` per-app, which is the right
-        # operator-visible signal.
-        for name in affected_apps:
+        # Always restart the apps we successfully stopped, success or
+        # failure.  Without this, a failed switch leaves them in
+        # ``stopped`` forever — operators retrying the switch would
+        # find the affected_apps list empty (because the apps are no
+        # longer running) and the apps would be permanently orphaned.
+        # On a failed switch, restarts may themselves fail (e.g. if
+        # the new backend is broken); those failures surface as DB
+        # ``error_message`` per-app, which is the right operator-
+        # visible signal.  Only ``stopped_apps`` is iterated, NOT
+        # ``affected_apps``, so we don't try to start an app whose
+        # earlier stop_app raised (it was never stopped).
+        for name in stopped_apps:
             try:
                 hook.start_app(name)
             except Exception:

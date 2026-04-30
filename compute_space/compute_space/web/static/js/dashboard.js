@@ -372,6 +372,10 @@ function testArchiveConnection() {
       var ok = pair[0] === 200 && pair[1].ok;
       msg.style.color = ok ? '#16a34a' : '#dc3545';
       msg.textContent = ok ? 'Bucket reachable' : ('Failed: ' + (pair[1].error || ''));
+    })
+    .catch(function(err) {
+      msg.style.color = '#dc3545';
+      msg.textContent = 'Network error: ' + err;
     });
 }
 
@@ -410,6 +414,10 @@ function submitSwitch(goingToS3) {
         msg.style.color = '#dc3545';
         msg.textContent = 'Failed: ' + (pair[1].error || pair[1]);
       }
+    })
+    .catch(function(err) {
+      msg.style.color = '#dc3545';
+      msg.textContent = 'Network error: ' + err;
     });
 }
 
@@ -418,12 +426,29 @@ function pollArchiveBackend() {
     if (state && state.state === 'switching') {
       setTimeout(pollArchiveBackend, 1500);
     }
+  }, function(err) {
+    // Surface the polling failure rather than silently freezing the
+    // last rendered state.  We don't reschedule — the operator can
+    // hit reload to retry.
+    var el = document.getElementById('archive-backend-status');
+    if (el) {
+      el.innerHTML = '<div style="background:#f8d7da;border:1px solid #dc3545;'
+        + 'padding:0.8em 1em;border-radius:4px;">'
+        + '<strong>&#x26A0;&#xFE0F; Archive backend status unavailable</strong>'
+        + '<div style="margin-top:0.35em;color:#666;font-size:0.9em;">'
+        + escapeHtml(String(err)) + '</div></div>';
+    }
   });
 }
 
 function loadArchiveBackend() {
   return fetch(config.archiveBackendUrl, {credentials: 'same-origin'})
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok) {
+        throw new Error('HTTP ' + r.status);
+      }
+      return r.json();
+    })
     .then(function(data) {
       renderArchiveBackend(data);
       return data;
