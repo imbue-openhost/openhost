@@ -21,6 +21,7 @@ build-backend = "hatchling.build"
 packages = ["src/compute_space_cli"]
 
 [tool.uv]
-# Don't manage this subproject with uv — it ships standalone via
-# `pip install git+https://.../openhost.git#subdirectory=compute_space_cli`.
+# Don't manage this subproject with uv; the pyproject.toml is just to make it installable via pip with a git URL.
+# otherwise since we rarely run uv from this subdir, the lockfile is liable to get out of date.
+# ideally we'd use some sort of proper workspace management but we don't now.
 managed = false
