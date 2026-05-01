@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 import threading
 
@@ -48,6 +49,52 @@ def _state_to_response(state: BackendState) -> dict:
     out = attr.asdict(state)
     out.pop("s3_secret_access_key", None)
     return out
+
+
+# Permissive ASCII subset for S3 prefix path segments: letters,
+# digits, dot, underscore, dash.  Anything outside the set is
+# rejected — S3 itself accepts a wider range, but we'd rather have
+# a tight allowlist than worry about edge cases (URL-encoding
+# semantics, JuiceFS prefix interpretation, weird shell quoting in
+# downstream subprocess calls).  ``..`` segments are always
+# rejected separately to defuse traversal-style mistakes.
+_S3_PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_S3_PREFIX_MAX_LEN = 256
+
+
+def _normalise_s3_prefix(raw: str | None) -> str | None:
+    """Validate and normalise an operator-supplied S3 prefix.
+
+    Returns the cleaned prefix (no leading/trailing slashes), or
+    None if the input was empty.  Raises ``ValueError`` with a
+    clear message if the prefix shape is invalid.
+
+    The cleaned form is what gets stored in the DB and what
+    ``_bucket_url`` appends to the bucket URL — keeping the storage
+    canonical avoids surprises when the operator's input has a
+    rogue leading slash or trailing whitespace.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip().strip("/")
+    if not cleaned:
+        return None
+    if len(cleaned) > _S3_PREFIX_MAX_LEN:
+        raise ValueError(f"s3_prefix must be at most {_S3_PREFIX_MAX_LEN} characters")
+    if "\x00" in cleaned:
+        raise ValueError("s3_prefix must not contain NUL bytes")
+    segments = cleaned.split("/")
+    for seg in segments:
+        if not seg:
+            raise ValueError("s3_prefix must not contain empty path segments (got '//')")
+        if seg in (".", ".."):
+            raise ValueError("s3_prefix must not contain '.' or '..' path segments")
+        if not _S3_PREFIX_SEGMENT_RE.match(seg):
+            raise ValueError(
+                "s3_prefix path segments must match [A-Za-z0-9._-] only "
+                f"(got {seg!r})"
+            )
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +215,14 @@ async def test_connection() -> ResponseReturnValue:
     endpoint = (form.get("s3_endpoint") or "").strip() or None
     access_key = (form.get("s3_access_key_id") or "").strip()
     secret_key = (form.get("s3_secret_access_key") or "").strip()
+    # Pre-flight against the bucket itself, not bucket+prefix —
+    # head_bucket is bucket-level and a wrong prefix wouldn't
+    # surface here anyway.  We DO normalise the prefix shape so
+    # the operator catches typos before the actual switch runs.
+    try:
+        _normalise_s3_prefix(form.get("s3_prefix"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": f"invalid s3_prefix: {exc}"}), 400
     if not (bucket and access_key and secret_key):
         return jsonify(
             {"ok": False, "error": "bucket, access_key_id, and secret_access_key are required"}
@@ -199,6 +254,10 @@ async def post_archive_backend() -> ResponseReturnValue:
       ``confirm_data_loss``: ``true`` (required — see below)
       ``s3_bucket``, ``s3_region``, ``s3_endpoint``, ``s3_access_key_id``,
       ``s3_secret_access_key``, ``juicefs_volume_name`` (when target=s3)
+      ``s3_prefix``: optional path under the bucket — lets multiple
+        OpenHost zones share a single bucket cleanly (each zone
+        configured with its own prefix).  Empty / unset means
+        "use the bucket root", which is the v4 default.
       ``delete_source_after_copy``: ``true`` to drop the source-side data
       after the copy succeeds (frees local disk on local->s3, or makes
       the S3 bucket the source of truth on s3->local).
@@ -222,10 +281,15 @@ async def post_archive_backend() -> ResponseReturnValue:
 
     s3_kwargs: dict[str, str | None] = {}
     if target == "s3":
+        try:
+            normalised_prefix = _normalise_s3_prefix(form.get("s3_prefix"))
+        except ValueError as exc:
+            return jsonify({"error": f"invalid s3_prefix: {exc}"}), 400
         s3_kwargs = {
             "s3_bucket": (form.get("s3_bucket") or "").strip() or None,
             "s3_region": (form.get("s3_region") or "").strip() or None,
             "s3_endpoint": (form.get("s3_endpoint") or "").strip() or None,
+            "s3_prefix": normalised_prefix,
             "s3_access_key_id": (form.get("s3_access_key_id") or "").strip() or None,
             "s3_secret_access_key": (form.get("s3_secret_access_key") or "").strip() or None,
             "juicefs_volume_name": (form.get("juicefs_volume_name") or "").strip() or None,

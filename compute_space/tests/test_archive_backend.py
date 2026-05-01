@@ -132,6 +132,49 @@ def test_archive_dir_for_backend(cfg):
     assert archive_dir_for_backend(cfg, "s3") == juicefs_mount_dir(cfg)
 
 
+def test_bucket_url_aws_no_prefix():
+    """AWS bucket URL: no endpoint, no prefix -> region-suffixed
+    virtual-host URL."""
+    assert (
+        archive_backend._bucket_url("mybucket", "us-west-2", None)
+        == "https://mybucket.s3.us-west-2.amazonaws.com"
+    )
+
+
+def test_bucket_url_aws_with_prefix():
+    """A non-empty prefix is appended to the bucket URL.  This is
+    the path the dashboard takes when an operator wants per-zone
+    isolation under a shared bucket."""
+    assert (
+        archive_backend._bucket_url(
+            "mybucket", "us-west-2", None, "s3-backing/andrew-3"
+        )
+        == "https://mybucket.s3.us-west-2.amazonaws.com/s3-backing/andrew-3"
+    )
+
+
+def test_bucket_url_strips_extra_slashes_on_prefix():
+    """Operator typed ``/s3-backing/zone/`` (leading + trailing
+    slashes) -> normalise to ``s3-backing/zone`` before
+    appending."""
+    assert (
+        archive_backend._bucket_url(
+            "mybucket", "us-west-2", None, "/s3-backing/zone/"
+        )
+        == "https://mybucket.s3.us-west-2.amazonaws.com/s3-backing/zone"
+    )
+
+
+def test_bucket_url_with_custom_endpoint_and_prefix():
+    """Non-AWS endpoint (MinIO, etc.) + prefix path."""
+    assert (
+        archive_backend._bucket_url(
+            "mybucket", "us-east-1", "https://minio.example.com:9000", "openhost"
+        )
+        == "https://minio.example.com:9000/mybucket/openhost"
+    )
+
+
 def test_is_archive_dir_healthy_local(cfg, db):
     """For the local backend the check just verifies the directory
     exists.  Make_all_dirs (run by _make_test_config) creates it."""

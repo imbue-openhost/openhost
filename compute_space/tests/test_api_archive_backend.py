@@ -142,6 +142,31 @@ async def test_post_s3_requires_creds(app):
 
 
 @pytest.mark.asyncio
+async def test_post_rejects_invalid_s3_prefix(app):
+    """A malformed prefix (path traversal, weird characters) must
+    not reach _bucket_url; we want the dashboard form to bounce
+    bad input with a clear message rather than have the operator
+    stare at a generic 'juicefs format failed' error 30 s later.
+    """
+    client = app.test_client()
+    for bad in ("../etc", "with space", "embedded\x00null", "leading/./dot"):
+        resp = await client.post(
+            "/api/storage/archive_backend",
+            form={
+                "backend": "s3",
+                "confirm_data_loss": "true",
+                "s3_bucket": "b",
+                "s3_access_key_id": "a",
+                "s3_secret_access_key": "s",
+                "s3_prefix": bad,
+            },
+        )
+        body = await resp.get_json()
+        assert resp.status_code == 400, (bad, body)
+        assert "s3_prefix" in body["error"], (bad, body)
+
+
+@pytest.mark.asyncio
 async def test_post_rejects_when_already_switching(app):
     db = sqlite3.connect(app.config["DB_PATH"])
     try:
@@ -224,6 +249,75 @@ async def test_post_local_to_s3_returns_202_and_runs_switch(app, cfg):
     assert "s3_secret_access_key" not in body
     # And the resolved archive_dir now points at the JuiceFS mount.
     assert body["archive_dir"] == juicefs_mount
+
+
+@pytest.mark.asyncio
+async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
+    """When the operator supplies a non-empty s3_prefix on the
+    switch form, it must round-trip cleanly: be passed to
+    format_volume, persisted in the DB, and surfaced on the next
+    GET response.  Mocking is exactly the same as the no-prefix
+    happy-path test; the distinguishing assertions are the
+    prefix-related ones at the end.
+    """
+    juicefs_mount = archive_backend.juicefs_mount_dir(cfg)
+    Path(juicefs_mount).mkdir(parents=True, exist_ok=True)
+
+    captured: dict[str, object] = {}
+
+    def _capture_format(*args, **kwargs):
+        # format_volume is called with config as a positional and
+        # the rest as kwargs in the production call site; this
+        # signature accepts both shapes defensively.
+        captured.update(kwargs)
+        if args:
+            captured["_positional_count"] = len(args)
+
+    client = app.test_client()
+    with (
+        mock.patch.object(archive_backend, "install_juicefs"),
+        mock.patch.object(archive_backend, "format_volume", side_effect=_capture_format),
+        mock.patch.object(archive_backend, "mount"),
+    ):
+        resp = await client.post(
+            "/api/storage/archive_backend",
+            form={
+                "backend": "s3",
+                "confirm_data_loss": "true",
+                "s3_bucket": "imbue-openhost",
+                "s3_region": "us-west-2",
+                # Operator-typed leading slash + trailing slash
+                # gets normalised before reaching format_volume.
+                "s3_prefix": "/s3-backing/andrew-3/",
+                "s3_access_key_id": "AKIA",
+                "s3_secret_access_key": "hunter2",
+            },
+        )
+        assert resp.status_code == 202
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            db = sqlite3.connect(cfg.db_path)
+            try:
+                row = db.execute(
+                    "SELECT backend, state FROM archive_backend WHERE id=1"
+                ).fetchone()
+            finally:
+                db.close()
+            if row[0] == "s3" and row[1] == "idle":
+                break
+            time.sleep(0.05)
+
+    # format_volume was called with the normalised prefix.
+    assert captured["s3_prefix"] == "s3-backing/andrew-3", captured
+
+    # GET surfaces the prefix as we stored it.
+    resp = await client.get("/api/storage/archive_backend")
+    body = await resp.get_json()
+    assert body["backend"] == "s3"
+    assert body["s3_prefix"] == "s3-backing/andrew-3"
+    assert body["s3_bucket"] == "imbue-openhost"
+    assert body["s3_region"] == "us-west-2"
 
 
 # ---------------------------------------------------------------------------

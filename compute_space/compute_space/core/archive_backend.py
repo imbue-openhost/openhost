@@ -149,14 +149,32 @@ def _format_meta_dsn(config: Config) -> str:
     return f"sqlite3://{_juicefs_meta_db(config)}"
 
 
-def _bucket_url(s3_bucket: str, s3_region: str, s3_endpoint: str | None) -> str:
+def _bucket_url(
+    s3_bucket: str,
+    s3_region: str,
+    s3_endpoint: str | None,
+    s3_prefix: str | None = None,
+) -> str:
     """JuiceFS expects the bucket as a URL even on AWS.  Custom S3
     endpoints (MinIO etc.) need the explicit endpoint; AWS gets the
     region-suffixed virtual-host URL.
+
+    When ``s3_prefix`` is set, it is appended as a path component
+    so JuiceFS lays its volume (juicefs_uuid, chunks/, meta/) out
+    under that prefix instead of at the bucket root.  Lets multiple
+    OpenHost zones share a single bucket cleanly, with each zone
+    pointing at its own prefix.  Validation of the prefix happens
+    upstream (the route layer enforces no-leading-slash, no ``..``,
+    etc.); here we only normalise the trailing slash for tidy URLs.
     """
     if s3_endpoint:
-        return f"{s3_endpoint.rstrip('/')}/{s3_bucket}"
-    return f"https://{s3_bucket}.s3.{s3_region or 'us-east-1'}.amazonaws.com"
+        base = f"{s3_endpoint.rstrip('/')}/{s3_bucket}"
+    else:
+        base = f"https://{s3_bucket}.s3.{s3_region or 'us-east-1'}.amazonaws.com"
+    prefix = (s3_prefix or "").strip().strip("/")
+    if prefix:
+        return f"{base}/{prefix}"
+    return base
 
 
 def format_volume(
@@ -164,6 +182,7 @@ def format_volume(
     s3_bucket: str,
     s3_region: str | None,
     s3_endpoint: str | None,
+    s3_prefix: str | None,
     s3_access_key_id: str,
     s3_secret_access_key: str,
     juicefs_volume_name: str,
@@ -176,7 +195,7 @@ def format_volume(
     the recovery flow ("provision a fresh VM with the same bucket") is
     the same code path as the first-time setup.
     """
-    bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint)
+    bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint, s3_prefix)
     cmd = [
         _juicefs_binary(config),
         "format",
@@ -405,6 +424,11 @@ class BackendState:
     s3_bucket: str | None
     s3_region: str | None
     s3_endpoint: str | None
+    # Operator-supplied prefix under the bucket so multiple zones
+    # can share one bucket cleanly.  ``None`` / empty means "use
+    # the bucket root", which is the v4-default behaviour and what
+    # row[10] returns for any DB row written before v5.
+    s3_prefix: str | None
     s3_access_key_id: str | None
     s3_secret_access_key: str | None
     juicefs_volume_name: str
@@ -416,7 +440,7 @@ def read_state(db: sqlite3.Connection) -> BackendState:
     row = db.execute(
         "SELECT backend, state, s3_bucket, s3_region, s3_endpoint, "
         "s3_access_key_id, s3_secret_access_key, juicefs_volume_name, "
-        "last_switched_at, state_message FROM archive_backend WHERE id = 1"
+        "last_switched_at, state_message, s3_prefix FROM archive_backend WHERE id = 1"
     ).fetchone()
     if row is None:
         # Should never happen — the v4 migration seeds this row — but
@@ -427,6 +451,7 @@ def read_state(db: sqlite3.Connection) -> BackendState:
             s3_bucket=None,
             s3_region=None,
             s3_endpoint=None,
+            s3_prefix=None,
             s3_access_key_id=None,
             s3_secret_access_key=None,
             juicefs_volume_name="openhost",
@@ -444,6 +469,7 @@ def read_state(db: sqlite3.Connection) -> BackendState:
         juicefs_volume_name=row[7] or "openhost",
         last_switched_at=row[8],
         state_message=row[9],
+        s3_prefix=row[10],
     )
 
 
@@ -792,6 +818,7 @@ class _SwitchPlan:
     s3_bucket: str | None
     s3_region: str | None
     s3_endpoint: str | None
+    s3_prefix: str | None
     s3_access_key_id: str | None
     s3_secret_access_key: str | None
     volume_name: str
@@ -813,6 +840,7 @@ def _bring_up_target(config: Config, db: sqlite3.Connection, plan: _SwitchPlan) 
             s3_bucket=plan.s3_bucket,
             s3_region=plan.s3_region,
             s3_endpoint=plan.s3_endpoint,
+            s3_prefix=plan.s3_prefix,
             s3_access_key_id=plan.s3_access_key_id,
             s3_secret_access_key=plan.s3_secret_access_key,
             juicefs_volume_name=plan.volume_name,
@@ -942,6 +970,7 @@ def switch_backend(
     s3_bucket: str | None = None,
     s3_region: str | None = None,
     s3_endpoint: str | None = None,
+    s3_prefix: str | None = None,
     s3_access_key_id: str | None = None,
     s3_secret_access_key: str | None = None,
     juicefs_volume_name: str | None = None,
@@ -1061,6 +1090,7 @@ def switch_backend(
             s3_bucket=s3_bucket,
             s3_region=s3_region,
             s3_endpoint=s3_endpoint,
+            s3_prefix=s3_prefix,
             s3_access_key_id=s3_access_key_id,
             s3_secret_access_key=s3_secret_access_key,
             volume_name=volume_name,
@@ -1083,13 +1113,14 @@ def switch_backend(
             db.execute(
                 "UPDATE archive_backend SET state='idle', state_message=?, "
                 "backend='s3', s3_bucket=?, s3_region=?, s3_endpoint=?, "
-                "s3_access_key_id=?, s3_secret_access_key=?, "
+                "s3_prefix=?, s3_access_key_id=?, s3_secret_access_key=?, "
                 "juicefs_volume_name=?, last_switched_at=? WHERE id=1",
                 (
                     teardown_warning,
                     s3_bucket,
                     s3_region,
                     s3_endpoint,
+                    s3_prefix,
                     s3_access_key_id,
                     s3_secret_access_key,
                     volume_name,

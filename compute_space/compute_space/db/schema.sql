@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS archive_backend (
     s3_bucket TEXT,
     s3_region TEXT,
     s3_endpoint TEXT,
+    s3_prefix TEXT,
     s3_access_key_id TEXT,
     s3_secret_access_key TEXT,
     juicefs_volume_name TEXT NOT NULL DEFAULT 'openhost',

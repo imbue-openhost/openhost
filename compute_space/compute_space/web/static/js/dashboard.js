@@ -298,6 +298,7 @@ function renderArchiveBackend(state) {
   if (state.backend === 's3') {
     details = ' <span style="color:#666;font-size:0.9em;">'
       + 'bucket=' + escapeHtml(state.s3_bucket || '?')
+      + (state.s3_prefix ? '/' + escapeHtml(state.s3_prefix) : '')
       + (state.s3_region ? ', region=' + escapeHtml(state.s3_region) : '')
       + (state.s3_access_key_id ? ', key=' + escapeHtml(state.s3_access_key_id.slice(0, 4)) + '…' : '')
       + '</span>';
@@ -326,6 +327,7 @@ function showSwitchForm(state) {
       + '<label>S3 bucket</label><input id="ab-bucket" value="' + escapeHtml(state.s3_bucket || '') + '" placeholder="my-openhost-archive">'
       + '<label>Region</label><input id="ab-region" value="' + escapeHtml(state.s3_region || 'us-east-1') + '">'
       + '<label>Endpoint <span style="color:#888;font-size:0.85em;">(optional, non-AWS)</span></label><input id="ab-endpoint" value="' + escapeHtml(state.s3_endpoint || '') + '" placeholder="https://...">'
+      + '<label>Prefix <span style="color:#888;font-size:0.85em;">(optional path under the bucket; lets multiple zones share one bucket)</span></label><input id="ab-prefix" value="' + escapeHtml(state.s3_prefix || '') + '" placeholder="s3-backing/zone-name">'
       + '<label>Access key ID</label><input id="ab-access-key" value="' + escapeHtml(state.s3_access_key_id || '') + '">'
       + '<label>Secret access key</label><input id="ab-secret-key" type="password">'
       + '<label>Volume name</label><input id="ab-volume" value="' + escapeHtml(state.juicefs_volume_name || 'openhost') + '">'
@@ -364,6 +366,7 @@ function testArchiveConnection() {
   fd.append('s3_bucket', document.getElementById('ab-bucket').value);
   fd.append('s3_region', document.getElementById('ab-region').value);
   fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
+  fd.append('s3_prefix', document.getElementById('ab-prefix').value);
   fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
   fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
   fetch(config.archiveBackendTestUrl, {method: 'POST', credentials: 'same-origin', body: fd})
@@ -393,6 +396,7 @@ function submitSwitch(goingToS3) {
     fd.append('s3_bucket', document.getElementById('ab-bucket').value);
     fd.append('s3_region', document.getElementById('ab-region').value);
     fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
+    fd.append('s3_prefix', document.getElementById('ab-prefix').value);
     fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
     fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
     fd.append('juicefs_volume_name', document.getElementById('ab-volume').value);
