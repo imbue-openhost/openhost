@@ -251,13 +251,8 @@ def run_container(
         "--add-host=host.docker.internal:host-gateway",
         "--add-host=host.containers.internal:host-gateway",
         "--cap-drop=ALL",
+        "--security-opt=no-new-privileges=true",
     ]
-    # ``no-new-privileges`` blocks setuid escalation; safe for normal
-    # apps but breaks Chromium's headless sandbox (which needs to
-    # call execve into a setuid helper). Apps opting into
-    # `[runtime.security] privileged = true` get the flag dropped.
-    if not manifest.privileged:
-        cmd.append("--security-opt=no-new-privileges=true")
     if manifest.shm_mb > 0:
         cmd.append(f"--shm-size={manifest.shm_mb}m")
     for cap in sorted(DEFAULT_CAPABILITIES):

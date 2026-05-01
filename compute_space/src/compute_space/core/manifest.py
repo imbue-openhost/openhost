@@ -68,20 +68,6 @@ SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
 )
 
 
-# Capabilities only granted to apps that opt in to
-# ``[runtime.security] privileged = true``.  Granting any of these
-# effectively gives the app root-equivalent privilege on the host
-# (inside its userns) and the operator must explicitly accept that
-# at deploy time. Keep this set minimal and well-justified.
-PRIVILEGED_ONLY_CAPABILITIES: frozenset[str] = frozenset(
-    {
-        # Required by Chromium's headless sandbox (jibri's recording
-        # path), which needs to create user/PID/mount namespaces.
-        "SYS_ADMIN",
-    }
-)
-
-
 @attr.s(auto_attribs=True, frozen=True)
 class PortMapping:
     """A structured port mapping declared in [[ports]]."""
@@ -126,13 +112,6 @@ class AppManifest:
     # `--shm-size` (in MiB).  0 = use podman's default (64 MiB).
     # Apps doing serious browser work (jibri) need ~2 GiB minimum.
     shm_mb: int = 0
-
-    # [runtime.security]
-    # When True, the app opts into capabilities the platform normally
-    # rejects (PRIVILEGED_ONLY_CAPABILITIES) and the dashboard
-    # surfaces a deploy-time warning.  Default-off; apps that need
-    # it must declare it explicitly.
-    privileged: bool = False
 
     # [routing]
     health_check: str | None = None
@@ -189,13 +168,11 @@ def _validate_devices(devices: list[Any]) -> list[str]:
     return validated
 
 
-def _validate_capabilities(caps: list[Any], *, privileged: bool) -> list[str]:
+def _validate_capabilities(caps: list[Any]) -> list[str]:
     """Normalise and validate ``[runtime.container].capabilities``.
 
-    Accepts ``CAP_`` prefix or bare names (podman uses bare).
-    Anything in ``SAFE_CAPABILITIES`` is always allowed; anything in
-    ``PRIVILEGED_ONLY_CAPABILITIES`` requires ``privileged = true``;
-    anything else is rejected.
+    Accepts ``CAP_`` prefix or bare names (podman uses bare).  Rejects
+    anything not in ``SAFE_CAPABILITIES``.
     """
     if not isinstance(caps, list):
         raise ValueError("[runtime.container].capabilities must be a list of strings")
@@ -206,26 +183,13 @@ def _validate_capabilities(caps: list[Any], *, privileged: bool) -> list[str]:
         name = entry.strip().upper()
         if name.startswith("CAP_"):
             name = name[len("CAP_") :]
-        if name in SAFE_CAPABILITIES:
-            normalised.append(name)
-            continue
-        if name in PRIVILEGED_ONLY_CAPABILITIES:
-            if not privileged:
-                raise ValueError(
-                    f"[runtime.container].capabilities entry {entry!r} requires "
-                    f"[runtime.security] privileged = true (this gives the app effective "
-                    f"root-on-host privilege inside its user namespace; operators must "
-                    f"opt in at deploy time)."
-                )
-            normalised.append(name)
-            continue
-        allowed_safe = ", ".join(sorted(SAFE_CAPABILITIES))
-        allowed_priv = ", ".join(sorted(PRIVILEGED_ONLY_CAPABILITIES))
-        raise ValueError(
-            f"[runtime.container].capabilities entry {entry!r} is not safe to grant under "
-            f"rootless podman.  Always-allowed: {allowed_safe}.  Privileged-only (require "
-            f"[runtime.security] privileged = true): {allowed_priv}."
-        )
+        if name not in SAFE_CAPABILITIES:
+            allowed = ", ".join(sorted(SAFE_CAPABILITIES))
+            raise ValueError(
+                f"[runtime.container].capabilities entry {entry!r} is not safe to grant under "
+                f"rootless podman.  Allowed: {allowed}."
+            )
+        normalised.append(name)
     return normalised
 
 
@@ -314,11 +278,6 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     if not container.get("port"):
         raise ValueError("[runtime.container].port is required")
 
-    security = runtime.get("security", {})
-    privileged = bool(security.get("privileged", False))
-    if not isinstance(security.get("privileged", False), bool):
-        raise ValueError("[runtime.security].privileged must be a boolean")
-
     shm_mb = container.get("shm_mb", 0)
     if not isinstance(shm_mb, int) or shm_mb < 0:
         raise ValueError("[runtime.container].shm_mb must be a non-negative integer")
@@ -348,10 +307,9 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         container_port=container["port"],
         container_command=container.get("command"),
         port_mappings=_parse_ports(data.get("ports", [])),
-        capabilities=_validate_capabilities(container.get("capabilities", []), privileged=privileged),
+        capabilities=_validate_capabilities(container.get("capabilities", [])),
         devices=_validate_devices(container.get("devices", [])),
         shm_mb=shm_mb,
-        privileged=privileged,
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
         memory_mb=resources.get("memory_mb", 128),
