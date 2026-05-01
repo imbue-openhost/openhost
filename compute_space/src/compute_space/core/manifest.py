@@ -60,11 +60,6 @@ SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
     {
         "/dev/net/tun",
         "/dev/fuse",
-        # ALSA: needed by jibri (audio capture via snd-aloop) and any
-        # other app that wants direct sound device access. The host
-        # kernel still gates which sound devices exist; rootless
-        # podman cgroup-restricts what the container can read inside.
-        "/dev/snd",
         # First 8 slots of each serial/USB-TTY family; expand if needed.
         *(f"/dev/ttyS{i}" for i in range(8)),
         *(f"/dev/ttyUSB{i}" for i in range(8)),

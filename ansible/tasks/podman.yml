@@ -121,24 +121,3 @@
       runtime_version=1
     dest: /etc/openhost/runtime
     mode: "0644"
-
-# snd-aloop (ALSA loopback) is a kernel module needed by privileged
-# apps that capture audio from a contained Chrome/ffmpeg pipeline
-# (jibri being the headline case). Apps cannot load kernel modules
-# from inside the rootless userns, so we load it here and persist
-# via /etc/modules-load.d. Apps that don't need audio capture see
-# extra /dev/snd/loop* nodes that podman won't expose unless their
-# manifest asks for `/dev/snd` in [runtime.container].devices.
-- name: Persist snd-aloop across reboots
-  copy:
-    content: |
-      # Managed by ansible/tasks/podman.yml; do not edit by hand.
-      snd-aloop
-    dest: /etc/modules-load.d/openhost-snd-aloop.conf
-    mode: "0644"
-
-- name: Load snd-aloop kernel module (ALSA loopback)
-  command: modprobe snd-aloop
-  args:
-    creates: /sys/module/snd_aloop
-  ignore_errors: yes
