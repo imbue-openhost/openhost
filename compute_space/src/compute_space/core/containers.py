@@ -240,6 +240,8 @@ def run_container(
         "-d",
         "--name",
         container_name,
+        "--hostname",
+        container_name,
         "-p",
         f"127.0.0.1:{local_port}:{manifest.container_port}",
         f"--memory={manifest.memory_mb}m",
