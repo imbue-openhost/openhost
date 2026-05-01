@@ -1,0 +1,74 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - System{% endblock %}
+{% block content %}
+<h2>Security Audit</h2>
+<table id="security-table">
+  <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+  <tbody id="security-body">
+    <tr><td colspan="3" style="color:#888;">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+
+<h2 style="margin-top: 2em;">Listening Ports</h2>
+<table id="ports-table">
+  <thead><tr><th>Port</th><th>Address</th><th>Classification</th><th>Detail</th></tr></thead>
+  <tbody id="ports-body">
+    <tr><td colspan="4" style="color:#888;">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+
+<h2 style="margin-top: 2em;">Storage</h2>
+<table id="storage-table">
+  <tbody id="storage-body">
+    <tr><td colspan="2" style="color:#888;">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+<div id="storage-guard-row" style="margin-bottom:1em;"></div>
+
+<h2 style="margin-top: 2em;">Archive Backend</h2>
+<p style="color: #666; font-size: 0.9em;">Where the <code>app_archive</code> data tier lives.  Default is local disk.  Switching to S3 (JuiceFS) lets the same archive bytes outlive a VM rebuild and lets multiple zones share a single bucket via the prefix field.</p>
+<div id="archive-backend-status" style="margin-bottom: 1em;">
+  <div style="color:#888;">Loading&hellip;</div>
+</div>
+
+<h2 style="margin-top: 2em;">Maintenance</h2>
+<table>
+  <tr>
+    <th style="width:14em;">Restart router</th>
+    <td>
+      <button class="btn" onclick="restartRouter()">Restart Router</button>
+      <span id="restart-msg" style="color:#d97706;margin-left:0.5em;"></span>
+    </td>
+  </tr>
+  <tr>
+    <th>Build cache</th>
+    <td>
+      <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
+      <span id="drop-build-cache-msg" style="color:#d97706;margin-left:0.5em;"></span>
+    </td>
+  </tr>
+  <tr>
+    <th>SSH</th>
+    <td>
+      <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
+      <span id="ssh-status" style="margin-left:0.5em;color:#6b7280;"></span>
+    </td>
+  </tr>
+</table>
+
+<script id="page-config" type="application/json">
+{
+  "securityAuditUrl": "{{ url_for('api_system.security_audit') }}",
+  "listeningPortsUrl": "{{ url_for('api_system.listening_ports') }}",
+  "storageStatusUrl": "{{ url_for('api_system.api_storage_status') }}",
+  "restartRouterUrl": "{{ url_for('api_system.restart_router') }}",
+  "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
+  "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
+  "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
+  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}",
+  "archiveBackendUrl": "{{ url_for('api_archive_backend.get_archive_backend') }}",
+  "archiveBackendTestUrl": "{{ url_for('api_archive_backend.test_connection') }}"
+}
+</script>
+<script src="{{ static_url('js/system.js') }}"></script>
+{% endblock %}

@@ -9,6 +9,13 @@
     version: "{{ openhost_commit | default('main') }}"
     force: true
 
+- name: Remove untracked files from openhost repo
+  ansible.builtin.command:
+    cmd: git clean -fd
+    chdir: /home/host/openhost
+  register: git_clean_result
+  changed_when: git_clean_result.stdout | length > 0
+
 - name: Copy ACME account key
   copy:
     src: "{{ playbook_dir }}/secrets/certbot_private_key.json"

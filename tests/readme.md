@@ -11,4 +11,4 @@ Local full-stack tests exercise the router via `test_full_stack.py`. These curre
 still use the legacy multiuser_provider + QEMU VM harness and need reworking to
 start the router directly (see TODO at top of `test_full_stack.py`).
 
-    cd tests && uv run pytest test_full_stack.py -v -s
+    cd tests && pixi run -e dev pytest test_full_stack.py -v -s

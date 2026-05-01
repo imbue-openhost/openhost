@@ -30,39 +30,22 @@ dependencies = [
 openhost = "self_host_cli.main:main"
 oh = "compute_space_cli.main:main"
 
-[dependency-groups]
-dev = [
-    "pytest>=8.0",
-    "requests>=2.31",
-    "pytest-timeout>=2.2",
-    "playwright",
-    "pytest-asyncio",
-    "ruff==0.15.5",
-    "mypy",
-    "types-requests",
-    "litestar>=2.0",
-    "schemathesis>=4.0",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["self_host_cli", "compute_space/compute_space", "compute_space_cli/compute_space_cli"]
-
-[tool.uv]
-# dependency cooldown, to help avoid pulling uber fresh packages that may have issues/exploits/etc.
-exclude-newer = "1 week"
+packages = ["self_host_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli"]
 
 [tool.pytest.ini_options]
 testpaths = [
-    "compute_space/tests",
-    "compute_space_cli/tests",
-    "self_host_cli/tests",
-    "apps/oauth/tests",
+    "compute_space/src/compute_space/tests",
+    "compute_space_cli/src/compute_space_cli/tests",
+    "self_host_cli/src/self_host_cli/tests",
+    "apps/oauth/src/oauth/tests",
 ]
-addopts = "-p no:randomly -v --import-mode=importlib"
+# do NOT set --import-mode=importlib or change the import-mode.
+addopts = "-p no:randomly -v"
 markers = [
     "requires_containers: needs --run-containers flag and a working rootless podman setup",
     "requires_tls: needs --run-tls flag, pebble, and coredns",
@@ -96,32 +79,59 @@ known-first-party = [
     "compute_space",
     "compute_space_cli",
     "self_host_cli",
-    "testing_helpers",
     "oauth",
 ]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["compute_space/compute_space", "compute_space_cli", "apps/oauth/oauth"]
+files = ["compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "apps/oauth_provider/src/oauth_provider"]
 strict = true
 ignore_missing_imports = true
+exclude = ["compute_space/src/compute_space/tests/"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-arm64"]
 
 [tool.pixi.dependencies]
 python = "3.12.*"
 caddy = "*"
-# this doesn't work on arm mac :(
-coredns = "*"
 litestar = ">=2.21.1,<3"
 
-# these are minimum system requirements, not something that pixi manages.
+# coredns, podman, and crun aren't published for osx-arm64 on conda-forge.
+# On mac, install them manually if you need to run the --run-tls /
+# --run-containers tests; the default test suite skips both via pytest
+# markers.  crun is podman's preferred OCI runtime — without it podman
+# falls back to runc (which conda-forge bundles with podman) but startup
+# is slower.
+[tool.pixi.target.linux-64.dependencies]
+coredns = "*"
+podman = "~=5.8"
+crun = "*"
+
+# system-requirements only apply on the matching platform; on osx-arm64
+# they're ignored.  Linux runtime needs kernel >= 6.8 (idmapped mounts +
+# unprivileged user namespaces) and glibc >= 2.39 (Ubuntu 24.04).
 [tool.pixi.system-requirements]
 linux = "6.8"
 libc = "2.39"
 
 [tool.pixi.pypi-dependencies]
 openhost = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+
+[tool.pixi.feature.dev.pypi-dependencies]
+pytest = ">=8.0"
+requests = ">=2.31"
+pytest-timeout = ">=2.2"
+playwright = "*"
+pytest-asyncio = "*"
+ruff = "==0.15.5"
+mypy = "*"
+types-requests = "*"
+schemathesis = ">=4.0"
+pre-commit = "*"
 

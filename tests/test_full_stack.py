@@ -6,7 +6,7 @@ via rootless Podman, and exercises routing, auth, WebSockets, API tokens, app
 lifecycle, and system endpoints over HTTP.
 
 Prerequisites:
-    - Rootless podman configured (see ansible/tasks/podman.yml)
+    - Rootless podman configured (see ansible/tasks/containers.yml)
     - *.localhost resolves to 127.0.0.1 (RFC 6761, default on most Linux systems)
 
 Run:
@@ -23,9 +23,10 @@ import websockets
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import DefaultConfig
-from compute_space.testing import managed_router
-from compute_space.testing import poll
-from compute_space.testing import wait_app_running
+from compute_space.tests.utils import managed_router
+from compute_space.tests.utils import poll
+from compute_space.tests.utils import wait_app_removed
+from compute_space.tests.utils import wait_app_running
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -368,7 +369,8 @@ class TestMultipleApps:
         s = test_app_deployed["session"]
         url = test_app_deployed["router_url"]
         r = s.post(f"{url}/remove_app/test-app-2", timeout=30)
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(s, url, "test-app-2")
 
         r = s.get(f"{url}/test-app-2/health", timeout=5)
         assert r.status_code == 404
@@ -672,7 +674,8 @@ class TestCleanup:
 
     def test_remove_test_app(self, test_app_deployed, admin_session, router_url):
         r = admin_session.post(f"{router_url}/remove_app/test-app", timeout=30)
-        assert r.status_code == 200
+        assert r.status_code == 202
+        wait_app_removed(admin_session, router_url, "test-app")
 
     def test_test_app_gone(self, admin_session, router_url):
         r = admin_session.get(f"{router_url}/test-app/health", timeout=5)

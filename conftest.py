@@ -3,13 +3,14 @@
 By default only lightweight tests run (no external runtimes needed).
 Pass flags to opt in to heavier suites:
 
-    uv run pytest                      # local-only tests
-    uv run pytest --run-containers         # + Podman integration tests
-    uv run pytest --run-tls            # + TLS cert tests
+    pixi run -e dev pytest                      # local-only tests
+    pixi run -e dev pytest --run-containers     # + Podman integration tests
+    pixi run -e dev pytest --run-tls            # + TLS cert tests
 """
 
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -51,7 +52,16 @@ def _container_runtime_available():
     """
     try:
         r = subprocess.run(["podman", "info"], capture_output=True, timeout=10)
-        return r.returncode == 0
+        if r.returncode == 0:
+            return True
+        if sys.platform == "darwin":
+            # On macOS, podman runs inside a VM that may be stopped or have a
+            # stale socket. Try to (re)start it before giving up.
+            print("podman info failed; attempting `podman machine start`...", file=sys.stderr)
+            subprocess.run(["podman", "machine", "start"], capture_output=True, timeout=120)
+            r = subprocess.run(["podman", "info"], capture_output=True, timeout=10)
+            return r.returncode == 0
+        return False
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         # OSError covers odd failure modes (EPERM on the binary, fd
         # exhaustion, etc.) that would otherwise crash pytest
