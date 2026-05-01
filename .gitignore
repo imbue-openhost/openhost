@@ -35,6 +35,7 @@ tests/pebble/
 ansible/secrets/certbot_private_key.json
 .claude/settings.json
 .claude/settings.local.json
+.claude/
 specs/
 
 # Beads (local only — not shared via git)
