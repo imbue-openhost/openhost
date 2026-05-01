@@ -153,28 +153,23 @@ def _bucket_url(
     s3_bucket: str,
     s3_region: str,
     s3_endpoint: str | None,
-    s3_prefix: str | None = None,
 ) -> str:
     """JuiceFS expects the bucket as a URL even on AWS.  Custom S3
     endpoints (MinIO etc.) need the explicit endpoint; AWS gets the
     region-suffixed virtual-host URL.
 
-    When ``s3_prefix`` is set, it is appended as a path component
-    so JuiceFS lays its volume (juicefs_uuid, chunks/, meta/) out
-    under that prefix instead of at the bucket root.  Lets multiple
-    OpenHost zones share a single bucket cleanly, with each zone
-    pointing at its own prefix.  Validation of the prefix happens
-    upstream (the route layer enforces no-leading-slash, no ``..``,
-    etc.); here we only normalise the trailing slash for tidy URLs.
+    No path component is appended.  Per-zone isolation under a shared
+    bucket happens via ``juicefs_volume_name`` (which JuiceFS uses as
+    the prefix for every object it writes), NOT via path segments on
+    the bucket URL — JuiceFS's S3 backend parses the URL with
+    ``url.ParseRequestURI`` and treats the first path component as
+    the bucket name (see pkg/object/s3.go), so any extra path here
+    would silently get reinterpreted as the bucket and break the
+    DNS lookup.  Keep the URL clean.
     """
     if s3_endpoint:
-        base = f"{s3_endpoint.rstrip('/')}/{s3_bucket}"
-    else:
-        base = f"https://{s3_bucket}.s3.{s3_region or 'us-east-1'}.amazonaws.com"
-    prefix = (s3_prefix or "").strip().strip("/")
-    if prefix:
-        return f"{base}/{prefix}"
-    return base
+        return f"{s3_endpoint.rstrip('/')}/{s3_bucket}"
+    return f"https://{s3_bucket}.s3.{s3_region or 'us-east-1'}.amazonaws.com"
 
 
 def format_volume(
@@ -182,7 +177,6 @@ def format_volume(
     s3_bucket: str,
     s3_region: str | None,
     s3_endpoint: str | None,
-    s3_prefix: str | None,
     s3_access_key_id: str,
     s3_secret_access_key: str,
     juicefs_volume_name: str,
@@ -194,8 +188,16 @@ def format_volume(
     Running it on every backend-on switch is therefore safe and means
     the recovery flow ("provision a fresh VM with the same bucket") is
     the same code path as the first-time setup.
+
+    ``juicefs_volume_name`` doubles as the per-zone object prefix:
+    every chunk JuiceFS writes lands under ``<bucket>/<volume>/...``
+    (see pkg/object/object_storage.go's ``WithPrefix`` wiring in
+    cmd/format.go).  The route layer takes the operator's
+    ``s3_prefix`` form field and passes it here as the volume name
+    when set, which is how zone-A and zone-B can share a bucket
+    without colliding.
     """
-    bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint, s3_prefix)
+    bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint)
     cmd = [
         _juicefs_binary(config),
         "format",
@@ -842,7 +844,6 @@ def _bring_up_target(config: Config, db: sqlite3.Connection, plan: _SwitchPlan) 
             s3_bucket=plan.s3_bucket,
             s3_region=plan.s3_region,
             s3_endpoint=plan.s3_endpoint,
-            s3_prefix=plan.s3_prefix,
             s3_access_key_id=plan.s3_access_key_id,
             s3_secret_access_key=plan.s3_secret_access_key,
             juicefs_volume_name=plan.volume_name,
@@ -1060,8 +1061,23 @@ def switch_backend(
             _update_state(db, state="idle", state_message=None)
             return
 
+        # The operator-supplied ``s3_prefix`` doubles as the JuiceFS
+        # volume name.  JuiceFS's S3 backend cannot store data under
+        # an arbitrary path inside a bucket — it insists on parsing
+        # the bucket URL itself as the bucket name and uses the
+        # volume name (the trailing positional arg of ``juicefs
+        # format``) as the prefix for every object it writes.  So
+        # the cleanest mapping is: prefix => volume_name.  When no
+        # prefix is set, fall back to the explicit volume_name form
+        # field, then the previously-recorded volume name, then
+        # "openhost" as the safe default.
         if target_backend == "s3":
-            volume_name = juicefs_volume_name or current.juicefs_volume_name or "openhost"
+            volume_name = (
+                s3_prefix
+                or juicefs_volume_name
+                or current.juicefs_volume_name
+                or "openhost"
+            )
         else:
             volume_name = current.juicefs_volume_name or "openhost"
 

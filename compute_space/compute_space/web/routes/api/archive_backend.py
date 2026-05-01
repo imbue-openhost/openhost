@@ -51,49 +51,49 @@ def _state_to_response(state: BackendState) -> dict:
     return out
 
 
-# Permissive ASCII subset for S3 prefix path segments: letters,
-# digits, dot, underscore, dash.  Anything outside the set is
-# rejected — S3 itself accepts a wider range, but we'd rather have
-# a tight allowlist than worry about edge cases (URL-encoding
-# semantics, JuiceFS prefix interpretation, weird shell quoting in
-# downstream subprocess calls).  ``..`` segments are always
-# rejected separately to defuse traversal-style mistakes.
-_S3_PREFIX_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_S3_PREFIX_MAX_LEN = 256
+# JuiceFS's ``format`` command requires the volume NAME to match
+# this regex (see cmd/format.go validName check in upstream
+# juicefs).  Because we map ``s3_prefix`` directly to the JuiceFS
+# volume name (which JuiceFS in turn uses as the per-object prefix
+# in S3), the prefix must satisfy the same constraint.  The regex
+# rejects:
+#   - leading/trailing dashes
+#   - slashes (so multi-segment prefixes like ``a/b`` are out — the
+#     JuiceFS bucket-URL parser breaks on path components, see the
+#     long comment on ``_bucket_url`` in core.archive_backend)
+#   - uppercase, underscores, dots, NUL, whitespace, anything else
+# The 3-63 length window is also JuiceFS's.
+_S3_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 
 
 def _normalise_s3_prefix(raw: str | None) -> str | None:
-    """Validate and normalise an operator-supplied S3 prefix.
+    """Validate an operator-supplied S3 prefix.
 
-    Returns the cleaned prefix (no leading/trailing slashes), or
-    None if the input was empty.  Raises ``ValueError`` with a
-    clear message if the prefix shape is invalid.
+    Returns the prefix (whitespace-trimmed) when set, ``None`` when
+    empty.  Raises ``ValueError`` with a clear message if the prefix
+    shape is invalid.
 
-    The cleaned form is what gets stored in the DB and what
-    ``_bucket_url`` appends to the bucket URL — keeping the storage
-    canonical avoids surprises when the operator's input has a
-    rogue leading slash or trailing whitespace.
+    Stored verbatim in the DB and used as the JuiceFS volume name
+    when the switch runs, which is what makes per-zone isolation
+    work without breaking the JuiceFS bucket-URL parser.  See the
+    long comment on ``_bucket_url`` in ``core.archive_backend`` for
+    why we can't store the prefix as a path component on the URL
+    instead.
     """
     if raw is None:
         return None
-    cleaned = raw.strip().strip("/")
+    cleaned = raw.strip()
     if not cleaned:
         return None
-    if len(cleaned) > _S3_PREFIX_MAX_LEN:
-        raise ValueError(f"s3_prefix must be at most {_S3_PREFIX_MAX_LEN} characters")
-    if "\x00" in cleaned:
-        raise ValueError("s3_prefix must not contain NUL bytes")
-    segments = cleaned.split("/")
-    for seg in segments:
-        if not seg:
-            raise ValueError("s3_prefix must not contain empty path segments (got '//')")
-        if seg in (".", ".."):
-            raise ValueError("s3_prefix must not contain '.' or '..' path segments")
-        if not _S3_PREFIX_SEGMENT_RE.match(seg):
-            raise ValueError(
-                "s3_prefix path segments must match [A-Za-z0-9._-] only "
-                f"(got {seg!r})"
-            )
+    if not _S3_PREFIX_RE.match(cleaned):
+        raise ValueError(
+            "s3_prefix must be 3-63 characters of [a-z0-9-] (lowercase only, "
+            "no leading/trailing dash) — it doubles as the JuiceFS volume name "
+            "and so has to satisfy JuiceFS's name regex.  For multi-zone "
+            "isolation under a shared bucket, give each zone a unique "
+            "single-segment name (e.g. ``andrew-3`` for zone andrew-3, "
+            f"``andrew-1`` for zone andrew-1).  Got: {cleaned!r}"
+        )
     return cleaned
 
 
@@ -215,10 +215,11 @@ async def test_connection() -> ResponseReturnValue:
     endpoint = (form.get("s3_endpoint") or "").strip() or None
     access_key = (form.get("s3_access_key_id") or "").strip()
     secret_key = (form.get("s3_secret_access_key") or "").strip()
-    # Pre-flight against the bucket itself, not bucket+prefix —
-    # head_bucket is bucket-level and a wrong prefix wouldn't
-    # surface here anyway.  We DO normalise the prefix shape so
-    # the operator catches typos before the actual switch runs.
+    # head_bucket is bucket-level; the prefix doesn't enter into
+    # the reachability check at all.  But we still validate the
+    # prefix shape so the operator catches typos before the actual
+    # switch runs and trips the JuiceFS name regex 30 s deep into
+    # the format-volume step instead.
     try:
         _normalise_s3_prefix(form.get("s3_prefix"))
     except ValueError as exc:
@@ -254,10 +255,17 @@ async def post_archive_backend() -> ResponseReturnValue:
       ``confirm_data_loss``: ``true`` (required — see below)
       ``s3_bucket``, ``s3_region``, ``s3_endpoint``, ``s3_access_key_id``,
       ``s3_secret_access_key``, ``juicefs_volume_name`` (when target=s3)
-      ``s3_prefix``: optional path under the bucket — lets multiple
-        OpenHost zones share a single bucket cleanly (each zone
-        configured with its own prefix).  Empty / unset means
-        "use the bucket root".
+      ``s3_prefix``: optional single-segment lowercase name (3-63
+        chars of ``[a-z0-9-]``).  Lets multiple OpenHost zones share
+        a single bucket cleanly: each zone runs with its own prefix
+        and JuiceFS namespaces every chunk it writes under
+        ``<bucket>/<prefix>/...``.  Implemented by mapping the
+        prefix to the JuiceFS volume name (which JuiceFS already
+        uses as a per-object prefix internally — see the comment on
+        ``_bucket_url`` in core.archive_backend for why we can't put
+        the prefix in the bucket URL instead).  Empty / unset means
+        "use the volume name 'openhost'", which is the historical
+        default and what a single-zone deploy gets.
       ``delete_source_after_copy``: ``true`` to drop the source-side data
       after the copy succeeds (frees local disk on local->s3, or makes
       the S3 bucket the source of truth on s3->local).

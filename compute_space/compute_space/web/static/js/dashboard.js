@@ -327,10 +327,9 @@ function showSwitchForm(state) {
       + '<label>S3 bucket</label><input id="ab-bucket" value="' + escapeHtml(state.s3_bucket || '') + '" placeholder="my-openhost-archive">'
       + '<label>Region</label><input id="ab-region" value="' + escapeHtml(state.s3_region || 'us-east-1') + '">'
       + '<label>Endpoint <span style="color:#888;font-size:0.85em;">(optional, non-AWS)</span></label><input id="ab-endpoint" value="' + escapeHtml(state.s3_endpoint || '') + '" placeholder="https://...">'
-      + '<label>Prefix <span style="color:#888;font-size:0.85em;">(optional path under the bucket; lets multiple zones share one bucket)</span></label><input id="ab-prefix" value="' + escapeHtml(state.s3_prefix || '') + '" placeholder="s3-backing/zone-name">'
+      + '<label>Prefix <span style="color:#888;font-size:0.85em;">(optional single-segment name; lets multiple zones share one bucket — also used as the JuiceFS volume name)</span></label><input id="ab-prefix" value="' + escapeHtml(state.s3_prefix || '') + '" placeholder="andrew-3">'
       + '<label>Access key ID</label><input id="ab-access-key" value="' + escapeHtml(state.s3_access_key_id || '') + '">'
       + '<label>Secret access key</label><input id="ab-secret-key" type="password">'
-      + '<label>Volume name</label><input id="ab-volume" value="' + escapeHtml(state.juicefs_volume_name || 'openhost') + '">'
       + '</div>'
       + '<label style="display:block;margin-top:0.6em;"><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped, restarted, and any in-flight uploads will be lost.</label>'
       + '<label style="display:block;margin-top:0.3em;"><input type="checkbox" id="ab-delete-source"> Also delete the local-disk archive after the copy succeeds.</label>'
@@ -399,7 +398,6 @@ function submitSwitch(goingToS3) {
     fd.append('s3_prefix', document.getElementById('ab-prefix').value);
     fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
     fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
-    fd.append('juicefs_volume_name', document.getElementById('ab-volume').value);
     if (document.getElementById('ab-delete-source').checked) {
       fd.append('delete_source_after_copy', 'true');
     }

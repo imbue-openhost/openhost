@@ -132,46 +132,53 @@ def test_archive_dir_for_backend(cfg):
     assert archive_dir_for_backend(cfg, "s3") == juicefs_mount_dir(cfg)
 
 
-def test_bucket_url_aws_no_prefix():
-    """AWS bucket URL: no endpoint, no prefix -> region-suffixed
-    virtual-host URL."""
+def test_bucket_url_aws_default():
+    """AWS bucket URL: no endpoint -> region-suffixed virtual-host
+    URL.  Per-zone isolation under a shared bucket goes via the
+    JuiceFS volume name, not the bucket URL — JuiceFS's S3 backend
+    parses the URL with ``url.ParseRequestURI`` and treats the
+    first path component as the bucket name, so any extra path
+    segment here would silently get reinterpreted as the bucket
+    and break the DNS lookup.
+    """
     assert (
         archive_backend._bucket_url("mybucket", "us-west-2", None)
         == "https://mybucket.s3.us-west-2.amazonaws.com"
     )
 
 
-def test_bucket_url_aws_with_prefix():
-    """A non-empty prefix is appended to the bucket URL.  This is
-    the path the dashboard takes when an operator wants per-zone
-    isolation under a shared bucket."""
+def test_bucket_url_aws_default_region_fallback():
+    """Empty/unset region falls back to us-east-1 — matches
+    JuiceFS's own default and stops the bucket URL from collapsing
+    into ``mybucket.s3..amazonaws.com`` (which has an extra dot
+    that AWS DNS rejects)."""
     assert (
-        archive_backend._bucket_url(
-            "mybucket", "us-west-2", None, "s3-backing/andrew-3"
-        )
-        == "https://mybucket.s3.us-west-2.amazonaws.com/s3-backing/andrew-3"
+        archive_backend._bucket_url("mybucket", "", None)
+        == "https://mybucket.s3.us-east-1.amazonaws.com"
     )
 
 
-def test_bucket_url_strips_extra_slashes_on_prefix():
-    """Operator typed ``/s3-backing/zone/`` (leading + trailing
-    slashes) -> normalise to ``s3-backing/zone`` before
-    appending."""
+def test_bucket_url_with_custom_endpoint():
+    """Non-AWS endpoint (MinIO, etc.) is path-style: the bucket
+    rides as a path component on the explicit endpoint URL."""
     assert (
         archive_backend._bucket_url(
-            "mybucket", "us-west-2", None, "/s3-backing/zone/"
+            "mybucket", "us-east-1", "https://minio.example.com:9000"
         )
-        == "https://mybucket.s3.us-west-2.amazonaws.com/s3-backing/zone"
+        == "https://minio.example.com:9000/mybucket"
     )
 
 
-def test_bucket_url_with_custom_endpoint_and_prefix():
-    """Non-AWS endpoint (MinIO, etc.) + prefix path."""
+def test_bucket_url_endpoint_strips_trailing_slash():
+    """Operator typed ``https://minio:9000/`` (with trailing slash)
+    -> normalise so we don't end up with ``//mybucket``, which most
+    S3 servers accept but JuiceFS's parser would treat as
+    bucket-name = '' (path[0] after split)."""
     assert (
         archive_backend._bucket_url(
-            "mybucket", "us-east-1", "https://minio.example.com:9000", "openhost"
+            "mybucket", "us-east-1", "https://minio.example.com:9000/"
         )
-        == "https://minio.example.com:9000/mybucket/openhost"
+        == "https://minio.example.com:9000/mybucket"
     )
 
 

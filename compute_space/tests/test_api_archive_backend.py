@@ -143,13 +143,31 @@ async def test_post_s3_requires_creds(app):
 
 @pytest.mark.asyncio
 async def test_post_rejects_invalid_s3_prefix(app):
-    """A malformed prefix (path traversal, weird characters) must
-    not reach _bucket_url; we want the dashboard form to bounce
-    bad input with a clear message rather than have the operator
-    stare at a generic 'juicefs format failed' error 30 s later.
+    """A malformed prefix (path traversal, weird characters,
+    multi-segment, uppercase, too-short, etc.) must be rejected at
+    the route layer.  We want the dashboard form to bounce bad
+    input with a clear message rather than have the operator stare
+    at a generic 'juicefs format failed: invalid name' error 30 s
+    later.
+
+    The accepted shape is JuiceFS's volume-name regex
+    (``^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$``) because the prefix is
+    used directly as the JuiceFS volume name on the format step.
     """
     client = app.test_client()
-    for bad in ("../etc", "with space", "embedded\x00null", "leading/./dot"):
+    bads = (
+        "../etc",            # traversal-style
+        "with space",        # no whitespace allowed
+        "embedded\x00null",  # NUL banned
+        "a/b",               # multi-segment forbidden — JuiceFS regex has no /
+        "UPPER",             # uppercase forbidden
+        "under_score",       # underscore forbidden by regex
+        "ab",                # too short (regex requires len 3+)
+        "-leading-dash",     # dash leader forbidden
+        "trailing-dash-",    # dash trailer forbidden
+        "with.dot",          # dot forbidden by JuiceFS regex
+    )
+    for bad in bads:
         resp = await client.post(
             "/api/storage/archive_backend",
             form={
@@ -254,11 +272,15 @@ async def test_post_local_to_s3_returns_202_and_runs_switch(app, cfg):
 @pytest.mark.asyncio
 async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
     """When the operator supplies a non-empty s3_prefix on the
-    switch form, it must round-trip cleanly: be passed to
-    format_volume, persisted in the DB, and surfaced on the next
-    GET response.  Mocking is exactly the same as the no-prefix
-    happy-path test; the distinguishing assertions are the
-    prefix-related ones at the end.
+    switch form, it must round-trip cleanly:
+
+      - become the JuiceFS volume name passed to format_volume
+        (NOT a separate s3_prefix kwarg — see the long comment on
+        ``_bucket_url`` in core.archive_backend for why JuiceFS
+        won't accept a path component on the bucket URL)
+      - be persisted as both ``s3_prefix`` and
+        ``juicefs_volume_name`` in the DB row
+      - be surfaced on the next GET response in both fields
     """
     juicefs_mount = archive_backend.juicefs_mount_dir(cfg)
     Path(juicefs_mount).mkdir(parents=True, exist_ok=True)
@@ -286,9 +308,7 @@ async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
                 "confirm_data_loss": "true",
                 "s3_bucket": "imbue-openhost",
                 "s3_region": "us-west-2",
-                # Operator-typed leading slash + trailing slash
-                # gets normalised before reaching format_volume.
-                "s3_prefix": "/s3-backing/andrew-3/",
+                "s3_prefix": "andrew-3",
                 "s3_access_key_id": "AKIA",
                 "s3_secret_access_key": "hunter2",
             },
@@ -308,14 +328,25 @@ async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
                 break
             time.sleep(0.05)
 
-    # format_volume was called with the normalised prefix.
-    assert captured["s3_prefix"] == "s3-backing/andrew-3", captured
+    # format_volume sees the prefix as the JuiceFS volume name.
+    # Important: NOT as a separate ``s3_prefix`` kwarg — that field
+    # has been deliberately removed from format_volume's signature
+    # because JuiceFS can't take a path-segment on the bucket URL.
+    assert captured["juicefs_volume_name"] == "andrew-3", captured
+    assert "s3_prefix" not in captured, (
+        "format_volume should NOT receive an s3_prefix kwarg; it must "
+        "go through juicefs_volume_name instead.  Captured: " + str(captured)
+    )
 
-    # GET surfaces the prefix as we stored it.
+    # GET surfaces both fields as we stored them: s3_prefix is the
+    # operator-visible name; juicefs_volume_name is the same value
+    # written verbatim, kept in its own column for the migration-
+    # path code that already keys off it.
     resp = await client.get("/api/storage/archive_backend")
     body = await resp.get_json()
     assert body["backend"] == "s3"
-    assert body["s3_prefix"] == "s3-backing/andrew-3"
+    assert body["s3_prefix"] == "andrew-3"
+    assert body["juicefs_volume_name"] == "andrew-3"
     assert body["s3_bucket"] == "imbue-openhost"
     assert body["s3_region"] == "us-west-2"
 
@@ -350,7 +381,10 @@ async def test_test_connection_rejects_invalid_s3_prefix(app):
                 "s3_bucket": "b",
                 "s3_access_key_id": "a",
                 "s3_secret_access_key": "s",
-                "s3_prefix": "../escape",
+                # Multi-segment prefix used to be accepted; the new
+                # contract rejects it because the prefix has to map
+                # 1:1 to a JuiceFS volume name (which forbids /).
+                "s3_prefix": "a/b",
             },
         )
         body = await resp.get_json()
