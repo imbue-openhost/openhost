@@ -6,14 +6,13 @@ the compute_space package is installed.
 
 import atexit
 import os
-import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import IO
 from typing import Any
 
@@ -96,38 +95,15 @@ def wait_app_removed(session: requests.Session, router_url: str, app_name: str, 
     poll(_check, timeout=timeout, interval=2, fail_msg=f"{app_name} was not removed within {timeout}s")
 
 
-def find_uv() -> str | None:
-    """Return the absolute path to ``uv``, or None if not found.
-
-    Checks PATH first, then common install locations (~/.local/bin, ~/.cargo/bin)
-    so it works even when those dirs aren't on PATH (e.g. subprocess environments).
-    """
-    found = shutil.which("uv")
-    if found:
-        return found
-    for candidate in [
-        Path.home() / ".local" / "bin" / "uv",
-        Path.home() / ".cargo" / "bin" / "uv",
-    ]:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
-
-
 def router_cmd() -> list[str]:
-    """Return the command list to launch the router via ``uv run``."""
-    uv = find_uv()
-    if not uv:
-        raise RuntimeError("'uv' is not installed — needed to launch the router.")
-    return [
-        uv,
-        "run",
-        "--directory",
-        str(COMPUTE_SPACE_PACKAGE_DIR),
-        "python",
-        "-m",
-        "compute_space",
-    ]
+    """Return the command list to launch the router as a subprocess.
+
+    Uses ``sys.executable`` rather than shelling out through pixi: the
+    test runner is itself launched via ``pixi run -e dev pytest``, so
+    ``sys.executable`` already points at the dev env's Python and
+    ``compute_space`` is importable as the editable package install.
+    """
+    return [sys.executable, "-m", "compute_space"]
 
 
 # ---------------------------------------------------------------------------

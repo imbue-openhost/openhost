@@ -3,9 +3,9 @@
 By default only lightweight tests run (no external runtimes needed).
 Pass flags to opt in to heavier suites:
 
-    uv run pytest                      # local-only tests
-    uv run pytest --run-containers         # + Podman integration tests
-    uv run pytest --run-tls            # + TLS cert tests
+    pixi run -e dev pytest                      # local-only tests
+    pixi run -e dev pytest --run-containers     # + Podman integration tests
+    pixi run -e dev pytest --run-tls            # + TLS cert tests
 """
 
 import shutil

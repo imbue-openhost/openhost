@@ -3,7 +3,7 @@ Description=OpenHost Compute Space
 # The user-session bus from ``user@{{ host_uid }}.service`` must be up
 # before we start, otherwise rootless podman's systemd cgroup manager
 # can't talk to it and builds fail with "Interactive authentication
-# required". Lingering (set in ansible/tasks/podman.yml) ensures that
+# required". Lingering (set in ansible/tasks/containers.yml) ensures that
 # unit exists; this After= makes sure systemd orders us after it's
 # actually running. ``host_uid`` is resolved dynamically by ansible
 # from the host user's actual UID, since the user is created without

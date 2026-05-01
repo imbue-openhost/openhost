@@ -1,6 +1,7 @@
 """``openhost update`` -- update OpenHost code.
 
-Pulls latest code via git fetch + reset, then syncs dependencies.
+Pulls latest code via git fetch + reset, then runs ``pixi install`` to
+sync the env to the new lockfile.
 """
 
 import argparse
@@ -99,15 +100,15 @@ def _update_code() -> None:
         raise SystemExit(1)
 
     # Sync dependencies
-    print("  Running uv sync...")
+    print("  Running pixi install...")
     sync = subprocess.run(
-        ["uv", "sync"],
+        ["pixi", "install"],
         capture_output=True,
         text=True,
         cwd=project_dir,
     )
     if sync.returncode != 0:
-        print(f"  Warning: uv sync failed:\n{sync.stderr}", file=sys.stderr)
+        print(f"  Warning: pixi install failed:\n{sync.stderr}", file=sys.stderr)
 
     current = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],

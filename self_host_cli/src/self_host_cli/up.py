@@ -112,7 +112,7 @@ def run_up(args: argparse.Namespace) -> None:
     env["OPENHOST_ROUTER_CONFIG"] = config_path
 
     cmd = [
-        "uv",
+        "pixi",
         "run",
         "python",
         "-m",

@@ -127,10 +127,10 @@ pre-commit install
 
 ```bash
 # run all lightweight tests (from project root)
-uv run --group dev pytest
+pixi run -e dev pytest
 
 # run with podman integration tests enabled
-uv run --group dev pytest --run-containers
+pixi run -e dev pytest --run-containers
 ```
 
 Server deployment prerequisites and test setup are documented in `ansible/readme.md`.

@@ -28,14 +28,17 @@ openhost/
 
 always run tests with -x to fail quickly.
 
-- **all lightweight tests**: `uv run --group dev pytest -x` (from project root)
-- **everything**: `uv run --group dev pytest -x --run-containers`
-- **compute_space tests**: `uv run --group dev pytest -x compute_space/tests/`
+- **all lightweight tests**: `pixi run -e dev pytest -x` (from project root)
+- **everything**: `pixi run -e dev pytest -x --run-containers`
+- **compute_space tests**: `pixi run -e dev pytest -x compute_space/tests/`
 
 ## package manager
 
-use `uv` or `pixi` for all python projects.
+use `pixi` for all python work in this repo.  the `dev` environment
+(`pixi install -e dev`) gives you the full test/lint stack.
 
-pixi is used for this project's main env on prod. python 3.12.
-but for dev, we haven't wired up the `dev` group, and pixi deps aren't all available on mac, so we still use uv.
+on mac, the `coredns` and `podman` conda packages are linux-only — they
+won't install via pixi.  the default test suite skips both via pytest
+markers, so this is only relevant if you want to run `--run-tls` or
+`--run-containers` locally on mac (install them by hand if so).
 

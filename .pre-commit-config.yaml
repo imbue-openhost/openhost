@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: ruff-check
         name: "ruff auto-fix"
-        entry: uv run --group dev ruff check
+        entry: pixi run -e dev ruff check
         language: system
         types: [python]
         args:
@@ -11,14 +11,14 @@ repos:
           - "--force-exclude"  # respect pyproject.toml's exclude settings even when passing in explicit file list
       - id: ruff-format
         name: "ruff format"
-        entry: uv run --group dev ruff format
+        entry: pixi run -e dev ruff format
         language: system
         types: [python]
         args:
           - "--force-exclude"  # respect pyproject.toml's exclude settings even when passing in explicit file list
       - id: mypy
         name: mypy
-        entry: uv run --group dev mypy
+        entry: pixi run -e dev mypy
         language: system
         pass_filenames: false
         types: [python]

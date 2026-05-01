@@ -7,7 +7,7 @@ import cattrs
 
 from compute_space.core.logging import logger
 
-# Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/podman.yml.
+# Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/containers.yml.
 # host_port values below this are rejected at parse time.
 UNPRIVILEGED_PORT_FLOOR = 25
 

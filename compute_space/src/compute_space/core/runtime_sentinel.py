@@ -1,6 +1,6 @@
 """Host-runtime sentinel file.
 
-``ansible/tasks/podman.yml`` writes ``/etc/openhost/runtime`` with
+``ansible/tasks/containers.yml`` writes ``/etc/openhost/runtime`` with
 ``runtime=podman`` and a ``runtime_version`` integer.  The dashboard's
 update flow reads this (via ``host_prep_status``) to warn the operator
 when clicking Update would land on a host whose runtime_version doesn't
@@ -22,7 +22,7 @@ import attr
 SENTINEL_PATH: Final[str] = "/etc/openhost/runtime"
 
 # Bump ``EXPECTED_RUNTIME_VERSION`` (here) and the value written by
-# ``ansible/tasks/podman.yml`` together whenever a host-side change
+# ``ansible/tasks/containers.yml`` together whenever a host-side change
 # ships that existing hosts must adopt before their next router start.
 EXPECTED_RUNTIME: Final[str] = "podman"
 EXPECTED_RUNTIME_VERSION: Final[int] = 1
