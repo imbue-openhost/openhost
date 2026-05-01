@@ -200,6 +200,17 @@ def format_volume(
     bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint)
     cmd = [
         _juicefs_binary(config),
+        # JuiceFS opens a Go pprof debug HTTP server on 127.0.0.1:6060
+        # by default for every command, and walks 6061..6099 if 6060
+        # is already taken (cmd/main.go's debugAgent goroutine).  When
+        # ``format`` runs while a previous ``mount`` is still up on
+        # 6060, the format briefly takes 6061; if mount restarts during
+        # that window it ALSO falls back to 6061 and stays there for
+        # its lifetime.  The format step doesn't need pprof — it's a
+        # short-lived synchronous call we run, watch exit, and forget.
+        # Disabling its agent both removes a phantom port on healthy
+        # zones and avoids pinning ``mount`` to 6061 across switches.
+        "--no-agent",
         "format",
         "--storage", "s3",
         "--bucket", bucket_url,

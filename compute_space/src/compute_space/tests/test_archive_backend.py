@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -179,6 +180,50 @@ def test_bucket_url_endpoint_strips_trailing_slash():
             "mybucket", "us-east-1", "https://minio.example.com:9000/"
         )
         == "https://minio.example.com:9000/mybucket"
+    )
+
+
+def test_format_volume_passes_no_agent_flag(cfg):
+    """``juicefs format`` must run with ``--no-agent``.
+
+    Background: every JuiceFS subcommand opens a Go pprof debug HTTP
+    server on 127.0.0.1:6060 by default, walking 6061..6099 if 6060
+    is already taken (cmd/main.go's debugAgent goroutine).  When
+    ``format`` runs while a previous ``mount`` is up on 6060, format
+    briefly grabs 6061; if mount restarts during that window it
+    falls back to 6061 and stays there for its lifetime.  Disabling
+    the agent on the short-lived format invocation removes that
+    transient extra port and prevents a long-lived mount from
+    pinning to 6061 across a backend switch.
+
+    ``--no-agent`` is a JuiceFS *global* flag so it MUST appear
+    before the ``format`` subcommand, not after it — putting it
+    after would make JuiceFS reject the argv with "unknown option".
+    """
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(cmd, **_kwargs):
+        captured["cmd"] = list(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(archive_backend.subprocess, "run", side_effect=fake_run):
+        archive_backend.format_volume(
+            cfg,
+            s3_bucket="mybucket",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_access_key_id="AKIA",
+            s3_secret_access_key="hunter2",
+            juicefs_volume_name="andrew-3",
+        )
+
+    cmd = captured["cmd"]
+    assert "--no-agent" in cmd, cmd
+    # Global flag MUST come before the subcommand or JuiceFS errors.
+    no_agent_idx = cmd.index("--no-agent")
+    format_idx = cmd.index("format")
+    assert no_agent_idx < format_idx, (
+        "--no-agent is a JuiceFS global flag and must precede the subcommand"
     )
 
 
