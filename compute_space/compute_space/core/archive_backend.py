@@ -425,9 +425,8 @@ class BackendState:
     s3_region: str | None
     s3_endpoint: str | None
     # Operator-supplied prefix under the bucket so multiple zones
-    # can share one bucket cleanly.  ``None`` / empty means "use
-    # the bucket root", which is the v4-default behaviour and what
-    # row[10] returns for any DB row written before v5.
+    # can share one bucket cleanly.  ``None`` / empty means
+    # "use the bucket root".
     s3_prefix: str | None
     s3_access_key_id: str | None
     s3_secret_access_key: str | None
@@ -482,6 +481,7 @@ def _update_state(
     s3_bucket: str | None = None,
     s3_region: str | None = None,
     s3_endpoint: str | None = None,
+    s3_prefix: str | None = None,
     s3_access_key_id: str | None = None,
     s3_secret_access_key: str | None = None,
     juicefs_volume_name: str | None = None,
@@ -518,6 +518,8 @@ def _update_state(
         fields["s3_region"] = s3_region
     if s3_endpoint is not None:
         fields["s3_endpoint"] = s3_endpoint
+    if s3_prefix is not None:
+        fields["s3_prefix"] = s3_prefix
     if s3_access_key_id is not None:
         fields["s3_access_key_id"] = s3_access_key_id
     if s3_secret_access_key is not None:

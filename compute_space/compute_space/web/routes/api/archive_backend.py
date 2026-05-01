@@ -257,7 +257,7 @@ async def post_archive_backend() -> ResponseReturnValue:
       ``s3_prefix``: optional path under the bucket — lets multiple
         OpenHost zones share a single bucket cleanly (each zone
         configured with its own prefix).  Empty / unset means
-        "use the bucket root", which is the v4 default.
+        "use the bucket root".
       ``delete_source_after_copy``: ``true`` to drop the source-side data
       after the copy succeeds (frees local disk on local->s3, or makes
       the S3 bucket the source of truth on s3->local).

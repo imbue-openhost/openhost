@@ -336,6 +336,33 @@ async def test_test_connection_requires_fields(app):
 
 
 @pytest.mark.asyncio
+async def test_test_connection_rejects_invalid_s3_prefix(app):
+    """The pre-flight endpoint validates s3_prefix shape too — same
+    rules as the switch POST — so the operator catches typos before
+    the actual switch runs.  The bad-prefix branch must reject
+    BEFORE we burn a head_bucket round-trip on it.
+    """
+    client = app.test_client()
+    with mock.patch.object(archive_backend, "test_s3_credentials") as mocked:
+        resp = await client.post(
+            "/api/storage/archive_backend/test_connection",
+            form={
+                "s3_bucket": "b",
+                "s3_access_key_id": "a",
+                "s3_secret_access_key": "s",
+                "s3_prefix": "../escape",
+            },
+        )
+        body = await resp.get_json()
+        assert resp.status_code == 400, body
+        assert "s3_prefix" in body["error"], body
+        # Critical: the head_bucket call must not have been made on
+        # an invalid prefix — we want fail-fast, not after a network
+        # round-trip.
+        mocked.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_test_connection_surfaces_errors(app):
     """A failed reachability check returns 400 with the underlying
     error string so the dashboard can surface it next to the form.
