@@ -1,0 +1,164 @@
+---
+# Host-side rootless container runtime config.  Podman itself is installed via pixi (see pyproject.toml); this file
+# installs the apt-only bits and writes the host config that podman reads.  Runs with become: yes.
+
+# remove old apt-installed packages from existing systems
+- name: Remove apt-installed podman + crun (now managed by pixi)
+  apt:
+    name:
+      - podman
+      - crun
+    state: absent
+
+- name: Install rootless container support packages
+  apt:
+    name:
+      # newuidmap/newgidmap — setuid root, can't ship via pixi.
+      - uidmap
+      # `pasta`, podman 5's default rootless network backend.
+      - passt
+      # /etc/containers/policy.json + default registries.conf.  conda-forge ships equivalents under the pixi prefix
+      # but podman searches /etc and ~/.config at runtime, so without this image builds fail with
+      # "no policy.json file found".  Upstream calls the package "containers-common".
+      - golang-github-containers-common
+    state: present
+    update_cache: yes
+
+# `podman run --restart=...` containers die with the user's systemd manager when the last login session ends, so
+# the host user needs lingering enabled.
+- name: Check whether user lingering is already enabled for host
+  stat:
+    path: /var/lib/systemd/linger/host
+  register: _linger_sentinel
+
+- name: Enable user lingering for host
+  command: loginctl enable-linger host
+  when: not _linger_sentinel.stat.exists
+  changed_when: true
+
+# net.ipv4.ip_unprivileged_port_start = 25: the router binds rootless on 0.0.0.0:<host_port>, including 25 for SMTP
+# apps.  Must match compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
+#
+# kernel.apparmor_restrict_unprivileged_userns = 0: Ubuntu 24.04 blocks unprivileged user namespaces unless the
+# binary has an AppArmor profile.  apt podman shipped one; conda-forge podman doesn't
+- name: Configure podman-related sysctls
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      net.ipv4.ip_unprivileged_port_start = 25
+      kernel.apparmor_restrict_unprivileged_userns = 0
+    dest: /etc/sysctl.d/90-openhost-podman.conf
+    mode: "0644"
+
+- name: Apply podman sysctls
+  command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
+  changed_when: false
+
+# Podman has no default registry, unlike Docker.  We need docker.io as the unqualified-search registry so apps'
+# bare `FROM python:3.12-alpine` resolves.  short-name-mode = permissive avoids erroring on missing aliases.
+#
+# Written to /etc/containers/registries.conf rather than a drop-in: apt golang-github-containers-common's own
+# /etc/containers/registries.conf.d/shortnames.conf was clobbering a 00-openhost.conf drop-in's value back to [].
+- name: Ensure /etc/containers exists
+  file:
+    path: /etc/containers
+    state: directory
+    mode: "0755"
+
+- name: Configure podman registries
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      unqualified-search-registries = ["docker.io"]
+      short-name-mode = "permissive"
+    dest: /etc/containers/registries.conf
+    mode: "0644"
+
+# Pasta (rootless podman's default network backend) shares the host's IP with containers.  This means host-gateway
+# resolves to the container's own IP, breaking container→host communication.  We create a dummy interface with a
+# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 0.0.0.0:8080)
+# via this IP.  Container ports are bound on 127.0.0.1, so they're NOT reachable via the dummy interface — containers
+# are isolated from each other.
+- name: Create openhost0 dummy interface for container→host gateway
+  shell: |
+    ip link show openhost0 >/dev/null 2>&1 && exit 0
+    ip link add openhost0 type dummy
+    ip addr add 10.200.0.1/32 dev openhost0
+    ip link set openhost0 up
+  changed_when: true
+
+- name: Persist openhost0 dummy interface via systemd-networkd
+  copy:
+    content: |
+      [NetDev]
+      Name=openhost0
+      Kind=dummy
+    dest: /etc/systemd/network/10-openhost0.netdev
+    mode: "0644"
+
+- name: Configure openhost0 address via systemd-networkd
+  copy:
+    content: |
+      [Match]
+      Name=openhost0
+
+      [Network]
+      Address=10.200.0.1/32
+    dest: /etc/systemd/network/10-openhost0.network
+    mode: "0644"
+
+- name: Ensure host user containers config dir exists
+  file:
+    path: /home/host/.config/containers
+    state: directory
+    owner: host
+    group: host
+    mode: "0755"
+
+# Point host.containers.internal at the dummy interface IP so pasta containers can reach host services.  Written at
+# the user level because conda-forge containers-common's containers.conf at $PIXI_PREFIX/share wins the merge over
+# /etc.  ~/.config/containers/containers.conf is last in the lookup chain.
+- name: Configure host user podman containers.conf
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      [containers]
+      host_containers_internal_ip = "10.200.0.1"
+    dest: /home/host/.config/containers/containers.conf
+    owner: host
+    group: host
+    mode: "0644"
+
+# Every bind mount uses `:idmap`.  Supported FSes: ext4 (reported as ext2/ext3 by stat -f -c '%T'), xfs, btrfs,
+# tmpfs.  ZFS < 2.2 and certain FUSE filesystems don't support it.
+- name: Find filesystem of data root
+  command: stat -f -c '%T' /home/host
+  register: _data_fs
+  changed_when: false
+
+- name: Verify data filesystem supports idmapped mounts
+  assert:
+    that:
+      - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs']
+    fail_msg: >-
+      Filesystem {{ _data_fs.stdout }} for /home/host does not reliably support idmapped bind mounts.  Reprovision
+      onto ext4, xfs, btrfs, or tmpfs.  (Linux reports every ext2/3/4 FS as 'ext2/ext3', so ext4 IS supported —
+      this failure means something else, e.g. ZFS or FUSE.)
+    success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
+
+- name: Ensure /etc/openhost exists
+  file:
+    path: /etc/openhost
+    state: directory
+    mode: "0755"
+
+# Read by compute_space.core.runtime_sentinel + the dashboard update-check endpoint.  Bump runtime_version here AND
+# EXPECTED_RUNTIME_VERSION in runtime_sentinel.py together when a host-side change requires re-running ansible.
+- name: Write host runtime sentinel
+  copy:
+    content: |
+      # Managed by ansible/tasks/containers.yml; do not edit by hand.
+      runtime=podman
+      runtime_version=1
+    dest: /etc/openhost/runtime
+    mode: "0644"

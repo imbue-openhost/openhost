@@ -1,6 +1,6 @@
 """Tests for the ``openhost update`` command.
 
-All external calls (git, uv) are mocked so tests run offline
+All external calls (git, pixi) are mocked so tests run offline
 and without side effects.
 """
 
@@ -123,7 +123,7 @@ class TestUpdateCode:
                 result.stdout = ""
             elif cmd[:2] == ["git", "reset"]:
                 result.stdout = ""
-            elif cmd[:2] == ["uv", "sync"]:
+            elif cmd[:2] == ["pixi", "install"]:
                 result.stdout = ""
             else:
                 result.stdout = ""
@@ -133,9 +133,9 @@ class TestUpdateCode:
         args = Namespace()
         run_update(args)
 
-        # Verify git reset --hard and uv sync were called
+        # Verify git reset --hard and pixi install were called
         flat = [c[:2] for c in commands_run]
         assert ["git", "reset"] in flat
-        assert ["uv", "sync"] in flat
+        assert ["pixi", "install"] in flat
         out = capsys.readouterr().out
         assert "Code updated" in out

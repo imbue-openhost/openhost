@@ -6,7 +6,7 @@ via rootless Podman, and exercises routing, auth, WebSockets, API tokens, app
 lifecycle, and system endpoints over HTTP.
 
 Prerequisites:
-    - Rootless podman configured (see ansible/tasks/podman.yml)
+    - Rootless podman configured (see ansible/tasks/containers.yml)
     - *.localhost resolves to 127.0.0.1 (RFC 6761, default on most Linux systems)
 
 Run:

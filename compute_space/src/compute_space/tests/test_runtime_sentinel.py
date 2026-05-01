@@ -82,7 +82,7 @@ def test_sentinel_with_comments_and_blank_lines_is_parsed(tmp_path: Path) -> Non
     ignore comments and blank lines so the file stays human-editable."""
     sentinel = tmp_path / "runtime"
     sentinel.write_text(
-        "# Managed by ansible/tasks/podman.yml\n"
+        "# Managed by ansible/tasks/containers.yml\n"
         "\n"
         f"runtime={EXPECTED_RUNTIME}\n"
         "\n"
@@ -152,7 +152,7 @@ def test_module_level_expected_values_match_ansible() -> None:
     to make the ``EXPECTED_RUNTIME`` / ``EXPECTED_RUNTIME_VERSION``
     values grep-findable from a failing test in CI, so the author of
     a mismatch sees this test die and remembers to update ``tasks
-    /podman.yml`` in the same commit.
+    /containers.yml`` in the same commit.
     """
     assert runtime_sentinel.EXPECTED_RUNTIME == "podman"
     assert runtime_sentinel.EXPECTED_RUNTIME_VERSION == 1
