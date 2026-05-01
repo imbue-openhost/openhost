@@ -1,7 +1,7 @@
 
 ## prerequisites
 
-- ansible installed locally: `pipx install ansible-core` (or `pip install --user ansible-core`)
+- ansible installed locally: `uv tool install ansible-core` or however you like.
 - a fresh ubuntu 24.04 server with root SSH access
 - DNS records pointing your domain (and `*.domain`) to the server IP
     - NS record host.example.com -> ns1.host.example.com

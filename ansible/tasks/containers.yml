@@ -1,16 +1,8 @@
 ---
-# Configure host-side rootless container runtime.  Podman itself is
-# installed via pixi (see pyproject.toml); this file installs the
-# system-only bits (setuid newuidmap/newgidmap, pasta) and writes
-# host-wide config that podman reads from /etc/containers.
-# Runs with become: yes.
+# Host-side rootless container runtime config.  Podman itself is installed via pixi (see pyproject.toml); this file
+# installs the apt-only bits and writes the host config that podman reads.  Runs with become: yes.
 
-# Hosts provisioned before podman moved to pixi have apt-installed
-# /usr/bin/podman and /usr/bin/crun.  The systemd unit's PATH puts
-# the pixi env first so this isn't strictly hazardous, but leaving
-# two copies invites drift (different versions, different config
-# search paths for interactive invocations).  Remove idempotently —
-# no-op on fresh hosts.
+# remove old apt-installed packages from existing systems
 - name: Remove apt-installed podman + crun (now managed by pixi)
   apt:
     name:
@@ -21,24 +13,19 @@
 - name: Install rootless container support packages
   apt:
     name:
-      # newuidmap/newgidmap for podman's rootless userns setup.
-      # Setuid root, so must come from apt — pixi can't ship these.
+      # newuidmap/newgidmap — setuid root, can't ship via pixi.
       - uidmap
-      # passt provides `pasta`, the default rootless network backend.
+      # `pasta`, podman 5's default rootless network backend.
       - passt
-      # golang-github-containers-common provides /etc/containers/
-      # policy.json (image signature policy), default registries.conf,
-      # storage.conf, etc.  The conda-forge containers-common installs
-      # equivalents under the pixi env prefix, but podman searches /etc
-      # and ~/.config at runtime — without this, container builds fail
-      # with "no policy.json file found".  (Debian/Ubuntu ship it under
-      # this name; upstream calls it just "containers-common".)
+      # /etc/containers/policy.json + default registries.conf.  conda-forge ships equivalents under the pixi prefix
+      # but podman searches /etc and ~/.config at runtime, so without this image builds fail with
+      # "no policy.json file found".  Upstream calls the package "containers-common".
       - golang-github-containers-common
     state: present
     update_cache: yes
 
-# Without lingering, the user's systemd instance exits when the last
-# session ends, which would kill `podman run --restart=...` containers.
+# `podman run --restart=...` containers die with the user's systemd manager when the last login session ends, so
+# the host user needs lingering enabled.
 - name: Check whether user lingering is already enabled for host
   stat:
     path: /var/lib/systemd/linger/host
@@ -49,19 +36,11 @@
   when: not _linger_sentinel.stat.exists
   changed_when: true
 
-# Rootless podman needs to publish ports >= 25 (the router's [[ports]]
-# binds on 0.0.0.0:<host_port>).  25 is chosen so SMTP-serving apps can
-# bind port 25 directly.  Must match
-# compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
+# net.ipv4.ip_unprivileged_port_start = 25: the router binds rootless on 0.0.0.0:<host_port>, including 25 for SMTP
+# apps.  Must match compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
 #
-# kernel.apparmor_restrict_unprivileged_userns=0: Ubuntu 24.04 blocks
-# unprivileged user namespaces unless the calling binary has an
-# AppArmor profile.  The apt podman package ships one; the
-# conda-forge build we now install via pixi does not, so podman's
-# rootless reexec fails with "failed to reexec: Permission denied"
-# until we lift the restriction.  We could ship a custom profile
-# instead, but the sysctl is simpler and the security trade-off is
-# small on a single-purpose host.
+# kernel.apparmor_restrict_unprivileged_userns = 0: Ubuntu 24.04 blocks unprivileged user namespaces unless the
+# binary has an AppArmor profile.  apt podman shipped one; conda-forge podman doesn't
 - name: Configure podman-related sysctls
   copy:
     content: |
@@ -75,18 +54,11 @@
   command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
   changed_when: false
 
-# Unlike Docker, podman has no default registry.  Set docker.io as
-# the short-name search registry so unqualified `FROM` lines in app
-# Dockerfiles resolve without operator intervention.
+# Podman has no default registry, unlike Docker.  We need docker.io as the unqualified-search registry so apps'
+# bare `FROM python:3.12-alpine` resolves.  short-name-mode = permissive avoids erroring on missing aliases.
 #
-# We overwrite /etc/containers/registries.conf rather than using a
-# drop-in because Ubuntu's apt golang-github-containers-common ships
-# its own drop-in (/etc/containers/registries.conf.d/shortnames.conf)
-# that we observed clobbering a `00-openhost.conf` drop-in's value
-# for unqualified-search-registries on the e2e VMs.  Writing the
-# main file directly sidesteps the merge order entirely; we keep
-# short-name-mode = permissive so unqualified pulls don't error out
-# on a missing alias.
+# Written to /etc/containers/registries.conf rather than a drop-in: apt golang-github-containers-common's own
+# /etc/containers/registries.conf.d/shortnames.conf was clobbering a 00-openhost.conf drop-in's value back to [].
 - name: Ensure /etc/containers exists
   file:
     path: /etc/containers
@@ -102,15 +74,9 @@
     dest: /etc/containers/registries.conf
     mode: "0644"
 
-# Podman's pasta network backend doesn't auto-detect the host IP for
-# host.containers.internal / host.docker.internal.  Without a value,
-# container start fails with "host containers internal IP address is
-# empty".  apt-installed podman defaulted to slirp4netns which had a
-# fixed gateway IP, so this never came up on the old setup.
-#
-# Detect the host's primary IPv4 (the address used to reach the
-# public internet) and write it to containers.conf.  This is the
-# address app containers should target for OPENHOST_ROUTER_URL etc.
+# Pasta can't auto-detect the host IP for host.containers.internal / host.docker.internal; without it container
+# start dies with "host containers internal IP address is empty".
+# Detect the primary IPv4 (route to 1.1.1.1) and pin it explicitly.
 - name: Detect host primary IPv4 (for host.containers.internal)
   shell: |
     set -o pipefail
@@ -134,12 +100,9 @@
     group: host
     mode: "0755"
 
-# We write at the user level rather than /etc/containers/containers.conf
-# because the conda-forge containers-common (loaded as part of pixi's
-# podman install) ships a containers.conf at $PIXI_PREFIX/share that
-# was observed to win the merge over /etc on these VMs.  The user-
-# level file is read last in the lookup chain, so its values always
-# take precedence.  Owned by host:host so rootless podman reads it.
+# Written at the user level rather than /etc because conda-forge containers-common's containers.conf at
+# $PIXI_PREFIX/share wins the merge over /etc on these VMs.  ~/.config/containers/containers.conf is last in the
+# lookup chain, so it always wins.
 - name: Configure host user podman containers.conf
   copy:
     content: |
@@ -151,9 +114,8 @@
     group: host
     mode: "0644"
 
-# Every bind mount uses `:idmap`.  Supported filesystems: ext4 (reported
-# as ext2/ext3 by stat -f -c '%T'), xfs, btrfs, tmpfs.  ZFS < 2.2 and
-# certain FUSE filesystems don't support it.
+# Every bind mount uses `:idmap`.  Supported FSes: ext4 (reported as ext2/ext3 by stat -f -c '%T'), xfs, btrfs,
+# tmpfs.  ZFS < 2.2 and certain FUSE filesystems don't support it.
 - name: Find filesystem of data root
   command: stat -f -c '%T' /home/host
   register: _data_fs
@@ -164,24 +126,19 @@
     that:
       - _data_fs.stdout in ['ext2/ext3', 'xfs', 'btrfs', 'tmpfs']
     fail_msg: >-
-      Filesystem {{ _data_fs.stdout }} for /home/host does not reliably
-      support idmapped bind mounts.  Reprovision onto ext4, xfs, btrfs,
-      or tmpfs.  (Note: Linux reports every ext2/3/4 filesystem as
-      'ext2/ext3', so ext4 IS supported — this failure means something
-      else entirely, e.g. ZFS or a FUSE filesystem.)
+      Filesystem {{ _data_fs.stdout }} for /home/host does not reliably support idmapped bind mounts.  Reprovision
+      onto ext4, xfs, btrfs, or tmpfs.  (Linux reports every ext2/3/4 FS as 'ext2/ext3', so ext4 IS supported —
+      this failure means something else, e.g. ZFS or FUSE.)
     success_msg: "Filesystem {{ _data_fs.stdout }} supports idmapped mounts."
 
-# /etc/openhost/runtime is read by compute_space.core.runtime_sentinel
-# and the dashboard update-check endpoint.  Bump runtime_version here
-# AND compute_space.core.runtime_sentinel.EXPECTED_RUNTIME_VERSION
-# together whenever a host-side change ships that existing hosts must
-# adopt before their next router restart.
 - name: Ensure /etc/openhost exists
   file:
     path: /etc/openhost
     state: directory
     mode: "0755"
 
+# Read by compute_space.core.runtime_sentinel + the dashboard update-check endpoint.  Bump runtime_version here AND
+# EXPECTED_RUNTIME_VERSION in runtime_sentinel.py together when a host-side change requires re-running ansible.
 - name: Write host runtime sentinel
   copy:
     content: |

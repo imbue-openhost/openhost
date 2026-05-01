@@ -36,27 +36,11 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.8.10
         with:
           environments: dev
-      # Podman itself ships with the pixi env (conda-forge).  Only the
-      # system-only bits (setuid newuidmap/newgidmap, pasta) come from apt,
-      # mirroring ansible/tasks/containers.yml.
-      #
-      # ubuntu-latest pre-installs both `podman` and `crun` from apt.  The
-      # older /usr/bin/crun gets picked over the pixi-managed crun (the
-      # conda-forge containers-common containers.conf hardcodes /usr/bin
-      # search paths), and podman 5.8 emits OCI spec fields that the
-      # older crun rejects with "unknown version specified".  Removing
-      # the apt copies forces podman to use the pixi env's binaries.
       - name: Install rootless container support packages
         run: |
           sudo apt-get update
           sudo apt-get remove -y --purge podman crun
           sudo apt-get install -y uidmap passt
-      # Ubuntu 24.04 blocks unprivileged user namespaces unless the
-      # calling binary has an AppArmor profile; conda-forge podman has
-      # none, so its rootless reexec fails with "failed to reexec:
-      # Permission denied" until we lift the restriction.  Ansible
-      # writes the equivalent sysctl on production hosts (see
-      # ansible/tasks/containers.yml).
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Verify rootless podman works
