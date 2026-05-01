@@ -202,14 +202,13 @@ def format_volume(
         _juicefs_binary(config),
         # JuiceFS opens a Go pprof debug HTTP server on 127.0.0.1:6060
         # by default for every command, and walks 6061..6099 if 6060
-        # is already taken (cmd/main.go's debugAgent goroutine).  When
-        # ``format`` runs while a previous ``mount`` is still up on
-        # 6060, the format briefly takes 6061; if mount restarts during
-        # that window it ALSO falls back to 6061 and stays there for
-        # its lifetime.  The format step doesn't need pprof — it's a
-        # short-lived synchronous call we run, watch exit, and forget.
-        # Disabling its agent both removes a phantom port on healthy
-        # zones and avoids pinning ``mount`` to 6061 across switches.
+        # is already taken.  We disable it here for the same reason
+        # we disable it on ``mount`` (see the long comment there) —
+        # rarely useful in production, and on this short-lived
+        # synchronous call we run-watch-forget, the host gets briefly
+        # contaminated with a transient 6060 listener that the
+        # security-audit flags as ``unexpected`` for the duration of
+        # the format.
         "--no-agent",
         "format",
         "--storage", "s3",
@@ -291,6 +290,19 @@ def mount(
         env["SECRET_KEY"] = s3_secret_access_key
         cmd = [
             _juicefs_binary(config),
+            # Disable JuiceFS's pprof debug HTTP agent.  Mount actually
+            # spawns *two* juicefs processes (a stage-0 supervisor +
+            # the stage-3 daemon, see the daemon-stage logic in
+            # cmd/mount.go upstream), each of which would otherwise
+            # call setup() and bind 127.0.0.1:6060 / :6061 — so even
+            # though our route only invokes ``juicefs mount`` once,
+            # two extra ports show up in the security-audit's
+            # listening-ports view as ``unexpected``.  The agent is
+            # rarely useful in production and ``--no-agent`` is the
+            # cleanest way to remove the audit-noise + the unbounded
+            # 6060..6099 port-walking that JuiceFS's main.go does
+            # when those ports are already taken by something else.
+            "--no-agent",
             "mount",
             "--no-usage-report",
             _format_meta_dsn(config),

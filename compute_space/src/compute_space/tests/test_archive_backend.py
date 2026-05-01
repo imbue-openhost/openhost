@@ -227,6 +227,69 @@ def test_format_volume_passes_no_agent_flag(cfg):
     )
 
 
+def test_mount_passes_no_agent_flag(cfg):
+    """``juicefs mount`` must run with ``--no-agent``.
+
+    JuiceFS's mount command spawns multiple processes internally
+    (stage-0 supervisor + stage-3 daemon, via re-execing itself
+    through __DAEMON_STAGE), each of which calls setup() and would
+    otherwise bind 127.0.0.1:6060 / :6061 — so a single ``mount``
+    invocation can produce two ``unexpected`` listening ports in the
+    security-audit's view.  Disabling the agent removes both.
+
+    Like format, ``--no-agent`` must precede the ``mount``
+    subcommand because it's a JuiceFS global flag.
+    """
+    captured: dict[str, list[str]] = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **_kwargs):
+            captured["cmd"] = list(cmd)
+            self._poll_return: int | None = None
+
+        def poll(self):
+            return self._poll_return
+
+        def terminate(self):
+            self._poll_return = -15
+
+        def wait(self, timeout=None):
+            return self._poll_return
+
+    with (
+        # Pretend the mount becomes live immediately so mount() doesn't
+        # block waiting for /proc/self/mountinfo to show our path.
+        mock.patch.object(archive_backend, "is_mounted", return_value=True),
+        mock.patch.object(archive_backend.subprocess, "Popen", FakePopen),
+        # Reset the module-level _mount_proc so this test doesn't see
+        # state from earlier tests in the same process.
+        mock.patch.object(archive_backend, "_mount_proc", None),
+    ):
+        archive_backend.mount(cfg, "AKIA", "hunter2")
+
+    cmd = captured.get("cmd")
+    # is_mounted=True short-circuits before Popen — re-run with
+    # is_mounted starting False and flipping True after Popen.
+    if cmd is None:
+        states = iter([False, True])
+        with (
+            mock.patch.object(
+                archive_backend, "is_mounted", side_effect=lambda _: next(states)
+            ),
+            mock.patch.object(archive_backend.subprocess, "Popen", FakePopen),
+            mock.patch.object(archive_backend, "_mount_proc", None),
+        ):
+            archive_backend.mount(cfg, "AKIA", "hunter2")
+        cmd = captured["cmd"]
+
+    assert "--no-agent" in cmd, cmd
+    no_agent_idx = cmd.index("--no-agent")
+    mount_idx = cmd.index("mount")
+    assert no_agent_idx < mount_idx, (
+        "--no-agent is a JuiceFS global flag and must precede the subcommand"
+    )
+
+
 def test_is_archive_dir_healthy_local(cfg, db):
     """For the local backend the check just verifies the directory
     exists.  Make_all_dirs (run by _make_test_config) creates it."""
