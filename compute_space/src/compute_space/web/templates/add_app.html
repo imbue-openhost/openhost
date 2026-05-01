@@ -197,10 +197,11 @@ function renderManifest(m, url) {
     row('Accessible without login', m.public_paths.map(p => `<code>${esc(p)}</code>`).join(', '));
   }
 
-  if (m.capabilities.length || m.devices.length) {
+  if (m.capabilities.length || m.devices.length || m.shm_mb) {
     section('Container Permissions', '#fff3cd');
     if (m.capabilities.length) row('Linux capabilities', m.capabilities.join(', '));
     if (m.devices.length) row('Devices', m.devices.join(', '));
+    if (m.shm_mb) row('Shared memory', m.shm_mb + ' MB');
   }
 
   document.getElementById('manifest-table').innerHTML = rows;
