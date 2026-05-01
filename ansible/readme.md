@@ -18,15 +18,19 @@ app containers run under rootless podman as the `host` user, sharing podman's de
 ansible-playbook ansible/setup.yml -i <IP>, -e domain=<domain> -e initial_user=root --private-key=~/.ssh/YOUR_SSH_KEY
 ```
 
+add `-e openhost_commit=$(git rev-parse HEAD)` to deploy the current commit, otherwise it defaults to remote's `main`. commit must be pushed.
+
 the trailing comma after the IP is required (tells ansible it's a host list, not a file).
 
 ## fast re-deploy
 
-syncs code, updates config, restarts the service:
+pulls fresh code (default to origin's main), updates config, restarts the service:
 
 ```bash
 ansible-playbook ansible/deploy.yml -i <IP>, -e domain=<domain> --private-key=~/.ssh/YOUR_SSH_KEY
 ```
+
+add `-e openhost_commit=$(git rev-parse HEAD)` to deploy the current commit, otherwise it defaults to remote's `main`. commit must be pushed.
 
 ## after setup
 
