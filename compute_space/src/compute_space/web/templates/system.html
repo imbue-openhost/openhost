@@ -25,6 +25,12 @@
 </table>
 <div id="storage-guard-row" style="margin-bottom:1em;"></div>
 
+<h2 style="margin-top: 2em;">Archive Backend</h2>
+<p style="color: #666; font-size: 0.9em;">Where the <code>app_archive</code> data tier lives.  Default is local disk.  Switching to S3 (JuiceFS) lets the same archive bytes outlive a VM rebuild and lets multiple zones share a single bucket via the prefix field.</p>
+<div id="archive-backend-status" style="margin-bottom: 1em;">
+  <div style="color:#888;">Loading&hellip;</div>
+</div>
+
 <h2 style="margin-top: 2em;">Maintenance</h2>
 <table>
   <tr>
@@ -59,7 +65,9 @@
   "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
   "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
   "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
-  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}"
+  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}",
+  "archiveBackendUrl": "{{ url_for('api_archive_backend.get_archive_backend') }}",
+  "archiveBackendTestUrl": "{{ url_for('api_archive_backend.test_connection') }}"
 }
 </script>
 <script src="{{ static_url('js/system.js') }}"></script>

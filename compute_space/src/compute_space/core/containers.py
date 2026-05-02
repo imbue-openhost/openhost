@@ -205,20 +205,39 @@ def run_container(
     env_vars: dict[str, str],
     data_dir: str,
     temp_data_dir: str,
+    archive_dir: str,
     port_mappings: list[PortMapping] | None = None,
 ) -> str:
-    """Start a detached container for an app.  Returns the container ID."""
+    """Start a detached container for an app.  Returns the container ID.
+
+    ``archive_dir`` is the host-side root for the ``app_archive`` tier;
+    its backing is operator-selected (local disk by default; can be a
+    JuiceFS mount path).  The in-container path is the same regardless
+    of backing so apps don't have to know whether their archive tier
+    is on local disk or on S3.
+
+    Mount topology depends on the manifest opt-ins:
+      - ``[data] app_archive = true``: a per-app subdir is bind-mounted
+        from ``archive_dir/<name>/`` into ``/data/app_archive/<name>/``.
+      - ``[data] access_all_data = true``: the WHOLE ``archive_dir`` is
+        bind-mounted into ``/data/app_archive/`` (mirroring how
+        ``app_data`` and ``app_temp_data`` are handled — the
+        all-access app gets every app's archive).
+    """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
+    app_archive_dir = os.path.join(archive_dir, app_name)
     vm_data_dir = os.path.join(data_dir, "vm_data")
     container_name = f"openhost-{app_name}"
 
     has_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
     has_app_temp = manifest.app_temp_data or manifest.access_all_data
+    has_app_archive = manifest.app_archive or manifest.access_all_data
     has_vm_data = manifest.access_vm_data or manifest.access_all_data
 
     c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
     c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
+    c_app_archive = f"{CONTAINER_ROOT}/app_archive/{app_name}"
     c_vm_data = f"{CONTAINER_ROOT}/vm_data"
 
     # Translate host paths in env vars to their in-container equivalents.
@@ -231,6 +250,8 @@ def run_container(
             container_env[key] = c_app_data
         elif key == "OPENHOST_APP_TEMP_DIR":
             container_env[key] = c_app_temp
+        elif key == "OPENHOST_APP_ARCHIVE_DIR":
+            container_env[key] = c_app_archive
         else:
             container_env[key] = value
 
@@ -268,6 +289,10 @@ def run_container(
                 ),
             ]
         )
+        # Archive parent mount.  Same rationale as the app_data parent
+        # mount above: an access_all_data app sees the entire archive
+        # namespace, not just its own subdir.
+        cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
         os.makedirs(vm_data_dir, exist_ok=True)
         cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data)])
     else:
@@ -275,6 +300,8 @@ def run_container(
             cmd.extend(["-v", _bind_mount_arg(app_data_dir, c_app_data)])
         if has_app_temp:
             cmd.extend(["-v", _bind_mount_arg(app_temp_dir, c_app_temp)])
+        if has_app_archive:
+            cmd.extend(["-v", _bind_mount_arg(app_archive_dir, c_app_archive)])
         if has_vm_data:
             os.makedirs(vm_data_dir, exist_ok=True)
             cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)])

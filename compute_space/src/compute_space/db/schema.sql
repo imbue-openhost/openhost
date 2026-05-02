@@ -129,3 +129,24 @@ CREATE TABLE IF NOT EXISTS schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
+
+-- Archive backend state.  Single-row table — exactly one backend per
+-- zone.  See ``compute_space/core/archive_backend.py`` and the
+-- ``v0005_archive_backend`` migration for the threat model around
+-- the plaintext credential columns.
+CREATE TABLE IF NOT EXISTS archive_backend (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    backend TEXT NOT NULL DEFAULT 'local' CHECK(backend IN ('local', 's3')),
+    state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('idle', 'switching')),
+    s3_bucket TEXT,
+    s3_region TEXT,
+    s3_endpoint TEXT,
+    s3_prefix TEXT,
+    s3_access_key_id TEXT,
+    s3_secret_access_key TEXT,
+    juicefs_volume_name TEXT NOT NULL DEFAULT 'openhost',
+    last_switched_at TEXT,
+    state_message TEXT
+);
+
+INSERT OR IGNORE INTO archive_backend (id, backend) VALUES (1, 'local');

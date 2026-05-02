@@ -13,7 +13,9 @@ from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
 
+from compute_space.config import Config
 from compute_space.config import get_config
+from compute_space.core import archive_backend
 from compute_space.core.apps import RESERVED_PATHS
 from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
@@ -46,6 +48,13 @@ def _rmtree_force(path: str) -> None:
     data-dir deprovision, which swallows cleanup errors).
     """
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
+
+
+# Re-exported alias of the shared helper in core.archive_backend.
+# The route file uses it to gate the reload-flow archive-health
+# check, in lockstep with the same rule applied by the system-tab
+# switch flow when enumerating affected apps.
+_manifest_uses_archive = archive_backend.manifest_uses_archive
 
 
 def _is_removing(app_row: sqlite3.Row | None) -> bool:
@@ -160,6 +169,19 @@ async def api_add_app() -> ResponseReturnValue:
     if validation_error:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
+
+    # Refuse archive-using deploys if the archive backend's mount
+    # is unhealthy; ``provision_data`` would otherwise write to the
+    # underlying empty mount-point and lose those writes once the
+    # mount came back.
+    if (manifest.app_archive or manifest.access_all_data) and not archive_backend.is_archive_dir_healthy(config, db):
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        return jsonify({
+            "error": "Archive backend is not healthy; refusing to deploy "
+                     "an archive-using app until the operator-configured "
+                     "archive mount is live again (see the dashboard's "
+                     "Archive backend panel)."
+        }), 503
 
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
     if os.path.exists(final_dir):
@@ -280,6 +302,21 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
 
+    # Refuse the reload if the archive backend's mount is dead and
+    # this app uses app_archive — otherwise ``provision_data`` would
+    # try to write to the underlying empty mount-point on local disk,
+    # which the mount would shadow once it came back, silently
+    # losing those writes.  Apps that don't use archive aren't
+    # affected; cheap precheck for everyone.
+    if not archive_backend.is_archive_dir_healthy(config, db):
+        if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+            return jsonify({
+                "error": "Archive backend is not healthy; refusing to "
+                         "reload an archive-using app until the "
+                         "operator-configured archive mount is live "
+                         "again (see the dashboard's Archive backend panel)."
+            }), 503
+
     form = await request.form if request.method == "POST" else {}
     update = form.get("update") == "1"
     continue_oauth = request.args.get("continue_oauth_update") == "1"
@@ -396,6 +433,26 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     form = await request.form
     keep_data = form.get("keep_data") == "1"
 
+    # Refuse the destructive remove path if the archive backend's
+    # mount is dead and the app uses archive — otherwise the rmtree
+    # in remove_app_background's deprovision_data would only delete
+    # the empty mountpoint directory on local disk, leaving the real
+    # archive bytes still in S3 while the app's DB row goes away.
+    # Operators would think they cleaned up; they didn't.  The
+    # keep_data path is fine because it doesn't touch the archive
+    # tier.  Pre-check fires BEFORE the atomic-claim UPDATE so a
+    # rejected remove leaves the app row's status untouched.
+    if not keep_data and not archive_backend.is_archive_dir_healthy(config, db):
+        if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+            return jsonify({
+                "error": "Archive backend is not healthy; refusing to "
+                         "remove an archive-using app's data because the "
+                         "S3-side bytes wouldn't actually be deleted.  "
+                         "Either restore the archive mount and retry, or "
+                         "use keep_data=1 to remove the app while leaving "
+                         "its data in place."
+            }), 503
+
     # Atomic claim: ``WHERE status != 'removing'`` makes concurrent
     # POSTs safe — only the first one gets rowcount=1 and spawns a
     # worker; later ones short-circuit to the already_removing branch.
@@ -428,6 +485,66 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     return jsonify({"ok": True}), 202
 
 
+def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> str | None:
+    """Rename per-app subdirs across the three storage tiers, with
+    best-effort rollback on partial failure.
+
+    Returns ``None`` on success, or an error message string on failure
+    (callers convert that to a 500 response).  Pure-sync helper so the
+    blocking ``os.rename`` calls — which can take tens-to-hundreds of
+    ms on a JuiceFS-backed archive tier — don't run on the asyncio
+    event loop.
+
+    Each per-tier rename stays within its own parent dir (jfs->jfs or
+    local->local), so cross-device EXDEV is not an issue, but a
+    transient mount drop or permissions blip on the archive tier
+    still could fail.  When that happens, undo the renames we already
+    did so the on-disk state matches what's still in the DB; if the
+    rollback rename itself ALSO fails, log it and continue — the
+    operator-visible state is wedged for that tier and only manual
+    reconciliation can fix it.
+    """
+    rename_parents = [
+        os.path.join(config.persistent_data_dir, "app_data"),
+        os.path.join(config.temporary_data_dir, "app_temp_data"),
+        config.app_archive_dir,
+    ]
+    # Refuse the rename if any parent storage dir is missing — the
+    # missing-archive case is the symptom of a JuiceFS mount that's
+    # transiently dead, and silently proceeding would rename the
+    # other tiers while leaving the archive subdir under the old
+    # name.  The mount-liveness check itself happens earlier (the
+    # rename route can call ``archive_backend.is_archive_dir_healthy``
+    # before getting here); this is the per-tier sanity check.
+    for parent in rename_parents:
+        if not os.path.isdir(parent):
+            return (
+                f"Storage parent {parent!r} is not a directory; "
+                f"refusing to rename so per-app data isn't orphaned."
+            )
+    renamed: list[tuple[str, str]] = []
+    try:
+        for parent in rename_parents:
+            old_dir = os.path.join(parent, old_name)
+            new_dir = os.path.join(parent, new_name)
+            if os.path.exists(old_dir) and not os.path.exists(new_dir):
+                os.rename(old_dir, new_dir)
+                renamed.append((old_dir, new_dir))
+    except OSError as exc:
+        for old_dir, new_dir in reversed(renamed):
+            try:
+                os.rename(new_dir, old_dir)
+            except OSError as rollback_exc:
+                logger.error(
+                    "Rollback of partial rename %s -> %s failed: %s",
+                    new_dir,
+                    old_dir,
+                    rollback_exc,
+                )
+        return str(exc)
+    return None
+
+
 @api_apps_bp.route("/rename_app/<app_name>", methods=["POST"])
 @login_required
 async def rename_app(app_name: str) -> ResponseReturnValue:
@@ -452,6 +569,18 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
 
+    # Refuse the rename if the archive backend's mount is dead.
+    # ``_rename_app_storage_dirs`` would otherwise silently skip the
+    # archive tier (its underlying mount-point dir exists; the per-
+    # app subdir doesn't) while renaming the other tiers, leaving
+    # the archive contents orphaned under the old name in S3.
+    if not archive_backend.is_archive_dir_healthy(config, db):
+        return jsonify({
+            "error": "Archive backend is not healthy; refusing to rename "
+                     "until the operator-configured archive mount is live "
+                     "again (see the dashboard's Archive backend panel)."
+        }), 503
+
     if new_name == app_name:
         return jsonify({"ok": True, "name": new_name})
 
@@ -459,7 +588,9 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if conflict:
         return jsonify({"error": f"Name already in use by '{conflict['name']}'"}), 409
 
-    was_running = app_row["status"] in ("running", "starting", "building")
+    prior_status = app_row["status"]
+    prior_container_id = app_row["container_id"]
+    was_running = prior_status in ("running", "starting", "building")
     stop_app_process(app_row)
     db.execute(
         "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
@@ -467,14 +598,53 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     )
     db.commit()
 
-    for parent in [
-        os.path.join(config.persistent_data_dir, "app_data"),
-        os.path.join(config.temporary_data_dir, "app_temp_data"),
-    ]:
-        old_dir = os.path.join(parent, app_name)
-        new_dir = os.path.join(parent, new_name)
-        if os.path.exists(old_dir) and not os.path.exists(new_dir):
-            os.rename(old_dir, new_dir)
+    # Rename every per-app subdirectory across each storage tier
+    # (local-persistent, local-scratch, archive).  Missing the
+    # archive tier here would orphan its contents under the old
+    # name; the next provision_data on the renamed app would create
+    # a fresh empty archive subdir, silently abandoning whatever
+    # was there.  ``_rename_app_storage_dirs`` runs in a worker
+    # thread because ``config.app_archive_dir`` may resolve to a
+    # JuiceFS mount with tens-to-hundreds-of-ms rename latency,
+    # which would otherwise stall the event loop and block other
+    # requests for the duration of the rename.
+    rename_error = await asyncio.to_thread(
+        _rename_app_storage_dirs,
+        config,
+        app_name,
+        new_name,
+    )
+    if rename_error is not None:
+        # Restore the prior status + container_id so the dashboard
+        # shows the app the same way it did before the failed rename.
+        # ``stop_app_process`` already terminated the process, so a
+        # ``running`` state will reconcile via the supervisor's
+        # crashed-app path on the next health-check tick rather than
+        # leaving a permanently-stuck ``stopped`` row.
+        rollback_db_error: str | None = None
+        try:
+            db.execute(
+                "UPDATE apps SET status = ?, container_id = ? WHERE name = ?",
+                (prior_status, prior_container_id, app_name),
+            )
+            db.commit()
+        except sqlite3.Error as db_exc:
+            logger.error("Failed to restore status during rename rollback: %s", db_exc)
+            rollback_db_error = str(db_exc)
+        error_message = f"Failed to rename app data directories: {rename_error}"
+        if rollback_db_error is not None:
+            # Surface BOTH errors — the operator needs to know that
+            # the app's DB row may be stuck at ``stopped`` even though
+            # the on-disk rollback succeeded.  Without this, the
+            # 500 response only mentions the rename failure and the
+            # operator has no signal to look in the logs for the
+            # secondary DB error.
+            error_message += (
+                f"; additionally, the DB-status rollback failed: "
+                f"{rollback_db_error}.  Check the apps table; the row "
+                f"for {app_name!r} may be stuck at status='stopped'."
+            )
+        return jsonify({"error": error_message}), 500
 
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute(

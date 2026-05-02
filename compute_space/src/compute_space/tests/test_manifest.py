@@ -49,6 +49,7 @@ class TestDefaults:
         manifest = parse_manifest_from_string(MINIMAL)
         assert manifest.app_data is False
         assert manifest.app_temp_data is False
+        assert manifest.app_archive is False
         assert manifest.access_vm_data is False
         assert manifest.access_all_data is False
 
@@ -550,3 +551,64 @@ class TestUnprivilegedPortFloor:
         toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.port_mappings[0].host_port == 0
+
+
+class TestAppArchive:
+    """Verify the [data].app_archive opt-in behaves correctly.
+
+    The archive tier is a host-level abstraction backed by either
+    local disk or a JuiceFS-on-S3 mount; the manifest opt-in is
+    backing-agnostic.  These tests pin the manifest-level contract.
+    """
+
+    def test_app_archive_default_is_false(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.app_archive is False
+
+    def test_app_archive_explicit_true_with_app_data(self):
+        toml = MINIMAL + "\n[data]\napp_data = true\napp_archive = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.app_data is True
+
+    def test_app_archive_explicit_true_with_sqlite_only(self):
+        """``app_archive`` is allowed when SQLite implicitly enables
+        the local app_data tier — the validator looks at the raw
+        toml, not the synthesised app_data flag."""
+        toml = MINIMAL + '\n[data]\nsqlite = ["main"]\napp_archive = true\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.sqlite_dbs == ["main"]
+
+    def test_app_archive_without_app_data_rejected(self):
+        """An archive-only app makes no sense.  SQLite + working
+        state must live in the local-disk tier; rejecting the
+        archive-only config at parse time prevents apps from ever
+        getting deployed in that state."""
+        toml = MINIMAL + "\n[data]\napp_archive = true\n"
+        with pytest.raises(ValueError, match="app_archive requires"):
+            parse_manifest_from_string(toml)
+
+    def test_app_archive_with_access_all_data_does_not_crash_validator(self):
+        """access_all_data is the catch-all permission.  It implies
+        access to every tier, but app_archive is still a separate
+        opt-in.  An access_all_data manifest without an explicit
+        app_archive should NOT trip the 'app_archive requires
+        app_data' validator."""
+        toml = MINIMAL + "\n[data]\naccess_all_data = true\n"
+        manifest = parse_manifest_from_string(toml)
+        # access_all_data on its own doesn't toggle app_archive;
+        # apps that want the archive bind must opt in explicitly.
+        assert manifest.app_archive is False
+        assert manifest.access_all_data is True
+
+    def test_app_archive_with_access_all_data_and_no_app_data_accepted(self):
+        """access_all_data implies access to every tier including
+        the local-disk one, so it satisfies the 'app_archive needs
+        local state somewhere' invariant on its own.  An
+        access_all_data manifest that adds app_archive=true must NOT
+        be rejected for missing app_data."""
+        toml = MINIMAL + "\n[data]\naccess_all_data = true\napp_archive = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.access_all_data is True
