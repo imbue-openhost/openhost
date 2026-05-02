@@ -235,9 +235,24 @@ function renderArchiveBackend(state) {
   var disabled = state.state === 'switching' ? 'disabled' : '';
   var buttonLabel = state.backend === 's3' ? 'Switch to local disk…' : 'Switch to S3…';
   var btn = '<button class="btn" id="archive-backend-switch-btn" ' + disabled + '>' + buttonLabel + '</button>';
+  // Persistent reminder when an experimental tier is in use.  Anyone
+  // who walks back to this page weeks later should see immediately
+  // that the archive lives on a backend they shouldn't trust as the
+  // sole copy of irreplaceable data.  Local-disk doesn't get the
+  // banner because openhost backs that up the same as every other
+  // local-tier file.
+  var experimentalNote = '';
+  if (state.backend === 's3') {
+    experimentalNote = '<div style="margin-top:0.5em;background:#f8d7da;border:1px solid #dc3545;color:#c00;padding:0.4em 0.6em;border-radius:4px;font-size:0.9em;">'
+      + '<strong>Experimental:</strong> the S3 archive backend is best-effort durable.  '
+      + 'Filename-to-S3-chunk mappings live in a SQLite metadata DB on this VM; '
+      + 'recovery from a lost VM requires the latest meta dump in S3 plus a manual <code>juicefs load</code>.  '
+      + 'Do not use for anything you cannot afford to lose without an out-of-band backup.'
+      + '</div>';
+  }
   el.innerHTML = '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';padding:0.8em 1em;border-radius:4px;">'
-    + '<strong>&#x1F5C4;&#xFE0F; Archive backend:</strong> ' + escHtml(label) + details
-    + pathInfo + note
+    + '<strong>Archive backend:</strong> ' + escHtml(label) + details
+    + pathInfo + note + experimentalNote
     + '<div style="margin-top:0.5em;">' + btn + '</div>'
     + '<div id="archive-backend-form" style="display:none;margin-top:0.8em;border-top:1px solid #ccc;padding-top:0.8em;"></div>'
     + '</div>';
@@ -249,7 +264,17 @@ function showArchiveSwitchForm(state) {
   var goingToS3 = state.backend === 'local';
   var html;
   if (goingToS3) {
-    html = '<p><strong>Switch to S3-backed archive.</strong> Affected apps (those using <code>app_archive</code> or <code>access_all_data</code>) will be stopped, archive data copied to the new backend, and apps restarted. In-flight uploads will be lost.</p>'
+    // Loud experimental warning at the top of the form, before the
+    // operator types a single character.  Same red-danger styling
+    // as the persistent banner in renderArchiveBackend so the two
+    // pieces are visually linked.
+    html = '<div style="background:#f8d7da;border:1px solid #dc3545;color:#c00;padding:0.6em 0.8em;border-radius:4px;margin-bottom:0.8em;">'
+      + '<strong>Experimental backend.  You may lose data.  Do not use this for anything you cannot afford to lose without a separate backup.</strong>'
+      + '<div style="margin-top:0.35em;font-size:0.9em;color:#600;">'
+      + 'Filename-to-S3-chunk mappings live in a SQLite metadata DB on this VM, not in the bucket.  '
+      + 'A lost VM means the bucket bytes can be recovered only from JuiceFS\'s periodic meta dumps in S3 (replayed via <code>juicefs load</code>); anything written between the last dump and the loss is orphan chunks with no inode.'
+      + '</div></div>'
+      + '<p><strong>Switch to S3-backed archive.</strong> Affected apps (those using <code>app_archive</code> or <code>access_all_data</code>) will be stopped, archive data copied to the new backend, and apps restarted. In-flight uploads will be lost.</p>'
       + '<div style="display:grid;grid-template-columns:max-content 1fr;gap:0.4em 0.8em;align-items:center;max-width:600px;">'
       + '<label>S3 bucket</label><input id="ab-bucket" value="' + escHtml(state.s3_bucket || '') + '" placeholder="my-openhost-archive">'
       + '<label>Region</label><input id="ab-region" value="' + escHtml(state.s3_region || 'us-east-1') + '">'
@@ -258,7 +283,7 @@ function showArchiveSwitchForm(state) {
       + '<label>Access key ID</label><input id="ab-access-key" value="' + escHtml(state.s3_access_key_id || '') + '">'
       + '<label>Secret access key</label><input id="ab-secret-key" type="password">'
       + '</div>'
-      + '<label style="display:block;margin-top:0.6em;"><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped, restarted, and any in-flight uploads will be lost.</label>'
+      + '<label style="display:block;margin-top:0.6em;"><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped, restarted, and any in-flight uploads will be lost.  I also understand the S3 archive backend is experimental and may lose data.</label>'
       + '<label style="display:block;margin-top:0.3em;"><input type="checkbox" id="ab-delete-source"> Also delete the local-disk archive after the copy succeeds.</label>'
       + '<div style="margin-top:0.6em;display:flex;gap:0.5em;align-items:center;">'
       + '<button class="btn" id="ab-test-btn">Test connection</button>'
@@ -363,7 +388,7 @@ function pollArchiveBackend() {
     if (el) {
       el.innerHTML = '<div style="background:#f8d7da;border:1px solid #dc3545;'
         + 'padding:0.8em 1em;border-radius:4px;">'
-        + '<strong>&#x26A0;&#xFE0F; Archive backend status unavailable</strong>'
+        + '<strong>Archive backend status unavailable</strong>'
         + '<div style="margin-top:0.35em;color:#666;font-size:0.9em;">'
         + escHtml(String(err)) + '</div></div>';
     }
