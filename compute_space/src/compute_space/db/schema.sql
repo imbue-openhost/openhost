@@ -136,7 +136,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- the plaintext credential columns.
 CREATE TABLE IF NOT EXISTS archive_backend (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    backend TEXT NOT NULL DEFAULT 'local' CHECK(backend IN ('local', 's3')),
+    -- backend = 'disabled' on a fresh install: the operator has not
+    -- chosen an archive backend yet.  Apps that opt into the
+    -- ``app_archive`` data tier refuse to install while disabled.
+    -- Existing zones at backend='local' from before the v7 migration
+    -- are left as-is on upgrade so nothing breaks for them.
+    backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 'local', 's3')),
     state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('idle', 'switching')),
     s3_bucket TEXT,
     s3_region TEXT,
@@ -149,4 +154,4 @@ CREATE TABLE IF NOT EXISTS archive_backend (
     state_message TEXT
 );
 
-INSERT OR IGNORE INTO archive_backend (id, backend) VALUES (1, 'local');
+INSERT OR IGNORE INTO archive_backend (id, backend) VALUES (1, 'disabled');

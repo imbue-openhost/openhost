@@ -170,18 +170,41 @@ async def api_add_app() -> ResponseReturnValue:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
-    # Refuse archive-using deploys if the archive backend's mount
-    # is unhealthy; ``provision_data`` would otherwise write to the
-    # underlying empty mount-point and lose those writes once the
-    # mount came back.
-    if (manifest.app_archive or manifest.access_all_data) and not archive_backend.is_archive_dir_healthy(config, db):
-        shutil.rmtree(clone_dir, ignore_errors=True)
-        return jsonify({
-            "error": "Archive backend is not healthy; refusing to deploy "
-                     "an archive-using app until the operator-configured "
-                     "archive mount is live again (see the dashboard's "
-                     "Archive backend panel)."
-        }), 503
+    # Refuse archive-using deploys if the archive backend isn't
+    # ready.  Two reasons it can be not-ready, with two different
+    # operator-actions, surfaced as different status codes so the
+    # dashboard's add-app form can distinguish "transient mount
+    # hiccup, retry in a sec" from "permanent operator decision
+    # required, click over to System tab":
+    #
+    #   1. backend = 'disabled' on a fresh zone -> 400.  Asking the
+    #      operator to retry won't help; they have to pick a
+    #      backend on the System tab.  400 surfaces the message in
+    #      the form's error area; 503 would suggest a retry button.
+    #   2. backend = 'local'/'s3' but ``is_archive_dir_healthy``
+    #      returned False -> 503.  Mount transient or local dir
+    #      missing — provision_data would otherwise write to the
+    #      empty mount-point and lose those writes once the mount
+    #      came back.
+    if manifest.app_archive or manifest.access_all_data:
+        backend_state = archive_backend.read_state(db)
+        if backend_state.backend == "disabled":
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            return jsonify({
+                "error": "This app uses the app_archive data tier, but "
+                         "the archive backend has not been configured on "
+                         "this zone.  Visit the System page and pick an "
+                         "archive backend (local disk or S3) before "
+                         "deploying this app."
+            }), 400
+        if not archive_backend.is_archive_dir_healthy(config, db):
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            return jsonify({
+                "error": "Archive backend is not healthy; refusing to deploy "
+                         "an archive-using app until the operator-configured "
+                         "archive mount is live again (see the dashboard's "
+                         "Archive backend panel)."
+            }), 503
 
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
     if os.path.exists(final_dir):

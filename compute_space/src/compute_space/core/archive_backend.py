@@ -603,7 +603,7 @@ def umount(config: Config) -> None:
 class BackendState:
     """Operator-visible archive backend state."""
 
-    backend: str  # "local" | "s3"
+    backend: str  # "disabled" | "local" | "s3"
     state: str  # "idle" | "switching"
     s3_bucket: str | None
     s3_region: str | None
@@ -626,10 +626,13 @@ def read_state(db: sqlite3.Connection) -> BackendState:
         "last_switched_at, state_message, s3_prefix FROM archive_backend WHERE id = 1"
     ).fetchone()
     if row is None:
-        # Should never happen — the v5 migration seeds this row — but
-        # tolerate it so the dashboard doesn't crash on a partial DB.
+        # Should never happen — the v5 migration seeds this row, and
+        # the v7 migration seeds new ones with backend='disabled' —
+        # but tolerate it so the dashboard doesn't crash on a partial
+        # DB.  The fallback uses 'disabled' to match what schema.sql
+        # would have produced for a row this code can't see.
         return BackendState(
-            backend="local",
+            backend="disabled",
             state="idle",
             s3_bucket=None,
             s3_region=None,
@@ -759,6 +762,10 @@ def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
     """Return True iff the currently-configured archive backing is
     actually live on the host.
 
+    For ``disabled``: always False.  No backing exists, so any caller
+    that gates on this (the install-time / reload-time precheck on
+    archive-using apps) refuses to proceed, which is exactly the
+    point of the disabled state.
     For ``local``: the per-zone fallback dir under
     ``persistent_data_dir/app_archive/`` simply needs to exist as a
     directory.
@@ -770,21 +777,32 @@ def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
     /proc/self/mountinfo and returns True only when the FS is up.
     """
     state = read_state(db)
+    if state.backend == "disabled":
+        return False
     if state.backend == "s3":
         return is_mounted(juicefs_mount_dir(config))
     return os.path.isdir(os.path.join(config.persistent_data_dir, "app_archive"))
 
 
-def archive_dir_for_backend(config: Config, backend: str) -> str:
+def archive_dir_for_backend(config: Config, backend: str) -> str | None:
     """Return the host-side archive root for ``backend``.
 
     Used by ``apply_backend_to_config`` to compute the right
     ``archive_dir_override`` value after a switch, and by the switch
     flow itself to know where to copy data to/from.
+
+    Returns ``None`` for ``backend == 'disabled'``: no host-side
+    backing exists.  Callers that produce paths for the dashboard
+    must handle the None and render "not configured" rather than
+    a path; callers in the switch flow only run for non-disabled
+    backends, so they never see None.
     """
     if backend == "s3":
         return juicefs_mount_dir(config)
-    return os.path.join(config.persistent_data_dir, "app_archive")
+    if backend == "local":
+        return os.path.join(config.persistent_data_dir, "app_archive")
+    # backend == "disabled" (or any future no-backing state).
+    return None
 
 
 def apply_backend_to_config(config: Config, db: sqlite3.Connection) -> Config:
@@ -796,11 +814,18 @@ def apply_backend_to_config(config: Config, db: sqlite3.Connection) -> Config:
     The original Config object isn't mutated (it's frozen attrs); the
     caller stores the returned Config wherever the live one lives
     (typically ``app.openhost_config`` on the Quart app).
+
+    For ``disabled``: leaves ``archive_dir_override`` unset so
+    ``config.app_archive_dir`` falls back to its default.  Apps that
+    opt into the archive tier will still fail to install via the
+    install-time gate; the Config itself doesn't need a special
+    sentinel because nothing is allowed to read from the archive
+    tier while disabled.
     """
     state = read_state(db)
     if state.backend == "s3":
         return config.evolve(archive_dir_override=juicefs_mount_dir(config))
-    # Local backend: archive_dir_override should be unset so the
+    # Local or disabled: archive_dir_override should be unset so the
     # property falls back to persistent_data_dir/app_archive.
     return config.evolve(archive_dir_override=None)
 
@@ -1287,7 +1312,7 @@ def switch_backend(
     down until the copy succeeds, so a failed switch can be retried
     or rolled back manually.
     """
-    if target_backend not in ("local", "s3"):
+    if target_backend not in ("disabled", "local", "s3"):
         raise BackendSwitchError(f"Unknown target backend {target_backend!r}")
 
     if target_backend == "s3":
@@ -1344,6 +1369,23 @@ def switch_backend(
             _update_state(db, state="idle", state_message=None)
             return
 
+        # Stepping down from a configured backend to ``disabled`` is
+        # not supported: it would leave the on-disk archive bytes
+        # (or S3 chunks) in place but unreachable through openhost,
+        # confusing every operator who hits it.  Operators who want
+        # to "deconfigure" should switch to local first (which
+        # drains s3 if any) and then leave it alone — the disabled
+        # state is reserved for fresh, never-configured zones.
+        if target_backend == "disabled" and current.backend != "disabled":
+            raise BackendSwitchError(
+                "Cannot switch from a configured archive backend "
+                f"({current.backend!r}) back to 'disabled'.  Switch to "
+                "'local' first if you want to step down from s3, then "
+                "leave it there — disabling a once-configured backend "
+                "would orphan archive data on disk or in S3 with no "
+                "openhost-side handle to recover it."
+            )
+
         # The operator-supplied ``s3_prefix`` doubles as the JuiceFS
         # volume name.  JuiceFS's S3 backend cannot store data under
         # an arbitrary path inside a bucket — it insists on parsing
@@ -1384,6 +1426,9 @@ def switch_backend(
                 ) from exc
             stopped_apps.append(name)
 
+        # Source dir is None when the current backend is 'disabled' —
+        # there's nothing on disk to migrate or tear down for that
+        # case.  The two phase helpers below are skipped accordingly.
         old_archive_dir = archive_dir_for_backend(config, current.backend)
         plan = _SwitchPlan(
             current=current,
@@ -1398,8 +1443,17 @@ def switch_backend(
             delete_source_after_copy=delete_source_after_copy,
         )
         new_archive_dir, new_mount_active = _bring_up_target(config, db, plan)
-        _migrate_archive_data(db, plan, old_archive_dir, new_archive_dir)
-        teardown_warning = _tear_down_source(config, db, plan, old_archive_dir)
+        if old_archive_dir is None:
+            # disabled -> local | s3.  No data to migrate; the
+            # destination is whatever ``_bring_up_target`` produced
+            # (a fresh local dir or a fresh JuiceFS mount).  Skip
+            # the wipe-and-copy phase entirely so we don't trip
+            # ``_migrate_archive_data``'s s3-source-mount-liveness
+            # check on a source that doesn't exist.
+            teardown_warning = None
+        else:
+            _migrate_archive_data(db, plan, old_archive_dir, new_archive_dir)
+            teardown_warning = _tear_down_source(config, db, plan, old_archive_dir)
 
         # Persist the new state.  We bypass _update_state for the s3
         # fields here because we need to write them to the EXACT
@@ -1428,7 +1482,7 @@ def switch_backend(
                     now_iso,
                 ),
             )
-        else:
+        elif target_backend == "local":
             # Switching to local: clear creds (sensitive — drop) but
             # keep bucket/region/endpoint so the operator's next switch
             # back to s3 form is pre-filled with their last config.
@@ -1442,6 +1496,19 @@ def switch_backend(
                     volume_name,
                     now_iso,
                 ),
+            )
+        else:
+            # Defensive: target_backend == 'disabled' should be
+            # unreachable here because (a) disabled→disabled is the
+            # no-op short-circuit at the top of the function and
+            # (b) local|s3 → disabled is rejected at the validation
+            # gate.  An assert keeps an unexpected control flow
+            # loud rather than silently writing the row to a state
+            # that breaks the next read.
+            raise BackendSwitchError(
+                f"unreachable: target_backend={target_backend!r} reached "
+                "the success-path SQL with no matching branch.  This is "
+                "a bug; the prior validation should have caught it."
             )
         db.commit()
 

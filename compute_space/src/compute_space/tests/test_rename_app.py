@@ -67,7 +67,14 @@ async def _post_rename(
 def _seed_app_row(
     db_path: str, name: str, port: int = 19500, status: str = "stopped"
 ) -> None:
-    """Insert a minimal apps row that rename_app can target."""
+    """Insert a minimal apps row that rename_app can target.
+
+    Also flips the archive backend off the v7 'disabled' default into
+    'local' so the rename route's archive-health gate doesn't bounce
+    the request with 503.  Rename tests deliberately exercise the
+    three-tier dir-rename path (including app_archive), which only
+    runs when an archive backend is configured.
+    """
     db = sqlite3.connect(db_path)
     try:
         db.execute(
@@ -75,6 +82,7 @@ def _seed_app_row(
                VALUES (?, '1.0', ?, ?, ?)""",
             (name, f"/tmp/repo/{name}", port, status),
         )
+        db.execute("UPDATE archive_backend SET backend='local' WHERE id=1")
         db.commit()
     finally:
         db.close()

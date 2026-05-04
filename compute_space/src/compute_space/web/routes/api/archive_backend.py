@@ -288,7 +288,11 @@ async def post_archive_backend() -> ResponseReturnValue:
     immediately; the dashboard polls ``GET`` to see the final state.
 
     Body fields:
-      ``backend``: ``local`` | ``s3``
+      ``backend``: ``local`` | ``s3``.  The ``disabled`` state cannot
+        be selected here — it's the seed state for fresh zones, and
+        once an operator has picked a backend they can switch
+        between local and s3 but never back to disabled (which
+        would orphan the on-disk / in-bucket archive bytes).
       ``confirm_data_loss``: ``true`` (required — see below)
       ``s3_bucket``, ``s3_region``, ``s3_endpoint``, ``s3_access_key_id``,
       ``s3_secret_access_key``, ``juicefs_volume_name`` (when target=s3)
@@ -312,12 +316,22 @@ async def post_archive_backend() -> ResponseReturnValue:
     a large archive will drop in-flight uploads.  The dashboard puts
     this behind an explicit "I understand apps will be restarted"
     checkbox.
+
+    The disabled→local / disabled→s3 transitions don't actually lose
+    data (no archive-using app can have been installed while
+    disabled), but ``confirm_data_loss=true`` is still required for
+    consistency with the local↔s3 transitions — operators get one
+    invariant set of expectations regardless of starting state.
     """
     form = await request.form
     target = (form.get("backend") or "").strip()
     confirm = (form.get("confirm_data_loss") or "").strip().lower() in ("1", "true", "yes")
 
     if target not in ("local", "s3"):
+        # ``disabled`` is intentionally not a valid target: see the
+        # docstring + ``switch_backend``'s rejection of *→disabled
+        # transitions.  Operators land at disabled at zone-init; the
+        # only way out is to pick local or s3.
         return jsonify({"error": "backend must be 'local' or 's3'"}), 400
     if not confirm:
         return jsonify(

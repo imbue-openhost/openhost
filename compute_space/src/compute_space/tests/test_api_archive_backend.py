@@ -9,6 +9,7 @@ real S3 bucket.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -65,17 +66,30 @@ def app(cfg):
 
 
 @pytest.mark.asyncio
-async def test_get_returns_seeded_local_state(app):
-    """A fresh DB returns the seeded ``local`` row with a resolved
-    archive_dir but no S3 fields set."""
+async def test_get_returns_seeded_disabled_state(app):
+    """A fresh DB returns the seeded ``disabled`` row with no S3
+    fields set and ``archive_dir`` null (no backing exists yet).
+
+    The default flipped from 'local' to 'disabled' in the v7 migration
+    so apps that opt into the app_archive tier refuse to install on
+    a brand-new zone until the operator picks a backend on the
+    System tab.  Existing zones at 'local' from before v7 are
+    preserved by the migration and follow a separate code path
+    (covered by ``test_get_redacts_secret_when_s3`` etc.).
+    """
     client = app.test_client()
     resp = await client.get("/api/storage/archive_backend")
     assert resp.status_code == 200
     body = await resp.get_json()
-    assert body["backend"] == "local"
+    assert body["backend"] == "disabled"
     assert body["state"] == "idle"
     assert body["s3_bucket"] is None
-    assert body["archive_dir"].endswith("/persistent_data/app_archive")
+    # archive_dir is null on disabled — no host-side backing exists.
+    # The dashboard renders this as "(not yet provisioned)" rather
+    # than as an empty <code> block.
+    assert body["archive_dir"] is None
+    # meta_dumps is null too (no S3 to list).
+    assert body["meta_dumps"] is None
     # The secret access key field must NEVER be in the response.
     assert "s3_secret_access_key" not in body
 
@@ -154,14 +168,33 @@ async def test_get_surfaces_meta_dumps_when_s3(app):
 
 
 @pytest.mark.asyncio
-async def test_get_meta_dumps_null_on_local_backend(app):
-    """A local-disk zone has no S3 to list — ``meta_dumps`` is
-    deliberately ``None`` so the dashboard renders nothing in that
-    column rather than a misleading "0 dumps" message.
+async def test_get_meta_dumps_null_on_non_s3_backends(app):
+    """Backends other than s3 (disabled, local) have no S3 to list,
+    so ``meta_dumps`` is deliberately ``None`` so the dashboard
+    renders nothing in that column rather than a misleading
+    "0 dumps" message.
+
+    Covers both the seeded-default (disabled) and an explicit
+    local zone in one test because the route-layer logic skips the
+    list_meta_dumps call for both cases.
     """
     client = app.test_client()
+    # Default (disabled) state.
     resp = await client.get("/api/storage/archive_backend")
     body = await resp.get_json()
+    assert body["backend"] == "disabled"
+    assert body["meta_dumps"] is None
+
+    # Pre-v7 zones at backend='local'.
+    db = sqlite3.connect(app.config["DB_PATH"])
+    try:
+        db.execute("UPDATE archive_backend SET backend='local'")
+        db.commit()
+    finally:
+        db.close()
+    resp = await client.get("/api/storage/archive_backend")
+    body = await resp.get_json()
+    assert body["backend"] == "local"
     assert body["meta_dumps"] is None
 
 
@@ -205,6 +238,28 @@ async def test_post_rejects_unknown_backend(app):
     )
     assert resp.status_code == 400
     assert "local" in (await resp.get_json())["error"]
+
+
+@pytest.mark.asyncio
+async def test_post_rejects_disabled_as_target(app):
+    """``backend=disabled`` is intentionally not a valid POST target.
+
+    The disabled state is the seed for fresh zones; once an operator
+    has picked local or s3 they can flip between those two but
+    can't go back to disabled (which would orphan the on-disk /
+    in-bucket archive bytes with no openhost-side handle to recover
+    them).  Surfacing this rejection at the route layer with a 400
+    means the dashboard's switch form doesn't even need to expose
+    a 'Disable archive tier' button.
+    """
+    client = app.test_client()
+    resp = await client.post(
+        "/api/storage/archive_backend",
+        form={"backend": "disabled", "confirm_data_loss": "true"},
+    )
+    assert resp.status_code == 400
+    body = await resp.get_json()
+    assert "local" in body["error"] or "s3" in body["error"], body
 
 
 @pytest.mark.asyncio
@@ -643,6 +698,104 @@ async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
     ):
         resp = await client.post("/reload_app/plain")
         assert resp.status_code != 503, await resp.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------------------
+# Install gate: app_archive=true + backend='disabled'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_app_refuses_archive_app_when_backend_disabled(app, cfg, tmp_path):
+    """An app whose manifest opts into ``app_archive`` cannot be
+    installed while the archive backend is at its v7-default
+    'disabled' state.
+
+    The route returns 400 (operator-actionable) with a message that
+    points at the System tab, NOT 503 (transient) — pre-v7 the
+    install path always succeeded for archive apps because the
+    seeded 'local' backend was always healthy.  The disabled state
+    introduces a permanent rejection until the operator picks a
+    backend, so 400 is the right surface.
+
+    Mocked at the manifest-parse level to avoid cloning a real repo.
+    """
+    import compute_space.web.routes.api.apps as apps_routes
+    from compute_space.core.manifest import AppManifest
+
+    # Default seeded state is 'disabled' — assert the precondition.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        backend = db.execute(
+            "SELECT backend FROM archive_backend WHERE id=1"
+        ).fetchone()[0]
+    finally:
+        db.close()
+    assert backend == "disabled", "test setup: expected fresh seed"
+
+    # Pretend a clone has already happened and produced an archive-
+    # using manifest at clone_dir.  We mock parse_manifest to return
+    # the manifest directly so we don't need to materialise a fake
+    # openhost.toml on disk.
+    archive_manifest = AppManifest(
+        name="probe",
+        version="1.0",
+        description="archive probe",
+        runtime_type="serverfull",
+        container_image="Dockerfile",
+        container_port=8080,
+        container_command=None,
+        memory_mb=128,
+        cpu_millicores=100,
+        gpu=False,
+        app_data=True,
+        app_archive=True,  # <- the trigger
+        access_all_data=False,
+        access_vm_data=False,
+        app_temp_data=False,
+        public_paths=["/"],
+        capabilities=[],
+        devices=[],
+        permissions_v2=[],
+        port_mappings=[],
+        provides_services=[],
+        provides_services_v2=[],
+        requires_services={},
+        sqlite_dbs=[],
+        health_check="/",
+        hidden=False,
+        authors=[],
+        raw_toml="",
+    )
+    fake_clone_dir = str(tmp_path / "clone")
+    os.makedirs(fake_clone_dir)
+
+    test_app = Quart(__name__)
+    test_app.config["DB_PATH"] = cfg.db_path
+    test_app.openhost_config = cfg  # type: ignore[attr-defined]
+    test_app.add_url_rule(
+        "/api/add_app",
+        view_func=apps_routes.api_add_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+    )
+    client = test_app.test_client()
+    with (
+        mock.patch.object(apps_routes, "parse_manifest", return_value=archive_manifest),
+        mock.patch.object(apps_routes, "validate_manifest", return_value=None),
+    ):
+        resp = await client.post(
+            "/api/add_app",
+            form={
+                "repo_url": "https://example.invalid/repo",
+                "app_name": "probe",
+                "clone_dir": fake_clone_dir,
+                "grant_permissions": "",
+            },
+        )
+    assert resp.status_code == 400, await resp.get_data(as_text=True)
+    body = await resp.get_json()
+    assert "archive backend" in body["error"].lower(), body
+    assert "system page" in body["error"].lower(), body
 
 
 @pytest.mark.asyncio

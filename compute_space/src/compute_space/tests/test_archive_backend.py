@@ -91,10 +91,15 @@ def _make_hook(*, archive_apps: list[str] | None = None) -> tuple[AppHook, dict[
 # ---------------------------------------------------------------------------
 
 
-def test_seeded_state_is_local_idle(db):
-    """The v4 migration seeds a single row in 'local' / 'idle' state."""
+def test_seeded_state_is_disabled_idle(db):
+    """A fresh DB built from schema.sql comes up at backend='disabled'.
+
+    Was 'local' pre-v7; the v7 migration shifted the default so apps
+    that opt into the app_archive tier refuse to install on a fresh
+    zone until the operator picks a backend on the System tab.
+    """
     state = read_state(db)
-    assert state.backend == "local"
+    assert state.backend == "disabled"
     assert state.state == "idle"
     assert state.s3_bucket is None
     assert state.s3_secret_access_key is None
@@ -131,6 +136,10 @@ def test_archive_dir_for_backend(cfg):
         cfg.persistent_data_dir, "app_archive"
     )
     assert archive_dir_for_backend(cfg, "s3") == juicefs_mount_dir(cfg)
+    # Disabled has no host-side backing — None signals "render this
+    # as 'not configured' rather than as a path."  Switch-flow callers
+    # never see None because they only run for non-disabled backends.
+    assert archive_dir_for_backend(cfg, "disabled") is None
 
 
 def test_bucket_url_aws_default():
@@ -515,8 +524,27 @@ def test_list_meta_dumps_handles_no_prefix():
 
 def test_is_archive_dir_healthy_local(cfg, db):
     """For the local backend the check just verifies the directory
-    exists.  Make_all_dirs (run by _make_test_config) creates it."""
+    exists.  Make_all_dirs (run by _make_test_config) creates it.
+
+    Sets backend='local' explicitly because the v7 default is now
+    'disabled' (which always returns False from this check); we
+    want to exercise the local-specific dir-exists path.
+    """
+    db.execute("UPDATE archive_backend SET backend='local'")
+    db.commit()
     assert archive_backend.is_archive_dir_healthy(cfg, db) is True
+
+
+def test_is_archive_dir_healthy_disabled_returns_false(cfg, db):
+    """The disabled state always returns False — no backing exists,
+    so any caller that gates on this (the install-time precheck on
+    archive-using apps) refuses to proceed.  That's the entire point
+    of the disabled state.
+    """
+    # Default seeded state is already 'disabled'; no UPDATE needed.
+    state = archive_backend.read_state(db)
+    assert state.backend == "disabled", "test setup: expected fresh seed"
+    assert archive_backend.is_archive_dir_healthy(cfg, db) is False
 
 
 def test_is_archive_dir_healthy_s3_uses_is_mounted(cfg, db):
@@ -673,11 +701,134 @@ def test_switch_to_s3_requires_credentials(cfg, db):
         switch_backend(cfg, db, hook, target_backend="s3")
 
 
+# ---------------------------------------------------------------------------
+# disabled-state transitions (added with the v7 migration)
+# ---------------------------------------------------------------------------
+
+
+def test_switch_disabled_to_local_happy_path(cfg, db):
+    """A fresh zone (backend='disabled') configures local with no
+    apps to stop and no data to copy.  The function returns idle
+    with backend='local' written.
+
+    No archive-using app could have been installed under disabled
+    (the install gate prevents it), so ``list_app_archive_apps``
+    returns []; the apps stop/start dance is a no-op; and there's
+    no source dir to migrate.  This is the smallest-possible
+    switch path the new disabled state introduces.
+    """
+    # Default seed is 'disabled' post-v7; no UPDATE needed.
+    state_before = read_state(db)
+    assert state_before.backend == "disabled", "test setup: expected fresh seed"
+
+    hook, calls = _make_hook(archive_apps=[])
+    switch_backend(cfg, db, hook, target_backend="local")
+
+    state_after = read_state(db)
+    assert state_after.backend == "local"
+    assert state_after.state == "idle"
+    assert state_after.last_switched_at is not None
+    # No apps were stopped (none can have been installed against
+    # the disabled backend) and none were started.
+    assert calls["stopped"] == []
+    assert calls["started"] == []
+
+
+def test_switch_disabled_to_s3_happy_path(cfg, db):
+    """disabled -> s3 with JuiceFS install/format/mount mocked.
+    Like the local-to-s3 happy path but with no source data to copy
+    and no apps to bounce.
+    """
+    target = juicefs_mount_dir(cfg)
+    os.makedirs(target, exist_ok=True)
+
+    hook, calls = _make_hook(archive_apps=[])
+    with (
+        mock.patch.object(archive_backend, "install_juicefs"),
+        mock.patch.object(archive_backend, "format_volume"),
+        mock.patch.object(archive_backend, "mount"),
+    ):
+        switch_backend(
+            cfg,
+            db,
+            hook,
+            target_backend="s3",
+            s3_bucket="mybucket",
+            s3_region="us-east-1",
+            s3_access_key_id="AKIA",
+            s3_secret_access_key="hunter2",
+        )
+
+    state_after = read_state(db)
+    assert state_after.backend == "s3"
+    assert state_after.state == "idle"
+    assert state_after.s3_bucket == "mybucket"
+    assert calls["stopped"] == []
+    assert calls["started"] == []
+
+
+def test_switch_local_to_disabled_rejected(cfg, db):
+    """Operators cannot step a configured local backend back to
+    disabled — that would orphan whatever's in the local-disk
+    archive dir with no openhost-side handle to recover it.  The
+    only escape from local is to s3 (or staying at local).
+    """
+    db.execute("UPDATE archive_backend SET backend='local'")
+    db.commit()
+    hook, _ = _make_hook(archive_apps=[])
+    with pytest.raises(BackendSwitchError, match="disabled"):
+        switch_backend(cfg, db, hook, target_backend="disabled")
+    # State stays at local, not 'switching' (the rejection happens
+    # after the lock is claimed but the finally block releases it).
+    state = read_state(db)
+    assert state.backend == "local"
+    assert state.state == "idle"
+
+
+def test_switch_s3_to_disabled_rejected(cfg, db):
+    """Same as the local case but coming from s3.  The S3 bucket
+    contents would still be reachable but openhost would have no
+    way to mount or address them; refusing the transition keeps
+    that surface clean.
+    """
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+        "s3_access_key_id='a', s3_secret_access_key='s'"
+    )
+    db.commit()
+    hook, _ = _make_hook(archive_apps=[])
+    with pytest.raises(BackendSwitchError, match="disabled"):
+        switch_backend(cfg, db, hook, target_backend="disabled")
+    state = read_state(db)
+    assert state.backend == "s3"
+    assert state.state == "idle"
+
+
+def test_switch_disabled_to_disabled_is_noop(cfg, db):
+    """``target_backend == current.backend`` is a no-op for every
+    pair of equal values, including disabled→disabled.  Without
+    this short-circuit a dashboard re-save would otherwise run the
+    full switch flow on what should be an idempotent re-render.
+    """
+    hook, calls = _make_hook(archive_apps=[])
+    switch_backend(cfg, db, hook, target_backend="disabled")
+    state = read_state(db)
+    assert state.backend == "disabled"
+    assert state.state == "idle"
+    # No-op: no apps stopped, no apps started.
+    assert calls["stopped"] == []
+    assert calls["started"] == []
+
+
 def test_switch_local_to_s3_happy_path(cfg, db, tmp_path):
     """End-to-end happy path: local -> s3 with JuiceFS install/format/
     mount mocked out.  Verifies the data copy, DB state transition,
     and the apps stop->start ordering.
     """
+    # Move the seeded zone off the v7 'disabled' default into 'local'
+    # so this test exercises the local→s3 path it was written for.
+    db.execute("UPDATE archive_backend SET backend='local'")
+    db.commit()
     # Pre-seed local archive with one app's worth of content so we
     # know the copy actually moved bytes.
     local_dir = Path(cfg.persistent_data_dir) / "app_archive" / "myapp"
@@ -732,6 +883,8 @@ def test_switch_local_to_s3_with_delete_source_clears_local(cfg, db):
     fail before another switch).  This is how operators free local
     disk after migrating to S3.
     """
+    db.execute("UPDATE archive_backend SET backend='local'")
+    db.commit()
     local_dir = Path(cfg.persistent_data_dir) / "app_archive" / "myapp"
     local_dir.mkdir(parents=True)
     (local_dir / "marker.txt").write_text("hello")
@@ -1025,6 +1178,12 @@ def test_switch_failure_during_format_recovers_state(cfg, db):
     """If the format step fails, the DB state must end up back at
     'idle' (with an error message) rather than wedged in 'switching'.
     """
+    # Move off the v7 'disabled' default into 'local' so this test
+    # covers the local→s3 failure path (the historical case).  The
+    # disabled→s3 failure path is exercised by a separate test added
+    # below.
+    db.execute("UPDATE archive_backend SET backend='local'")
+    db.commit()
     hook, calls = _make_hook(archive_apps=["myapp"])
 
     with (
