@@ -773,7 +773,24 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
             if keep_data:
                 deprovision_temp_data(app_name, config.temporary_data_dir)
             else:
-                deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
+                # ``archive_dir`` is the per-app subdir under the
+                # currently-mounted archive tier; ``config.app_archive_dir``
+                # already resolves to the FUSE mount when backend=s3 and
+                # to the local fallback dir otherwise (see
+                # apply_backend_to_config).  The fourth-arg drop here
+                # was a real bug — pre-existing on main but only
+                # reachable via the keep_data=False remove path on a
+                # zone with archive-using apps, so it never fired in
+                # the test fleet.  Fixed as part of mypy-clean-up
+                # because this PR's install-gate edit on the same
+                # file now puts apps.py in pre-commit's mypy
+                # incremental-check set.
+                deprovision_data(
+                    app_name,
+                    config.persistent_data_dir,
+                    config.temporary_data_dir,
+                    config.app_archive_dir,
+                )
         except Exception:
             logger.exception("Failed to deprovision data for %s", app_name)
 

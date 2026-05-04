@@ -17,6 +17,7 @@ fast and don't depend on podman.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 from unittest import mock
@@ -27,12 +28,11 @@ from quart import Quart
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp, _make_test_config
+from .conftest import _FakeApp
+from .conftest import _make_test_config
 
 
-async def _post_rename(
-    cfg, db_path: str, app_name: str, new_name: str
-) -> tuple[int, dict | None]:
+async def _post_rename(cfg, db_path: str, app_name: str, new_name: str) -> tuple[int, dict | None]:
     """Drive the unwrapped rename_app route under a Quart context.
 
     Uses ``app.test_client().post`` rather than ``test_request_context``
@@ -54,9 +54,7 @@ async def _post_rename(
     )
     client = app.test_client()
     with mock.patch.object(apps_routes, "stop_app_process"):
-        response = await client.post(
-            f"/rename_app/{app_name}", form={"name": new_name}
-        )
+        response = await client.post(f"/rename_app/{app_name}", form={"name": new_name})
     try:
         payload = await response.get_json()
     except Exception:
@@ -64,9 +62,7 @@ async def _post_rename(
     return response.status_code, payload
 
 
-def _seed_app_row(
-    db_path: str, name: str, port: int = 19500, status: str = "stopped"
-) -> None:
+def _seed_app_row(db_path: str, name: str, port: int = 19500, status: str = "stopped") -> None:
     """Insert a minimal apps row that rename_app can target.
 
     Also flips the archive backend off the v7 'disabled' default into
@@ -232,9 +228,7 @@ async def test_rename_refuses_when_archive_parent_missing(tmp_path: Path) -> Non
     # Simulate the mount drop by removing the archive parent itself
     # (this models JuiceFS being unhealthy — the mount point exists
     # in the parent FS but isn't a directory anymore).
-    import shutil as _shutil  # local import: not used in main scope
-
-    _shutil.rmtree(cfg.app_archive_dir)
+    shutil.rmtree(cfg.app_archive_dir)
 
     status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
     # 503 = the route layer's archive_backend.is_archive_dir_healthy
@@ -278,9 +272,7 @@ async def test_rename_rollback_continues_when_a_rollback_rename_itself_fails(
 
     real_rename = os.rename
     archive_root = os.path.realpath(cfg.app_archive_dir)
-    app_temp_root = os.path.realpath(
-        str(Path(cfg.temporary_data_dir) / "app_temp_data")
-    )
+    app_temp_root = os.path.realpath(str(Path(cfg.temporary_data_dir) / "app_temp_data"))
 
     def flaky_rename(src: str, dst: str) -> None:
         parent = os.path.realpath(os.path.dirname(src))

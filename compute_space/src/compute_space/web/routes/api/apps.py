@@ -190,21 +190,25 @@ async def api_add_app() -> ResponseReturnValue:
         backend_state = archive_backend.read_state(db)
         if backend_state.backend == "disabled":
             shutil.rmtree(clone_dir, ignore_errors=True)
-            return jsonify({
-                "error": "This app uses the app_archive data tier, but "
-                         "the archive backend has not been configured on "
-                         "this zone.  Visit the System page and pick an "
-                         "archive backend (local disk or S3) before "
-                         "deploying this app."
-            }), 400
+            return jsonify(
+                {
+                    "error": "This app uses the app_archive data tier, but "
+                    "the archive backend has not been configured on "
+                    "this zone.  Visit the System page and pick an "
+                    "archive backend (local disk or S3) before "
+                    "deploying this app."
+                }
+            ), 400
         if not archive_backend.is_archive_dir_healthy(config, db):
             shutil.rmtree(clone_dir, ignore_errors=True)
-            return jsonify({
-                "error": "Archive backend is not healthy; refusing to deploy "
-                         "an archive-using app until the operator-configured "
-                         "archive mount is live again (see the dashboard's "
-                         "Archive backend panel)."
-            }), 503
+            return jsonify(
+                {
+                    "error": "Archive backend is not healthy; refusing to deploy "
+                    "an archive-using app until the operator-configured "
+                    "archive mount is live again (see the dashboard's "
+                    "Archive backend panel)."
+                }
+            ), 503
 
     final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
     if os.path.exists(final_dir):
@@ -333,12 +337,14 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     # affected; cheap precheck for everyone.
     if not archive_backend.is_archive_dir_healthy(config, db):
         if _manifest_uses_archive(app_row["manifest_raw"] or ""):
-            return jsonify({
-                "error": "Archive backend is not healthy; refusing to "
-                         "reload an archive-using app until the "
-                         "operator-configured archive mount is live "
-                         "again (see the dashboard's Archive backend panel)."
-            }), 503
+            return jsonify(
+                {
+                    "error": "Archive backend is not healthy; refusing to "
+                    "reload an archive-using app until the "
+                    "operator-configured archive mount is live "
+                    "again (see the dashboard's Archive backend panel)."
+                }
+            ), 503
 
     form = await request.form if request.method == "POST" else {}
     update = form.get("update") == "1"
@@ -467,14 +473,16 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     # rejected remove leaves the app row's status untouched.
     if not keep_data and not archive_backend.is_archive_dir_healthy(config, db):
         if _manifest_uses_archive(app_row["manifest_raw"] or ""):
-            return jsonify({
-                "error": "Archive backend is not healthy; refusing to "
-                         "remove an archive-using app's data because the "
-                         "S3-side bytes wouldn't actually be deleted.  "
-                         "Either restore the archive mount and retry, or "
-                         "use keep_data=1 to remove the app while leaving "
-                         "its data in place."
-            }), 503
+            return jsonify(
+                {
+                    "error": "Archive backend is not healthy; refusing to "
+                    "remove an archive-using app's data because the "
+                    "S3-side bytes wouldn't actually be deleted.  "
+                    "Either restore the archive mount and retry, or "
+                    "use keep_data=1 to remove the app while leaving "
+                    "its data in place."
+                }
+            ), 503
 
     # Atomic claim: ``WHERE status != 'removing'`` makes concurrent
     # POSTs safe — only the first one gets rowcount=1 and spawns a
@@ -541,10 +549,7 @@ def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> st
     # before getting here); this is the per-tier sanity check.
     for parent in rename_parents:
         if not os.path.isdir(parent):
-            return (
-                f"Storage parent {parent!r} is not a directory; "
-                f"refusing to rename so per-app data isn't orphaned."
-            )
+            return f"Storage parent {parent!r} is not a directory; refusing to rename so per-app data isn't orphaned."
     renamed: list[tuple[str, str]] = []
     try:
         for parent in rename_parents:
@@ -598,11 +603,13 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     # app subdir doesn't) while renaming the other tiers, leaving
     # the archive contents orphaned under the old name in S3.
     if not archive_backend.is_archive_dir_healthy(config, db):
-        return jsonify({
-            "error": "Archive backend is not healthy; refusing to rename "
-                     "until the operator-configured archive mount is live "
-                     "again (see the dashboard's Archive backend panel)."
-        }), 503
+        return jsonify(
+            {
+                "error": "Archive backend is not healthy; refusing to rename "
+                "until the operator-configured archive mount is live "
+                "again (see the dashboard's Archive backend panel)."
+            }
+        ), 503
 
     if new_name == app_name:
         return jsonify({"ok": True, "name": new_name})

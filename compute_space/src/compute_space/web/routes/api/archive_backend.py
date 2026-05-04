@@ -6,9 +6,9 @@ import asyncio
 import re
 import sqlite3
 import threading
+from typing import Any
 
 import attr
-
 from quart import Blueprint
 from quart import current_app
 from quart import jsonify
@@ -17,17 +17,14 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core import archive_backend
-from compute_space.core.archive_backend import (
-    AppHook,
-    BackendState,
-    BackendSwitchError,
-)
+from compute_space.core.archive_backend import AppHook
+from compute_space.core.archive_backend import BackendState
+from compute_space.core.archive_backend import BackendSwitchError
 from compute_space.core.containers import is_container_running
 from compute_space.core.containers import stop_container
 from compute_space.core.logging import logger
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
-
 
 api_archive_backend_bp = Blueprint("api_archive_backend", __name__)
 
@@ -37,7 +34,7 @@ api_archive_backend_bp = Blueprint("api_archive_backend", __name__)
 # ---------------------------------------------------------------------------
 
 
-def _state_to_response(state: BackendState) -> dict:
+def _state_to_response(state: BackendState) -> dict[str, object]:
     """Project the DB state to a JSON-safe shape that's safe to return
     to the dashboard.
 
@@ -102,7 +99,7 @@ def _normalise_s3_prefix(raw: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to avoid the import cycle
+def _build_hook(app: Any) -> AppHook:  # ``Any`` because typing the Quart app would pull in import-cycle imports
     """Wire ``AppHook`` callbacks against the live apps table.
 
     The list/stop/start callbacks operate on opted-in apps only —
@@ -120,15 +117,12 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
         db = sqlite3.connect(config.db_path)
         try:
             rows = db.execute(
-                "SELECT name, manifest_raw, status FROM apps "
-                "WHERE status IN ('running', 'starting', 'building')"
+                "SELECT name, manifest_raw, status FROM apps WHERE status IN ('running', 'starting', 'building')"
             ).fetchall()
         finally:
             db.close()
         return [
-            name
-            for name, manifest_raw, _status in rows
-            if archive_backend.manifest_uses_archive(manifest_raw or "")
+            name for name, manifest_raw, _status in rows if archive_backend.manifest_uses_archive(manifest_raw or "")
         ]
 
     def stop_app(name: str) -> None:
@@ -161,7 +155,7 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
         finally:
             db.close()
 
-    def set_config(new_cfg) -> None:  # noqa: ANN001
+    def set_config(new_cfg: Any) -> None:  # ``Any`` for the same reason as ``_build_hook(app)``
         # Replace the live Config so the next ``get_config()`` call
         # returns the new ``app_archive_dir``.
         app.openhost_config = new_cfg
@@ -237,9 +231,7 @@ async def get_archive_backend() -> ResponseReturnValue:
     return jsonify(response)
 
 
-@api_archive_backend_bp.route(
-    "/api/storage/archive_backend/test_connection", methods=["POST"]
-)
+@api_archive_backend_bp.route("/api/storage/archive_backend/test_connection", methods=["POST"])
 @login_required
 async def test_connection() -> ResponseReturnValue:
     """Try to reach the supplied S3 bucket with the supplied creds.
@@ -262,9 +254,7 @@ async def test_connection() -> ResponseReturnValue:
     except ValueError as exc:
         return jsonify({"ok": False, "error": f"invalid s3_prefix: {exc}"}), 400
     if not (bucket and access_key and secret_key):
-        return jsonify(
-            {"ok": False, "error": "bucket, access_key_id, and secret_access_key are required"}
-        ), 400
+        return jsonify({"ok": False, "error": "bucket, access_key_id, and secret_access_key are required"}), 400
     # head_bucket can take seconds (DNS + TLS + HTTP round-trip);
     # run it on a worker thread so the asyncio event loop stays
     # responsive to other requests.
@@ -372,9 +362,7 @@ async def post_archive_backend() -> ResponseReturnValue:
     db = get_db()
     state = archive_backend.read_state(db)
     if state.state == "switching":
-        return jsonify(
-            {"error": "An archive backend switch is already in progress; wait for it to finish."}
-        ), 409
+        return jsonify({"error": "An archive backend switch is already in progress; wait for it to finish."}), 409
 
     config = get_config()
     app = current_app._get_current_object()  # type: ignore[attr-defined]

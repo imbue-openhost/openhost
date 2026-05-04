@@ -8,7 +8,6 @@ import io
 import os
 import re
 import shutil
-import socket
 import sqlite3
 import subprocess
 import tarfile
@@ -17,12 +16,14 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from typing import Any
 
 import attr
+import boto3
+import botocore.exceptions  # noqa: F401  -- imported for ``except`` matching downstream
 
 from compute_space.config import Config
 from compute_space.core.logging import logger
-
 
 # ---------------------------------------------------------------------------
 # JuiceFS install + mount machinery
@@ -170,16 +171,16 @@ def _migrate_legacy_layout(config: Config) -> None:
                 if not os.path.exists(dst):
                     try:
                         os.rename(src, dst)
-                        logger.info(
-                            "Migrated legacy juicefs binary %s -> %s", src, dst
-                        )
+                        logger.info("Migrated legacy juicefs binary %s -> %s", src, dst)
                     except OSError as exc:
                         # Non-fatal: ``install_juicefs`` will redownload
                         # if the binary is still missing at the new
                         # path.  Logging keeps the failure visible.
                         logger.warning(
                             "Could not migrate legacy juicefs binary %s -> %s: %s",
-                            src, dst, exc,
+                            src,
+                            dst,
+                            exc,
                         )
 
     # Step 2: rename the meta DB from the openhost_data_path root to
@@ -191,7 +192,8 @@ def _migrate_legacy_layout(config: Config) -> None:
             os.rename(legacy_meta, new_meta)
             logger.info(
                 "Migrated JuiceFS metadata DB %s -> %s (one-shot layout tidy)",
-                legacy_meta, new_meta,
+                legacy_meta,
+                new_meta,
             )
         except OSError as exc:
             # Refusing to silently continue: the meta DB is the one
@@ -235,9 +237,7 @@ def juicefs_state_dir(config: Config) -> str:
 
 
 def is_juicefs_installed(config: Config) -> bool:
-    return os.path.isfile(_juicefs_binary(config)) and os.access(
-        _juicefs_binary(config), os.X_OK
-    )
+    return os.path.isfile(_juicefs_binary(config)) and os.access(_juicefs_binary(config), os.X_OK)
 
 
 def install_juicefs(config: Config) -> None:
@@ -263,9 +263,7 @@ def install_juicefs(config: Config) -> None:
     arch = _arch()
     expected_sha = JUICEFS_SHA256.get(arch)
     if not expected_sha:
-        raise RuntimeError(
-            f"No pinned JuiceFS sha256 for arch {arch!r}; refusing to install."
-        )
+        raise RuntimeError(f"No pinned JuiceFS sha256 for arch {arch!r}; refusing to install.")
     url = (
         f"https://github.com/juicedata/juicefs/releases/download/"
         f"v{JUICEFS_VERSION}/juicefs-{JUICEFS_VERSION}-linux-{arch}.tar.gz"
@@ -274,14 +272,13 @@ def install_juicefs(config: Config) -> None:
     try:
         with urllib.request.urlopen(url, timeout=120) as resp:
             tarball_bytes = resp.read()
-    except (urllib.error.URLError, socket.timeout) as exc:
+    except (TimeoutError, urllib.error.URLError) as exc:
         raise RuntimeError(f"Failed to download JuiceFS: {exc}") from exc
 
     actual_sha = hashlib.sha256(tarball_bytes).hexdigest()
     if actual_sha != expected_sha:
         raise RuntimeError(
-            f"JuiceFS tarball sha256 mismatch (expected {expected_sha}, "
-            f"got {actual_sha}).  Refusing to install."
+            f"JuiceFS tarball sha256 mismatch (expected {expected_sha}, got {actual_sha}).  Refusing to install."
         )
 
     # Extract just the ``juicefs`` binary; ignore the LICENSE / README
@@ -370,8 +367,10 @@ def format_volume(
         # the format.
         "--no-agent",
         "format",
-        "--storage", "s3",
-        "--bucket", bucket_url,
+        "--storage",
+        "s3",
+        "--bucket",
+        bucket_url,
         _format_meta_dsn(config),
         juicefs_volume_name,
     ]
@@ -386,8 +385,7 @@ def format_volume(
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(
-            f"juicefs format failed (exit {result.returncode}): "
-            f"{result.stderr.strip() or result.stdout.strip()}"
+            f"juicefs format failed (exit {result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
         )
 
 
@@ -407,7 +405,7 @@ def is_mounted(mount_point: str) -> bool:
     works but breaks on some FS/userns combinations.
     """
     try:
-        with open("/proc/self/mountinfo", "r") as f:
+        with open("/proc/self/mountinfo") as f:
             for line in f:
                 # Each line: "id parent maj:min root mount_point ..."
                 parts = line.split()
@@ -492,9 +490,7 @@ def mount(
                 # ~/.juicefs/juicefs.log by default; we don't override
                 # that, so check there for the underlying error.
                 _mount_proc = None
-                raise RuntimeError(
-                    f"juicefs mount exited early (rc={rc}); check ~/.juicefs/juicefs.log"
-                )
+                raise RuntimeError(f"juicefs mount exited early (rc={rc}); check ~/.juicefs/juicefs.log")
             time.sleep(0.2)
         # Timeout: the child is still alive but hasn't registered a
         # mount.  Kill it before raising so we don't leak a process
@@ -510,9 +506,7 @@ def mount(
             logger.exception("Failed to terminate stuck juicefs mount process")
         finally:
             _mount_proc = None
-        raise RuntimeError(
-            f"juicefs mount did not become ready within 15s at {mount_point}"
-        )
+        raise RuntimeError(f"juicefs mount did not become ready within 15s at {mount_point}")
 
 
 def umount(config: Config) -> None:
@@ -544,9 +538,7 @@ def umount(config: Config) -> None:
                         # If even SIGKILL + 5 s wait doesn't reap it,
                         # something is very wrong.  Drop the handle so
                         # we don't reuse it and let the OS clean up.
-                        logger.error(
-                            "juicefs mount process did not exit after SIGKILL"
-                        )
+                        logger.error("juicefs mount process did not exit after SIGKILL")
             _mount_proc = None
             return
         cmd = [_juicefs_binary(config), "umount", mount_point]
@@ -557,15 +549,11 @@ def umount(config: Config) -> None:
         # from subprocess.run still triggers the cleanup.
         try:
             try:
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=30
-                )
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             except subprocess.TimeoutExpired as exc:
                 # The juicefs umount binary itself hung.  Treat as a
                 # busy-FS failure and surface the error.
-                raise RuntimeError(
-                    f"juicefs umount of {mount_point} timed out after 30s"
-                ) from exc
+                raise RuntimeError(f"juicefs umount of {mount_point} timed out after 30s") from exc
             if result.returncode != 0:
                 raise RuntimeError(
                     f"juicefs umount of {mount_point} failed "
@@ -588,9 +576,7 @@ def umount(config: Config) -> None:
                     try:
                         _mount_proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        logger.error(
-                            "juicefs mount process did not exit after SIGKILL"
-                        )
+                        logger.error("juicefs mount process did not exit after SIGKILL")
             _mount_proc = None
 
 
@@ -745,9 +731,7 @@ def _update_state(
 # tier.  Substring matching ("app_archive" in raw + "true" in raw)
 # false-matches manifests with ``app_archive = false`` alongside any
 # other ``= true`` field, so we anchor on TOML key=value shape.
-_MANIFEST_USES_ARCHIVE_RE = re.compile(
-    r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b"
-)
+_MANIFEST_USES_ARCHIVE_RE = re.compile(r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b")
 
 
 def manifest_uses_archive(manifest_raw: str) -> bool:
@@ -859,8 +843,7 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> Config:
         _update_state(
             db,
             state="idle",
-            state_message=(state.state_message or "")
-            + " (interrupted by openhost-core restart)",
+            state_message=(state.state_message or "") + " (interrupted by openhost-core restart)",
         )
     if state.backend == "local":
         return apply_backend_to_config(config, db)
@@ -885,6 +868,32 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> Config:
             state_message=f"Failed to attach archive backend: {exc}",
         )
     return apply_backend_to_config(config, db)
+
+
+def _s3_client(
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+) -> Any:
+    """Build a boto3 S3 client from the same five-field bag the
+    archive_backend row carries.
+
+    Centralises the kwargs assembly so ``test_s3_credentials`` and
+    ``list_meta_dumps`` (and any future S3-touching helper) share one
+    call site.  Preserves the boto3 default-region behaviour by only
+    passing ``region_name`` when set; same for ``endpoint_url`` (when
+    talking to a non-AWS S3-compatible bucket).
+    """
+    kwargs: dict[str, object] = {
+        "aws_access_key_id": s3_access_key_id,
+        "aws_secret_access_key": s3_secret_access_key,
+    }
+    if s3_endpoint:
+        kwargs["endpoint_url"] = s3_endpoint
+    if s3_region:
+        kwargs["region_name"] = s3_region
+    return boto3.client("s3", **kwargs)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -925,23 +934,10 @@ def list_meta_dumps(
     the dashboard's "N dumps in bucket" line is overkill — we cap
     the count at 1000 and label it as such if needed.
     """
-    try:
-        import boto3
-    except ImportError:
-        return None
-
     prefix = (s3_prefix or "").strip("/")
     list_prefix = f"{prefix}/meta/" if prefix else "meta/"
     try:
-        kwargs: dict[str, object] = {
-            "aws_access_key_id": s3_access_key_id,
-            "aws_secret_access_key": s3_secret_access_key,
-        }
-        if s3_endpoint:
-            kwargs["endpoint_url"] = s3_endpoint
-        if s3_region:
-            kwargs["region_name"] = s3_region
-        client = boto3.client("s3", **kwargs)
+        client = _s3_client(s3_region, s3_endpoint, s3_access_key_id, s3_secret_access_key)
         resp = client.list_objects_v2(
             Bucket=s3_bucket,
             Prefix=list_prefix,
@@ -961,9 +957,9 @@ def list_meta_dumps(
     # operator (or another tool) drops unrelated objects in the meta/
     # prefix; our count should reflect what JuiceFS itself wrote.
     dumps = [
-        obj for obj in contents
-        if obj.get("Key", "").rsplit("/", 1)[-1].startswith("dump-")
-        and obj.get("Key", "").endswith(".json.gz")
+        obj
+        for obj in contents
+        if obj.get("Key", "").rsplit("/", 1)[-1].startswith("dump-") and obj.get("Key", "").endswith(".json.gz")
     ]
     if not dumps:
         return MetaDumpSummary(count=0, latest_at=None, latest_key=None)
@@ -976,9 +972,7 @@ def list_meta_dumps(
         # canonical ``2026-05-01T18:37:49Z`` shape we already use
         # elsewhere (see ``last_switched_at``).
         try:
-            latest_at = last_modified.astimezone().strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+            latest_at = last_modified.astimezone().strftime("%Y-%m-%dT%H:%M:%SZ")
         except Exception:
             latest_at = str(last_modified)
     return MetaDumpSummary(
@@ -1001,32 +995,13 @@ def test_s3_credentials(
     failure.  Used by the dashboard's "Test connection" button before
     the operator commits to a backend switch.
 
-    Uses boto3's ``head_bucket`` to validate.  ``boto3`` is imported
-    lazily because openhost-core doesn't otherwise need it on every
-    code path; if it's not installed, we return a descriptive error
-    rather than running the check (an actual switch attempt would
-    surface any cred problem via JuiceFS regardless).
+    Uses boto3's ``head_bucket`` to validate.  ``boto3`` is a
+    top-level import (it's a hard dep of openhost-core for the
+    archive backend code path); the historical try/except-import
+    fallback is gone now that the dep is declared in pyproject.toml.
     """
     try:
-        import boto3
-        import botocore.exceptions  # noqa: F401
-    except ImportError:
-        return (
-            "boto3 is not installed in this openhost-core; cannot pre-flight "
-            "the S3 connection.  The backend switch itself will surface "
-            "any credential problems, but you'll have to roll back manually."
-        )
-
-    try:
-        kwargs: dict[str, object] = {
-            "aws_access_key_id": s3_access_key_id,
-            "aws_secret_access_key": s3_secret_access_key,
-        }
-        if s3_endpoint:
-            kwargs["endpoint_url"] = s3_endpoint
-        if s3_region:
-            kwargs["region_name"] = s3_region
-        client = boto3.client("s3", **kwargs)
+        client = _s3_client(s3_region, s3_endpoint, s3_access_key_id, s3_secret_access_key)
         client.head_bucket(Bucket=s3_bucket)
     except Exception as exc:
         return f"S3 reachability test failed: {exc}"
@@ -1042,6 +1017,7 @@ def test_s3_credentials(
 # than direct imports of compute_space.core.containers / apps so this
 # module stays unit-testable without standing up the whole web stack.
 # The api layer wires the real callbacks; tests pass fakes.
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class AppHook:
@@ -1111,9 +1087,7 @@ def _copy_tree(src: str, dst: str) -> None:
         elif entry.is_file(follow_symlinks=False):
             shutil.copy2(s, d)
         else:
-            logger.warning(
-                "Skipping non-regular entry %s during archive backend switch", s
-            )
+            logger.warning("Skipping non-regular entry %s during archive backend switch", s)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -1144,6 +1118,14 @@ def _bring_up_target(config: Config, db: sqlite3.Connection, plan: _SwitchPlan) 
     mount up — used by the failure path to umount it again.
     """
     if plan.target_backend == "s3":
+        # The route layer + switch_backend's validation gate already
+        # rejected an s3 target without these three required fields,
+        # so they're guaranteed non-None here.  Asserting both
+        # type-narrows for mypy AND makes the runtime invariant
+        # self-documenting if a future caller skips the validation.
+        assert plan.s3_bucket is not None, "s3 target requires bucket"
+        assert plan.s3_access_key_id is not None, "s3 target requires access_key_id"
+        assert plan.s3_secret_access_key is not None, "s3 target requires secret_access_key"
         _update_state(db, state_message="Installing juicefs")
         install_juicefs(config)
         _update_state(db, state_message="Formatting volume")
@@ -1217,9 +1199,7 @@ def _migrate_archive_data(
         _copy_tree(old_archive_dir, new_archive_dir)
 
 
-def _tear_down_source(
-    config: Config, db: sqlite3.Connection, plan: _SwitchPlan, old_archive_dir: str
-) -> str | None:
+def _tear_down_source(config: Config, db: sqlite3.Connection, plan: _SwitchPlan, old_archive_dir: str) -> str | None:
     """Umount the old s3 mount (if any) and optionally delete source-side data.
 
     Returns a non-fatal warning string if delete_source_after_copy
@@ -1317,10 +1297,7 @@ def switch_backend(
 
     if target_backend == "s3":
         if not (s3_bucket and s3_access_key_id and s3_secret_access_key):
-            raise BackendSwitchError(
-                "Switching to s3 requires bucket, access_key_id, and "
-                "secret_access_key."
-            )
+            raise BackendSwitchError("Switching to s3 requires bucket, access_key_id, and secret_access_key.")
 
     # Atomically claim the switching slot.  Two concurrent POSTs
     # both passing the read_state check would otherwise enter the
@@ -1330,8 +1307,7 @@ def switch_backend(
     # means somebody else got it (or the row is missing, which
     # shouldn't happen because the v5 migration seeds it).
     cur = db.execute(
-        "UPDATE archive_backend SET state='switching', state_message='Starting' "
-        "WHERE id=1 AND state='idle'"
+        "UPDATE archive_backend SET state='switching', state_message='Starting' WHERE id=1 AND state='idle'"
     )
     db.commit()
     if cur.rowcount == 0:
@@ -1397,12 +1373,7 @@ def switch_backend(
         # field, then the previously-recorded volume name, then
         # "openhost" as the safe default.
         if target_backend == "s3":
-            volume_name = (
-                s3_prefix
-                or juicefs_volume_name
-                or current.juicefs_volume_name
-                or "openhost"
-            )
+            volume_name = s3_prefix or juicefs_volume_name or current.juicefs_volume_name or "openhost"
         else:
             volume_name = current.juicefs_volume_name or "openhost"
 

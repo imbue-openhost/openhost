@@ -8,9 +8,13 @@ VM (see the PR description).
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
+import io
 import os
 import sqlite3
 import subprocess
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -18,20 +22,17 @@ from unittest import mock
 import pytest
 
 from compute_space.core import archive_backend
-from compute_space.core.archive_backend import (
-    AppHook,
-    BackendState,
-    BackendSwitchError,
-    apply_backend_to_config,
-    archive_dir_for_backend,
-    juicefs_mount_dir,
-    read_state,
-    switch_backend,
-)
+from compute_space.core.archive_backend import AppHook
+from compute_space.core.archive_backend import BackendSwitchError
+from compute_space.core.archive_backend import apply_backend_to_config
+from compute_space.core.archive_backend import archive_dir_for_backend
+from compute_space.core.archive_backend import juicefs_mount_dir
+from compute_space.core.archive_backend import read_state
+from compute_space.core.archive_backend import switch_backend
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp, _make_test_config
-
+from .conftest import _FakeApp
+from .conftest import _make_test_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -132,9 +133,7 @@ def test_apply_backend_to_config_s3(cfg, db):
 
 
 def test_archive_dir_for_backend(cfg):
-    assert archive_dir_for_backend(cfg, "local") == os.path.join(
-        cfg.persistent_data_dir, "app_archive"
-    )
+    assert archive_dir_for_backend(cfg, "local") == os.path.join(cfg.persistent_data_dir, "app_archive")
     assert archive_dir_for_backend(cfg, "s3") == juicefs_mount_dir(cfg)
     # Disabled has no host-side backing — None signals "render this
     # as 'not configured' rather than as a path."  Switch-flow callers
@@ -151,10 +150,7 @@ def test_bucket_url_aws_default():
     segment here would silently get reinterpreted as the bucket
     and break the DNS lookup.
     """
-    assert (
-        archive_backend._bucket_url("mybucket", "us-west-2", None)
-        == "https://mybucket.s3.us-west-2.amazonaws.com"
-    )
+    assert archive_backend._bucket_url("mybucket", "us-west-2", None) == "https://mybucket.s3.us-west-2.amazonaws.com"
 
 
 def test_bucket_url_aws_default_region_fallback():
@@ -162,19 +158,14 @@ def test_bucket_url_aws_default_region_fallback():
     JuiceFS's own default and stops the bucket URL from collapsing
     into ``mybucket.s3..amazonaws.com`` (which has an extra dot
     that AWS DNS rejects)."""
-    assert (
-        archive_backend._bucket_url("mybucket", "", None)
-        == "https://mybucket.s3.us-east-1.amazonaws.com"
-    )
+    assert archive_backend._bucket_url("mybucket", "", None) == "https://mybucket.s3.us-east-1.amazonaws.com"
 
 
 def test_bucket_url_with_custom_endpoint():
     """Non-AWS endpoint (MinIO, etc.) is path-style: the bucket
     rides as a path component on the explicit endpoint URL."""
     assert (
-        archive_backend._bucket_url(
-            "mybucket", "us-east-1", "https://minio.example.com:9000"
-        )
+        archive_backend._bucket_url("mybucket", "us-east-1", "https://minio.example.com:9000")
         == "https://minio.example.com:9000/mybucket"
     )
 
@@ -185,9 +176,7 @@ def test_bucket_url_endpoint_strips_trailing_slash():
     S3 servers accept but JuiceFS's parser would treat as
     bucket-name = '' (path[0] after split)."""
     assert (
-        archive_backend._bucket_url(
-            "mybucket", "us-east-1", "https://minio.example.com:9000/"
-        )
+        archive_backend._bucket_url("mybucket", "us-east-1", "https://minio.example.com:9000/")
         == "https://minio.example.com:9000/mybucket"
     )
 
@@ -231,9 +220,7 @@ def test_format_volume_passes_no_agent_flag(cfg):
     # Global flag MUST come before the subcommand or JuiceFS errors.
     no_agent_idx = cmd.index("--no-agent")
     format_idx = cmd.index("format")
-    assert no_agent_idx < format_idx, (
-        "--no-agent is a JuiceFS global flag and must precede the subcommand"
-    )
+    assert no_agent_idx < format_idx, "--no-agent is a JuiceFS global flag and must precede the subcommand"
 
 
 def test_mount_passes_no_agent_flag(cfg):
@@ -282,9 +269,7 @@ def test_mount_passes_no_agent_flag(cfg):
     if cmd is None:
         states = iter([False, True])
         with (
-            mock.patch.object(
-                archive_backend, "is_mounted", side_effect=lambda _: next(states)
-            ),
+            mock.patch.object(archive_backend, "is_mounted", side_effect=lambda _: next(states)),
             mock.patch.object(archive_backend.subprocess, "Popen", FakePopen),
             mock.patch.object(archive_backend, "_mount_proc", None),
         ):
@@ -294,9 +279,7 @@ def test_mount_passes_no_agent_flag(cfg):
     assert "--no-agent" in cmd, cmd
     no_agent_idx = cmd.index("--no-agent")
     mount_idx = cmd.index("mount")
-    assert no_agent_idx < mount_idx, (
-        "--no-agent is a JuiceFS global flag and must precede the subcommand"
-    )
+    assert no_agent_idx < mount_idx, "--no-agent is a JuiceFS global flag and must precede the subcommand"
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +394,7 @@ def test_migrate_legacy_layout_moves_legacy_binary_to_runtime_bin(cfg):
     """
     legacy_install = os.path.join(cfg.openhost_data_path, "juicefs")
     os.makedirs(legacy_install, exist_ok=True)
-    legacy_binary = os.path.join(
-        legacy_install, f"juicefs-{archive_backend.JUICEFS_VERSION}"
-    )
+    legacy_binary = os.path.join(legacy_install, f"juicefs-{archive_backend.JUICEFS_VERSION}")
     Path(legacy_binary).write_bytes(b"#!/bin/sh\nfake juicefs binary\n")
 
     archive_backend._migrate_legacy_layout(cfg)
@@ -434,33 +415,29 @@ def test_list_meta_dumps_summarises_dump_objects():
     "Last metadata dump: <ts> (N in bucket)" without the dashboard JS
     having to talk to S3 directly.
     """
-    import datetime as dt
-
     fake_resp = {
         "Contents": [
             {
                 "Key": "andrew-3/meta/dump-2026-05-01-180000.json.gz",
-                "LastModified": dt.datetime(2026, 5, 1, 18, 0, 0, tzinfo=dt.timezone.utc),
+                "LastModified": dt.datetime(2026, 5, 1, 18, 0, 0, tzinfo=dt.UTC),
             },
             {
                 "Key": "andrew-3/meta/dump-2026-05-01-190000.json.gz",
-                "LastModified": dt.datetime(2026, 5, 1, 19, 0, 0, tzinfo=dt.timezone.utc),
+                "LastModified": dt.datetime(2026, 5, 1, 19, 0, 0, tzinfo=dt.UTC),
             },
             # Stray non-dump object in the meta/ prefix — must be
             # filtered out so an operator who drops a README in there
             # doesn't inflate the count.
             {
                 "Key": "andrew-3/meta/README.txt",
-                "LastModified": dt.datetime(2026, 5, 1, 12, 0, 0, tzinfo=dt.timezone.utc),
+                "LastModified": dt.datetime(2026, 5, 1, 12, 0, 0, tzinfo=dt.UTC),
             },
         ]
     }
     fake_client = mock.MagicMock()
     fake_client.list_objects_v2.return_value = fake_resp
     with mock.patch("boto3.client", return_value=fake_client):
-        summary = archive_backend.list_meta_dumps(
-            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3"
-        )
+        summary = archive_backend.list_meta_dumps("imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3")
     assert summary is not None
     assert summary.count == 2  # README filtered out
     assert summary.latest_key == "andrew-3/meta/dump-2026-05-01-190000.json.gz"
@@ -483,9 +460,7 @@ def test_list_meta_dumps_empty_bucket_returns_zero_count():
     fake_client = mock.MagicMock()
     fake_client.list_objects_v2.return_value = {}  # no Contents key
     with mock.patch("boto3.client", return_value=fake_client):
-        summary = archive_backend.list_meta_dumps(
-            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3"
-        )
+        summary = archive_backend.list_meta_dumps("imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3")
     assert summary is not None
     assert summary.count == 0
     assert summary.latest_at is None
@@ -502,9 +477,7 @@ def test_list_meta_dumps_returns_none_on_s3_failure():
     fake_client = mock.MagicMock()
     fake_client.list_objects_v2.side_effect = RuntimeError("S3 unreachable")
     with mock.patch("boto3.client", return_value=fake_client):
-        summary = archive_backend.list_meta_dumps(
-            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3"
-        )
+        summary = archive_backend.list_meta_dumps("imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3")
     assert summary is None
 
 
@@ -515,9 +488,7 @@ def test_list_meta_dumps_handles_no_prefix():
     fake_client = mock.MagicMock()
     fake_client.list_objects_v2.return_value = {"Contents": []}
     with mock.patch("boto3.client", return_value=fake_client):
-        archive_backend.list_meta_dumps(
-            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", None
-        )
+        archive_backend.list_meta_dumps("imbue-openhost", "us-west-2", None, "AKIA", "hunter2", None)
     fake_client.list_objects_v2.assert_called_once()
     assert fake_client.list_objects_v2.call_args.kwargs["Prefix"] == "meta/"
 
@@ -607,9 +578,7 @@ def test_attach_on_startup_clears_stale_switching_state(cfg, db):
     locked there; clear it and annotate state_message so the operator
     can see what happened.
     """
-    db.execute(
-        "UPDATE archive_backend SET state='switching', state_message='copying'"
-    )
+    db.execute("UPDATE archive_backend SET state='switching', state_message='copying'")
     db.commit()
     archive_backend.attach_on_startup(cfg, db)
     state = read_state(db)
@@ -657,8 +626,7 @@ def test_attach_on_startup_s3_missing_creds_records_error(cfg, db):
     not crash boot — record the error and let the operator fix it
     via the dashboard."""
     db.execute(
-        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
-        "s3_access_key_id=NULL, s3_secret_access_key=NULL"
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id=NULL, s3_secret_access_key=NULL"
     )
     db.commit()
     # Pretend juicefs is already installed so we don't try to download.
@@ -792,8 +760,7 @@ def test_switch_s3_to_disabled_rejected(cfg, db):
     that surface clean.
     """
     db.execute(
-        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
-        "s3_access_key_id='a', s3_secret_access_key='s'"
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
     )
     db.commit()
     hook, _ = _make_hook(archive_apps=[])
@@ -965,8 +932,7 @@ def test_switch_s3_to_local_refuses_when_source_mount_dead(cfg, db):
     the operator had on S3.
     """
     db.execute(
-        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
-        "s3_access_key_id='a', s3_secret_access_key='s'"
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
     )
     db.commit()
     src = juicefs_mount_dir(cfg)
@@ -1064,9 +1030,7 @@ def test_umount_failed_subprocess_clears_proc_handle(cfg, monkeypatch):
     # Pretend the mount IS live so the umount path runs.
     monkeypatch.setattr(archive_backend, "is_mounted", lambda _path: True)
 
-    failure = subprocess.CompletedProcess(
-        args=[], returncode=1, stdout="", stderr="device busy"
-    )
+    failure = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="device busy")
     monkeypatch.setattr(archive_backend.subprocess, "run", lambda *a, **kw: failure)
 
     with pytest.raises(RuntimeError, match="device busy"):
@@ -1082,19 +1046,15 @@ def test_install_juicefs_extracts_binary_on_sha256_match(cfg, monkeypatch):
     point urlopen at it, and verify the binary is extracted with
     the expected path + executable bit set.
     """
-    import hashlib as _hashlib
-    import io as _io
-    import tarfile as _tarfile
-
     fake_binary = b"#!/bin/sh\necho fake juicefs\n"
-    buf = _io.BytesIO()
-    with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        info = _tarfile.TarInfo(name="juicefs")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="juicefs")
         info.size = len(fake_binary)
         info.mode = 0o755
-        tar.addfile(info, _io.BytesIO(fake_binary))
+        tar.addfile(info, io.BytesIO(fake_binary))
     tarball_bytes = buf.getvalue()
-    real_sha = _hashlib.sha256(tarball_bytes).hexdigest()
+    real_sha = hashlib.sha256(tarball_bytes).hexdigest()
 
     class _FakeResp:
         def __init__(self, body: bytes) -> None:

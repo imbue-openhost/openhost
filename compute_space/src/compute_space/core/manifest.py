@@ -315,11 +315,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     # every tier including the local-disk one, so it satisfies the
     # invariant on its own — an access_all_data app gets app_data
     # access regardless of whether the manifest names the field.
-    has_local_tier = (
-        data_section.get("app_data")
-        or data_section.get("sqlite")
-        or data_section.get("access_all_data")
-    )
+    has_local_tier = data_section.get("app_data") or data_section.get("sqlite") or data_section.get("access_all_data")
     if data_section.get("app_archive") and not has_local_tier:
         raise ValueError(
             "[data].app_archive requires [data].app_data (or [data].sqlite, "

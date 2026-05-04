@@ -18,11 +18,14 @@ from unittest import mock
 import pytest
 from quart import Quart
 
+import compute_space.web.routes.api.apps as apps_routes
 import compute_space.web.routes.api.archive_backend as routes
 from compute_space.core import archive_backend
+from compute_space.core.manifest import AppManifest
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp, _make_test_config
+from .conftest import _FakeApp
+from .conftest import _make_test_config
 
 
 def _make_app(cfg) -> Quart:  # noqa: ANN001
@@ -299,16 +302,16 @@ async def test_post_rejects_invalid_s3_prefix(app):
     """
     client = app.test_client()
     bads = (
-        "../etc",            # traversal-style
-        "with space",        # no whitespace allowed
+        "../etc",  # traversal-style
+        "with space",  # no whitespace allowed
         "embedded\x00null",  # NUL banned
-        "a/b",               # multi-segment forbidden — JuiceFS regex has no /
-        "UPPER",             # uppercase forbidden
-        "under_score",       # underscore forbidden by regex
-        "ab",                # too short (regex requires len 3+)
-        "-leading-dash",     # dash leader forbidden
-        "trailing-dash-",    # dash trailer forbidden
-        "with.dot",          # dot forbidden by JuiceFS regex
+        "a/b",  # multi-segment forbidden — JuiceFS regex has no /
+        "UPPER",  # uppercase forbidden
+        "under_score",  # underscore forbidden by regex
+        "ab",  # too short (regex requires len 3+)
+        "-leading-dash",  # dash leader forbidden
+        "trailing-dash-",  # dash trailer forbidden
+        "with.dot",  # dot forbidden by JuiceFS regex
     )
     for bad in bads:
         resp = await client.post(
@@ -392,9 +395,7 @@ async def test_post_local_to_s3_returns_202_and_runs_switch(app, cfg):
         while time.time() < deadline:
             db = sqlite3.connect(cfg.db_path)
             try:
-                row = db.execute(
-                    "SELECT backend, state FROM archive_backend WHERE id=1"
-                ).fetchone()
+                row = db.execute("SELECT backend, state FROM archive_backend WHERE id=1").fetchone()
             finally:
                 db.close()
             if row[0] == "s3" and row[1] == "idle":
@@ -462,9 +463,7 @@ async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
         while time.time() < deadline:
             db = sqlite3.connect(cfg.db_path)
             try:
-                row = db.execute(
-                    "SELECT backend, state FROM archive_backend WHERE id=1"
-                ).fetchone()
+                row = db.execute("SELECT backend, state FROM archive_backend WHERE id=1").fetchone()
             finally:
                 db.close()
             if row[0] == "s3" and row[1] == "idle":
@@ -621,15 +620,13 @@ async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
     point on local disk and lose those writes once the mount came
     back.
     """
-    import compute_space.web.routes.api.apps as apps_routes
 
     db = sqlite3.connect(cfg.db_path)
     try:
         # Mark the backend s3 with a missing mount, and seed an
         # archive-using app row.
         db.execute(
-            "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
-            "s3_access_key_id='a', s3_secret_access_key='s'"
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
         )
         db.execute(
             "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
@@ -661,13 +658,11 @@ async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
     reloadable when the archive backend is unhealthy — the precheck
     is targeted, not a blanket lock-out.
     """
-    import compute_space.web.routes.api.apps as apps_routes
 
     db = sqlite3.connect(cfg.db_path)
     try:
         db.execute(
-            "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
-            "s3_access_key_id='a', s3_secret_access_key='s'"
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
         )
         db.execute(
             "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
@@ -691,10 +686,9 @@ async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
     # we just verify the precheck DOESN'T return 503 — the call
     # may still fail later for unrelated reasons (which is fine
     # for this test's purposes).
-    with mock.patch(
-        "compute_space.web.routes.api.apps.stop_app_process"
-    ), mock.patch(
-        "compute_space.web.routes.api.apps.reload_app_background"
+    with (
+        mock.patch("compute_space.web.routes.api.apps.stop_app_process"),
+        mock.patch("compute_space.web.routes.api.apps.reload_app_background"),
     ):
         resp = await client.post("/reload_app/plain")
         assert resp.status_code != 503, await resp.get_data(as_text=True)
@@ -720,15 +714,11 @@ async def test_add_app_refuses_archive_app_when_backend_disabled(app, cfg, tmp_p
 
     Mocked at the manifest-parse level to avoid cloning a real repo.
     """
-    import compute_space.web.routes.api.apps as apps_routes
-    from compute_space.core.manifest import AppManifest
 
     # Default seeded state is 'disabled' — assert the precondition.
     db = sqlite3.connect(cfg.db_path)
     try:
-        backend = db.execute(
-            "SELECT backend FROM archive_backend WHERE id=1"
-        ).fetchone()[0]
+        backend = db.execute("SELECT backend FROM archive_backend WHERE id=1").fetchone()[0]
     finally:
         db.close()
     assert backend == "disabled", "test setup: expected fresh seed"

@@ -16,7 +16,8 @@ from __future__ import annotations
 import pytest
 
 from compute_space.config import DefaultConfig
-from compute_space.core.data import deprovision_data, provision_data
+from compute_space.core.data import deprovision_data
+from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
 
 

@@ -28,10 +28,7 @@ class Migration0006ArchiveBackendS3Prefix(Migration):
     def up(self, db: sqlite3.Connection) -> None:
         # ``PRAGMA table_info`` returns one row per column; the
         # second element of each tuple is the column name.
-        existing_columns = {
-            row[1]
-            for row in db.execute("PRAGMA table_info(archive_backend)").fetchall()
-        }
+        existing_columns = {row[1] for row in db.execute("PRAGMA table_info(archive_backend)").fetchall()}
         if "s3_prefix" in existing_columns:
             # Already present (legacy-bootstrap path that loaded
             # schema.sql which already declares the column).

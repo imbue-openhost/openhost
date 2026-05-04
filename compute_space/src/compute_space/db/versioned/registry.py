@@ -12,9 +12,7 @@ from compute_space.db.versioned.migrations.v0002_noop import Migration0002Noop
 from compute_space.db.versioned.migrations.v0003_drop_password_needs_set import Migration0003DropPasswordNeedsSet
 from compute_space.db.versioned.migrations.v0004_apps_removing_status import Migration0004AppsRemovingStatus
 from compute_space.db.versioned.migrations.v0005_archive_backend import Migration0005ArchiveBackend
-from compute_space.db.versioned.migrations.v0006_archive_backend_s3_prefix import (
-    Migration0006ArchiveBackendS3Prefix,
-)
+from compute_space.db.versioned.migrations.v0006_archive_backend_s3_prefix import Migration0006ArchiveBackendS3Prefix
 from compute_space.db.versioned.migrations.v0007_archive_backend_disabled_state import (
     Migration0007ArchiveBackendDisabledState,
 )

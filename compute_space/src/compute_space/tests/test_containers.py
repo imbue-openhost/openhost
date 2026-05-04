@@ -467,9 +467,7 @@ def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeyp
     assert vm_mounts[0].endswith(":ro,idmap"), vm_mounts[0]
 
 
-def test_run_container_app_archive_mounts_per_app_subdir(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_app_archive_mounts_per_app_subdir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Apps that opt in via [data].app_archive get a per-app bind mount
     at /data/app_archive/<name>/.  The host source comes from the
     operator-configured archive_dir (defaulting to a local-disk path
@@ -496,9 +494,7 @@ def test_run_container_app_archive_mounts_per_app_subdir(
     assert f"archive/{manifest.name}:" in archive_mounts[0], archive_mounts[0]
 
 
-def test_run_container_app_archive_off_by_default(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_app_archive_off_by_default(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Apps that don't opt into app_archive get NO archive bind mount.
     A regression that always mounted the archive tier would surface
     operator-configured backings (potentially with stale credentials,
@@ -510,9 +506,7 @@ def test_run_container_app_archive_off_by_default(
     assert not any("/data/app_archive" in v for v in volume_args)
 
 
-def test_run_container_access_all_data_mounts_archive_parent(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_access_all_data_mounts_archive_parent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """access_all_data implies access to every app's archive too.
     The mount is the parent ``/data/app_archive`` directory, not a
     single per-app subdir, mirroring how app_data is mounted under
@@ -539,9 +533,7 @@ def test_run_container_app_archive_env_var_translated_to_container_path(
     # Arbitrary host path; provision_data would normally produce
     # something like ``<archive_dir>/<name>``.
     env_vars = {"OPENHOST_APP_ARCHIVE_DIR": "/some/host/archive/myapp"}
-    argv = _run_and_capture(
-        monkeypatch, manifest=manifest, tmp_path=tmp_path, env_vars=env_vars
-    )
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path, env_vars=env_vars)
 
     e_values = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-e"]
     archive_env = [e for e in e_values if e.startswith("OPENHOST_APP_ARCHIVE_DIR=")]
