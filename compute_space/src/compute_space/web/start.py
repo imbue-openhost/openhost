@@ -8,6 +8,7 @@ from typing import Any
 
 import hypercorn.asyncio
 import hypercorn.config
+from hypercorn.middleware import ProxyFixMiddleware
 
 from compute_space.config import load_config
 from compute_space.core.caddy import start_caddy
@@ -81,7 +82,64 @@ def main() -> None:
             raise RuntimeError("TLS is enabled but start_caddy is False. Caddy is required for TLS termination.")
 
     # Main web server
-    app = create_app(config)
+    quart_app = create_app(config)
+
+    # Wrap the ASGI app in hypercorn's ProxyFixMiddleware ONLY when
+    # we expect a trusted upstream proxy (``start_caddy=True``,
+    # i.e. our public Caddy reverse_proxy is in front of us).
+    # Without the wrap, ``quart_request.scheme`` is always ``http``
+    # — the scheme of the loopback Caddy->hypercorn hop — even when
+    # the original public request was HTTPS.  Downstream
+    # (``proxy.py``) sets ``X-Forwarded-Proto = quart_request.scheme``
+    # on the upstream request to each app, so the un-wrapped path
+    # silently rewrites the public ``https`` to ``http`` for every
+    # proxied request, which breaks any app that constructs absolute
+    # URLs from ``X-Forwarded-Proto`` (peertube's @uploadx/core
+    # resumable upload library is the canonical example: it builds
+    # a ``http://...`` resumable-upload Location header on a HTTPS
+    # page, and the browser blocks it as Mixed Content).
+    #
+    # Trust model and ``trusted_hops=1``: the middleware copies the
+    # SINGLE most-recent ``X-Forwarded-*`` value in each header
+    # onto the ASGI scope (``scope['scheme']``, ``scope['client']``,
+    # ``host`` header), i.e. whatever the immediately-upstream
+    # proxy added.  This trust is unconditional — the middleware
+    # has no IP-allowlist mechanism and trusts the connection peer
+    # implicitly.  We therefore wrap ONLY when Caddy is in front of
+    # us, because Caddy's ``reverse_proxy`` default behaviour is to
+    # OVERWRITE any client-supplied ``X-Forwarded-*`` headers with
+    # values derived from the actual TCP connection — so a hostile
+    # client cannot smuggle forged values past Caddy.  When
+    # ``start_caddy=False`` (development, tests, or operators who
+    # have an alternative trusted proxy), we leave the app
+    # un-wrapped and ``quart_request.scheme`` remains the connection
+    # scheme; operators putting their own proxy in front are
+    # expected to either run with TLS termination at hypercorn or
+    # set ``start_caddy=True`` to re-enable the wrap.
+    #
+    # KNOWN CAVEAT: hypercorn binds to ``config.host`` which defaults
+    # to ``0.0.0.0``, so even with ``start_caddy=True`` an attacker
+    # with direct network access to the bind port can bypass Caddy
+    # and supply arbitrary ``X-Forwarded-*`` values that ProxyFix
+    # will then trust.  In the OpenHost reference deployment, the
+    # OS-level firewall and the (lack of) NAT publishing for port
+    # 8080 keep the hypercorn socket reachable only from the same
+    # host as Caddy.  Tightening this — by binding hypercorn to
+    # ``127.0.0.1`` whenever ``start_caddy=True``, or switching to a
+    # UNIX socket — is a hardening followup worth doing but out of
+    # scope for the immediate fix.
+    #
+    # ``mode="legacy"`` reads the conventional ``X-Forwarded-For``
+    # / ``X-Forwarded-Proto`` / ``X-Forwarded-Host`` triplet rather
+    # than the newer RFC 7239 ``Forwarded`` header.  Caddy stamps
+    # the legacy headers by default, and most of the apps we
+    # proxy to are configured to read the legacy headers, so the
+    # legacy mode keeps the wire format consistent end-to-end.
+    asgi_app: Any
+    if config.start_caddy:
+        asgi_app = ProxyFixMiddleware(quart_app, mode="legacy", trusted_hops=1)
+    else:
+        asgi_app = quart_app
 
     hypercorn_config = hypercorn.config.Config()
     hypercorn_config.bind = [f"{config.host}:{config.port}"]
@@ -89,7 +147,7 @@ def main() -> None:
     hypercorn_config.shutdown_timeout = 5
 
     logger.info("running hypercorn serve")
-    restart_requested = asyncio.run(_serve(app, hypercorn_config))
+    restart_requested = asyncio.run(_serve(asgi_app, hypercorn_config))
     logger.info(f"hypercorn serve returned, restart_requested={restart_requested}")
 
     _terminate_children(children)

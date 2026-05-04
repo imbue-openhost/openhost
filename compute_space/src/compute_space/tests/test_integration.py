@@ -1092,7 +1092,25 @@ class TestContainerE2E:
         assert "X-Forwarded-Host" in headers
 
     def test_proxy_strips_spoofed_forwarded_headers(self, admin_session, config):
-        """Client-supplied X-Forwarded-* headers are overwritten, not forwarded."""
+        """Client-supplied X-Forwarded-* headers are overwritten, not forwarded.
+
+        With ``start_caddy=False`` (the test default) the router runs
+        without ``ProxyFixMiddleware``, so any inbound
+        ``X-Forwarded-*`` headers are NOT trusted: ``quart_request``
+        observes the actual loopback connection scheme/host/client,
+        and ``proxy.py`` re-stamps the upstream-app request with
+        those values, dropping the spoofed ones.  This is the
+        threat model that protects an operator who exposes
+        compute_space directly without a trusted proxy in front.
+
+        The complementary case (``start_caddy=True``, where
+        ``ProxyFixMiddleware`` IS wrapped and inbound headers ARE
+        trusted because Caddy normalises them upstream of us) is
+        exercised at the unit level in ``test_proxy_fix.py`` —
+        full end-to-end coverage with a real Caddy in front would
+        require a more complex test harness and isn't currently in
+        the suite.
+        """
         base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
             f"{base_url}/test-app/echo-headers",
