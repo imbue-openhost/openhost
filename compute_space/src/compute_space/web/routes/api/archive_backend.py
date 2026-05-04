@@ -111,9 +111,14 @@ def _build_hook(app: Any) -> AppHook:  # ``Any`` because typing the Quart app wo
     def list_archive_apps() -> list[str]:
         # Read manifest_raw and look for a real ``app_archive = true``
         # (or ``access_all_data = true``) assignment.  Uses the
-        # shared ``manifest_uses_archive`` helper so route-level
-        # gating (``rename_app`` / ``reload_app``) and switch-flow
-        # enumeration agree on what counts.
+        # shared ``manifest_uses_archive`` helper — the *broader*
+        # of the two predicates, because during a backend switch we
+        # must stop every app whose container has the archive mount,
+        # which includes ``access_all_data`` apps that see the parent
+        # archive directory.  This deliberately differs from the
+        # install/reload gate's ``manifest_requires_archive`` (only
+        # ``app_archive=true``), which is about hard runtime
+        # dependence rather than mount-handle invalidation.
         db = sqlite3.connect(config.db_path)
         try:
             rows = db.execute(

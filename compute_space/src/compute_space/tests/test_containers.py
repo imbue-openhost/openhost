@@ -521,6 +521,57 @@ def test_run_container_access_all_data_mounts_archive_parent(tmp_path, monkeypat
     assert f"/data/app_archive/{manifest.name}" not in targets
 
 
+def test_run_container_access_all_data_skips_archive_mount_when_archive_dir_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``access_all_data`` is permissive: when the archive tier isn't
+    configured (backend='disabled') or its mount has dropped, the
+    container must still start — just without the archive bind.
+    Refusing to start would lock out apps like the backup app on every
+    archive-less zone, defeating the point of access_all_data being a
+    "see whatever's there" permission rather than a hard requirement.
+
+    Pin: no ``-v`` argument whose target is ``/data/app_archive`` (the
+    parent mount), and equally no per-app archive subdir mount, when
+    ``archive_dir`` does not exist on the host.
+    """
+    runs: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=60, **_):  # type: ignore[no-untyped-def]
+        runs.append(list(cmd))
+        if cmd[:2] == ["podman", "run"]:
+            return _FakeCompleted(0, stdout="container-id-xyz\n")
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    manifest = _basic_manifest(access_all_data=True)
+    data_dir = str(tmp_path / "persistent")
+    temp_data_dir = str(tmp_path / "temp")
+    archive_dir = str(tmp_path / "archive-not-mounted")  # NOT created
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
+
+    run_container(
+        manifest.name,
+        "openhost-myapp:latest",
+        manifest,
+        local_port=9001,
+        env_vars={},
+        data_dir=data_dir,
+        temp_data_dir=temp_data_dir,
+        archive_dir=archive_dir,
+    )
+    run_cmds = [c for c in runs if c[:2] == ["podman", "run"]]
+    assert len(run_cmds) == 1
+    argv = run_cmds[0]
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    archive_mounts = [v for v in volume_args if "/data/app_archive" in v]
+    assert archive_mounts == [], f"expected no archive mount, got {archive_mounts}"
+
+
 def test_run_container_app_archive_env_var_translated_to_container_path(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

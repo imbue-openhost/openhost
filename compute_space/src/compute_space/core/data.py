@@ -123,37 +123,42 @@ def provision_data(
         os.makedirs(app_temp_dir, exist_ok=True)
         env_vars["OPENHOST_APP_TEMP_DIR"] = app_temp_dir
 
-    if manifest.app_archive or manifest.access_all_data:
-        # ``archive_dir`` itself must already exist by the time we
-        # provision an app.  On the local-disk default it was created
-        # by ``Config.make_all_dirs``; on the S3 backend it was
-        # created by the storage-management code that set up the
-        # JuiceFS mount.
+    archive_available = os.path.isdir(archive_dir)
+    if manifest.app_archive:
+        # ``app_archive = true`` apps cannot run without the archive
+        # tier.  ``archive_dir`` itself must already exist by the time
+        # we get here.  On the local-disk default it was created by
+        # ``Config.make_all_dirs``; on the S3 backend it was created
+        # by the storage-management code that set up the JuiceFS
+        # mount.
         #
-        # We deliberately do NOT use ``os.makedirs(app_archive_dir,
-        # exist_ok=True)`` on a missing override here — that would
-        # silently create a local-disk path that the JuiceFS mount
-        # then shadows once it comes back up, losing whatever apps
-        # wrote in the meantime.  Refuse to provision instead so the
-        # operator-visible failure is loud rather than silent.
+        # We deliberately do NOT auto-mkdir a missing ``archive_dir``
+        # here — that would silently create a local-disk path that
+        # the JuiceFS mount then shadows once it comes back up,
+        # losing whatever apps wrote in the meantime.  Refuse to
+        # provision instead so the operator-visible failure is loud
+        # rather than silent.
         #
         # The "is the override path actually a live mount" check
         # belongs in the route layer (deploy / reload / rename),
         # because only the route layer has access to the
         # archive_backend DB row that says which backend is active.
         # Here we just sanity-check that the path is a directory.
-        if not os.path.isdir(archive_dir):
+        if not archive_available:
             raise RuntimeError(
                 f"archive_dir {archive_dir!r} does not exist or is not a "
                 f"directory.  If the S3 backend is configured, check "
                 f"that ``juicefs-mount`` is healthy; otherwise check "
                 f"that ``Config.make_all_dirs()`` ran on startup."
             )
-        # mkdir only the per-app leaf, not parents — exist_ok=True
-        # for redeploy idempotency.  ``os.mkdir`` would fail if
-        # ``app_archive_dir`` already exists; we use ``makedirs``
-        # with the parent existence-check above guaranteeing the
-        # parent is real.
+        os.makedirs(app_archive_dir, exist_ok=True)
+        env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
+    elif manifest.access_all_data and archive_available:
+        # ``access_all_data`` is permissive: grant archive access when
+        # the tier exists, but don't refuse to provision when it
+        # doesn't.  Apps that opt into access_all_data (e.g. the
+        # backup app, the file browser) keep working in archive-less
+        # zones; they just don't see the archive mount.
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
 

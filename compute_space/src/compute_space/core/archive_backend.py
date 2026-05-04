@@ -726,18 +726,45 @@ def _update_state(
 
 
 # Match TOML's ``key = true`` allowing whitespace + a value of true.
-# Used by the api routes (rename/reload/add) and by the switch-flow's
-# affected-app enumeration to decide which apps "use" the archive
-# tier.  Substring matching ("app_archive" in raw + "true" in raw)
-# false-matches manifests with ``app_archive = false`` alongside any
-# other ``= true`` field, so we anchor on TOML key=value shape.
+# Used by the api routes (rename/reload/add) and the switch-flow's
+# affected-app enumeration.  Two separate notions, two separate
+# regexes:
+#
+# - manifest_requires_archive: the app cannot run without the archive
+#   tier being live.  Only ``app_archive = true`` qualifies; that
+#   field's purpose is to opt a per-app subdir into the archive tier.
+#
+# - manifest_uses_archive: the app's container will be granted access
+#   to the archive mount when it's available.  Both ``app_archive =
+#   true`` and ``access_all_data = true`` qualify; access_all_data is
+#   permissive ("show me whatever data tiers exist") and does not
+#   itself require the archive backend to be configured.
+#
+# Substring matching ("app_archive" in raw + "true" in raw) would
+# false-match ``app_archive = false`` alongside any other ``= true``
+# field, so both regexes anchor on TOML key=value shape.
+_MANIFEST_REQUIRES_ARCHIVE_RE = re.compile(r"(?m)^\s*app_archive\s*=\s*[Tt][Rr][Uu][Ee]\b")
 _MANIFEST_USES_ARCHIVE_RE = re.compile(r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b")
 
 
+def manifest_requires_archive(manifest_raw: str) -> bool:
+    """Return True iff the (raw TOML) manifest cannot run without the
+    archive tier — i.e. ``app_archive = true``.
+
+    ``access_all_data`` apps don't qualify even though they will see
+    the archive mount when it's available; they don't need it to
+    function and shouldn't be refused on archive-disabled zones.
+    """
+    return bool(_MANIFEST_REQUIRES_ARCHIVE_RE.search(manifest_raw))
+
+
 def manifest_uses_archive(manifest_raw: str) -> bool:
-    """Return True iff the (raw TOML) manifest opts the app into the
-    archive tier — either via ``app_archive = true`` or via
-    ``access_all_data = true``.
+    """Return True iff the manifest will be granted access to the
+    archive tier when the app is deployed — either via
+    ``app_archive = true`` or via ``access_all_data = true``.
+
+    Used by the switch-flow to enumerate apps that need to be stopped
+    while the archive backend changes underneath them.
     """
     return bool(_MANIFEST_USES_ARCHIVE_RE.search(manifest_raw))
 

@@ -50,10 +50,26 @@ def _rmtree_force(path: str) -> None:
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
-# Re-exported alias of the shared helper in core.archive_backend.
-# The route file uses it to gate the reload-flow archive-health
-# check, in lockstep with the same rule applied by the system-tab
-# switch flow when enumerating affected apps.
+# Re-exported aliases of the shared helpers in core.archive_backend.
+#
+# The two predicates serve different gates:
+#
+# - ``_manifest_requires_archive`` (only ``app_archive = true``) gates
+#   the install (api_add_app) and reload (reload_app) routes: those
+#   apps cannot run without the archive tier being live, so refuse
+#   the operation rather than have ``provision_data`` write to an
+#   empty mount-point that the real mount shadows on next attach.
+#   ``access_all_data`` is NOT a hard requirement — those apps just
+#   see the archive when it's available, and the provision /
+#   container layer silently skip the archive mount otherwise.
+#
+# - ``_manifest_uses_archive`` (either flag) gates the destructive
+#   ``remove_app`` route: when the archive backend is unhealthy and
+#   the app has any per-app archive bytes (which both flags imply,
+#   since ``provision_data`` creates a per-app archive subdir for
+#   both when the tier is healthy), refusing the remove avoids the
+#   "rmtree the empty mountpoint, S3 bytes orphan" footgun.
+_manifest_requires_archive = archive_backend.manifest_requires_archive
 _manifest_uses_archive = archive_backend.manifest_uses_archive
 
 
@@ -170,23 +186,31 @@ async def api_add_app() -> ResponseReturnValue:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
-    # Refuse archive-using deploys if the archive backend isn't
-    # ready.  Two reasons it can be not-ready, with two different
-    # operator-actions, surfaced as different status codes so the
-    # dashboard's add-app form can distinguish "transient mount
-    # hiccup, retry in a sec" from "permanent operator decision
-    # required, click over to System tab":
+    # Refuse the deploy only when the manifest *requires* the archive
+    # tier — i.e. ``app_archive = true``.  ``access_all_data`` is a
+    # catch-all permission that grants access to whichever data tiers
+    # exist; it does not in itself require the archive backend to be
+    # configured.  Apps like the backup app set access_all_data because
+    # they want to see anything that's there, but they keep working
+    # fine in archive-less zones too.  Mount-time path (containers.py)
+    # / provision-time path (data.py) skip the archive mount silently
+    # when it isn't healthy for those apps.
+    #
+    # Two reasons archive can be not-ready for an ``app_archive=true``
+    # app, with two different operator-actions, surfaced as different
+    # status codes so the dashboard's add-app form can distinguish
+    # "transient mount hiccup, retry in a sec" from "permanent operator
+    # decision required, click over to System tab":
     #
     #   1. backend = 'disabled' on a fresh zone -> 400.  Asking the
-    #      operator to retry won't help; they have to pick a
-    #      backend on the System tab.  400 surfaces the message in
-    #      the form's error area; 503 would suggest a retry button.
+    #      operator to retry won't help; they have to pick a backend
+    #      on the System tab.
     #   2. backend = 'local'/'s3' but ``is_archive_dir_healthy``
     #      returned False -> 503.  Mount transient or local dir
     #      missing — provision_data would otherwise write to the
     #      empty mount-point and lose those writes once the mount
     #      came back.
-    if manifest.app_archive or manifest.access_all_data:
+    if manifest.app_archive:
         backend_state = archive_backend.read_state(db)
         if backend_state.backend == "disabled":
             shutil.rmtree(clone_dir, ignore_errors=True)
@@ -330,18 +354,20 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
         return jsonify({"error": "App is being removed"}), 409
 
     # Refuse the reload if the archive backend's mount is dead and
-    # this app uses app_archive — otherwise ``provision_data`` would
-    # try to write to the underlying empty mount-point on local disk,
-    # which the mount would shadow once it came back, silently
-    # losing those writes.  Apps that don't use archive aren't
-    # affected; cheap precheck for everyone.
+    # this app *requires* the archive tier (``app_archive = true``).
+    # access_all_data apps are not gated here: they merely see the
+    # archive when it's available, and reload on a dead archive just
+    # results in the mount being skipped.  app_archive=true apps would
+    # otherwise have ``provision_data`` write to an empty mount-point
+    # that the real mount shadows once it comes back, silently losing
+    # those writes.
     if not archive_backend.is_archive_dir_healthy(config, db):
-        if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+        if _manifest_requires_archive(app_row["manifest_raw"] or ""):
             return jsonify(
                 {
                     "error": "Archive backend is not healthy; refusing to "
-                    "reload an archive-using app until the "
-                    "operator-configured archive mount is live "
+                    "reload an app that requires app_archive until "
+                    "the operator-configured archive mount is live "
                     "again (see the dashboard's Archive backend panel)."
                 }
             ), 503

@@ -162,12 +162,14 @@ def test_provision_data_refuses_when_archive_dir_missing(tmp_path) -> None:
         )
 
 
-def test_provision_data_refuses_when_archive_dir_missing_via_access_all_data(tmp_path) -> None:
-    """The same guard must fire for ``access_all_data`` apps too —
-    they use the archive tier even though they don't set
-    ``app_archive=True`` directly.  Without this branch coverage a
-    refactor that splits the two could regress the guard for one
-    flag and leave the other silently broken.
+def test_provision_data_skips_archive_for_access_all_data_when_archive_dir_missing(tmp_path) -> None:
+    """``access_all_data`` is permissive: the app gets archive access
+    when it's available, but provisioning must not fail when the
+    archive backend is disabled or the mount has dropped.
+
+    This contrasts with ``app_archive = true``, which is a hard
+    requirement — that path still raises (covered above by
+    ``test_provision_data_refuses_when_archive_dir_missing``).
     """
     data_dir = tmp_path / "persistent"
     temp_dir = tmp_path / "temp"
@@ -176,17 +178,20 @@ def test_provision_data_refuses_when_archive_dir_missing_via_access_all_data(tmp
     temp_dir.mkdir()
 
     manifest = _manifest(access_all_data=True)
-    with pytest.raises(RuntimeError, match="archive_dir"):
-        provision_data(
-            manifest.name,
-            manifest,
-            str(data_dir),
-            str(temp_dir),
-            str(archive_dir),
-            my_openhost_redirect_domain="my.example.com",
-            zone_domain="example.com",
-            port=8080,
-        )
+    env = provision_data(
+        manifest.name,
+        manifest,
+        str(data_dir),
+        str(temp_dir),
+        str(archive_dir),
+        my_openhost_redirect_domain="my.example.com",
+        zone_domain="example.com",
+        port=8080,
+    )
+
+    # No archive subdir gets created, no env var gets stamped.
+    assert "OPENHOST_APP_ARCHIVE_DIR" not in env
+    assert not archive_dir.exists()
 
 
 def test_provision_data_does_not_fail_when_archive_dir_missing_and_no_archive_opt_in(

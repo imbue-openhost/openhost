@@ -802,3 +802,178 @@ async def test_test_connection_succeeds(app):
         )
     assert resp.status_code == 200
     assert (await resp.get_json())["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# manifest_requires_archive vs manifest_uses_archive: separate predicates
+#
+# The two helpers exist because ``access_all_data`` and ``app_archive``
+# have different gating semantics:
+#
+#   - ``manifest_requires_archive`` ⇒ refuse install / reload when the
+#     archive tier is disabled or unhealthy.  Only ``app_archive=true``
+#     qualifies; that flag carves a per-app subdir into the archive
+#     and the app is presumed to depend on it.
+#
+#   - ``manifest_uses_archive`` ⇒ stop the app during a backend switch,
+#     because the archive mount changes underneath it.  Both flags
+#     qualify; access_all_data apps see the archive parent directory.
+#
+# The risk if the two collapse back into one: either install gets
+# over-strict (access_all_data apps refused on archive-less zones,
+# breaking the backup app) or the switch flow gets under-strict
+# (access_all_data apps not stopped while the mount changes, racing
+# with their open file handles).  These tests pin both directions.
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_requires_archive_only_matches_app_archive_true():
+    """``app_archive = true`` ⇒ True; ``access_all_data = true`` alone
+    ⇒ False.  The reload/install gates use this; gating
+    access_all_data here would over-block on archive-less zones.
+    """
+    assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\n")
+    assert not archive_backend.manifest_requires_archive("[data]\naccess_all_data = true\n")
+    assert not archive_backend.manifest_requires_archive("[data]\napp_data = true\n")
+    assert not archive_backend.manifest_requires_archive("")
+    # Substring footgun: ``app_archive = false`` plus another true field
+    # must not false-match.
+    assert not archive_backend.manifest_requires_archive(
+        "[data]\napp_archive = false\napp_data = true\n"
+    )
+    # Both flags ⇒ True (app_archive=true wins).
+    assert archive_backend.manifest_requires_archive(
+        "[data]\napp_archive = true\naccess_all_data = true\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tmp_path):
+    """An ``access_all_data = true`` app (with ``app_archive`` not
+    set or false) must be installable while the archive backend is
+    'disabled'.  ``access_all_data`` is permissive — the app sees the
+    archive when it's there and silently goes without when it isn't,
+    so refusing the install would lock out apps like the backup app
+    on every fresh archive-less zone.
+
+    Companion to ``test_add_app_refuses_archive_app_when_backend_disabled``
+    above: pins that the gate now keys on ``app_archive`` only.
+    """
+
+    # Default seeded state is 'disabled' — assert the precondition.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        backend = db.execute("SELECT backend FROM archive_backend WHERE id=1").fetchone()[0]
+    finally:
+        db.close()
+    assert backend == "disabled"
+
+    aad_manifest = AppManifest(
+        name="seer",
+        version="1.0",
+        description="access_all_data probe",
+        runtime_type="serverfull",
+        container_image="Dockerfile",
+        container_port=8080,
+        container_command=None,
+        memory_mb=128,
+        cpu_millicores=100,
+        gpu=False,
+        app_data=True,
+        app_archive=False,  # NOT set
+        access_all_data=True,  # the trigger we used to over-gate on
+        access_vm_data=False,
+        app_temp_data=False,
+        public_paths=["/"],
+        capabilities=[],
+        devices=[],
+        permissions_v2=[],
+        port_mappings=[],
+        provides_services=[],
+        provides_services_v2=[],
+        requires_services={},
+        sqlite_dbs=[],
+        health_check="/",
+        hidden=False,
+        authors=[],
+        raw_toml="",
+    )
+    fake_clone_dir = str(tmp_path / "clone-aad")
+    os.makedirs(fake_clone_dir)
+
+    test_app = Quart(__name__)
+    test_app.config["DB_PATH"] = cfg.db_path
+    test_app.openhost_config = cfg  # type: ignore[attr-defined]
+    test_app.add_url_rule(
+        "/api/add_app",
+        view_func=apps_routes.api_add_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+    )
+    client = test_app.test_client()
+    # Mock the heavy work after the gate so we just observe the gate's
+    # decision.  ``insert_and_deploy`` does the DB row + image build;
+    # we short-circuit it with a stub that returns the app name.
+    with (
+        mock.patch.object(apps_routes, "parse_manifest", return_value=aad_manifest),
+        mock.patch.object(apps_routes, "validate_manifest", return_value=None),
+        mock.patch.object(apps_routes, "insert_and_deploy", return_value="seer"),
+    ):
+        resp = await client.post(
+            "/api/add_app",
+            form={
+                "repo_url": "https://example.invalid/repo",
+                "app_name": "seer",
+                "clone_dir": fake_clone_dir,
+                "grant_permissions": "",
+            },
+        )
+    # The gate must NOT fire: a 400 with "archive backend" in the
+    # error body would mean the same over-block we're guarding
+    # against.  503 with "Archive backend is not healthy" likewise.
+    body_text = await resp.get_data(as_text=True)
+    assert resp.status_code != 400 or "archive" not in body_text.lower(), body_text
+    assert resp.status_code != 503 or "archive" not in body_text.lower(), body_text
+
+
+@pytest.mark.asyncio
+async def test_reload_app_allows_access_all_data_when_archive_unhealthy(app, cfg):
+    """An ``access_all_data`` app must be reloadable when the archive
+    backend is unhealthy — the reload-time precheck is for apps that
+    *require* the archive (``app_archive = true``).  access_all_data
+    apps just see the archive when it's available; reload simply
+    ends up with the archive mount silently skipped.
+    """
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
+        )
+        db.execute(
+            "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES ('seer', '1.0', '/r/seer', 19603, 'running', "
+            "'[data]\naccess_all_data = true\n')"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    test_app = Quart(__name__)
+    test_app.config["DB_PATH"] = cfg.db_path
+    test_app.openhost_config = cfg  # type: ignore[attr-defined]
+    test_app.add_url_rule(
+        "/reload_app/<app_name>",
+        view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+    )
+    client = test_app.test_client()
+    with (
+        mock.patch("compute_space.web.routes.api.apps.stop_app_process"),
+        mock.patch("compute_space.web.routes.api.apps.reload_app_background"),
+    ):
+        resp = await client.post("/reload_app/seer")
+        # The reload may succeed or hit unrelated mock-shaped issues,
+        # but it must NOT be the archive-health 503 — that would mean
+        # we're back to the over-strict gating.
+        body = await resp.get_data(as_text=True)
+        assert resp.status_code != 503 or "Archive backend is not healthy" not in body, body

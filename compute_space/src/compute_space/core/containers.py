@@ -291,8 +291,14 @@ def run_container(
         )
         # Archive parent mount.  Same rationale as the app_data parent
         # mount above: an access_all_data app sees the entire archive
-        # namespace, not just its own subdir.
-        cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
+        # namespace, not just its own subdir.  But unlike app_data,
+        # the archive tier may be ``disabled`` (no host backing) — in
+        # which case we silently skip the mount rather than refusing
+        # to start.  access_all_data is permissive: it grants access
+        # to whichever data tiers exist, not a hard requirement that
+        # all of them be configured.
+        if os.path.isdir(archive_dir):
+            cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
         os.makedirs(vm_data_dir, exist_ok=True)
         cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data)])
     else:
