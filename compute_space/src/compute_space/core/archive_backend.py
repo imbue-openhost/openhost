@@ -217,7 +217,7 @@ def juicefs_mount_dir(config: Config) -> str:
     # Lives under data_root_dir so all openhost state is in one tree.
     # NOT under persistent_data_dir, because we don't want this path
     # included in restic backups (the bytes are already in S3).
-    return os.path.join(config.data_root_dir, "app_archive_juicefs")
+    return os.path.join(config.data_root_dir, "app_archive")
 
 
 def juicefs_meta_db_path(config: Config) -> str:
