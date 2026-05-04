@@ -103,6 +103,94 @@ async def test_get_redacts_secret_when_s3(app):
     assert body["s3_bucket"] == "b"
 
 
+@pytest.mark.asyncio
+async def test_get_surfaces_meta_db_path(app):
+    """The dashboard renders ``meta_db_path`` so an operator can see
+    where the must-back-up file lives.  Surfaced for both backends —
+    on local the path is the one a future s3 switch would use, so
+    the operator can pre-plan their backup story before flipping
+    the switch.
+    """
+    client = app.test_client()
+    resp = await client.get("/api/storage/archive_backend")
+    body = await resp.get_json()
+    # Path is canonical: under ``juicefs/state/`` so it's grouped
+    # with the rest of the must-back-up state.
+    assert "meta_db_path" in body
+    assert body["meta_db_path"].endswith("/juicefs/state/meta.db"), body["meta_db_path"]
+
+
+@pytest.mark.asyncio
+async def test_get_surfaces_meta_dumps_when_s3(app):
+    """When backend=s3, GET runs ``list_meta_dumps`` and surfaces the
+    summary so the dashboard can render "Last metadata dump: <ts>".
+    Mocked at the core helper level to avoid hitting S3.
+    """
+    db = sqlite3.connect(app.config["DB_PATH"])
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+            "s3_prefix='zone-a', s3_access_key_id='AKIA', "
+            "s3_secret_access_key='hunter2'"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    summary = archive_backend.MetaDumpSummary(
+        count=42,
+        latest_at="2026-05-01T18:00:00Z",
+        latest_key="zone-a/meta/dump-2026-05-01-180000.json.gz",
+    )
+    client = app.test_client()
+    with mock.patch.object(archive_backend, "list_meta_dumps", return_value=summary):
+        resp = await client.get("/api/storage/archive_backend")
+    body = await resp.get_json()
+    assert body["meta_dumps"] == {
+        "count": 42,
+        "latest_at": "2026-05-01T18:00:00Z",
+        "latest_key": "zone-a/meta/dump-2026-05-01-180000.json.gz",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_meta_dumps_null_on_local_backend(app):
+    """A local-disk zone has no S3 to list — ``meta_dumps`` is
+    deliberately ``None`` so the dashboard renders nothing in that
+    column rather than a misleading "0 dumps" message.
+    """
+    client = app.test_client()
+    resp = await client.get("/api/storage/archive_backend")
+    body = await resp.get_json()
+    assert body["meta_dumps"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_meta_dumps_null_on_s3_list_failure(app):
+    """When ``list_meta_dumps`` returns None (S3 unreachable, etc.),
+    we propagate that through to the response as ``meta_dumps: null``.
+    The dashboard distinguishes this from the "0 dumps" case by
+    rendering a yellow "status unavailable" line instead of a red
+    "no dumps yet" warning.
+    """
+    db = sqlite3.connect(app.config["DB_PATH"])
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
+            "s3_access_key_id='AKIA', s3_secret_access_key='hunter2'"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    client = app.test_client()
+    with mock.patch.object(archive_backend, "list_meta_dumps", return_value=None):
+        resp = await client.get("/api/storage/archive_backend")
+    body = await resp.get_json()
+    assert body["backend"] == "s3"
+    assert body["meta_dumps"] is None
+
+
 # ---------------------------------------------------------------------------
 # POST validation
 # ---------------------------------------------------------------------------

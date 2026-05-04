@@ -46,10 +46,65 @@ def _arch() -> str:
     return "amd64"
 
 
+# ---------------------------------------------------------------------------
+# On-disk layout (host)
+#
+# All JuiceFS-related files openhost-core writes go under one of these
+# two directories, both under the host user's data tree (no sudo).
+# Splitting by lifetime + criticality is what lets an operator answer
+# the "what do I have to back up" question without reading the code:
+#
+#   <openhost_data_path>/juicefs/state/      <- ``_juicefs_state_dir``
+#                                               CRITICAL.  Must be
+#                                               backed up.  Losing
+#                                               this means the S3
+#                                               bucket is recoverable
+#                                               only via JuiceFS's
+#                                               periodic meta-dump
+#                                               replays in S3.
+#       meta.db                                  <- the SQLite metadata DB
+#                                                  (file -> chunk-id mapping)
+#
+#   <openhost_data_path>/juicefs/runtime/    <- ``_juicefs_runtime_dir``
+#                                               REGENERABLE.  Safe to
+#                                               drop on any boot — the
+#                                               install/mount code
+#                                               recreates it on demand.
+#       bin/juicefs-<version>                    <- the JuiceFS binary
+#                                                  (re-downloaded if missing)
+#
+# ``juicefs_mount_dir`` (the FUSE mount point) lives under
+# ``data_root_dir/`` so it isn't included in the existing restic-based
+# host backups — JuiceFS's bucket already holds those bytes and
+# double-backing them up wastes time and storage.
+# ---------------------------------------------------------------------------
+
+
+def _juicefs_state_dir(config: Config) -> str:
+    """Critical-state directory.
+
+    Holds files that MUST survive across reboots and that are not
+    automatically reconstructible from the S3 bucket (the mappings
+    from filenames to bucket objects).  An operator who wants to
+    survive disk loss should snapshot this directory regularly.
+    """
+    return os.path.join(config.openhost_data_path, "juicefs", "state")
+
+
+def _juicefs_runtime_dir(config: Config) -> str:
+    """Regenerable-state directory.
+
+    Holds files openhost-core (re)creates on demand: the JuiceFS
+    binary, future flock files, JuiceFS's own log dir if we ever
+    redirect it.  Safe to wipe.
+    """
+    return os.path.join(config.openhost_data_path, "juicefs", "runtime")
+
+
 def _juicefs_install_dir(config: Config) -> str:
-    """Where the JuiceFS binary lives.  Under the host user's data tree
-    so install never needs sudo."""
-    return os.path.join(config.openhost_data_path, "juicefs")
+    """Where the JuiceFS binary lives.  ``runtime/bin/`` under the
+    juicefs tree because the binary is regenerable on boot."""
+    return os.path.join(_juicefs_runtime_dir(config), "bin")
 
 
 def _juicefs_binary(config: Config) -> str:
@@ -57,12 +112,99 @@ def _juicefs_binary(config: Config) -> str:
 
 
 def _juicefs_meta_db(config: Config) -> str:
-    """SQLite metadata DB for JuiceFS.  Lives under
-    ``persistent_data_dir/openhost/`` so the existing backup flow
-    picks it up — that's what lets a fresh VM with the same S3
-    bucket reattach via the metadata.
+    """SQLite metadata DB for JuiceFS.  Lives under the critical-
+    state directory so the existing backup flow picks it up — that's
+    what lets a fresh VM with the same S3 bucket reattach via the
+    metadata.
     """
-    return os.path.join(config.openhost_data_path, "juicefs-meta.db")
+    return os.path.join(_juicefs_state_dir(config), "meta.db")
+
+
+# Legacy paths used by openhost-core before the juicefs/state +
+# juicefs/runtime split.  ``_migrate_legacy_layout`` renames any of
+# these into their new homes once on startup.  Kept as module-level
+# constants (not helper functions) because they're only referenced
+# from one place and inlining the join would be three identical lines.
+_LEGACY_META_DB_BASENAME = "juicefs-meta.db"
+_LEGACY_INSTALL_DIRNAME = "juicefs"
+
+
+def _migrate_legacy_layout(config: Config) -> None:
+    """Move a pre-tidy meta DB into the new ``juicefs/state/`` home.
+
+    Idempotent: if the new path already exists or the legacy path
+    doesn't, this is a no-op.  Runs as part of every JuiceFS install
+    on every boot so an operator who upgrades from a pre-tidy build
+    never has to do anything manual.
+
+    The legacy install dir (``<openhost_data_path>/juicefs/``) collides
+    with the new top-level ``juicefs/`` dir we're about to use.  We
+    rename the legacy install dir AWAY first if it has the legacy
+    binary at the top level, before creating the new layout below it.
+    """
+    legacy_meta = os.path.join(config.openhost_data_path, _LEGACY_META_DB_BASENAME)
+    new_meta = _juicefs_meta_db(config)
+    legacy_install = os.path.join(config.openhost_data_path, _LEGACY_INSTALL_DIRNAME)
+
+    # Step 1: if the legacy install dir is the OLD shape (binaries
+    # at its root), shuffle them aside so we can lay the new
+    # state/runtime tree underneath.  ``_LEGACY_INSTALL_DIRNAME`` is
+    # the same directory name we use today for the ``juicefs/`` parent
+    # of state/ + runtime/, so we have to disambiguate by checking
+    # whether anything that looks like the legacy binary lives at the
+    # top level rather than under ``runtime/bin/``.
+    if os.path.isdir(legacy_install):
+        legacy_top_level_files = []
+        try:
+            for entry in os.scandir(legacy_install):
+                if entry.is_file() and entry.name.startswith("juicefs-"):
+                    legacy_top_level_files.append(entry.path)
+        except OSError:
+            legacy_top_level_files = []
+        if legacy_top_level_files:
+            # Move each binary into the new runtime/bin/ home.
+            new_bin_dir = _juicefs_install_dir(config)
+            os.makedirs(new_bin_dir, exist_ok=True)
+            for src in legacy_top_level_files:
+                dst = os.path.join(new_bin_dir, os.path.basename(src))
+                if not os.path.exists(dst):
+                    try:
+                        os.rename(src, dst)
+                        logger.info(
+                            "Migrated legacy juicefs binary %s -> %s", src, dst
+                        )
+                    except OSError as exc:
+                        # Non-fatal: ``install_juicefs`` will redownload
+                        # if the binary is still missing at the new
+                        # path.  Logging keeps the failure visible.
+                        logger.warning(
+                            "Could not migrate legacy juicefs binary %s -> %s: %s",
+                            src, dst, exc,
+                        )
+
+    # Step 2: rename the meta DB from the openhost_data_path root to
+    # the new state dir.  This is the file an operator MUST not lose
+    # quietly, so be loud on success and louder on failure.
+    if os.path.isfile(legacy_meta) and not os.path.exists(new_meta):
+        os.makedirs(os.path.dirname(new_meta), exist_ok=True)
+        try:
+            os.rename(legacy_meta, new_meta)
+            logger.info(
+                "Migrated JuiceFS metadata DB %s -> %s (one-shot layout tidy)",
+                legacy_meta, new_meta,
+            )
+        except OSError as exc:
+            # Refusing to silently continue: the meta DB is the one
+            # file whose loss makes the bucket unreadable.  An
+            # operator who sees an in-flight rename failure should
+            # fix it manually before the next boot, not have a
+            # second copy mysteriously appear at the new path.
+            raise RuntimeError(
+                f"Could not migrate JuiceFS metadata DB from {legacy_meta!r} "
+                f"to {new_meta!r}: {exc}.  Refusing to start the archive "
+                f"backend — fix the rename manually (or let the original "
+                f"meta DB be the source of truth) before retrying."
+            ) from exc
 
 
 def juicefs_mount_dir(config: Config) -> str:
@@ -76,10 +218,20 @@ def juicefs_mount_dir(config: Config) -> str:
     return os.path.join(config.data_root_dir, "app_archive_juicefs")
 
 
-# TODO: a daily ``juicefs dump`` to ``persistent_data_dir/openhost/`` so
-# the existing restic-based backup app picks the dump up — that's the
-# DR path for "fresh VM, same S3 bucket, get the metadata back".
-# Tracked separately because it cuts across the backup app boundary.
+def juicefs_meta_db_path(config: Config) -> str:
+    """Public alias of ``_juicefs_meta_db`` for the route layer.
+
+    The dashboard surfaces this path so an operator who wants to
+    snapshot the must-back-up file knows exactly where to look.
+    Not part of the BackendState DTO because it's a derived path,
+    not persistent DB state.
+    """
+    return _juicefs_meta_db(config)
+
+
+def juicefs_state_dir(config: Config) -> str:
+    """Public alias of ``_juicefs_state_dir`` for the route layer."""
+    return _juicefs_state_dir(config)
 
 
 def is_juicefs_installed(config: Config) -> bool:
@@ -96,7 +248,14 @@ def install_juicefs(config: Config) -> None:
     new one alongside the old before swapping a symlink (we don't ship
     that flow today — bumping JUICEFS_VERSION just makes a fresh
     install on the next boot).
+
+    Runs the legacy-layout migration first so a zone whose meta DB
+    still lives at the pre-tidy path gets renamed into the new
+    ``juicefs/state/`` home before the install proceeds.  Idempotent
+    on already-migrated zones; cheap enough to run on every install
+    that openhost-core won't notice the extra ``os.path.isfile`` calls.
     """
+    _migrate_legacy_layout(config)
     if is_juicefs_installed(config):
         return
     install_dir = _juicefs_install_dir(config)
@@ -701,6 +860,107 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> Config:
             state_message=f"Failed to attach archive backend: {exc}",
         )
     return apply_backend_to_config(config, db)
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class MetaDumpSummary:
+    """Summary of the JuiceFS metadata dumps living in ``<bucket>/<prefix>/meta/``.
+
+    Surfaces JuiceFS's automatic hourly meta-backup in a form the
+    dashboard can render without itself having to talk to S3 from JS.
+    The bucket is the source of truth: counting and finding the
+    most-recent dump means a single ListObjectsV2 pass.
+    """
+
+    count: int
+    latest_at: str | None  # ISO 8601 string
+    latest_key: str | None  # full S3 key, useful for diagnostics
+
+
+def list_meta_dumps(
+    s3_bucket: str,
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+    s3_prefix: str | None,
+) -> MetaDumpSummary | None:
+    """Summarise the JuiceFS meta-dump objects in the bucket.
+
+    Returns ``None`` on any failure (boto3 missing, bucket
+    unreachable, list permission denied, etc.) — the dashboard
+    treats ``None`` as "I can't see whether dumps exist" and renders
+    accordingly.  Returning a structured error here would just push
+    the rendering complexity into the route layer; ``None``-on-error
+    keeps the GET path responsive even when S3 is having a bad day.
+
+    Lists at most 1000 dumps in a single call (boto3's default page
+    size).  An hourly cadence implies ~8760 dumps after a year, so
+    we may eventually paginate, but pagination just to count for
+    the dashboard's "N dumps in bucket" line is overkill — we cap
+    the count at 1000 and label it as such if needed.
+    """
+    try:
+        import boto3
+    except ImportError:
+        return None
+
+    prefix = (s3_prefix or "").strip("/")
+    list_prefix = f"{prefix}/meta/" if prefix else "meta/"
+    try:
+        kwargs: dict[str, object] = {
+            "aws_access_key_id": s3_access_key_id,
+            "aws_secret_access_key": s3_secret_access_key,
+        }
+        if s3_endpoint:
+            kwargs["endpoint_url"] = s3_endpoint
+        if s3_region:
+            kwargs["region_name"] = s3_region
+        client = boto3.client("s3", **kwargs)
+        resp = client.list_objects_v2(
+            Bucket=s3_bucket,
+            Prefix=list_prefix,
+            MaxKeys=1000,
+        )
+    except Exception:
+        # Don't surface S3 errors as exceptions on the GET path.  The
+        # operator-visible signal is "we don't know how recent the
+        # last dump was" which the dashboard renders as a yellow
+        # "Last metadata dump: unknown" line.
+        logger.exception("list_meta_dumps: list_objects_v2 failed")
+        return None
+
+    contents = resp.get("Contents") or []
+    # Filter to actual dump files (juicefs writes them as
+    # ``meta/dump-YYYY-MM-DD-HHMMSS.json.gz``).  Defensive in case the
+    # operator (or another tool) drops unrelated objects in the meta/
+    # prefix; our count should reflect what JuiceFS itself wrote.
+    dumps = [
+        obj for obj in contents
+        if obj.get("Key", "").rsplit("/", 1)[-1].startswith("dump-")
+        and obj.get("Key", "").endswith(".json.gz")
+    ]
+    if not dumps:
+        return MetaDumpSummary(count=0, latest_at=None, latest_key=None)
+
+    latest = max(dumps, key=lambda obj: obj.get("LastModified") or 0)
+    last_modified = latest.get("LastModified")
+    latest_at: str | None = None
+    if last_modified is not None:
+        # boto3 returns timezone-aware datetimes.  Render as the
+        # canonical ``2026-05-01T18:37:49Z`` shape we already use
+        # elsewhere (see ``last_switched_at``).
+        try:
+            latest_at = last_modified.astimezone().strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except Exception:
+            latest_at = str(last_modified)
+    return MetaDumpSummary(
+        count=len(dumps),
+        latest_at=latest_at,
+        latest_key=latest.get("Key"),
+    )
 
 
 def test_s3_credentials(

@@ -290,6 +290,229 @@ def test_mount_passes_no_agent_flag(cfg):
     )
 
 
+# ---------------------------------------------------------------------------
+# Layout helpers + legacy-layout migration
+# ---------------------------------------------------------------------------
+
+
+def test_juicefs_state_and_runtime_dirs_are_separate_and_under_data_path(cfg):
+    """The on-disk layout splits JuiceFS state into two trees: critical
+    (``state/``, must back up) and regenerable (``runtime/``).  Both
+    live under ``openhost_data_path/juicefs/`` so the existing backup
+    flow picks the critical tree up by path-prefix matching.
+    """
+    state_dir = archive_backend._juicefs_state_dir(cfg)
+    runtime_dir = archive_backend._juicefs_runtime_dir(cfg)
+    juicefs_root = os.path.join(cfg.openhost_data_path, "juicefs")
+    assert state_dir == os.path.join(juicefs_root, "state")
+    assert runtime_dir == os.path.join(juicefs_root, "runtime")
+    # The critical tree and the regenerable tree must not nest into
+    # each other: an operator's restic include for ``state/`` should
+    # not accidentally hoover up the regenerable binary.
+    assert not state_dir.startswith(runtime_dir + os.sep)
+    assert not runtime_dir.startswith(state_dir + os.sep)
+
+
+def test_juicefs_meta_db_lives_in_state_dir(cfg):
+    """The metadata DB is the single must-back-up file, so it must
+    live in the critical-state directory (the one whose loss makes
+    the S3 bucket bytes uninterpretable without a meta-dump replay).
+    """
+    meta_db = archive_backend._juicefs_meta_db(cfg)
+    state_dir = archive_backend._juicefs_state_dir(cfg)
+    assert meta_db == os.path.join(state_dir, "meta.db")
+
+
+def test_juicefs_meta_db_path_is_public_alias(cfg):
+    """``juicefs_meta_db_path`` (no underscore) is the route layer's
+    entrypoint to the meta-DB path.  Must agree with the private
+    helper so an operator-visible "back this file up" message and
+    the actual file the migration writes are guaranteed identical.
+    """
+    assert archive_backend.juicefs_meta_db_path(cfg) == archive_backend._juicefs_meta_db(cfg)
+
+
+def test_migrate_legacy_layout_renames_old_meta_db(cfg, tmp_path):
+    """A pre-tidy zone has its meta DB at
+    ``<openhost_data_path>/juicefs-meta.db``.  After a single call to
+    ``_migrate_legacy_layout`` the file lives at the new path and the
+    old path is gone.  Mimics the upgrade-on-first-boot behaviour of
+    a real openhost-core that pulled in the layout-tidy commit.
+    """
+    legacy_meta = os.path.join(cfg.openhost_data_path, "juicefs-meta.db")
+    new_meta = archive_backend._juicefs_meta_db(cfg)
+    os.makedirs(cfg.openhost_data_path, exist_ok=True)
+    Path(legacy_meta).write_bytes(b"FAKE_SQLITE_HEADER\x00pretend-meta-db")
+    assert os.path.isfile(legacy_meta)
+    assert not os.path.exists(new_meta)
+
+    archive_backend._migrate_legacy_layout(cfg)
+
+    assert not os.path.exists(legacy_meta), "legacy path should have been renamed away"
+    assert os.path.isfile(new_meta), "new path should now hold the file"
+    # Content preserved byte-for-byte; no copy-then-delete (which
+    # would risk leaving two diverging copies if interrupted).
+    assert Path(new_meta).read_bytes() == b"FAKE_SQLITE_HEADER\x00pretend-meta-db"
+
+
+def test_migrate_legacy_layout_is_idempotent(cfg):
+    """Subsequent boots must not re-rename or otherwise touch the
+    file once it's at the new path.  ``install_juicefs`` calls the
+    migration on every install, so non-idempotency would mean every
+    s3 switch re-fires the ``Migrated JuiceFS metadata DB`` log line.
+    """
+    new_meta = archive_backend._juicefs_meta_db(cfg)
+    os.makedirs(os.path.dirname(new_meta), exist_ok=True)
+    Path(new_meta).write_bytes(b"already-at-new-path")
+
+    archive_backend._migrate_legacy_layout(cfg)
+    archive_backend._migrate_legacy_layout(cfg)
+
+    assert Path(new_meta).read_bytes() == b"already-at-new-path"
+
+
+def test_migrate_legacy_layout_does_not_clobber_new_meta(cfg):
+    """If both legacy and new paths somehow exist (e.g. a partial
+    migration left both), the migration must NOT overwrite the new
+    file.  We refuse to make a guess about which is the source of
+    truth and leave the legacy file alone for the operator to
+    resolve manually.  This is the conservative behaviour: silently
+    picking one of two diverging meta DBs could turn an operator's
+    inconsistency into permanent data loss.
+    """
+    legacy_meta = os.path.join(cfg.openhost_data_path, "juicefs-meta.db")
+    new_meta = archive_backend._juicefs_meta_db(cfg)
+    os.makedirs(cfg.openhost_data_path, exist_ok=True)
+    os.makedirs(os.path.dirname(new_meta), exist_ok=True)
+    Path(legacy_meta).write_bytes(b"old-data")
+    Path(new_meta).write_bytes(b"new-data")
+
+    archive_backend._migrate_legacy_layout(cfg)
+
+    assert Path(legacy_meta).read_bytes() == b"old-data"
+    assert Path(new_meta).read_bytes() == b"new-data"
+
+
+def test_migrate_legacy_layout_moves_legacy_binary_to_runtime_bin(cfg):
+    """The legacy install dir put the JuiceFS binary at
+    ``<openhost_data_path>/juicefs/juicefs-<version>``.  The new
+    layout has ``<openhost_data_path>/juicefs/runtime/bin/juicefs-<version>``.
+    Migration moves the binary into the new home so we don't
+    re-download it on the post-upgrade boot.
+    """
+    legacy_install = os.path.join(cfg.openhost_data_path, "juicefs")
+    os.makedirs(legacy_install, exist_ok=True)
+    legacy_binary = os.path.join(
+        legacy_install, f"juicefs-{archive_backend.JUICEFS_VERSION}"
+    )
+    Path(legacy_binary).write_bytes(b"#!/bin/sh\nfake juicefs binary\n")
+
+    archive_backend._migrate_legacy_layout(cfg)
+
+    new_binary = archive_backend._juicefs_binary(cfg)
+    assert os.path.isfile(new_binary), "binary should move into runtime/bin/"
+    assert not os.path.exists(legacy_binary), "legacy binary should be renamed away"
+
+
+# ---------------------------------------------------------------------------
+# list_meta_dumps
+# ---------------------------------------------------------------------------
+
+
+def test_list_meta_dumps_summarises_dump_objects():
+    """The summariser walks ``<bucket>/<prefix>/meta/`` and reports
+    count + most-recent timestamp.  Used by the System tab to render
+    "Last metadata dump: <ts> (N in bucket)" without the dashboard JS
+    having to talk to S3 directly.
+    """
+    import datetime as dt
+
+    fake_resp = {
+        "Contents": [
+            {
+                "Key": "andrew-3/meta/dump-2026-05-01-180000.json.gz",
+                "LastModified": dt.datetime(2026, 5, 1, 18, 0, 0, tzinfo=dt.timezone.utc),
+            },
+            {
+                "Key": "andrew-3/meta/dump-2026-05-01-190000.json.gz",
+                "LastModified": dt.datetime(2026, 5, 1, 19, 0, 0, tzinfo=dt.timezone.utc),
+            },
+            # Stray non-dump object in the meta/ prefix — must be
+            # filtered out so an operator who drops a README in there
+            # doesn't inflate the count.
+            {
+                "Key": "andrew-3/meta/README.txt",
+                "LastModified": dt.datetime(2026, 5, 1, 12, 0, 0, tzinfo=dt.timezone.utc),
+            },
+        ]
+    }
+    fake_client = mock.MagicMock()
+    fake_client.list_objects_v2.return_value = fake_resp
+    with mock.patch("boto3.client", return_value=fake_client):
+        summary = archive_backend.list_meta_dumps(
+            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3"
+        )
+    assert summary is not None
+    assert summary.count == 2  # README filtered out
+    assert summary.latest_key == "andrew-3/meta/dump-2026-05-01-190000.json.gz"
+    # ``latest_at`` rendered in the canonical ISO-Z shape we use for
+    # the other timestamp fields (last_switched_at).
+    assert "2026-05-01" in (summary.latest_at or "")
+    # list_objects_v2 was called with the right Prefix
+    fake_client.list_objects_v2.assert_called_once()
+    call = fake_client.list_objects_v2.call_args
+    assert call.kwargs["Bucket"] == "imbue-openhost"
+    assert call.kwargs["Prefix"] == "andrew-3/meta/"
+
+
+def test_list_meta_dumps_empty_bucket_returns_zero_count():
+    """A freshly-formatted bucket has no dumps yet — the dashboard
+    renders that as a yellow "no dumps yet" warning.  We need to
+    return a structured summary (count=0), NOT None, so the
+    dashboard distinguishes "no dumps" from "list failed."
+    """
+    fake_client = mock.MagicMock()
+    fake_client.list_objects_v2.return_value = {}  # no Contents key
+    with mock.patch("boto3.client", return_value=fake_client):
+        summary = archive_backend.list_meta_dumps(
+            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3"
+        )
+    assert summary is not None
+    assert summary.count == 0
+    assert summary.latest_at is None
+    assert summary.latest_key is None
+
+
+def test_list_meta_dumps_returns_none_on_s3_failure():
+    """When the list call raises (network glitch, perm error, etc.),
+    the dashboard renders 'metadata-dump status unavailable' — we
+    return None to signal the failure rather than propagating the
+    exception, because the GET path serving this must stay
+    responsive even on a partial outage.
+    """
+    fake_client = mock.MagicMock()
+    fake_client.list_objects_v2.side_effect = RuntimeError("S3 unreachable")
+    with mock.patch("boto3.client", return_value=fake_client):
+        summary = archive_backend.list_meta_dumps(
+            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", "andrew-3"
+        )
+    assert summary is None
+
+
+def test_list_meta_dumps_handles_no_prefix():
+    """Operator running without a prefix (single-zone bucket): the
+    list_prefix collapses to plain ``meta/`` instead of ``<prefix>/meta/``.
+    """
+    fake_client = mock.MagicMock()
+    fake_client.list_objects_v2.return_value = {"Contents": []}
+    with mock.patch("boto3.client", return_value=fake_client):
+        archive_backend.list_meta_dumps(
+            "imbue-openhost", "us-west-2", None, "AKIA", "hunter2", None
+        )
+    fake_client.list_objects_v2.assert_called_once()
+    assert fake_client.list_objects_v2.call_args.kwargs["Prefix"] == "meta/"
+
+
 def test_is_archive_dir_healthy_local(cfg, db):
     """For the local backend the check just verifies the directory
     exists.  Make_all_dirs (run by _make_test_config) creates it."""

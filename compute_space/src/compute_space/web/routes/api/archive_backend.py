@@ -181,23 +181,60 @@ def _build_hook(app) -> AppHook:  # noqa: ANN001  -- Quart app, kept loose to av
 
 @api_archive_backend_bp.route("/api/storage/archive_backend", methods=["GET"])
 @login_required
-def get_archive_backend() -> ResponseReturnValue:
+async def get_archive_backend() -> ResponseReturnValue:
     """Return the current archive-backend state (with secret redacted).
 
-    Also returns the resolved host-side path, which the dashboard
-    surfaces as a debugging aid: operators have asked "where do my
-    archive bytes actually live?" enough that giving them a
-    copy-pasteable answer is worth the extra two lines.
+    Surfaces three derived/operator-visible fields on top of the raw
+    DB state:
+
+    - ``archive_dir``: where ``app_archive`` data lives on the host
+      RIGHT NOW (the FUSE mount when backend=s3, the local-disk path
+      when backend=local).  Operators have asked "where do my
+      archive bytes actually live" enough that giving them a
+      copy-pasteable answer is worth the few extra lines.
+    - ``meta_db_path``: where the JuiceFS metadata DB lives.  The
+      one file an operator must back up to survive disk loss when
+      backend=s3.  Always present in the response (renders as a
+      no-op when backend=local — the path doesn't exist yet, but
+      surfacing it consistently lets the dashboard show "this is
+      where it WILL live" before a switch).
+    - ``meta_dumps``: summary of the JuiceFS auto-meta-backup
+      objects in the bucket.  ``None`` when backend=local OR when
+      we can't reach S3 to list them; an object with ``count`` +
+      ``latest_at`` + ``latest_key`` otherwise.  JuiceFS writes one
+      every hour by default (see ``--backup-meta=1h`` upstream),
+      so a healthy zone shows ``latest_at`` within the last hour.
     """
     config = get_config()
     db = get_db()
     state = archive_backend.read_state(db)
-    return jsonify(
-        {
-            **_state_to_response(state),
-            "archive_dir": archive_backend.archive_dir_for_backend(config, state.backend),
-        }
-    )
+    response: dict[str, object] = {
+        **_state_to_response(state),
+        "archive_dir": archive_backend.archive_dir_for_backend(config, state.backend),
+        "meta_db_path": archive_backend.juicefs_meta_db_path(config),
+        "meta_dumps": None,
+    }
+    if state.backend == "s3" and state.s3_bucket and state.s3_access_key_id and state.s3_secret_access_key:
+        # Only list when we have everything we need to authenticate.
+        # Run on a worker thread because list_objects_v2 does DNS +
+        # TLS + HTTP and would otherwise block the event loop on a
+        # cold cache.
+        summary = await asyncio.to_thread(
+            archive_backend.list_meta_dumps,
+            state.s3_bucket,
+            state.s3_region,
+            state.s3_endpoint,
+            state.s3_access_key_id,
+            state.s3_secret_access_key,
+            state.s3_prefix,
+        )
+        if summary is not None:
+            response["meta_dumps"] = {
+                "count": summary.count,
+                "latest_at": summary.latest_at,
+                "latest_key": summary.latest_key,
+            }
+    return jsonify(response)
 
 
 @api_archive_backend_bp.route(

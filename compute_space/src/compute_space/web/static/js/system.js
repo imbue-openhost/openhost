@@ -230,8 +230,51 @@ function renderArchiveBackend(state) {
       + (state.s3_access_key_id ? ', key=' + escHtml(state.s3_access_key_id.slice(0, 4)) + '…' : '')
       + '</span>';
   }
-  var pathInfo = '<div style="margin-top:0.35em;color:#666;font-size:0.9em;">'
+  // Three host-path lines clarifying where the operator-relevant
+  // pieces of state actually live on disk.  Order is intentional:
+  // operators want "where do my bytes live" first (Host path), then
+  // "what file do I have to back up if the disk dies" (Metadata DB).
+  // The metadata-DB line renders for both backends — local-mode shows
+  // the path it WILL use after a switch, so the operator knows in
+  // advance and can pre-plan their backup story.
+  var hostInfo = '<div style="margin-top:0.35em;color:#666;font-size:0.9em;">'
     + 'Host path: <code>' + escHtml(state.archive_dir || '') + '</code></div>';
+  if (state.meta_db_path) {
+    hostInfo += '<div style="color:#666;font-size:0.9em;">'
+      + 'Metadata DB: <code>' + escHtml(state.meta_db_path) + '</code>'
+      + (state.backend === 's3'
+        ? ' <span style="color:#600;">(must back up to survive disk loss)</span>'
+        : '')
+      + '</div>';
+  }
+
+  // Meta-dump status (s3 only).  Three render paths: list succeeded
+  // and dumps exist; list succeeded and zero dumps; list failed (we
+  // got null from the server because S3 was unreachable or boto3
+  // wasn't installed).
+  var dumpInfo = '';
+  if (state.backend === 's3') {
+    var dumps = state.meta_dumps;
+    if (dumps && dumps.count > 0) {
+      dumpInfo = '<div style="margin-top:0.35em;color:#666;font-size:0.9em;">'
+        + 'Last metadata dump: <code>' + escHtml(dumps.latest_at || '?') + '</code>'
+        + ' (' + dumps.count + ' in bucket, hourly cadence)</div>';
+    } else if (dumps && dumps.count === 0) {
+      dumpInfo = '<div style="margin-top:0.35em;color:#dc3545;font-size:0.9em;">'
+        + 'No metadata dumps in bucket yet.  JuiceFS writes one within an hour of mount; if this persists past the first hour something is wrong with the mount.</div>';
+    } else {
+      // ``meta_dumps === null`` -> server couldn't list.  Could be
+      // a transient S3 hiccup or a missing list permission on the
+      // creds.  Surface the uncertainty rather than silently
+      // omitting the line, so an operator who wonders "is JuiceFS
+      // backing up my metadata" gets a visible "we don't know."
+      dumpInfo = '<div style="margin-top:0.35em;color:#d97706;font-size:0.9em;">'
+        + 'Metadata-dump status unavailable: could not list <code>'
+        + escHtml((state.s3_prefix ? state.s3_prefix + '/' : '') + 'meta/')
+        + '</code> in the bucket.  Check creds + bucket reachability.</div>';
+    }
+  }
+
   var disabled = state.state === 'switching' ? 'disabled' : '';
   var buttonLabel = state.backend === 's3' ? 'Switch to local disk…' : 'Switch to S3…';
   var btn = '<button class="btn" id="archive-backend-switch-btn" ' + disabled + '>' + buttonLabel + '</button>';
@@ -252,7 +295,7 @@ function renderArchiveBackend(state) {
   }
   el.innerHTML = '<div style="background:' + bgColor + ';border:1px solid ' + borderColor + ';padding:0.8em 1em;border-radius:4px;">'
     + '<strong>Archive backend:</strong> ' + escHtml(label) + details
-    + pathInfo + note + experimentalNote
+    + hostInfo + dumpInfo + note + experimentalNote
     + '<div style="margin-top:0.5em;">' + btn + '</div>'
     + '<div id="archive-backend-form" style="display:none;margin-top:0.8em;border-top:1px solid #ccc;padding-top:0.8em;"></div>'
     + '</div>';
@@ -275,6 +318,7 @@ function showArchiveSwitchForm(state) {
       + 'A lost VM means the bucket bytes can be recovered only from JuiceFS\'s periodic meta dumps in S3 (replayed via <code>juicefs load</code>); anything written between the last dump and the loss is orphan chunks with no inode.'
       + '</div></div>'
       + '<p><strong>Switch to S3-backed archive.</strong> Affected apps (those using <code>app_archive</code> or <code>access_all_data</code>) will be stopped, archive data copied to the new backend, and apps restarted. In-flight uploads will be lost.</p>'
+      + '<p style="color:#666;font-size:0.9em;">JuiceFS will automatically dump the metadata DB to <code>&lt;bucket&gt;/&lt;prefix&gt;/meta/dump-*.json.gz</code> once an hour after the mount comes up.  These dumps are the recovery anchor for the "fresh VM, same bucket" case &mdash; a zone whose VM dies retains everything written before the last dump.</p>'
       + '<div style="display:grid;grid-template-columns:max-content 1fr;gap:0.4em 0.8em;align-items:center;max-width:600px;">'
       + '<label>S3 bucket</label><input id="ab-bucket" value="' + escHtml(state.s3_bucket || '') + '" placeholder="my-openhost-archive">'
       + '<label>Region</label><input id="ab-region" value="' + escHtml(state.s3_region || 'us-east-1') + '">'
