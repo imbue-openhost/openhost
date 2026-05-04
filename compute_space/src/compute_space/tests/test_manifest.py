@@ -550,3 +550,26 @@ class TestUnprivilegedPortFloor:
         toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.port_mappings[0].host_port == 0
+
+
+class TestShmMb:
+    """[runtime.container].shm_mb."""
+
+    def test_default_zero(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.shm_mb == 0
+
+    def test_shm_mb_accepted(self):
+        toml = MINIMAL + "shm_mb = 2048\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.shm_mb == 2048
+
+    def test_shm_mb_negative_rejected(self):
+        toml = MINIMAL + "shm_mb = -1\n"
+        with pytest.raises(ValueError, match="shm_mb"):
+            parse_manifest_from_string(toml)
+
+    def test_shm_mb_non_int_rejected(self):
+        toml = MINIMAL + 'shm_mb = "big"\n'
+        with pytest.raises(ValueError, match="shm_mb"):
+            parse_manifest_from_string(toml)
