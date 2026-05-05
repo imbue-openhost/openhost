@@ -14,7 +14,6 @@ import pytest
 
 from compute_space.core import security
 
-
 _SS_FORMAT = "LISTEN  0  4096  {addr}  *:*"
 
 

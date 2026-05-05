@@ -642,12 +642,8 @@ def test_manifest_requires_archive_only_matches_app_archive_true():
     assert not archive_backend.manifest_requires_archive("[data]\naccess_all_data = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\napp_data = true\n")
     assert not archive_backend.manifest_requires_archive("")
-    assert not archive_backend.manifest_requires_archive(
-        "[data]\napp_archive = false\napp_data = true\n"
-    )
-    assert archive_backend.manifest_requires_archive(
-        "[data]\napp_archive = true\naccess_all_data = true\n"
-    )
+    assert not archive_backend.manifest_requires_archive("[data]\napp_archive = false\napp_data = true\n")
+    assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\naccess_all_data = true\n")
 
 
 @pytest.mark.asyncio

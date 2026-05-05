@@ -998,8 +998,7 @@ def switch_backend(
             # disabled→disabled is the no-op short-circuit and
             # local|s3→disabled is rejected upstream, so this is unreachable.
             raise BackendSwitchError(
-                f"unreachable: target_backend={target_backend!r} reached "
-                "the success-path SQL with no matching branch."
+                f"unreachable: target_backend={target_backend!r} reached the success-path SQL with no matching branch."
             )
         db.commit()
 
