@@ -109,6 +109,9 @@ class AppManifest:
     port_mappings: list[PortMapping] = attr.Factory(list)
     capabilities: list[str] = attr.Factory(list)
     devices: list[str] = attr.Factory(list)
+    # `--shm-size` (in MiB).  0 = use podman's default (64 MiB).
+    # Apps doing serious browser work (jibri) need ~2 GiB minimum.
+    shm_mb: int = 0
 
     # [routing]
     health_check: str | None = None
@@ -276,6 +279,10 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     if not container.get("port"):
         raise ValueError("[runtime.container].port is required")
 
+    shm_mb = container.get("shm_mb", 0)
+    if not isinstance(shm_mb, int) or shm_mb < 0:
+        raise ValueError("[runtime.container].shm_mb must be a non-negative integer")
+
     routing = data.get("routing", {})
     resources = data.get("resources", {})
     data_section = data.get("data", {})
@@ -312,6 +319,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         port_mappings=_parse_ports(data.get("ports", [])),
         capabilities=_validate_capabilities(container.get("capabilities", [])),
         devices=_validate_devices(container.get("devices", [])),
+        shm_mb=shm_mb,
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
         memory_mb=resources.get("memory_mb", 128),

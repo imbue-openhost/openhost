@@ -259,6 +259,8 @@ def run_container(
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges=true",
     ]
+    if manifest.shm_mb > 0:
+        cmd.append(f"--shm-size={manifest.shm_mb}m")
     for cap in sorted(DEFAULT_CAPABILITIES):
         cmd.extend(["--cap-add", cap])
 

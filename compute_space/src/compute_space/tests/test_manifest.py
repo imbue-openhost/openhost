@@ -597,3 +597,26 @@ class TestAppArchive:
         manifest = parse_manifest_from_string(toml)
         assert manifest.app_archive is True
         assert manifest.access_all_data is True
+
+
+class TestShmMb:
+    """[runtime.container].shm_mb."""
+
+    def test_default_zero(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.shm_mb == 0
+
+    def test_shm_mb_accepted(self):
+        toml = MINIMAL + "shm_mb = 2048\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.shm_mb == 2048
+
+    def test_shm_mb_negative_rejected(self):
+        toml = MINIMAL + "shm_mb = -1\n"
+        with pytest.raises(ValueError, match="shm_mb"):
+            parse_manifest_from_string(toml)
+
+    def test_shm_mb_non_int_rejected(self):
+        toml = MINIMAL + 'shm_mb = "big"\n'
+        with pytest.raises(ValueError, match="shm_mb"):
+            parse_manifest_from_string(toml)
