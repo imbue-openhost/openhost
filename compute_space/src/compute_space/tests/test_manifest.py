@@ -572,42 +572,27 @@ class TestAppArchive:
         assert manifest.app_data is True
 
     def test_app_archive_explicit_true_with_sqlite_only(self):
-        """``app_archive`` is allowed when SQLite implicitly enables
-        the local app_data tier — the validator looks at the raw
-        toml, not the synthesised app_data flag."""
+        """``app_archive`` is allowed when SQLite implicitly enables the local app_data tier; the validator looks at the raw toml, not the synthesised app_data flag."""
         toml = MINIMAL + '\n[data]\nsqlite = ["main"]\napp_archive = true\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.app_archive is True
         assert manifest.sqlite_dbs == ["main"]
 
     def test_app_archive_without_app_data_rejected(self):
-        """An archive-only app makes no sense.  SQLite + working
-        state must live in the local-disk tier; rejecting the
-        archive-only config at parse time prevents apps from ever
-        getting deployed in that state."""
+        """An archive-only app is rejected at parse time so apps with no local-disk tier (where SQLite + working state must live) never get deployed."""
         toml = MINIMAL + "\n[data]\napp_archive = true\n"
         with pytest.raises(ValueError, match="app_archive requires"):
             parse_manifest_from_string(toml)
 
     def test_app_archive_with_access_all_data_does_not_crash_validator(self):
-        """access_all_data is the catch-all permission.  It implies
-        access to every tier, but app_archive is still a separate
-        opt-in.  An access_all_data manifest without an explicit
-        app_archive should NOT trip the 'app_archive requires
-        app_data' validator."""
+        """An ``access_all_data`` manifest without an explicit ``app_archive`` must NOT trip the 'app_archive requires app_data' validator; access_all_data implies access to every tier but app_archive is still a separate explicit opt-in."""
         toml = MINIMAL + "\n[data]\naccess_all_data = true\n"
         manifest = parse_manifest_from_string(toml)
-        # access_all_data on its own doesn't toggle app_archive;
-        # apps that want the archive bind must opt in explicitly.
         assert manifest.app_archive is False
         assert manifest.access_all_data is True
 
     def test_app_archive_with_access_all_data_and_no_app_data_accepted(self):
-        """access_all_data implies access to every tier including
-        the local-disk one, so it satisfies the 'app_archive needs
-        local state somewhere' invariant on its own.  An
-        access_all_data manifest that adds app_archive=true must NOT
-        be rejected for missing app_data."""
+        """An ``access_all_data`` manifest that adds ``app_archive = true`` must NOT be rejected for missing ``app_data``; access_all_data implies access to every tier including local-disk, satisfying the 'archive needs local state somewhere' invariant."""
         toml = MINIMAL + "\n[data]\naccess_all_data = true\napp_archive = true\n"
         manifest = parse_manifest_from_string(toml)
         assert manifest.app_archive is True

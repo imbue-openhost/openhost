@@ -208,22 +208,7 @@ def run_container(
     archive_dir: str,
     port_mappings: list[PortMapping] | None = None,
 ) -> str:
-    """Start a detached container for an app.  Returns the container ID.
-
-    ``archive_dir`` is the host-side root for the ``app_archive`` tier;
-    its backing is operator-selected (local disk by default; can be a
-    JuiceFS mount path).  The in-container path is the same regardless
-    of backing so apps don't have to know whether their archive tier
-    is on local disk or on S3.
-
-    Mount topology depends on the manifest opt-ins:
-      - ``[data] app_archive = true``: a per-app subdir is bind-mounted
-        from ``archive_dir/<name>/`` into ``/data/app_archive/<name>/``.
-      - ``[data] access_all_data = true``: the WHOLE ``archive_dir`` is
-        bind-mounted into ``/data/app_archive/`` (mirroring how
-        ``app_data`` and ``app_temp_data`` are handled — the
-        all-access app gets every app's archive).
-    """
+    """Start a detached container for an app.  Returns the container ID."""
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
     app_archive_dir = os.path.join(archive_dir, app_name)
@@ -289,14 +274,8 @@ def run_container(
                 ),
             ]
         )
-        # Archive parent mount.  Same rationale as the app_data parent
-        # mount above: an access_all_data app sees the entire archive
-        # namespace, not just its own subdir.  But unlike app_data,
-        # the archive tier may be ``disabled`` (no host backing) — in
-        # which case we silently skip the mount rather than refusing
-        # to start.  access_all_data is permissive: it grants access
-        # to whichever data tiers exist, not a hard requirement that
-        # all of them be configured.
+        # access_all_data is permissive — skip the archive mount when
+        # the tier isn't configured rather than refusing to start.
         if os.path.isdir(archive_dir):
             cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
         os.makedirs(vm_data_dir, exist_ok=True)

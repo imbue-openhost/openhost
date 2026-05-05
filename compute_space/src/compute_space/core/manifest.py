@@ -123,18 +123,6 @@ class AppManifest:
     sqlite_dbs: list[str] = attr.Factory(list)
     app_data: bool = False
     app_temp_data: bool = False
-    # ``app_archive`` opts the app into an additional bind mount at
-    # ``/data/app_archive/<name>/`` whose host backing is operator-
-    # configurable from the dashboard: defaults to a local-disk
-    # subdirectory under ``persistent_data_dir``, switchable to a
-    # JuiceFS-on-S3 mount by the operator at runtime.  The app sees
-    # the same POSIX path either way.  Intended for bulk content
-    # (videos, photos, attachments) — things that need elastic
-    # storage but tolerate the higher latency of a network FS.
-    # ``app_data`` remains the right place for SQLite, working
-    # state, and anything that requires strict POSIX
-    # consistency (close-to-open semantics over a network FS would
-    # corrupt SQLite WAL).
     app_archive: bool = False
     access_vm_data: bool = False
     access_all_data: bool = False
@@ -302,19 +290,6 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
             app_name,
         )
 
-    # Reject ``app_archive`` without ``app_data``.  The archive tier is
-    # for bulk content (videos, photos, attachments); SQLite + working
-    # state must live in the local-disk app_data tier because the
-    # archive tier may be backed by a network FS with close-to-open
-    # consistency that corrupts SQLite WAL.  Allowing app_archive on
-    # its own would invite that corruption — every meaningful app
-    # needs SOME local state (at least a sqlite session db, even if
-    # the bulk content is archive-resident).
-    #
-    # ``access_all_data`` is the catch-all permission that grants
-    # every tier including the local-disk one, so it satisfies the
-    # invariant on its own — an access_all_data app gets app_data
-    # access regardless of whether the manifest names the field.
     has_local_tier = data_section.get("app_data") or data_section.get("sqlite") or data_section.get("access_all_data")
     if data_section.get("app_archive") and not has_local_tier:
         raise ValueError(

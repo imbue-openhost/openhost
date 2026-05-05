@@ -124,10 +124,6 @@ def init_app(app: Quart) -> None:
     """Initialize DB and app state. Call after data directories are ready."""
     config = app.openhost_config  # type: ignore[attr-defined]
     init_db(app)
-    # Reattach the archive backend (mount JuiceFS if the operator
-    # had switched to s3 in a previous boot).  Returns a Config
-    # whose archive_dir_override matches the persisted backend so
-    # subsequent code reads the right path.
     db = sqlite3.connect(config.db_path)
     try:
         new_config = archive_backend.attach_on_startup(config, db)

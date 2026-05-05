@@ -128,11 +128,6 @@ def test_remove_full_calls_full_deprovision(tmp_path: Path) -> None:
         remove_app_background("myapp", keep_data=False, config=cfg)
 
     temp_only.assert_not_called()
-    # ``deprovision_data`` takes four args including ``archive_dir``;
-    # an earlier-PR version of this call dropped the 4th arg, which
-    # was a real bug (mypy flagged it once apps.py landed in the
-    # incremental-check set).  Updated the call + this assertion at
-    # the same time.
     full.assert_called_once_with(
         "myapp",
         cfg.persistent_data_dir,

@@ -294,9 +294,6 @@ function renderArchiveBackend(state) {
   document.getElementById('archive-backend-switch-btn').onclick = function() { showArchiveSwitchForm(state); };
 }
 
-// HTML fragment for the S3 form body, shared between the
-// 'local→s3' (regular switch) and 'disabled→s3' (initial configure)
-// paths so the two stay in lockstep.
 function _s3SwitchFormHtml(state, includeDeleteSource) {
   return '<p><strong>Switch to S3-backed archive.</strong> Affected apps (those using <code>app_archive</code> or <code>access_all_data</code>) will be stopped, archive data copied to the new backend, and apps restarted. In-flight uploads will be lost.</p>'
     + '<p class="error"><strong>Experimental.</strong> Filename-to-S3-chunk mappings live in a SQLite metadata DB on this VM, not in the bucket. A lost VM means the bucket bytes can be recovered only from JuiceFS\'s periodic meta dumps in S3 (replayed via <code>juicefs load</code>); anything written between the last dump and the loss is orphan chunks with no inode.</p>'
@@ -322,11 +319,6 @@ function _s3SwitchFormHtml(state, includeDeleteSource) {
 }
 
 function _localSwitchFormHtml(fromBackend) {
-  // ``fromBackend`` is the source we're switching FROM.
-  // 'disabled': we're configuring local from scratch — no copy,
-  //   no apps to stop (none can have been installed against a
-  //   disabled backend), so the wording reflects that.
-  // 's3': data is copied off S3 onto local disk and apps restart.
   if (fromBackend === 'disabled') {
     return '<p><strong>Configure local-disk archive.</strong> Archive data will live on the persistent host volume under <code>persistent_data/app_archive/</code>. Same backup story as <code>app_data</code>.</p>'
       + '<p><label><input type="checkbox" id="ab-confirm"> I understand: archive-using apps deployed after this point will store their bulk data on the host\u2019s local disk.</label></p>'
@@ -348,9 +340,6 @@ function _localSwitchFormHtml(fromBackend) {
 function showArchiveSwitchForm(state) {
   var formEl = document.getElementById('archive-backend-form');
   if (state.backend === 'disabled') {
-    // Pick-either flow: a radio at the top selects local vs s3, and
-    // re-renders the body underneath when toggled.  ``ab-target``
-    // determines which submit handler runs.
     var pickerHtml = '<p><strong>Pick an archive backend.</strong> This is a one-time configure step for fresh zones; you can still switch between local and s3 afterwards.</p>'
       + '<div class="control-row">'
       + '<label><input type="radio" name="ab-target" value="local" checked> Local disk</label>'
@@ -362,8 +351,6 @@ function showArchiveSwitchForm(state) {
     var renderBody = function() {
       var picked = document.querySelector('input[name="ab-target"]:checked').value;
       var body = document.getElementById('ab-target-body');
-      // ``includeDeleteSource=false`` because there's no local-disk
-      // archive to delete when coming from disabled.
       body.innerHTML = picked === 's3'
         ? _s3SwitchFormHtml(state, false)
         : _localSwitchFormHtml('disabled');
@@ -376,7 +363,6 @@ function showArchiveSwitchForm(state) {
     return;
   }
 
-  // Existing local→s3 / s3→local flows.
   var goingToS3 = state.backend === 'local';
   formEl.innerHTML = goingToS3
     ? _s3SwitchFormHtml(state, true)
@@ -385,9 +371,6 @@ function showArchiveSwitchForm(state) {
   _wireArchiveSwitchFormButtons(goingToS3, formEl);
 }
 
-// Hook up the cancel / test-connection / submit buttons after the
-// form HTML has been written.  Shared between the disabled-pick and
-// the regular local↔s3 paths.
 function _wireArchiveSwitchFormButtons(goingToS3, formEl) {
   document.getElementById('ab-cancel-btn').onclick = function() {
     formEl.hidden = true;
@@ -440,10 +423,7 @@ function submitArchiveSwitch(goingToS3) {
     fd.append('s3_prefix', document.getElementById('ab-prefix').value);
     fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
     fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
-    // The delete-source-after-copy checkbox only exists for the
-    // local→s3 transition (there's no local-disk archive to delete
-    // when coming from disabled).  Defensive lookup so the missing-
-    // element case is not a TypeError.
+    // Checkbox only exists on the local→s3 transition.
     var deleteSourceEl = document.getElementById('ab-delete-source');
     if (deleteSourceEl && deleteSourceEl.checked) {
       fd.append('delete_source_after_copy', 'true');
@@ -476,9 +456,6 @@ function pollArchiveBackend() {
       setTimeout(pollArchiveBackend, 1500);
     }
   }, function(err) {
-    // Surface the polling failure rather than silently freezing the
-    // last rendered state.  We don't reschedule — the operator can
-    // hit reload to retry.
     var el = document.getElementById('archive-backend-status');
     if (el) {
       el.innerHTML = '<p class="error"><strong>Archive backend status unavailable.</strong> '

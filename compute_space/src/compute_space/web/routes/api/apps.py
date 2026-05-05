@@ -50,25 +50,6 @@ def _rmtree_force(path: str) -> None:
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
-# Re-exported aliases of the shared helpers in core.archive_backend.
-#
-# The two predicates serve different gates:
-#
-# - ``_manifest_requires_archive`` (only ``app_archive = true``) gates
-#   the install (api_add_app) and reload (reload_app) routes: those
-#   apps cannot run without the archive tier being live, so refuse
-#   the operation rather than have ``provision_data`` write to an
-#   empty mount-point that the real mount shadows on next attach.
-#   ``access_all_data`` is NOT a hard requirement — those apps just
-#   see the archive when it's available, and the provision /
-#   container layer silently skip the archive mount otherwise.
-#
-# - ``_manifest_uses_archive`` (either flag) gates the destructive
-#   ``remove_app`` route: when the archive backend is unhealthy and
-#   the app has any per-app archive bytes (which both flags imply,
-#   since ``provision_data`` creates a per-app archive subdir for
-#   both when the tier is healthy), refusing the remove avoids the
-#   "rmtree the empty mountpoint, S3 bytes orphan" footgun.
 _manifest_requires_archive = archive_backend.manifest_requires_archive
 _manifest_uses_archive = archive_backend.manifest_uses_archive
 
@@ -186,30 +167,8 @@ async def api_add_app() -> ResponseReturnValue:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
-    # Refuse the deploy only when the manifest *requires* the archive
-    # tier — i.e. ``app_archive = true``.  ``access_all_data`` is a
-    # catch-all permission that grants access to whichever data tiers
-    # exist; it does not in itself require the archive backend to be
-    # configured.  Apps like the backup app set access_all_data because
-    # they want to see anything that's there, but they keep working
-    # fine in archive-less zones too.  Mount-time path (containers.py)
-    # / provision-time path (data.py) skip the archive mount silently
-    # when it isn't healthy for those apps.
-    #
-    # Two reasons archive can be not-ready for an ``app_archive=true``
-    # app, with two different operator-actions, surfaced as different
-    # status codes so the dashboard's add-app form can distinguish
-    # "transient mount hiccup, retry in a sec" from "permanent operator
-    # decision required, click over to System tab":
-    #
-    #   1. backend = 'disabled' on a fresh zone -> 400.  Asking the
-    #      operator to retry won't help; they have to pick a backend
-    #      on the System tab.
-    #   2. backend = 'local'/'s3' but ``is_archive_dir_healthy``
-    #      returned False -> 503.  Mount transient or local dir
-    #      missing — provision_data would otherwise write to the
-    #      empty mount-point and lose those writes once the mount
-    #      came back.
+    # 400 for backend=disabled (operator must pick one); 503 for
+    # configured-but-unhealthy (transient, retry).
     if manifest.app_archive:
         backend_state = archive_backend.read_state(db)
         if backend_state.backend == "disabled":
@@ -353,14 +312,6 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
 
-    # Refuse the reload if the archive backend's mount is dead and
-    # this app *requires* the archive tier (``app_archive = true``).
-    # access_all_data apps are not gated here: they merely see the
-    # archive when it's available, and reload on a dead archive just
-    # results in the mount being skipped.  app_archive=true apps would
-    # otherwise have ``provision_data`` write to an empty mount-point
-    # that the real mount shadows once it comes back, silently losing
-    # those writes.
     if not archive_backend.is_archive_dir_healthy(config, db):
         if _manifest_requires_archive(app_row["manifest_raw"] or ""):
             return jsonify(
@@ -488,15 +439,9 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     form = await request.form
     keep_data = form.get("keep_data") == "1"
 
-    # Refuse the destructive remove path if the archive backend's
-    # mount is dead and the app uses archive — otherwise the rmtree
-    # in remove_app_background's deprovision_data would only delete
-    # the empty mountpoint directory on local disk, leaving the real
-    # archive bytes still in S3 while the app's DB row goes away.
-    # Operators would think they cleaned up; they didn't.  The
-    # keep_data path is fine because it doesn't touch the archive
-    # tier.  Pre-check fires BEFORE the atomic-claim UPDATE so a
-    # rejected remove leaves the app row's status untouched.
+    # Refuse destructive remove on an unhealthy archive: rmtree of an
+    # empty mountpoint would leave S3 bytes orphaned while the DB row
+    # disappears. Must run before the atomic-claim UPDATE.
     if not keep_data and not archive_backend.is_archive_dir_healthy(config, db):
         if _manifest_uses_archive(app_row["manifest_raw"] or ""):
             return jsonify(
@@ -543,36 +488,17 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
 
 
 def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> str | None:
-    """Rename per-app subdirs across the three storage tiers, with
-    best-effort rollback on partial failure.
+    """Rename per-app subdirs across the three storage tiers, with rollback on partial failure.
 
-    Returns ``None`` on success, or an error message string on failure
-    (callers convert that to a 500 response).  Pure-sync helper so the
-    blocking ``os.rename`` calls — which can take tens-to-hundreds of
-    ms on a JuiceFS-backed archive tier — don't run on the asyncio
+    Returns ``None`` on success or an error message on failure. Sync helper
+    so the blocking renames (which can be slow on JuiceFS) stay off the
     event loop.
-
-    Each per-tier rename stays within its own parent dir (jfs->jfs or
-    local->local), so cross-device EXDEV is not an issue, but a
-    transient mount drop or permissions blip on the archive tier
-    still could fail.  When that happens, undo the renames we already
-    did so the on-disk state matches what's still in the DB; if the
-    rollback rename itself ALSO fails, log it and continue — the
-    operator-visible state is wedged for that tier and only manual
-    reconciliation can fix it.
     """
     rename_parents = [
         os.path.join(config.persistent_data_dir, "app_data"),
         os.path.join(config.temporary_data_dir, "app_temp_data"),
         config.app_archive_dir,
     ]
-    # Refuse the rename if any parent storage dir is missing — the
-    # missing-archive case is the symptom of a JuiceFS mount that's
-    # transiently dead, and silently proceeding would rename the
-    # other tiers while leaving the archive subdir under the old
-    # name.  The mount-liveness check itself happens earlier (the
-    # rename route can call ``archive_backend.is_archive_dir_healthy``
-    # before getting here); this is the per-tier sanity check.
     for parent in rename_parents:
         if not os.path.isdir(parent):
             return f"Storage parent {parent!r} is not a directory; refusing to rename so per-app data isn't orphaned."
@@ -623,11 +549,9 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
 
-    # Refuse the rename if the archive backend's mount is dead.
-    # ``_rename_app_storage_dirs`` would otherwise silently skip the
-    # archive tier (its underlying mount-point dir exists; the per-
-    # app subdir doesn't) while renaming the other tiers, leaving
-    # the archive contents orphaned under the old name in S3.
+    # Refuse rename on an unhealthy archive: the archive subdir would
+    # be silently skipped while other tiers are renamed, orphaning the
+    # archive contents under the old name.
     if not archive_backend.is_archive_dir_healthy(config, db):
         return jsonify(
             {
@@ -654,16 +578,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     )
     db.commit()
 
-    # Rename every per-app subdirectory across each storage tier
-    # (local-persistent, local-scratch, archive).  Missing the
-    # archive tier here would orphan its contents under the old
-    # name; the next provision_data on the renamed app would create
-    # a fresh empty archive subdir, silently abandoning whatever
-    # was there.  ``_rename_app_storage_dirs`` runs in a worker
-    # thread because ``config.app_archive_dir`` may resolve to a
-    # JuiceFS mount with tens-to-hundreds-of-ms rename latency,
-    # which would otherwise stall the event loop and block other
-    # requests for the duration of the rename.
+    # Off-loop because JuiceFS renames can take hundreds of ms.
     rename_error = await asyncio.to_thread(
         _rename_app_storage_dirs,
         config,
@@ -671,12 +586,6 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
         new_name,
     )
     if rename_error is not None:
-        # Restore the prior status + container_id so the dashboard
-        # shows the app the same way it did before the failed rename.
-        # ``stop_app_process`` already terminated the process, so a
-        # ``running`` state will reconcile via the supervisor's
-        # crashed-app path on the next health-check tick rather than
-        # leaving a permanently-stuck ``stopped`` row.
         rollback_db_error: str | None = None
         try:
             db.execute(
@@ -689,12 +598,6 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
             rollback_db_error = str(db_exc)
         error_message = f"Failed to rename app data directories: {rename_error}"
         if rollback_db_error is not None:
-            # Surface BOTH errors — the operator needs to know that
-            # the app's DB row may be stuck at ``stopped`` even though
-            # the on-disk rollback succeeded.  Without this, the
-            # 500 response only mentions the rename failure and the
-            # operator has no signal to look in the logs for the
-            # secondary DB error.
             error_message += (
                 f"; additionally, the DB-status rollback failed: "
                 f"{rollback_db_error}.  Check the apps table; the row "

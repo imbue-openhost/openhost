@@ -88,13 +88,6 @@ def provision_data(
     Apps only get filesystem access to directories they explicitly request
     via app_data, app_temp_data, and app_archive flags in [data].  SQLite
     entries implicitly enable app_data.
-
-    ``archive_dir`` is the host-side root for the ``app_archive`` tier.
-    Apps that opt in get a per-app subdirectory under it bind-mounted
-    into the container at ``/data/app_archive/<name>/``.  The backing
-    is operator-selected from the dashboard: defaults to local disk
-    under ``persistent_data_dir/app_archive``, switches to a JuiceFS
-    mount path when the operator picks the S3 backend.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -125,25 +118,9 @@ def provision_data(
 
     archive_available = os.path.isdir(archive_dir)
     if manifest.app_archive:
-        # ``app_archive = true`` apps cannot run without the archive
-        # tier.  ``archive_dir`` itself must already exist by the time
-        # we get here.  On the local-disk default it was created by
-        # ``Config.make_all_dirs``; on the S3 backend it was created
-        # by the storage-management code that set up the JuiceFS
-        # mount.
-        #
-        # We deliberately do NOT auto-mkdir a missing ``archive_dir``
-        # here — that would silently create a local-disk path that
-        # the JuiceFS mount then shadows once it comes back up,
-        # losing whatever apps wrote in the meantime.  Refuse to
-        # provision instead so the operator-visible failure is loud
-        # rather than silent.
-        #
-        # The "is the override path actually a live mount" check
-        # belongs in the route layer (deploy / reload / rename),
-        # because only the route layer has access to the
-        # archive_backend DB row that says which backend is active.
-        # Here we just sanity-check that the path is a directory.
+        # Do NOT auto-mkdir a missing archive_dir: a local path created
+        # here would be shadowed once the JuiceFS mount lands, silently
+        # losing whatever apps wrote in the meantime.  Fail loudly.
         if not archive_available:
             raise RuntimeError(
                 f"archive_dir {archive_dir!r} does not exist or is not a "
@@ -154,11 +131,8 @@ def provision_data(
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
     elif manifest.access_all_data and archive_available:
-        # ``access_all_data`` is permissive: grant archive access when
-        # the tier exists, but don't refuse to provision when it
-        # doesn't.  Apps that opt into access_all_data (e.g. the
-        # backup app, the file browser) keep working in archive-less
-        # zones; they just don't see the archive mount.
+        # access_all_data is permissive — skip the archive mount when
+        # the tier isn't configured rather than refusing to provision.
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
 
@@ -198,15 +172,7 @@ def deprovision_data(
     temp_data_dir: str,
     archive_dir: str,
 ) -> None:
-    """Remove all data for an app from local-persistent, archive, and
-    local-temp disks.
-
-    ``archive_dir`` is the host-side root for the ``app_archive`` tier
-    (see ``provision_data``).  The same rmtree-with-sudo-fallback path
-    works for both local-disk and JuiceFS backings — JuiceFS handles
-    chunk cleanup in its metadata engine and async-deletes blocks
-    from S3 when the per-app subdir is removed.
-    """
+    """Remove all data for an app from persistent, archive, and temp disks."""
     rmtree_with_sudo_fallback(os.path.join(data_dir, "app_data", app_name))
     rmtree_with_sudo_fallback(os.path.join(archive_dir, app_name))
     deprovision_temp_data(app_name, temp_data_dir)

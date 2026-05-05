@@ -32,7 +32,6 @@ def _make_app(cfg) -> Quart:  # noqa: ANN001
     app = Quart(__name__)
     app.config["DB_PATH"] = cfg.db_path
     app.openhost_config = cfg  # type: ignore[attr-defined]
-    # Wire the unwrapped endpoints so login_required doesn't bounce.
     app.add_url_rule(
         "/api/storage/archive_backend",
         view_func=routes.get_archive_backend.__wrapped__,  # type: ignore[attr-defined]
@@ -63,23 +62,9 @@ def app(cfg):
     yield _make_app(cfg)
 
 
-# ---------------------------------------------------------------------------
-# GET
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_get_returns_seeded_disabled_state(app):
-    """A fresh DB returns the seeded ``disabled`` row with no S3
-    fields set and ``archive_dir`` null (no backing exists yet).
-
-    The default flipped from 'local' to 'disabled' in the v7 migration
-    so apps that opt into the app_archive tier refuse to install on
-    a brand-new zone until the operator picks a backend on the
-    System tab.  Existing zones at 'local' from before v7 are
-    preserved by the migration and follow a separate code path
-    (covered by ``test_get_redacts_secret_when_s3`` etc.).
-    """
+    """A fresh DB returns the seeded ``disabled`` row with no S3 fields set and ``archive_dir`` null; the v7 migration flipped the default from 'local' to 'disabled' so app_archive apps refuse to install on a brand-new zone until the operator picks a backend."""
     client = app.test_client()
     resp = await client.get("/api/storage/archive_backend")
     assert resp.status_code == 200
@@ -87,13 +72,8 @@ async def test_get_returns_seeded_disabled_state(app):
     assert body["backend"] == "disabled"
     assert body["state"] == "idle"
     assert body["s3_bucket"] is None
-    # archive_dir is null on disabled — no host-side backing exists.
-    # The dashboard renders this as "(not yet provisioned)" rather
-    # than as an empty <code> block.
     assert body["archive_dir"] is None
-    # meta_dumps is null too (no S3 to list).
     assert body["meta_dumps"] is None
-    # The secret access key field must NEVER be in the response.
     assert "s3_secret_access_key" not in body
 
 
@@ -122,17 +102,10 @@ async def test_get_redacts_secret_when_s3(app):
 
 @pytest.mark.asyncio
 async def test_get_surfaces_meta_db_path(app):
-    """The dashboard renders ``meta_db_path`` so an operator can see
-    where the must-back-up file lives.  Surfaced for both backends —
-    on local the path is the one a future s3 switch would use, so
-    the operator can pre-plan their backup story before flipping
-    the switch.
-    """
+    """The dashboard renders ``meta_db_path`` (under ``juicefs/state/``) for both backends so the operator can pre-plan their backup story before flipping the switch."""
     client = app.test_client()
     resp = await client.get("/api/storage/archive_backend")
     body = await resp.get_json()
-    # Path is canonical: under ``juicefs/state/`` so it's grouped
-    # with the rest of the must-back-up state.
     assert "meta_db_path" in body
     assert body["meta_db_path"].endswith("/juicefs/state/meta.db"), body["meta_db_path"]
 
@@ -172,23 +145,13 @@ async def test_get_surfaces_meta_dumps_when_s3(app):
 
 @pytest.mark.asyncio
 async def test_get_meta_dumps_null_on_non_s3_backends(app):
-    """Backends other than s3 (disabled, local) have no S3 to list,
-    so ``meta_dumps`` is deliberately ``None`` so the dashboard
-    renders nothing in that column rather than a misleading
-    "0 dumps" message.
-
-    Covers both the seeded-default (disabled) and an explicit
-    local zone in one test because the route-layer logic skips the
-    list_meta_dumps call for both cases.
-    """
+    """Backends other than s3 (disabled, local) have ``meta_dumps`` set to ``None`` so the dashboard renders nothing rather than a misleading "0 dumps" message; covers both disabled and local in one test."""
     client = app.test_client()
-    # Default (disabled) state.
     resp = await client.get("/api/storage/archive_backend")
     body = await resp.get_json()
     assert body["backend"] == "disabled"
     assert body["meta_dumps"] is None
 
-    # Pre-v7 zones at backend='local'.
     db = sqlite3.connect(app.config["DB_PATH"])
     try:
         db.execute("UPDATE archive_backend SET backend='local'")
@@ -203,12 +166,7 @@ async def test_get_meta_dumps_null_on_non_s3_backends(app):
 
 @pytest.mark.asyncio
 async def test_get_meta_dumps_null_on_s3_list_failure(app):
-    """When ``list_meta_dumps`` returns None (S3 unreachable, etc.),
-    we propagate that through to the response as ``meta_dumps: null``.
-    The dashboard distinguishes this from the "0 dumps" case by
-    rendering a yellow "status unavailable" line instead of a red
-    "no dumps yet" warning.
-    """
+    """When ``list_meta_dumps`` returns None (S3 unreachable, etc.) the response surfaces ``meta_dumps: null`` so the dashboard distinguishes "status unavailable" from "no dumps yet"."""
     db = sqlite3.connect(app.config["DB_PATH"])
     try:
         db.execute(
@@ -227,11 +185,6 @@ async def test_get_meta_dumps_null_on_s3_list_failure(app):
     assert body["meta_dumps"] is None
 
 
-# ---------------------------------------------------------------------------
-# POST validation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_post_rejects_unknown_backend(app):
     client = app.test_client()
@@ -245,16 +198,7 @@ async def test_post_rejects_unknown_backend(app):
 
 @pytest.mark.asyncio
 async def test_post_rejects_disabled_as_target(app):
-    """``backend=disabled`` is intentionally not a valid POST target.
-
-    The disabled state is the seed for fresh zones; once an operator
-    has picked local or s3 they can flip between those two but
-    can't go back to disabled (which would orphan the on-disk /
-    in-bucket archive bytes with no openhost-side handle to recover
-    them).  Surfacing this rejection at the route layer with a 400
-    means the dashboard's switch form doesn't even need to expose
-    a 'Disable archive tier' button.
-    """
+    """``backend=disabled`` is rejected (400) because going back to disabled would orphan the on-disk / in-bucket archive bytes with no openhost-side handle to recover them."""
     client = app.test_client()
     resp = await client.post(
         "/api/storage/archive_backend",
@@ -289,29 +233,19 @@ async def test_post_s3_requires_creds(app):
 
 @pytest.mark.asyncio
 async def test_post_rejects_invalid_s3_prefix(app):
-    """A malformed prefix (path traversal, weird characters,
-    multi-segment, uppercase, too-short, etc.) must be rejected at
-    the route layer.  We want the dashboard form to bounce bad
-    input with a clear message rather than have the operator stare
-    at a generic 'juicefs format failed: invalid name' error 30 s
-    later.
-
-    The accepted shape is JuiceFS's volume-name regex
-    (``^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$``) because the prefix is
-    used directly as the JuiceFS volume name on the format step.
-    """
+    """Malformed prefix (path traversal, whitespace, NUL, multi-segment, uppercase, underscore, too short, leading/trailing dash, dot) is rejected at the route layer because it's used directly as the JuiceFS volume name (regex ``^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$``)."""
     client = app.test_client()
     bads = (
-        "../etc",  # traversal-style
-        "with space",  # no whitespace allowed
-        "embedded\x00null",  # NUL banned
-        "a/b",  # multi-segment forbidden — JuiceFS regex has no /
-        "UPPER",  # uppercase forbidden
-        "under_score",  # underscore forbidden by regex
-        "ab",  # too short (regex requires len 3+)
-        "-leading-dash",  # dash leader forbidden
-        "trailing-dash-",  # dash trailer forbidden
-        "with.dot",  # dot forbidden by JuiceFS regex
+        "../etc",
+        "with space",
+        "embedded\x00null",
+        "a/b",
+        "UPPER",
+        "under_score",
+        "ab",
+        "-leading-dash",
+        "trailing-dash-",
+        "with.dot",
     )
     for bad in bads:
         resp = await client.post(
@@ -353,18 +287,9 @@ async def test_post_rejects_when_already_switching(app):
     assert "already in progress" in (await resp.get_json())["error"]
 
 
-# ---------------------------------------------------------------------------
-# POST happy path
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_post_local_to_s3_returns_202_and_runs_switch(app, cfg):
-    """Switching local -> s3 returns 202 with state=switching; the
-    background thread eventually flips the DB row to s3/idle.
-    """
-    # Pre-create the JuiceFS mount target so the (mocked) mount
-    # leaves us with somewhere to copy into.
+    """Switching local -> s3 returns 202 with state=switching; the background thread eventually flips the DB row to s3/idle."""
     juicefs_mount = archive_backend.juicefs_mount_dir(cfg)
     Path(juicefs_mount).mkdir(parents=True, exist_ok=True)
 
@@ -389,8 +314,6 @@ async def test_post_local_to_s3_returns_202_and_runs_switch(app, cfg):
         body = await resp.get_json()
         assert body["state"] == "switching"
 
-        # Wait for the worker thread to finish.  The switch is small
-        # (no real S3 work) so this should settle very quickly.
         deadline = time.time() + 5
         while time.time() < deadline:
             db = sqlite3.connect(cfg.db_path)
@@ -402,39 +325,24 @@ async def test_post_local_to_s3_returns_202_and_runs_switch(app, cfg):
                 break
             time.sleep(0.05)
 
-    # GET reflects the new state and still redacts the secret.
     resp = await client.get("/api/storage/archive_backend")
     body = await resp.get_json()
     assert body["backend"] == "s3"
     assert body["state"] == "idle"
     assert body["s3_bucket"] == "mybucket"
     assert "s3_secret_access_key" not in body
-    # And the resolved archive_dir now points at the JuiceFS mount.
     assert body["archive_dir"] == juicefs_mount
 
 
 @pytest.mark.asyncio
 async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
-    """When the operator supplies a non-empty s3_prefix on the
-    switch form, it must round-trip cleanly:
-
-      - become the JuiceFS volume name passed to format_volume
-        (NOT a separate s3_prefix kwarg — see the long comment on
-        ``_bucket_url`` in core.archive_backend for why JuiceFS
-        won't accept a path component on the bucket URL)
-      - be persisted as both ``s3_prefix`` and
-        ``juicefs_volume_name`` in the DB row
-      - be surfaced on the next GET response in both fields
-    """
+    """A non-empty s3_prefix round-trips cleanly: it becomes the JuiceFS volume name passed to format_volume (not a separate s3_prefix kwarg, since JuiceFS won't accept a path component on the bucket URL), is persisted as both ``s3_prefix`` and ``juicefs_volume_name`` in the DB row, and is surfaced on the next GET response in both fields."""
     juicefs_mount = archive_backend.juicefs_mount_dir(cfg)
     Path(juicefs_mount).mkdir(parents=True, exist_ok=True)
 
     captured: dict[str, object] = {}
 
     def _capture_format(*args, **kwargs):
-        # format_volume is called with config as a positional and
-        # the rest as kwargs in the production call site; this
-        # signature accepts both shapes defensively.
         captured.update(kwargs)
         if args:
             captured["_positional_count"] = len(args)
@@ -470,20 +378,12 @@ async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
                 break
             time.sleep(0.05)
 
-    # format_volume sees the prefix as the JuiceFS volume name.
-    # Important: NOT as a separate ``s3_prefix`` kwarg — that field
-    # has been deliberately removed from format_volume's signature
-    # because JuiceFS can't take a path-segment on the bucket URL.
     assert captured["juicefs_volume_name"] == "andrew-3", captured
     assert "s3_prefix" not in captured, (
         "format_volume should NOT receive an s3_prefix kwarg; it must "
         "go through juicefs_volume_name instead.  Captured: " + str(captured)
     )
 
-    # GET surfaces both fields as we stored them: s3_prefix is the
-    # operator-visible name; juicefs_volume_name is the same value
-    # written verbatim, kept in its own column for the migration-
-    # path code that already keys off it.
     resp = await client.get("/api/storage/archive_backend")
     body = await resp.get_json()
     assert body["backend"] == "s3"
@@ -491,11 +391,6 @@ async def test_post_local_to_s3_with_prefix_persists_prefix(app, cfg):
     assert body["juicefs_volume_name"] == "andrew-3"
     assert body["s3_bucket"] == "imbue-openhost"
     assert body["s3_region"] == "us-west-2"
-
-
-# ---------------------------------------------------------------------------
-# test_connection
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -510,11 +405,7 @@ async def test_test_connection_requires_fields(app):
 
 @pytest.mark.asyncio
 async def test_test_connection_rejects_invalid_s3_prefix(app):
-    """The pre-flight endpoint validates s3_prefix shape too — same
-    rules as the switch POST — so the operator catches typos before
-    the actual switch runs.  The bad-prefix branch must reject
-    BEFORE we burn a head_bucket round-trip on it.
-    """
+    """The pre-flight endpoint validates s3_prefix shape with the same rules as the switch POST and rejects fail-fast — the head_bucket round-trip must NOT be made on an invalid prefix."""
     client = app.test_client()
     with mock.patch.object(archive_backend, "test_s3_credentials") as mocked:
         resp = await client.post(
@@ -523,26 +414,18 @@ async def test_test_connection_rejects_invalid_s3_prefix(app):
                 "s3_bucket": "b",
                 "s3_access_key_id": "a",
                 "s3_secret_access_key": "s",
-                # Multi-segment prefix used to be accepted; the new
-                # contract rejects it because the prefix has to map
-                # 1:1 to a JuiceFS volume name (which forbids /).
                 "s3_prefix": "a/b",
             },
         )
         body = await resp.get_json()
         assert resp.status_code == 400, body
         assert "s3_prefix" in body["error"], body
-        # Critical: the head_bucket call must not have been made on
-        # an invalid prefix — we want fail-fast, not after a network
-        # round-trip.
         mocked.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_test_connection_surfaces_errors(app):
-    """A failed reachability check returns 400 with the underlying
-    error string so the dashboard can surface it next to the form.
-    """
+    """A failed reachability check returns 400 with the underlying error string so the dashboard can surface it next to the form."""
     client = app.test_client()
     with mock.patch.object(
         archive_backend,
@@ -565,41 +448,26 @@ async def test_test_connection_surfaces_errors(app):
 
 @pytest.mark.asyncio
 async def test_list_archive_apps_heuristic_precision(app, cfg):
-    """The heuristic that decides which apps to stop during a switch
-    must match exactly ``app_archive = true`` (or
-    ``access_all_data = true``), not the substring "true" anywhere
-    in the manifest.  Without this, an app with
-    ``app_archive = false`` plus ``app_data = true`` would be
-    erroneously stopped — which means a routine s3 backend switch
-    would needlessly bounce every app on the zone that happened to
-    have any boolean opt-in.
-    """
-    # Seed three apps with manifests covering the relevant cases.
+    """The heuristic deciding which apps to stop during a switch matches exactly ``app_archive = true`` or ``access_all_data = true``, not the substring "true" anywhere in the manifest, so a routine switch doesn't needlessly bounce every app with an unrelated boolean opt-in."""
     db = sqlite3.connect(cfg.db_path)
     try:
         db.executemany(
             "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
             "VALUES (?, '1.0', ?, ?, 'running', ?)",
             [
-                # Should match: explicit app_archive = true.
                 ("real-archiver", "/r/a", 19501, "[data]\napp_archive = true\n"),
-                # Should match: access_all_data = true.
                 (
                     "all-access",
                     "/r/aa",
                     19502,
                     "[data]\naccess_all_data = true\n",
                 ),
-                # Should NOT match: app_archive=false with a different
-                # boolean=true elsewhere — the old substring heuristic
-                # got this wrong.
                 (
                     "innocent",
                     "/r/i",
                     19503,
                     "[data]\napp_archive = false\napp_data = true\n",
                 ),
-                # Should NOT match: no archive/access fields at all.
                 ("plain", "/r/p", 19504, "[data]\napp_data = true\n"),
             ],
         )
@@ -614,17 +482,10 @@ async def test_list_archive_apps_heuristic_precision(app, cfg):
 
 @pytest.mark.asyncio
 async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
-    """An archive-using app cannot be reloaded while the operator-
-    configured archive backend is unhealthy.  Without this guard, the
-    next provision_data would write to the underlying empty mount-
-    point on local disk and lose those writes once the mount came
-    back.
-    """
+    """An archive-using app cannot be reloaded while the configured archive backend is unhealthy; without this guard, provision_data would write to the underlying empty mount-point and lose those writes once the mount came back."""
 
     db = sqlite3.connect(cfg.db_path)
     try:
-        # Mark the backend s3 with a missing mount, and seed an
-        # archive-using app row.
         db.execute(
             "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
         )
@@ -654,10 +515,7 @@ async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
 
 @pytest.mark.asyncio
 async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
-    """An app that doesn't use the archive tier must still be
-    reloadable when the archive backend is unhealthy — the precheck
-    is targeted, not a blanket lock-out.
-    """
+    """An app that doesn't use the archive tier must still be reloadable when the archive backend is unhealthy — the precheck is targeted, not a blanket lock-out."""
 
     db = sqlite3.connect(cfg.db_path)
     try:
@@ -682,10 +540,6 @@ async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
         methods=["POST"],
     )
     client = test_app.test_client()
-    # We can't exercise the full reload flow without podman, so
-    # we just verify the precheck DOESN'T return 503 — the call
-    # may still fail later for unrelated reasons (which is fine
-    # for this test's purposes).
     with (
         mock.patch("compute_space.web.routes.api.apps.stop_app_process"),
         mock.patch("compute_space.web.routes.api.apps.reload_app_background"),
@@ -694,28 +548,10 @@ async def test_reload_app_allows_non_archive_when_archive_unhealthy(app, cfg):
         assert resp.status_code != 503, await resp.get_data(as_text=True)
 
 
-# ---------------------------------------------------------------------------
-# Install gate: app_archive=true + backend='disabled'
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_add_app_refuses_archive_app_when_backend_disabled(app, cfg, tmp_path):
-    """An app whose manifest opts into ``app_archive`` cannot be
-    installed while the archive backend is at its v7-default
-    'disabled' state.
+    """An app whose manifest opts into ``app_archive`` cannot be installed while the archive backend is at its v7-default 'disabled' state; the route returns 400 (operator-actionable, points at System tab) rather than 503 because this is a permanent rejection until the operator picks a backend."""
 
-    The route returns 400 (operator-actionable) with a message that
-    points at the System tab, NOT 503 (transient) — pre-v7 the
-    install path always succeeded for archive apps because the
-    seeded 'local' backend was always healthy.  The disabled state
-    introduces a permanent rejection until the operator picks a
-    backend, so 400 is the right surface.
-
-    Mocked at the manifest-parse level to avoid cloning a real repo.
-    """
-
-    # Default seeded state is 'disabled' — assert the precondition.
     db = sqlite3.connect(cfg.db_path)
     try:
         backend = db.execute("SELECT backend FROM archive_backend WHERE id=1").fetchone()[0]
@@ -723,10 +559,6 @@ async def test_add_app_refuses_archive_app_when_backend_disabled(app, cfg, tmp_p
         db.close()
     assert backend == "disabled", "test setup: expected fresh seed"
 
-    # Pretend a clone has already happened and produced an archive-
-    # using manifest at clone_dir.  We mock parse_manifest to return
-    # the manifest directly so we don't need to materialise a fake
-    # openhost.toml on disk.
     archive_manifest = AppManifest(
         name="probe",
         version="1.0",
@@ -739,7 +571,7 @@ async def test_add_app_refuses_archive_app_when_backend_disabled(app, cfg, tmp_p
         cpu_millicores=100,
         gpu=False,
         app_data=True,
-        app_archive=True,  # <- the trigger
+        app_archive=True,
         access_all_data=False,
         access_vm_data=False,
         app_temp_data=False,
@@ -804,44 +636,15 @@ async def test_test_connection_succeeds(app):
     assert (await resp.get_json())["ok"] is True
 
 
-# ---------------------------------------------------------------------------
-# manifest_requires_archive vs manifest_uses_archive: separate predicates
-#
-# The two helpers exist because ``access_all_data`` and ``app_archive``
-# have different gating semantics:
-#
-#   - ``manifest_requires_archive`` ⇒ refuse install / reload when the
-#     archive tier is disabled or unhealthy.  Only ``app_archive=true``
-#     qualifies; that flag carves a per-app subdir into the archive
-#     and the app is presumed to depend on it.
-#
-#   - ``manifest_uses_archive`` ⇒ stop the app during a backend switch,
-#     because the archive mount changes underneath it.  Both flags
-#     qualify; access_all_data apps see the archive parent directory.
-#
-# The risk if the two collapse back into one: either install gets
-# over-strict (access_all_data apps refused on archive-less zones,
-# breaking the backup app) or the switch flow gets under-strict
-# (access_all_data apps not stopped while the mount changes, racing
-# with their open file handles).  These tests pin both directions.
-# ---------------------------------------------------------------------------
-
-
 def test_manifest_requires_archive_only_matches_app_archive_true():
-    """``app_archive = true`` ⇒ True; ``access_all_data = true`` alone
-    ⇒ False.  The reload/install gates use this; gating
-    access_all_data here would over-block on archive-less zones.
-    """
+    """``manifest_requires_archive`` (used by install/reload gates) keys on ``app_archive = true`` only — ``access_all_data = true`` alone does NOT qualify, otherwise apps like the backup app would be blocked on archive-less zones. Companion to ``manifest_uses_archive`` (which gates the backend-switch stop flow on either flag)."""
     assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\naccess_all_data = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\napp_data = true\n")
     assert not archive_backend.manifest_requires_archive("")
-    # Substring footgun: ``app_archive = false`` plus another true field
-    # must not false-match.
     assert not archive_backend.manifest_requires_archive(
         "[data]\napp_archive = false\napp_data = true\n"
     )
-    # Both flags ⇒ True (app_archive=true wins).
     assert archive_backend.manifest_requires_archive(
         "[data]\napp_archive = true\naccess_all_data = true\n"
     )
@@ -849,18 +652,8 @@ def test_manifest_requires_archive_only_matches_app_archive_true():
 
 @pytest.mark.asyncio
 async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tmp_path):
-    """An ``access_all_data = true`` app (with ``app_archive`` not
-    set or false) must be installable while the archive backend is
-    'disabled'.  ``access_all_data`` is permissive — the app sees the
-    archive when it's there and silently goes without when it isn't,
-    so refusing the install would lock out apps like the backup app
-    on every fresh archive-less zone.
+    """An ``access_all_data = true`` app (with ``app_archive`` unset/false) must be installable while the archive backend is 'disabled' — ``access_all_data`` is permissive, so refusing the install would lock out apps like the backup app on every fresh archive-less zone."""
 
-    Companion to ``test_add_app_refuses_archive_app_when_backend_disabled``
-    above: pins that the gate now keys on ``app_archive`` only.
-    """
-
-    # Default seeded state is 'disabled' — assert the precondition.
     db = sqlite3.connect(cfg.db_path)
     try:
         backend = db.execute("SELECT backend FROM archive_backend WHERE id=1").fetchone()[0]
@@ -880,8 +673,8 @@ async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tm
         cpu_millicores=100,
         gpu=False,
         app_data=True,
-        app_archive=False,  # NOT set
-        access_all_data=True,  # the trigger we used to over-gate on
+        app_archive=False,
+        access_all_data=True,
         access_vm_data=False,
         app_temp_data=False,
         public_paths=["/"],
@@ -910,9 +703,6 @@ async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tm
         methods=["POST"],
     )
     client = test_app.test_client()
-    # Mock the heavy work after the gate so we just observe the gate's
-    # decision.  ``insert_and_deploy`` does the DB row + image build;
-    # we short-circuit it with a stub that returns the app name.
     with (
         mock.patch.object(apps_routes, "parse_manifest", return_value=aad_manifest),
         mock.patch.object(apps_routes, "validate_manifest", return_value=None),
@@ -927,9 +717,6 @@ async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tm
                 "grant_permissions": "",
             },
         )
-    # The gate must NOT fire: a 400 with "archive backend" in the
-    # error body would mean the same over-block we're guarding
-    # against.  503 with "Archive backend is not healthy" likewise.
     body_text = await resp.get_data(as_text=True)
     assert resp.status_code != 400 or "archive" not in body_text.lower(), body_text
     assert resp.status_code != 503 or "archive" not in body_text.lower(), body_text
@@ -937,12 +724,7 @@ async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tm
 
 @pytest.mark.asyncio
 async def test_reload_app_allows_access_all_data_when_archive_unhealthy(app, cfg):
-    """An ``access_all_data`` app must be reloadable when the archive
-    backend is unhealthy — the reload-time precheck is for apps that
-    *require* the archive (``app_archive = true``).  access_all_data
-    apps just see the archive when it's available; reload simply
-    ends up with the archive mount silently skipped.
-    """
+    """An ``access_all_data`` app must be reloadable when the archive backend is unhealthy — the reload-time precheck is for apps that *require* the archive (``app_archive = true``); access_all_data apps just see the archive when it's available."""
 
     db = sqlite3.connect(cfg.db_path)
     try:
@@ -972,8 +754,5 @@ async def test_reload_app_allows_access_all_data_when_archive_unhealthy(app, cfg
         mock.patch("compute_space.web.routes.api.apps.reload_app_background"),
     ):
         resp = await client.post("/reload_app/seer")
-        # The reload may succeed or hit unrelated mock-shaped issues,
-        # but it must NOT be the archive-health 503 — that would mean
-        # we're back to the over-strict gating.
         body = await resp.get_data(as_text=True)
         assert resp.status_code != 503 or "Archive backend is not healthy" not in body, body
