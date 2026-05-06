@@ -43,13 +43,8 @@ class Config:
     port_range_start: int
     port_range_end: int
 
-    # Apps to deploy automatically when the owner finishes ``/setup`` on a
-    # fresh zone.  Each entry is the directory name of a builtin app under
-    # ``apps_dir`` (e.g. ``"secrets-v2"``, ``"file-browser"``).  The default
-    # list gives a fresh zone a working secrets store + file browser without
-    # the operator having to find them on the deploy page.  Operators who
-    # want a clean zone can set this to ``[]``; operators who want extras
-    # can append other builtin app dirnames.
+    # Builtin app directory names to deploy at /setup completion (set
+    # to [] to opt out).  Keyed on dirname under apps_dir.
     default_apps: list[str]
 
     def evolve(self, **kwargs: Any) -> Self:
@@ -128,9 +123,6 @@ class Config:
 
     @property
     def default_apps_sentinel_path(self) -> str:
-        # Tracks per-app install outcomes from the auto-deploy hook in
-        # ``/setup`` so partial failures get retried once on the next
-        # boot rather than re-running every successful install too.
         return str(Path(self.openhost_data_path) / "default_apps.json")
 
     def make_all_dirs(self) -> None:
@@ -177,11 +169,8 @@ class DefaultConfig(Config):
     port_range_start: int = 9000
     port_range_end: int = 9999
 
-    # Apps to deploy on first boot (see ``Config.default_apps``).
-    # Each entry is the directory name under ``apps_dir`` — the
-    # ``apps/`` tree uses Python-import-style underscores, while the
-    # manifest's ``[app].name`` field uses hyphens; this list keys
-    # on the directory name.
+    # Directory names under apps_dir (note: dirs use underscores,
+    # manifest [app].name uses hyphens; this keys on the dirname).
     default_apps: list[str] = attr.Factory(lambda: ["secrets_v2", "file_browser"])
 
 

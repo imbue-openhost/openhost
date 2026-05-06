@@ -169,14 +169,7 @@ async def clone_and_read_manifest(
 def clone_and_read_manifest_sync(
     repo_url: str,
 ) -> tuple[AppManifest | None, str | None, str | None]:
-    """Sync, file://-only counterpart to ``clone_and_read_manifest``.
-
-    Used by the default-apps deploy hook in /setup, which has a sync
-    callsite (it runs after the synchronous DB inserts that complete
-    the owner-row write) and only ever resolves builtin apps from the
-    on-disk ``apps_dir``.  Refusing non-file:// URLs keeps the sync
-    path narrow — anything else needs the async ``clone_and_read_manifest``.
-    """
+    """Sync, file://-only counterpart to clone_and_read_manifest."""
     base_url, _ref = parse_repo_url(repo_url)
     if not base_url.startswith("file://"):
         return None, None, "clone_and_read_manifest_sync only supports file:// URLs"

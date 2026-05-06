@@ -121,15 +121,8 @@ def _restart_apps_sequential(app_names: list[str], config: Config) -> None:
 
 
 def _retry_pending_default_apps(config: Config) -> None:
-    """If a previous /setup partially failed to deploy default apps, retry
-    them once on this boot.  No-op if /setup hasn't run yet (no owner row),
-    if the sentinel doesn't exist, or if every default app is already
-    marked ``ok`` in the sentinel.
-
-    The retry budget per app is enforced inside ``deploy_default_apps``;
-    this hook just runs it again so the budget gets consumed across
-    boots rather than only at /setup time.
-    """
+    """Retry failed default-app installs on each boot (no-op if no
+    owner row or no sentinel)."""
     db = sqlite3.connect(config.db_path)
     try:
         owner = db.execute("SELECT 1 FROM owner WHERE id = 1").fetchone()
