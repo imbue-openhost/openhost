@@ -19,6 +19,7 @@ from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
+from compute_space.core.apps import move_clone_to_app_temp_dir
 from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import remove_app_background
 from compute_space.core.apps import start_app_process
@@ -161,11 +162,7 @@ async def api_add_app() -> ResponseReturnValue:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
-    final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
-    if os.path.exists(final_dir):
-        _rmtree_force(final_dir)
-    os.makedirs(os.path.dirname(final_dir), exist_ok=True)
-    shutil.move(clone_dir, final_dir)
+    final_dir = move_clone_to_app_temp_dir(clone_dir, app_name, config)
 
     if grant_permissions_raw is None:
         logger.warning("add_app called without grant_permissions field")

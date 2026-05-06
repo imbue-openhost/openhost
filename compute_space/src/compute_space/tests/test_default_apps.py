@@ -83,8 +83,8 @@ def test_deploy_default_apps_installs_each(cfg_with_apps, monkeypatch):
     finally:
         db.close()
 
-    assert result.ok_count == 2
-    assert result.failed_count == 0
+    assert sum(1 for o in result if o.status == "ok") == 2
+    assert sum(1 for o in result if o.status == "failed") == 0
     with open(cfg_with_apps.default_apps_sentinel_path) as f:
         sentinel = json.load(f)
     assert all(entry["status"] == "ok" for entry in sentinel.values())
@@ -105,7 +105,7 @@ def test_redeploy_short_circuits_on_terminal_sentinel(cfg_with_apps, monkeypatch
     finally:
         db.close()
 
-    assert all(o.status == "ok" for o in result.outcomes)
+    assert all(o.status == "ok" for o in result)
 
 
 def test_retries_until_max_attempts(cfg_with_apps, monkeypatch):
@@ -117,7 +117,7 @@ def test_retries_until_max_attempts(cfg_with_apps, monkeypatch):
             result = da.deploy_default_apps(cfg_with_apps, db)
         finally:
             db.close()
-        for o in result.outcomes:
+        for o in result:
             assert o.status == "failed"
             assert o.attempts == i + 1
 
@@ -126,8 +126,25 @@ def test_retries_until_max_attempts(cfg_with_apps, monkeypatch):
         result_after = da.deploy_default_apps(cfg_with_apps, db)
     finally:
         db.close()
-    for o in result_after.outcomes:
+    for o in result_after:
         assert o.attempts == da.MAX_RETRY_ATTEMPTS
+
+
+def test_malformed_sentinel_is_ignored(cfg_with_apps, monkeypatch):
+    """Non-dict sentinel entries (or non-UTF-8 / non-JSON content) must
+    not raise — they're treated as if the sentinel were absent."""
+    _patch_insert_and_deploy(monkeypatch)
+    os.makedirs(os.path.dirname(cfg_with_apps.default_apps_sentinel_path), exist_ok=True)
+    with open(cfg_with_apps.default_apps_sentinel_path, "w") as f:
+        json.dump({"secrets_v2": "not-a-dict", "file_browser": {"status": "failed"}}, f)
+
+    db = sqlite3.connect(cfg_with_apps.db_path)
+    try:
+        result = da.deploy_default_apps(cfg_with_apps, db)
+    finally:
+        db.close()
+    by_name = {o.name: o.status for o in result}
+    assert by_name["secrets_v2"] == "ok"
 
 
 def test_empty_default_apps_is_no_op(tmp_path: Path):
@@ -142,5 +159,5 @@ def test_empty_default_apps_is_no_op(tmp_path: Path):
     finally:
         db.close()
 
-    assert result.outcomes == []
+    assert result == []
     assert not os.path.isfile(cfg.default_apps_sentinel_path)
