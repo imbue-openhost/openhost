@@ -9,7 +9,7 @@
 - each app has three storage areas with different durability + size + latency tradeoffs:
     - **permanent data (`app_data`)** — local disk, small, fast, backed up, legible to users.  Standard file types, exportable, importable.  This is where SQLite databases and other embedded-DB stores live (LMDB, RocksDB, BoltDB) — the latency profile is right and the strict POSIX consistency keeps WAL fsyncs safe.
         - examples: sqlite files. markdown notes. JSON config. small assets.
-    - **archive data (`app_archive`)** — operator-selected backing.  Defaults to local disk so apps work out of the box; operators can switch to S3-backed storage from the dashboard.  Large, optionally elastic, durability tied to the operator's choice.  Higher latency than `app_data` on uncached reads when backed by S3.  Intended for bulk content the app would otherwise outgrow local disk for.
+    - **archive data (`app_archive`)** — S3-backed (via JuiceFS) once the operator configures a bucket from the dashboard.  Disabled by default on fresh zones; apps that require it (`app_archive = true`) won't install until S3 is configured.  Large, elastic, durability tied to the operator's S3 provider.  Higher latency than `app_data` on uncached reads.  Intended for bulk content the app would otherwise outgrow local disk for.
         - examples: source jpegs / RAWs in a photo library, original video files, attachment uploads, large model weights.
     - **temporary data (`app_temp_data`)** — local disk scratch, not backed up, recreatable on demand.
         - examples: low-res thumbnails generated from source photos, transcoding work files, in-flight upload chunks.
@@ -33,7 +33,7 @@
 
 `app_data` is local NVMe.  Microsecond random reads, fsync that means something, strict POSIX.  This is where SQLite WAL files have to live: a WAL needs shared-memory mappings the kernel propagates between processes on the same host, and it needs `fsync()` to actually durably commit.  A network FS that gives close-to-open consistency or that buffers writes in a daemon process would corrupt SQLite databases silently.
 
-`app_archive` is the layer that can be backed by S3 (operator opt-in via the dashboard).  When S3-backed it has tens-to-hundreds-of-ms first-touch reads, eventual durability, and no shared-memory mmap.  Apps that put the wrong data here — SQLite, anything using `fcntl` advisory locks for correctness — would hit data loss or corruption on the S3 backend.  The manifest validator rejects `app_archive = true` without `app_data` (or `sqlite`, or `access_all_data`) so apps always have somewhere safe to put their working state regardless of which backend the operator picks.
+`app_archive` is S3-backed via JuiceFS (operator opt-in via the dashboard, one-shot configuration; disabled until configured).  It has tens-to-hundreds-of-ms first-touch reads, eventual durability, and no shared-memory mmap.  Apps that put the wrong data here — SQLite, anything using `fcntl` advisory locks for correctness — would hit data loss or corruption.  The manifest validator rejects `app_archive = true` without `app_data` (or `sqlite`, or `access_all_data`) so apps always have somewhere safe to put their working state.  Apps with `app_archive = true` are blocked from install/reload until the operator configures the S3 backend; if you want a local-disk archive, run minio (or equivalent) yourself and point the operator UI at it.
 
 ### API
 
@@ -44,8 +44,8 @@
 
 - permanent data (`app_data`) lives on the host's local disk under `persistent_data_dir/app_data/<app>`
 - temp data (`app_temp_data`) lives on a separate subdirectory under `temporary_data_dir`, so that backups can target only the persistent data
-- archive data (`app_archive`) lives at the path determined by the currently-configured archive backend.  Default backend is `local`, which writes to a subdirectory under `persistent_data_dir/app_archive/`.  Operators can switch to the `s3` backend from the dashboard, which routes archive bytes through a JuiceFS mount of an operator-supplied bucket; the operator-visible path the operator deals with on the host changes, but the in-container path apps see is always `/data/app_archive/<app>/`.
-- when on the `s3` backend, the JuiceFS metadata database is small and lives on the host's local disk under `persistent_data_dir/openhost/`; the standard backup picks up that directory.  A planned but not-yet-implemented daily `juicefs dump` will write a JSON snapshot alongside the SQLite metadata file so a fresh VM restoring from backup has everything it needs to reattach to the existing S3 bucket via `juicefs format` + `juicefs load`.  Until that's wired up, recovery is "back up the SQLite metadata file directly" — see the JuiceFS upstream docs.
+- archive data (`app_archive`) is disabled by default; once the operator configures the S3 backend from the dashboard, archive bytes route through a JuiceFS mount of the operator-supplied bucket.  The in-container path apps see is always `/data/app_archive/<app>/`.  Configuration is one-shot per zone — once configured, the choice is permanent.
+- the JuiceFS metadata database is small and lives on the host's local disk under `persistent_data_dir/openhost/juicefs/state/meta.db`; the standard backup picks up that directory.  A planned but not-yet-implemented daily `juicefs dump` will write a JSON snapshot alongside the SQLite metadata file so a fresh VM restoring from backup has everything it needs to reattach to the existing S3 bucket via `juicefs format` + `juicefs load`.  Until that's wired up, recovery is "back up the SQLite metadata file directly" — see the JuiceFS upstream docs.
 
 ### permissions
 
