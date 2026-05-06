@@ -18,6 +18,8 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core import auth
+from compute_space.core.default_apps import deploy_default_apps
+from compute_space.core.logging import logger
 from compute_space.db import get_db
 from compute_space.web.middleware import _try_refresh  # noqa: F401 — re-exported
 from compute_space.web.middleware import login_required  # noqa: F401 — re-exported
@@ -132,6 +134,18 @@ async def setup() -> ResponseReturnValue:
 
     # Mark owner as verified so subdomain routing activates
     current_app._owner_verified = True  # type: ignore[attr-defined]
+
+    # Auto-deploy the configured set of builtin apps.  Synchronous
+    # call; each insert_and_deploy spawns its own daemon thread for
+    # the actual image build, so this only blocks for the cheap
+    # manifest-clone + DB insert per app (~1s for 2-3 apps).  Errors
+    # never propagate — partial failures land in the dashboard's
+    # app list with status='error' for the operator to retry, and
+    # are tracked in the sentinel for one-shot retry-on-restart.
+    try:
+        deploy_default_apps(config, db)
+    except Exception as exc:
+        logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
     response = redirect(url_for("apps.dashboard"))
     auth.set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]

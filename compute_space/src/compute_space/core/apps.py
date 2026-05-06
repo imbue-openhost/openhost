@@ -166,6 +166,39 @@ async def clone_and_read_manifest(
         return None, None, f"Clone failed: {e}"
 
 
+def clone_and_read_manifest_sync(
+    repo_url: str,
+) -> tuple[AppManifest | None, str | None, str | None]:
+    """Sync, file://-only counterpart to ``clone_and_read_manifest``.
+
+    Used by the default-apps deploy hook in /setup, which has a sync
+    callsite (it runs after the synchronous DB inserts that complete
+    the owner-row write) and only ever resolves builtin apps from the
+    on-disk ``apps_dir``.  Refusing non-file:// URLs keeps the sync
+    path narrow — anything else needs the async ``clone_and_read_manifest``.
+    """
+    base_url, _ref = parse_repo_url(repo_url)
+    if not base_url.startswith("file://"):
+        return None, None, "clone_and_read_manifest_sync only supports file:// URLs"
+
+    local_path = base_url[len("file://") :]
+    if not os.path.isdir(local_path):
+        return None, None, f"Local path does not exist: {local_path}"
+
+    tmp_parent = tempfile.mkdtemp(prefix="openhost-clone-")
+    clone_dir = os.path.join(tmp_parent, "repo")
+    try:
+        shutil.copytree(local_path, clone_dir)
+        manifest = parse_manifest(clone_dir)
+        return manifest, clone_dir, None
+    except ValueError as e:
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
+        return None, None, str(e)
+    except Exception as e:
+        rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
+        return None, None, f"Copy failed: {e}"
+
+
 async def clone_with_github_fallback(
     repo_url: str, return_to: str
 ) -> tuple[AppManifest | None, str | None, str | None, str | None]:

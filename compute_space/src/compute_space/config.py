@@ -43,6 +43,15 @@ class Config:
     port_range_start: int
     port_range_end: int
 
+    # Apps to deploy automatically when the owner finishes ``/setup`` on a
+    # fresh zone.  Each entry is the directory name of a builtin app under
+    # ``apps_dir`` (e.g. ``"secrets-v2"``, ``"file-browser"``).  The default
+    # list gives a fresh zone a working secrets store + file browser without
+    # the operator having to find them on the deploy page.  Operators who
+    # want a clean zone can set this to ``[]``; operators who want extras
+    # can append other builtin app dirnames.
+    default_apps: list[str]
+
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
 
@@ -117,6 +126,13 @@ class Config:
     def claim_token_path(self) -> str:
         return str(Path(self.openhost_data_path) / "claim_token")
 
+    @property
+    def default_apps_sentinel_path(self) -> str:
+        # Tracks per-app install outcomes from the auto-deploy hook in
+        # ``/setup`` so partial failures get retried once on the next
+        # boot rather than re-running every successful install too.
+        return str(Path(self.openhost_data_path) / "default_apps.json")
+
     def make_all_dirs(self) -> None:
         """Make all necessary directories for the config."""
         assert os.path.exists(self.data_root_dir)
@@ -160,6 +176,9 @@ class DefaultConfig(Config):
     # Ports
     port_range_start: int = 9000
     port_range_end: int = 9999
+
+    # Apps to deploy on first boot (see ``Config.default_apps``).
+    default_apps: list[str] = attr.Factory(lambda: ["secrets-v2", "file-browser"])
 
 
 def load_config() -> Config:
