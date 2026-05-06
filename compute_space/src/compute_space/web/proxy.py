@@ -181,9 +181,18 @@ async def ws_proxy(
     # `websockets` client to emit an empty `Sec-WebSocket-Protocol:` header, which strict backends
     # (including `websockets`' own server, as used by Selkies / the linuxserver webtop image) reject
     # with `InvalidHeaderFormat: expected token at 0 in`.
+    #
+    # `max_size=None` lifts the default 1 MiB incoming-message cap: the proxy shouldn't impose its
+    # own size policy — apps decide their own limits, and a 1 MiB ceiling here silently kills any
+    # backend that legitimately sends a larger frame (e.g. a CRDT's initial-state sync).
+    #
+    # Compression is left at the websockets default (permessage-deflate offered): the previous
+    # `compression=None` was overly cautious — RFC 7692 already mandates graceful fallback if the
+    # backend rejects the extension, and enabling it dramatically reduces transfer sizes for the
+    # text-heavy traffic this proxy commonly carries.
     ws_kwargs: dict[str, Any] = {
         "additional_headers": extra_headers,
-        "compression": None,  # avoid permessage-deflate mismatches with backend
+        "max_size": None,
         "open_timeout": 10,
         "close_timeout": 5,
     }
