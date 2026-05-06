@@ -8,7 +8,6 @@ import sqlite3
 
 import attr
 from quart import Blueprint
-from quart import current_app
 from quart import jsonify
 from quart import request
 from quart.typing import ResponseReturnValue
@@ -58,7 +57,7 @@ async def get_archive_backend() -> ResponseReturnValue:
     state = archive_backend.read_state(db)
     response: dict[str, object] = {
         **_state_to_response(state),
-        "archive_dir": archive_backend.archive_dir_for_backend(config, state.backend),
+        "archive_dir": archive_backend.juicefs_mount_dir(config) if state.backend == "s3" else None,
         "meta_db_path": archive_backend.juicefs_meta_db_path(config),
         "meta_dumps": None,
     }
@@ -185,13 +184,6 @@ async def configure_archive_backend() -> ResponseReturnValue:
         if "already configured" in str(exc):
             return jsonify({"error": str(exc)}), 409
         return jsonify({"error": str(exc)}), 500
-
-    # Now that the row says backend='s3', re-derive the live config so
-    # subsequent get_config() calls return the right archive_dir_override.
-    # Without this, new app deployments would write to the local-disk
-    # default until process restart.
-    new_config = archive_backend.apply_backend_to_config(config, db)
-    current_app.openhost_config = new_config  # type: ignore[attr-defined]
 
     state = archive_backend.read_state(db)
     return jsonify(_state_to_response(state)), 200

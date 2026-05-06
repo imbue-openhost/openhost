@@ -6,13 +6,13 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
 import tarfile
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from typing import Any
@@ -63,68 +63,9 @@ def _juicefs_meta_db(config: Config) -> str:
     return os.path.join(_juicefs_state_dir(config), "meta.db")
 
 
-_LEGACY_META_DB_BASENAME = "juicefs-meta.db"
-_LEGACY_INSTALL_DIRNAME = "juicefs"
-
-
-def _migrate_legacy_layout(config: Config) -> None:
-    """One-shot migration of pre-tidy paths into juicefs/state + juicefs/runtime.  Idempotent."""
-    legacy_meta = os.path.join(config.openhost_data_path, _LEGACY_META_DB_BASENAME)
-    new_meta = _juicefs_meta_db(config)
-    legacy_install = os.path.join(config.openhost_data_path, _LEGACY_INSTALL_DIRNAME)
-
-    # The legacy install dir shares a name with the new juicefs/ parent of
-    # state/ + runtime/, so disambiguate by looking for binaries at its top
-    # level (vs. nested under runtime/bin/).
-    if os.path.isdir(legacy_install):
-        legacy_top_level_files = []
-        try:
-            for entry in os.scandir(legacy_install):
-                if entry.is_file() and entry.name.startswith("juicefs-"):
-                    legacy_top_level_files.append(entry.path)
-        except OSError:
-            legacy_top_level_files = []
-        if legacy_top_level_files:
-            new_bin_dir = _juicefs_install_dir(config)
-            os.makedirs(new_bin_dir, exist_ok=True)
-            for src in legacy_top_level_files:
-                dst = os.path.join(new_bin_dir, os.path.basename(src))
-                if not os.path.exists(dst):
-                    try:
-                        os.rename(src, dst)
-                        logger.info("Migrated legacy juicefs binary %s -> %s", src, dst)
-                    except OSError as exc:
-                        # Non-fatal: install_juicefs redownloads if needed.
-                        logger.warning(
-                            "Could not migrate legacy juicefs binary %s -> %s: %s",
-                            src,
-                            dst,
-                            exc,
-                        )
-
-    if os.path.isfile(legacy_meta) and not os.path.exists(new_meta):
-        os.makedirs(os.path.dirname(new_meta), exist_ok=True)
-        try:
-            os.rename(legacy_meta, new_meta)
-            logger.info(
-                "Migrated JuiceFS metadata DB %s -> %s (one-shot layout tidy)",
-                legacy_meta,
-                new_meta,
-            )
-        except OSError as exc:
-            # Loss of meta.db makes the bucket unreadable; never let a second
-            # copy mysteriously appear at the new path.
-            raise RuntimeError(
-                f"Could not migrate JuiceFS metadata DB from {legacy_meta!r} "
-                f"to {new_meta!r}: {exc}.  Fix the rename manually before retrying."
-            ) from exc
-
-
 def juicefs_mount_dir(config: Config) -> str:
     """The host-side JuiceFS FUSE mount; bind-mounted into containers."""
-    # Under data_root_dir, NOT persistent_data_dir, so restic backups don't
-    # double-store bytes that already live in S3.
-    return os.path.join(config.data_root_dir, "app_archive")
+    return config.app_archive_dir
 
 
 def juicefs_meta_db_path(config: Config) -> str:
@@ -141,7 +82,6 @@ def is_juicefs_installed(config: Config) -> bool:
 
 def install_juicefs(config: Config) -> None:
     """Download + verify + extract the JuiceFS binary.  Idempotent."""
-    _migrate_legacy_layout(config)
     if is_juicefs_installed(config):
         return
     install_dir = _juicefs_install_dir(config)
@@ -429,20 +369,27 @@ def read_state(db: sqlite3.Connection) -> BackendState:
     )
 
 
-# Anchored on TOML key=value shape so substring matching can't false-match
-# ``app_archive = false`` alongside an unrelated ``= true``.
-_MANIFEST_REQUIRES_ARCHIVE_RE = re.compile(r"(?m)^\s*app_archive\s*=\s*[Tt][Rr][Uu][Ee]\b")
-_MANIFEST_USES_ARCHIVE_RE = re.compile(r"(?m)^\s*(?:app_archive|access_all_data)\s*=\s*[Tt][Rr][Uu][Ee]\b")
+def _data_section(manifest_raw: str) -> dict[str, Any]:
+    """Read just the ``[data]`` table out of a stored manifest.  Tolerant of
+    parse errors (returns ``{}``) because callers gate behaviour on this and
+    a corrupt row should fail closed."""
+    if not manifest_raw:
+        return {}
+    try:
+        return tomllib.loads(manifest_raw).get("data", {}) or {}
+    except tomllib.TOMLDecodeError:
+        return {}
 
 
 def manifest_requires_archive(manifest_raw: str) -> bool:
     """``app_archive = true`` means the app cannot run without the archive tier."""
-    return bool(_MANIFEST_REQUIRES_ARCHIVE_RE.search(manifest_raw))
+    return bool(_data_section(manifest_raw).get("app_archive"))
 
 
 def manifest_uses_archive(manifest_raw: str) -> bool:
     """``app_archive`` OR ``access_all_data`` means the app gets the archive mount."""
-    return bool(_MANIFEST_USES_ARCHIVE_RE.search(manifest_raw))
+    data = _data_section(manifest_raw)
+    return bool(data.get("app_archive") or data.get("access_all_data"))
 
 
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
@@ -453,30 +400,17 @@ def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
     return is_mounted(juicefs_mount_dir(config))
 
 
-def archive_dir_for_backend(config: Config, backend: str) -> str | None:
-    """Host-side archive root for ``backend``, or None for ``disabled``."""
-    return juicefs_mount_dir(config) if backend == "s3" else None
-
-
-def apply_backend_to_config(config: Config, db: sqlite3.Connection) -> Config:
-    """Return a Config whose ``archive_dir_override`` matches the persisted backend."""
-    state = read_state(db)
-    if state.backend == "s3":
-        return config.evolve(archive_dir_override=juicefs_mount_dir(config))
-    return config.evolve(archive_dir_override=None)
-
-
 def _set_state_message(db: sqlite3.Connection, message: str | None) -> None:
     db.execute("UPDATE archive_backend SET state_message = ? WHERE id = 1", (message,))
     db.commit()
 
 
-def attach_on_startup(config: Config, db: sqlite3.Connection) -> Config:
+def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
     """Bring the archive backend back online at boot.  Failures don't crash boot;
     they're surfaced via state_message so the dashboard stays reachable."""
     state = read_state(db)
     if state.backend != "s3":
-        return apply_backend_to_config(config, db)
+        return
     try:
         if not is_juicefs_installed(config):
             install_juicefs(config)
@@ -490,7 +424,6 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> Config:
     except Exception as exc:
         logger.exception("Failed to attach archive backend on startup")
         _set_state_message(db, f"Failed to attach archive backend: {exc}")
-    return apply_backend_to_config(config, db)
 
 
 def _s3_client(

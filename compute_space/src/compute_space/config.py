@@ -36,11 +36,6 @@ class Config:
     data_root_dir: str
     apps_dir_override: str | None
 
-    # If set, points at the archive tier's mount path (e.g. JuiceFS
-    # for the S3 backend); otherwise app_archive is backed by a local
-    # subdir under persistent_data_dir.
-    archive_dir_override: str | None
-
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int
 
@@ -75,9 +70,10 @@ class Config:
 
     @property
     def app_archive_dir(self) -> str:
-        if self.archive_dir_override:
-            return self.archive_dir_override
-        return os.path.join(self.persistent_data_dir, "app_archive")
+        # JuiceFS FUSE mount; lives under data_root_dir (NOT persistent_data_dir)
+        # so restic backups don't double-store bytes that already live in S3.
+        # Empty/non-existent until archive_backend.configure_backend has run.
+        return os.path.join(self.data_root_dir, "app_archive")
 
     @property
     def apps_dir(self) -> str:
@@ -133,10 +129,8 @@ class Config:
         assert os.path.exists(self.data_root_dir)
         os.makedirs(self.persistent_data_dir, exist_ok=True)
         os.makedirs(self.temporary_data_dir, exist_ok=True)
-        # Don't mkdir when the archive resolves to an external mount;
-        # creating it pre-mount would shadow the real mount once it lands.
-        if not self.archive_dir_override:
-            os.makedirs(self.app_archive_dir, exist_ok=True)
+        # Skip app_archive_dir: a stray local dir at that path would shadow
+        # the JuiceFS mount once attach_on_startup brings it up.
         os.makedirs(self.apps_dir, exist_ok=True)
         os.makedirs(self.openhost_data_path, exist_ok=True)
         os.makedirs(self.keys_dir, exist_ok=True)
@@ -168,7 +162,6 @@ class DefaultConfig(Config):
     # Data
     data_root_dir: str = "/opt/openhost"
     apps_dir_override: str | None = None  # if None, defaults to data_root_dir/apps
-    archive_dir_override: str | None = None  # if None, defaults to persistent_data_dir/app_archive
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int = 0

@@ -264,38 +264,17 @@ def _config(**kwargs) -> DefaultConfig:  # type: ignore[no-untyped-def]
     return DefaultConfig(**base)  # type: ignore[arg-type]
 
 
-def test_config_archive_dir_defaults_to_local_subdir() -> None:
-    """With ``archive_dir_override`` unset, the archive lives on local disk under ``persistent_data_dir`` so apps that opt into app_archive still deploy on operators who haven't configured JuiceFS."""
+def test_config_archive_dir_lives_under_data_root() -> None:
+    """``app_archive_dir`` is the JuiceFS mount point; under ``data_root_dir``
+    (NOT ``persistent_data_dir``) so restic backups don't double-store bytes
+    that already live in S3."""
     cfg = _config(data_root_dir="/opt/openhost")
-    assert cfg.archive_dir_override is None
-    expected = "/opt/openhost/persistent_data/app_archive"
-    assert cfg.app_archive_dir == expected
+    assert cfg.app_archive_dir == "/opt/openhost/app_archive"
 
 
-def test_config_archive_dir_uses_override_when_set() -> None:
-    """When ``archive_dir_override`` is set (e.g. a JuiceFS mount), the archive tier resolves to that path — the JuiceFS-on-S3 path."""
-    cfg = _config(
-        data_root_dir="/opt/openhost",
-        archive_dir_override="/var/lib/openhost/juicefs/mount/app_archive",
-    )
-    assert cfg.app_archive_dir == "/var/lib/openhost/juicefs/mount/app_archive"
-
-
-def test_config_make_all_dirs_creates_local_archive_dir(tmp_path) -> None:
-    """When the archive backing is local (no override), make_all_dirs creates it so the first provision_data on a fresh instance doesn't race against the mkdir."""
+def test_config_make_all_dirs_does_not_create_archive_dir(tmp_path) -> None:
+    """make_all_dirs must NOT mkdir app_archive_dir: a stray local dir at that
+    path would shadow the JuiceFS mount once attach_on_startup brings it up."""
     cfg = _config(data_root_dir=str(tmp_path))
     cfg.make_all_dirs()
-    assert (tmp_path / "persistent_data" / "app_archive").is_dir()
-
-
-def test_config_make_all_dirs_does_not_create_overridden_archive_dir(
-    tmp_path,
-) -> None:
-    """When ``archive_dir_override`` points at an external mount, make_all_dirs must NOT mkdir it — that would either fail or, worse, create a local-disk path that shadows the mount when it eventually attaches."""
-    override = tmp_path / "external" / "archive"
-    cfg = _config(
-        data_root_dir=str(tmp_path),
-        archive_dir_override=str(override),
-    )
-    cfg.make_all_dirs()
-    assert not override.exists()
+    assert not (tmp_path / "app_archive").exists()

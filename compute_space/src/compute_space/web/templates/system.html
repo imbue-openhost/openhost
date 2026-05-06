@@ -26,7 +26,7 @@
 <div id="storage-guard-row"></div>
 
 <h2>Archive Backend</h2>
-<p class="hint">Where the <code>app_archive</code> data tier lives. Default is local disk. Switching to S3 (JuiceFS) lets the same archive bytes outlive a VM rebuild and lets multiple zones share a single bucket via the prefix field.</p>
+<p class="hint">Where the <code>app_archive</code> data tier lives. Disabled by default; configure an S3 bucket here once and apps with <code>app_archive = true</code> get a JuiceFS-backed mount that outlives VM rebuilds. The prefix lets multiple zones share one bucket. Configuration is one-shot per zone.</p>
 <div id="archive-backend-status">
   <div class="muted">Loading&hellip;</div>
 </div>

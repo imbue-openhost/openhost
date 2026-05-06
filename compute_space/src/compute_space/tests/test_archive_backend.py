@@ -14,8 +14,6 @@ import pytest
 
 from compute_space.core import archive_backend
 from compute_space.core.archive_backend import BackendConfigureError
-from compute_space.core.archive_backend import apply_backend_to_config
-from compute_space.core.archive_backend import archive_dir_for_backend
 from compute_space.core.archive_backend import configure_backend
 from compute_space.core.archive_backend import juicefs_mount_dir
 from compute_space.core.archive_backend import read_state
@@ -39,7 +37,7 @@ def db(cfg):
     conn.close()
 
 
-# --- read_state / apply_backend / archive_dir_for_backend -----------------
+# --- read_state ------------------------------------------------------------
 
 
 def test_seeded_state_is_disabled(db):
@@ -48,26 +46,6 @@ def test_seeded_state_is_disabled(db):
     state = read_state(db)
     assert state.backend == "disabled"
     assert state.s3_bucket is None
-
-
-def test_apply_backend_to_config_disabled(cfg, db):
-    new_cfg = apply_backend_to_config(cfg, db)
-    assert new_cfg.archive_dir_override is None
-
-
-def test_apply_backend_to_config_s3(cfg, db):
-    db.execute(
-        "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
-        "s3_access_key_id='ak', s3_secret_access_key='sk' WHERE id=1"
-    )
-    db.commit()
-    new_cfg = apply_backend_to_config(cfg, db)
-    assert new_cfg.archive_dir_override == juicefs_mount_dir(cfg)
-
-
-def test_archive_dir_for_backend(cfg):
-    assert archive_dir_for_backend(cfg, "s3") == juicefs_mount_dir(cfg)
-    assert archive_dir_for_backend(cfg, "disabled") is None
 
 
 # --- _bucket_url -----------------------------------------------------------
@@ -197,7 +175,7 @@ def test_mount_passes_no_agent_flag(cfg):
     assert cmd.index("--no-agent") < cmd.index("mount")
 
 
-# --- on-disk layout helpers + legacy-layout migration ---------------------
+# --- on-disk layout helpers ----------------------------------------------
 
 
 def test_juicefs_state_and_runtime_dirs_are_separate_and_under_data_path(cfg):
@@ -220,35 +198,6 @@ def test_juicefs_meta_db_lives_in_state_dir(cfg):
 
 def test_juicefs_meta_db_path_is_public_alias(cfg):
     assert archive_backend.juicefs_meta_db_path(cfg) == archive_backend._juicefs_meta_db(cfg)
-
-
-def test_migrate_legacy_layout_renames_old_meta_db(cfg, tmp_path):
-    """A pre-tidy zone has meta.db at openhost_data_path/juicefs-meta.db;
-    it must be moved into juicefs/state/meta.db on first boot."""
-    legacy = os.path.join(cfg.openhost_data_path, "juicefs-meta.db")
-    Path(legacy).write_bytes(b"sqlite-bytes")
-    archive_backend._migrate_legacy_layout(cfg)
-    new = archive_backend._juicefs_meta_db(cfg)
-    assert os.path.isfile(new)
-    assert not os.path.isfile(legacy)
-
-
-def test_migrate_legacy_layout_is_idempotent(cfg):
-    """Calling twice must be a no-op."""
-    archive_backend._migrate_legacy_layout(cfg)
-    archive_backend._migrate_legacy_layout(cfg)
-
-
-def test_migrate_legacy_layout_does_not_clobber_new_meta(cfg):
-    """If both old and new paths exist, the migration must NOT overwrite
-    the new path (loud-fail rather than silent-pick)."""
-    legacy = os.path.join(cfg.openhost_data_path, "juicefs-meta.db")
-    new = archive_backend._juicefs_meta_db(cfg)
-    Path(legacy).write_bytes(b"old")
-    os.makedirs(os.path.dirname(new), exist_ok=True)
-    Path(new).write_bytes(b"new")
-    archive_backend._migrate_legacy_layout(cfg)
-    assert Path(new).read_bytes() == b"new"
 
 
 # --- list_meta_dumps -------------------------------------------------------
@@ -341,10 +290,9 @@ def test_attach_on_startup_disabled_is_no_op(cfg, db):
     touching the install/mount path."""
     with mock.patch.object(archive_backend, "install_juicefs") as inst:
         with mock.patch.object(archive_backend, "mount") as mnt:
-            new_cfg = archive_backend.attach_on_startup(cfg, db)
+            archive_backend.attach_on_startup(cfg, db)
     inst.assert_not_called()
     mnt.assert_not_called()
-    assert new_cfg.archive_dir_override is None
 
 
 def test_attach_on_startup_s3_happy_path(cfg, db):
@@ -357,9 +305,8 @@ def test_attach_on_startup_s3_happy_path(cfg, db):
     db.commit()
     with mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True):
         with mock.patch.object(archive_backend, "mount") as mnt:
-            new_cfg = archive_backend.attach_on_startup(cfg, db)
+            archive_backend.attach_on_startup(cfg, db)
     mnt.assert_called_once()
-    assert new_cfg.archive_dir_override == juicefs_mount_dir(cfg)
     state = read_state(db)
     assert state.state_message is None
 
@@ -368,13 +315,10 @@ def test_attach_on_startup_s3_missing_creds_records_error(cfg, db):
     """If creds are NULL, attach must record a state_message + not crash boot."""
     db.execute("UPDATE archive_backend SET backend='s3', s3_bucket='b' WHERE id=1")
     db.commit()
-    new_cfg = archive_backend.attach_on_startup(cfg, db)
+    archive_backend.attach_on_startup(cfg, db)
     state = read_state(db)
     assert state.state_message is not None
     assert "credentials" in state.state_message.lower()
-    # The override is still set so reads of archive_dir don't silently fall
-    # back to a different path; the operator sees the error and reconfigures.
-    assert new_cfg.archive_dir_override == juicefs_mount_dir(cfg)
 
 
 # --- configure_backend ----------------------------------------------------

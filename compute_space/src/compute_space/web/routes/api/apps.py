@@ -50,10 +50,6 @@ def _rmtree_force(path: str) -> None:
     rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
-_manifest_requires_archive = archive_backend.manifest_requires_archive
-_manifest_uses_archive = archive_backend.manifest_uses_archive
-
-
 def _is_removing(app_row: sqlite3.Row | None) -> bool:
     """True if the row is being torn down by remove_app_background.
 
@@ -311,7 +307,7 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
         return jsonify({"error": "App is being removed"}), 409
 
     if not archive_backend.is_archive_dir_healthy(config, db):
-        if _manifest_requires_archive(app_row["manifest_raw"] or ""):
+        if archive_backend.manifest_requires_archive(app_row["manifest_raw"] or ""):
             return jsonify(
                 {
                     "error": "Archive backend is not healthy; refusing to "
@@ -441,7 +437,7 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     # empty mountpoint would leave S3 bytes orphaned while the DB row
     # disappears. Must run before the atomic-claim UPDATE.
     if not keep_data and not archive_backend.is_archive_dir_healthy(config, db):
-        if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+        if archive_backend.manifest_uses_archive(app_row["manifest_raw"] or ""):
             return jsonify(
                 {
                     "error": "Archive backend is not healthy; refusing to "
@@ -495,11 +491,15 @@ def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> st
     rename_parents = [
         os.path.join(config.persistent_data_dir, "app_data"),
         os.path.join(config.temporary_data_dir, "app_temp_data"),
-        config.app_archive_dir,
     ]
     for parent in rename_parents:
         if not os.path.isdir(parent):
             return f"Storage parent {parent!r} is not a directory; refusing to rename so per-app data isn't orphaned."
+    # The archive parent only exists when the operator has configured S3 +
+    # JuiceFS is mounted; skip it cleanly otherwise (apps with app_archive=true
+    # are blocked from install on disabled zones, so this is harmless).
+    if os.path.isdir(config.app_archive_dir):
+        rename_parents.append(config.app_archive_dir)
     renamed: list[tuple[str, str]] = []
     try:
         for parent in rename_parents:
@@ -552,7 +552,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     # skipped while other tiers are renamed, orphaning the archive
     # contents under the old name.  Apps that don't use the archive
     # tier are unaffected and can rename freely on any backend state.
-    if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+    if archive_backend.manifest_uses_archive(app_row["manifest_raw"] or ""):
         if not archive_backend.is_archive_dir_healthy(config, db):
             return jsonify(
                 {

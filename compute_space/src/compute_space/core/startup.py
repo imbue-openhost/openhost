@@ -126,11 +126,9 @@ def init_app(app: Quart) -> None:
     init_db(app)
     db = sqlite3.connect(config.db_path)
     try:
-        new_config = archive_backend.attach_on_startup(config, db)
+        archive_backend.attach_on_startup(config, db)
     finally:
         db.close()
-    app.openhost_config = new_config  # type: ignore[attr-defined]
-    config = new_config
     _check_app_status(config)
     identity.load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)

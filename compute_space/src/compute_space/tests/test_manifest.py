@@ -571,28 +571,18 @@ class TestAppArchive:
         assert manifest.app_archive is True
         assert manifest.app_data is True
 
-    def test_app_archive_explicit_true_with_sqlite_only(self):
-        """``app_archive`` is allowed when SQLite implicitly enables the local app_data tier; the validator looks at the raw toml, not the synthesised app_data flag."""
+    def test_app_archive_with_sqlite(self):
         toml = MINIMAL + '\n[data]\nsqlite = ["main"]\napp_archive = true\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.app_archive is True
         assert manifest.sqlite_dbs == ["main"]
 
-    def test_app_archive_without_app_data_rejected(self):
-        """An archive-only app is rejected at parse time so apps with no local-disk tier (where SQLite + working state must live) never get deployed."""
+    def test_app_archive_alone(self):
         toml = MINIMAL + "\n[data]\napp_archive = true\n"
-        with pytest.raises(ValueError, match="app_archive requires"):
-            parse_manifest_from_string(toml)
-
-    def test_app_archive_with_access_all_data_does_not_crash_validator(self):
-        """An ``access_all_data`` manifest without an explicit ``app_archive`` must NOT trip the 'app_archive requires app_data' validator; access_all_data implies access to every tier but app_archive is still a separate explicit opt-in."""
-        toml = MINIMAL + "\n[data]\naccess_all_data = true\n"
         manifest = parse_manifest_from_string(toml)
-        assert manifest.app_archive is False
-        assert manifest.access_all_data is True
+        assert manifest.app_archive is True
 
-    def test_app_archive_with_access_all_data_and_no_app_data_accepted(self):
-        """An ``access_all_data`` manifest that adds ``app_archive = true`` must NOT be rejected for missing ``app_data``; access_all_data implies access to every tier including local-disk, satisfying the 'archive needs local state somewhere' invariant."""
+    def test_app_archive_with_access_all_data(self):
         toml = MINIMAL + "\n[data]\naccess_all_data = true\napp_archive = true\n"
         manifest = parse_manifest_from_string(toml)
         assert manifest.app_archive is True

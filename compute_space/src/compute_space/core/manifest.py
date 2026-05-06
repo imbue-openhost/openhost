@@ -297,15 +297,6 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
             app_name,
         )
 
-    has_local_tier = data_section.get("app_data") or data_section.get("sqlite") or data_section.get("access_all_data")
-    if data_section.get("app_archive") and not has_local_tier:
-        raise ValueError(
-            "[data].app_archive requires [data].app_data (or [data].sqlite, "
-            "or [data].access_all_data).  The archive tier is for bulk "
-            "content; working state and embedded databases must live in "
-            "the local-disk app_data tier."
-        )
-
     return AppManifest(
         name=app_name,
         version=app_section["version"],
