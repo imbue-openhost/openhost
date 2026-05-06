@@ -109,6 +109,9 @@ def provision_data(
             # (e.g. "if not exists: create tables") triggers correctly.
             env_key = f"OPENHOST_SQLITE_{db_name}"
             env_vars[env_key] = db_path
+            upper_key = f"OPENHOST_SQLITE_{db_name.upper()}"
+            if upper_key != env_key:
+                env_vars[upper_key] = db_path
 
     if manifest.app_temp_data or manifest.access_all_data:
         os.makedirs(app_temp_dir, exist_ok=True)

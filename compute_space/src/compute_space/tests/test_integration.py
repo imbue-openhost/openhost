@@ -66,9 +66,13 @@ def test_sqlite_provisioning():
         assert os.path.isdir(sqlite_dir)
 
         assert "OPENHOST_SQLITE_main" in env_vars
+        assert "OPENHOST_SQLITE_MAIN" in env_vars
         assert "OPENHOST_SQLITE_cache" in env_vars
+        assert "OPENHOST_SQLITE_CACHE" in env_vars
         assert env_vars["OPENHOST_SQLITE_main"] == os.path.join(sqlite_dir, "main.db")
+        assert env_vars["OPENHOST_SQLITE_MAIN"] == os.path.join(sqlite_dir, "main.db")
         assert env_vars["OPENHOST_SQLITE_cache"] == os.path.join(sqlite_dir, "cache.db")
+        assert env_vars["OPENHOST_SQLITE_CACHE"] == os.path.join(sqlite_dir, "cache.db")
 
         # .db files should NOT exist yet — the app creates them
         assert not os.path.exists(env_vars["OPENHOST_SQLITE_main"])

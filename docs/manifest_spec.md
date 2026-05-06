@@ -77,7 +77,7 @@ All data dirs live under `/data/` in the container. All apps see the same path s
 
 The host provisions requested data services and injects connection info as environment variables:
 
-- `OPENHOST_SQLITE_<name>` — filesystem path to the named sqlite database (only if `sqlite` entries requested)
+- `OPENHOST_SQLITE_<NAME>` — filesystem path to the named sqlite database (only if `sqlite` entries requested)
 - `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
 - `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
