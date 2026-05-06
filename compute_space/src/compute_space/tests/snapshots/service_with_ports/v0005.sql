@@ -64,8 +64,7 @@ INSERT INTO "apps" VALUES(1,'orders','orders','1.0.0','Order service','serverful
 INSERT INTO "apps" VALUES(2,'billing','billing','2.1.0','Billing service','serverfull','/repo/billing','https://git.example/billing',NULL,19101,NULL,NULL,'running',NULL,512,1000,0,'["/invoices"]',NULL,'2024-02-15T10:00:00','2024-02-15T10:00:00');
 CREATE TABLE archive_backend (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 'local', 's3')),
-    state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('idle', 'switching')),
+    backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 's3')),
     s3_bucket TEXT,
     s3_region TEXT,
     s3_endpoint TEXT,
@@ -73,10 +72,10 @@ CREATE TABLE archive_backend (
     s3_access_key_id TEXT,
     s3_secret_access_key TEXT,
     juicefs_volume_name TEXT NOT NULL DEFAULT 'openhost',
-    last_switched_at TEXT,
+    configured_at TEXT,
     state_message TEXT
 );
-INSERT INTO "archive_backend" VALUES(1,'local','idle',NULL,NULL,NULL,NULL,NULL,NULL,'openhost',NULL,NULL);
+INSERT INTO "archive_backend" VALUES(1,'disabled',NULL,NULL,NULL,NULL,NULL,NULL,'openhost',NULL,NULL);
 CREATE TABLE "owner" (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     username TEXT NOT NULL UNIQUE,
@@ -113,7 +112,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,7);
+INSERT INTO "schema_version" VALUES(1,5);
 CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
             app_name TEXT NOT NULL,

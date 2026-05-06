@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 from pathlib import Path
 from unittest import mock
@@ -19,7 +18,7 @@ from .conftest import _make_test_config
 
 
 async def _post_rename(cfg, db_path: str, app_name: str, new_name: str) -> tuple[int, dict | None]:
-    """Drive the unwrapped rename_app route via app.test_client().post (test_request_context doesn't populate request.form from data= in this Quart version)."""
+    """Drive the unwrapped rename_app route via app.test_client().post."""
     app = Quart(__name__)
     app.config["DB_PATH"] = db_path
     app.openhost_config = cfg  # type: ignore[attr-defined]
@@ -30,7 +29,12 @@ async def _post_rename(cfg, db_path: str, app_name: str, new_name: str) -> tuple
         defaults={"app_name": app_name},
     )
     client = app.test_client()
-    with mock.patch.object(apps_routes, "stop_app_process"):
+    # Mock the archive-health gate so it doesn't bounce on 503 — these tests
+    # exercise the directory-rename machinery, not the gate itself.
+    with (
+        mock.patch.object(apps_routes, "stop_app_process"),
+        mock.patch.object(apps_routes.archive_backend, "is_archive_dir_healthy", return_value=True),
+    ):
         response = await client.post(f"/rename_app/{app_name}", form={"name": new_name})
     try:
         payload = await response.get_json()
@@ -40,7 +44,8 @@ async def _post_rename(cfg, db_path: str, app_name: str, new_name: str) -> tuple
 
 
 def _seed_app_row(db_path: str, name: str, port: int = 19500, status: str = "stopped") -> None:
-    """Insert a minimal apps row and flip archive backend off the v7 'disabled' default into 'local' so the rename route's archive-health gate doesn't bounce the request with 503."""
+    """Insert a minimal apps row.  The archive-health gate that would
+    normally 503 on disabled-backend zones is mocked in ``_post_rename``."""
     db = sqlite3.connect(db_path)
     try:
         db.execute(
@@ -48,7 +53,6 @@ def _seed_app_row(db_path: str, name: str, port: int = 19500, status: str = "sto
                VALUES (?, '1.0', ?, ?, ?)""",
             (name, f"/tmp/repo/{name}", port, status),
         )
-        db.execute("UPDATE archive_backend SET backend='local' WHERE id=1")
         db.commit()
     finally:
         db.close()
@@ -139,17 +143,44 @@ async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rename_refuses_when_archive_parent_missing(tmp_path: Path) -> None:
-    """If the archive backend's parent dir is missing (JuiceFS mount transiently dead), rename_app must refuse at the precheck rather than silently rename other tiers and orphan the archive subdir under the old name."""
+async def test_rename_refuses_archive_using_app_when_archive_unhealthy(tmp_path: Path) -> None:
+    """An app with app_archive=true cannot be renamed while the JuiceFS
+    mount is transiently dead — would orphan the archive subdir under
+    the old name.  Apps that don't use archive aren't affected (see the
+    test below for that)."""
     cfg = _make_test_config(tmp_path, port=20299)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_row(cfg.db_path, "old-name", status="running")
+
+    # Seed an app whose manifest opts into app_archive.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            """INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw)
+               VALUES (?, '1.0', ?, ?, 'running', ?)""",
+            ("old-name", "/tmp/repo/old-name", 19500, "[data]\napp_archive = true\n"),
+        )
+        db.commit()
+    finally:
+        db.close()
     _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
 
-    shutil.rmtree(cfg.app_archive_dir)
-
-    status, payload = await _post_rename(cfg, cfg.db_path, "old-name", "new-name")
-    assert status == 503, payload
+    app = Quart(__name__)
+    app.config["DB_PATH"] = cfg.db_path
+    app.openhost_config = cfg  # type: ignore[attr-defined]
+    app.add_url_rule(
+        "/rename_app/old-name",
+        view_func=apps_routes.rename_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+        defaults={"app_name": "old-name"},
+    )
+    client = app.test_client()
+    with (
+        mock.patch.object(apps_routes, "stop_app_process"),
+        mock.patch.object(apps_routes.archive_backend, "is_archive_dir_healthy", return_value=False),
+    ):
+        response = await client.post("/rename_app/old-name", form={"name": "new-name"})
+    payload = await response.get_json()
+    assert response.status_code == 503, payload
     assert "Archive backend" in (payload or {}).get("error", ""), payload
 
     parents_present = {
@@ -203,3 +234,43 @@ async def test_rename_rollback_continues_when_a_rollback_rename_itself_fails(
     finally:
         db.close()
     assert [(r[0], r[1]) for r in rows] == [("old-name", "running")], rows
+
+
+@pytest.mark.asyncio
+async def test_rename_non_archive_app_works_with_disabled_backend(tmp_path: Path) -> None:
+    """An app that doesn't use the archive tier (no app_archive, no
+    access_all_data) must rename successfully on a fresh zone where the
+    archive backend is the default 'disabled'.  Pre-fix, the gate
+    blocked all renames whenever the backend was unhealthy."""
+    cfg = _make_test_config(tmp_path, port=20305)
+    init_db(_FakeApp(cfg.db_path))
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            """INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw)
+               VALUES (?, '1.0', ?, ?, 'stopped', ?)""",
+            ("plain", "/tmp/repo/plain", 19510, "[data]\napp_data = true\n"),
+        )
+        db.commit()
+    finally:
+        db.close()
+    _make_per_app_dirs(cfg, "plain", ["app_data", "app_temp_data"])
+
+    # Don't mock is_archive_dir_healthy — let it return False for the
+    # default disabled backend so the test exercises the real gate.
+    app = Quart(__name__)
+    app.config["DB_PATH"] = cfg.db_path
+    app.openhost_config = cfg  # type: ignore[attr-defined]
+    app.add_url_rule(
+        "/rename_app/plain",
+        view_func=apps_routes.rename_app.__wrapped__,  # type: ignore[attr-defined]
+        methods=["POST"],
+        defaults={"app_name": "plain"},
+    )
+    client = app.test_client()
+    with mock.patch.object(apps_routes, "stop_app_process"):
+        response = await client.post("/rename_app/plain", form={"name": "renamed"})
+    payload = await response.get_json()
+    assert response.status_code == 200, payload
+    assert payload["name"] == "renamed"

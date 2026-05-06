@@ -211,25 +211,12 @@ function toggleSsh() {
 
 function renderArchiveBackend(state) {
   var el = document.getElementById('archive-backend-status');
-  var label, statusCls;
-  if (state.backend === 's3') {
-    label = 'S3 (JuiceFS)';
-    statusCls = 'status-running';
-  } else if (state.backend === 'local') {
-    label = 'Local disk';
-    statusCls = 'status-running';
-  } else {
-    label = 'not configured';
-    statusCls = 'status-stopped';
-  }
-
   var rows = '';
-  rows += '<tr><th class="label-col">Backend</th>'
-    + '<td><span class="' + statusCls + '">' + escHtml(label) + '</span>'
-    + (state.state === 'switching' ? ' <span class="status-building">switching: ' + escHtml(state.state_message || '') + '…</span>' : '')
-    + (state.state !== 'switching' && state.state_message ? ' <span class="error">last switch error: ' + escHtml(state.state_message) + '</span>' : '')
-    + '</td></tr>';
   if (state.backend === 's3') {
+    rows += '<tr><th class="label-col">Backend</th>'
+      + '<td><span class="status-running">S3 (JuiceFS)</span>'
+      + (state.state_message ? ' <span class="error">' + escHtml(state.state_message) + '</span>' : '')
+      + '</td></tr>';
     var bucketLine = escHtml(state.s3_bucket || '?')
       + (state.s3_prefix ? '/' + escHtml(state.s3_prefix) : '')
       + (state.s3_region ? ' <span class="hint">(' + escHtml(state.s3_region) + ')</span>' : '');
@@ -237,149 +224,82 @@ function renderArchiveBackend(state) {
     if (state.s3_access_key_id) {
       rows += '<tr><th>Access key</th><td><code>' + escHtml(state.s3_access_key_id.slice(0, 4)) + '…</code></td></tr>';
     }
-  }
-  var archiveDirText = state.archive_dir
-    ? '<code>' + escHtml(state.archive_dir) + '</code>'
-    : '<span class="hint">not yet provisioned</span>';
-  rows += '<tr><th>Host path</th><td>' + archiveDirText + '</td></tr>';
-  if (state.meta_db_path) {
-    rows += '<tr><th>Metadata DB</th><td><code>' + escHtml(state.meta_db_path) + '</code>'
-      + (state.backend === 's3' ? ' <span class="error">(must back up to survive disk loss)</span>' : '')
-      + '</td></tr>';
-  }
-  if (state.backend === 's3') {
+    if (state.archive_dir) {
+      rows += '<tr><th>Host path</th><td><code>' + escHtml(state.archive_dir) + '</code></td></tr>';
+    }
+    if (state.meta_db_path) {
+      rows += '<tr><th>Metadata DB</th><td><code>' + escHtml(state.meta_db_path) + '</code>'
+        + ' <span class="error">(must back up to survive disk loss)</span></td></tr>';
+    }
     var dumps = state.meta_dumps;
     var dumpLine;
     if (dumps && dumps.count > 0) {
       dumpLine = '<code>' + escHtml(dumps.latest_at || '?') + '</code> <span class="hint">(' + dumps.count + ' in bucket, hourly cadence)</span>';
     } else if (dumps && dumps.count === 0) {
-      dumpLine = '<span class="error">No metadata dumps in bucket yet.</span> <span class="hint">JuiceFS writes one within an hour of mount; if this persists past the first hour something is wrong with the mount.</span>';
+      dumpLine = '<span class="error">No metadata dumps in bucket yet.</span> <span class="hint">JuiceFS writes one within an hour of mount.</span>';
     } else {
       dumpLine = '<span class="hint">unavailable; could not list <code>'
         + escHtml((state.s3_prefix ? state.s3_prefix + '/' : '') + 'meta/')
         + '</code></span>';
     }
     rows += '<tr><th>Latest meta dump</th><td>' + dumpLine + '</td></tr>';
-  }
-
-  var disabled = state.state === 'switching' ? 'disabled' : '';
-  var buttonLabel;
-  if (state.backend === 'disabled') {
-    buttonLabel = 'Configure archive backend…';
-  } else if (state.backend === 's3') {
-    buttonLabel = 'Switch to local disk…';
   } else {
-    buttonLabel = 'Switch to S3…';
+    rows += '<tr><th class="label-col">Backend</th>'
+      + '<td><span class="status-stopped">not configured</span></td></tr>';
   }
-  var btn = '<button class="btn" id="archive-backend-switch-btn" ' + disabled + '>' + escHtml(buttonLabel) + '</button>';
 
-  var disabledNote = '';
-  if (state.backend === 'disabled') {
-    disabledNote = '<p class="hint"><strong>No archive backend configured yet.</strong> '
-      + 'Apps that opt into the <code>app_archive</code> data tier (such as Immich) will refuse to install until you pick a backend below. Apps that don\u2019t use the archive tier are unaffected.</p>';
-  }
   var experimentalNote = '';
   if (state.backend === 's3') {
     experimentalNote = '<p class="hint"><strong class="error">Experimental:</strong> the S3 archive backend is best-effort durable. '
       + 'Filename-to-S3-chunk mappings live in a SQLite metadata DB on this VM; '
-      + 'recovery from a lost VM requires the latest meta dump in S3 plus a manual <code>juicefs load</code>. '
-      + 'Do not use for anything you cannot afford to lose without an out-of-band backup.</p>';
+      + 'recovery from a lost VM requires the latest meta dump in S3 plus a manual <code>juicefs load</code>.</p>';
+  }
+  var disabledNote = '';
+  var configureBtn = '';
+  if (state.backend === 'disabled') {
+    disabledNote = '<p class="hint"><strong>No archive backend configured.</strong> '
+      + 'Apps that opt into the <code>app_archive</code> data tier (such as Immich) will refuse to install until S3 storage is configured below. Apps that don\u2019t use the archive tier are unaffected. '
+      + '<strong>This is a one-time setup; reconfiguration is not supported.</strong></p>';
+    configureBtn = '<div class="control-row"><button class="btn" id="archive-backend-configure-btn">Configure S3 backend\u2026</button></div>';
   }
 
   el.innerHTML = '<table id="archive-backend-table"><tbody>' + rows + '</tbody></table>'
     + disabledNote
     + experimentalNote
-    + '<div class="control-row">' + btn + '</div>'
+    + configureBtn
     + '<div id="archive-backend-form" hidden></div>';
-  document.getElementById('archive-backend-switch-btn').onclick = function() { showArchiveSwitchForm(state); };
+  if (state.backend === 'disabled') {
+    document.getElementById('archive-backend-configure-btn').onclick = function() { showConfigureForm(); };
+  }
 }
 
-function _s3SwitchFormHtml(state, includeDeleteSource) {
-  return '<p><strong>Switch to S3-backed archive.</strong> Affected apps (those using <code>app_archive</code> or <code>access_all_data</code>) will be stopped, archive data copied to the new backend, and apps restarted. In-flight uploads will be lost.</p>'
-    + '<p class="error"><strong>Experimental.</strong> Filename-to-S3-chunk mappings live in a SQLite metadata DB on this VM, not in the bucket. A lost VM means the bucket bytes can be recovered only from JuiceFS\'s periodic meta dumps in S3 (replayed via <code>juicefs load</code>); anything written between the last dump and the loss is orphan chunks with no inode.</p>'
-    + '<p class="hint">JuiceFS will automatically dump the metadata DB to <code>&lt;bucket&gt;/&lt;prefix&gt;/meta/dump-*.json.gz</code> once an hour after the mount comes up. These dumps are the recovery anchor for the "fresh VM, same bucket" case &mdash; a zone whose VM dies retains everything written before the last dump.</p>'
+function showConfigureForm() {
+  var formEl = document.getElementById('archive-backend-form');
+  formEl.innerHTML = '<p><strong>Configure S3 archive storage.</strong> JuiceFS will format the bucket and mount it locally; this is a one-time operation.</p>'
+    + '<p class="error"><strong>Experimental.</strong> Filename-to-S3-chunk mappings live in a SQLite metadata DB on this VM, not in the bucket. A lost VM means the bucket bytes can be recovered only from JuiceFS\'s periodic meta dumps in S3 (replayed via <code>juicefs load</code>).</p>'
+    + '<p class="hint">JuiceFS will automatically dump the metadata DB to <code>&lt;bucket&gt;/&lt;prefix&gt;/meta/dump-*.json.gz</code> once an hour. These dumps are the recovery anchor for the "fresh VM, same bucket" case.</p>'
     + '<table class="form-table"><tbody>'
-    + '<tr><th><label for="ab-bucket">S3 bucket</label></th><td><input id="ab-bucket" type="text" value="' + escHtml(state.s3_bucket || '') + '" placeholder="my-openhost-archive"></td></tr>'
-    + '<tr><th><label for="ab-region">Region</label></th><td><input id="ab-region" type="text" value="' + escHtml(state.s3_region || 'us-east-1') + '"></td></tr>'
-    + '<tr><th><label for="ab-endpoint">Endpoint</label></th><td><input id="ab-endpoint" type="text" value="' + escHtml(state.s3_endpoint || '') + '" placeholder="https://..."> <span class="hint">optional, non-AWS</span></td></tr>'
-    + '<tr><th><label for="ab-prefix">Prefix</label></th><td><input id="ab-prefix" type="text" value="' + escHtml(state.s3_prefix || '') + '" placeholder="andrew-3"> <span class="hint">optional single-segment name; lets multiple zones share one bucket — also used as the JuiceFS volume name</span></td></tr>'
-    + '<tr><th><label for="ab-access-key">Access key ID</label></th><td><input id="ab-access-key" type="text" value="' + escHtml(state.s3_access_key_id || '') + '"></td></tr>'
+    + '<tr><th><label for="ab-bucket">S3 bucket</label></th><td><input id="ab-bucket" type="text" placeholder="my-openhost-archive"></td></tr>'
+    + '<tr><th><label for="ab-region">Region</label></th><td><input id="ab-region" type="text" value="us-east-1"></td></tr>'
+    + '<tr><th><label for="ab-endpoint">Endpoint</label></th><td><input id="ab-endpoint" type="text" placeholder="https://..."> <span class="hint">optional, non-AWS</span></td></tr>'
+    + '<tr><th><label for="ab-prefix">Prefix</label></th><td><input id="ab-prefix" type="text" placeholder="andrew-3"> <span class="hint">optional single-segment name; lets multiple zones share one bucket &mdash; also used as the JuiceFS volume name</span></td></tr>'
+    + '<tr><th><label for="ab-access-key">Access key ID</label></th><td><input id="ab-access-key" type="text"></td></tr>'
     + '<tr><th><label for="ab-secret-key">Secret access key</label></th><td><input id="ab-secret-key" type="password"></td></tr>'
     + '</tbody></table>'
-    + '<p><label><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped, restarted, and any in-flight uploads will be lost. I also understand the S3 archive backend is experimental and may lose data.</label></p>'
-    + (includeDeleteSource
-      ? '<p><label><input type="checkbox" id="ab-delete-source"> Also delete the local-disk archive after the copy succeeds.</label></p>'
-      : '')
+    + '<p><label><input type="checkbox" id="ab-confirm"> I understand the S3 archive backend is experimental and that reconfiguration is not supported.</label></p>'
     + '<div class="control-row">'
     + '<button class="btn" id="ab-test-btn">Test connection</button>'
-    + '<button class="btn btn-primary" id="ab-submit-btn">Switch to S3</button>'
+    + '<button class="btn btn-primary" id="ab-submit-btn">Configure</button>'
     + '<button class="btn" id="ab-cancel-btn">Cancel</button>'
     + '<span id="ab-msg" class="hint"></span>'
     + '</div>';
-}
-
-function _localSwitchFormHtml(fromBackend) {
-  if (fromBackend === 'disabled') {
-    return '<p><strong>Configure local-disk archive.</strong> Archive data will live on the persistent host volume under <code>persistent_data/app_archive/</code>. Same backup story as <code>app_data</code>.</p>'
-      + '<p><label><input type="checkbox" id="ab-confirm"> I understand: archive-using apps deployed after this point will store their bulk data on the host\u2019s local disk.</label></p>'
-      + '<div class="control-row">'
-      + '<button class="btn btn-primary" id="ab-submit-btn">Configure local</button>'
-      + '<button class="btn" id="ab-cancel-btn">Cancel</button>'
-      + '<span id="ab-msg" class="hint"></span>'
-      + '</div>';
-  }
-  return '<p><strong>Switch to local-disk archive.</strong> Affected apps will be stopped, archive data copied off S3 to local disk, and apps restarted. The S3 bucket\'s contents stay; you can delete it manually after.</p>'
-    + '<p><label><input type="checkbox" id="ab-confirm"> I understand: opted-in apps will be stopped and restarted, and in-flight uploads will be lost.</label></p>'
-    + '<div class="control-row">'
-    + '<button class="btn btn-primary" id="ab-submit-btn">Switch to local</button>'
-    + '<button class="btn" id="ab-cancel-btn">Cancel</button>'
-    + '<span id="ab-msg" class="hint"></span>'
-    + '</div>';
-}
-
-function showArchiveSwitchForm(state) {
-  var formEl = document.getElementById('archive-backend-form');
-  if (state.backend === 'disabled') {
-    var pickerHtml = '<p><strong>Pick an archive backend.</strong> This is a one-time configure step for fresh zones; you can still switch between local and s3 afterwards.</p>'
-      + '<div class="control-row">'
-      + '<label><input type="radio" name="ab-target" value="local" checked> Local disk</label>'
-      + '<label><input type="radio" name="ab-target" value="s3"> S3 (JuiceFS) &mdash; <span class="error">experimental</span></label>'
-      + '</div>'
-      + '<div id="ab-target-body"></div>';
-    formEl.innerHTML = pickerHtml;
-    formEl.hidden = false;
-    var renderBody = function() {
-      var picked = document.querySelector('input[name="ab-target"]:checked').value;
-      var body = document.getElementById('ab-target-body');
-      body.innerHTML = picked === 's3'
-        ? _s3SwitchFormHtml(state, false)
-        : _localSwitchFormHtml('disabled');
-      _wireArchiveSwitchFormButtons(picked === 's3', formEl);
-    };
-    document.querySelectorAll('input[name="ab-target"]').forEach(function(el) {
-      el.onchange = renderBody;
-    });
-    renderBody();
-    return;
-  }
-
-  var goingToS3 = state.backend === 'local';
-  formEl.innerHTML = goingToS3
-    ? _s3SwitchFormHtml(state, true)
-    : _localSwitchFormHtml('s3');
   formEl.hidden = false;
-  _wireArchiveSwitchFormButtons(goingToS3, formEl);
-}
-
-function _wireArchiveSwitchFormButtons(goingToS3, formEl) {
   document.getElementById('ab-cancel-btn').onclick = function() {
     formEl.hidden = true;
     formEl.innerHTML = '';
   };
-  if (goingToS3) {
-    document.getElementById('ab-test-btn').onclick = function() { testArchiveConnection(); };
-  }
-  document.getElementById('ab-submit-btn').onclick = function() { submitArchiveSwitch(goingToS3); };
+  document.getElementById('ab-test-btn').onclick = testArchiveConnection;
+  document.getElementById('ab-submit-btn').onclick = submitConfigure;
 }
 
 function testArchiveConnection() {
@@ -406,7 +326,7 @@ function testArchiveConnection() {
     });
 }
 
-function submitArchiveSwitch(goingToS3) {
+function submitConfigure() {
   var msg = document.getElementById('ab-msg');
   if (!document.getElementById('ab-confirm').checked) {
     msg.style.color = '#dc3545';
@@ -414,54 +334,31 @@ function submitArchiveSwitch(goingToS3) {
     return;
   }
   var fd = new FormData();
-  fd.append('backend', goingToS3 ? 's3' : 'local');
-  fd.append('confirm_data_loss', 'true');
-  if (goingToS3) {
-    fd.append('s3_bucket', document.getElementById('ab-bucket').value);
-    fd.append('s3_region', document.getElementById('ab-region').value);
-    fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
-    fd.append('s3_prefix', document.getElementById('ab-prefix').value);
-    fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
-    fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
-    // Checkbox only exists on the local→s3 transition.
-    var deleteSourceEl = document.getElementById('ab-delete-source');
-    if (deleteSourceEl && deleteSourceEl.checked) {
-      fd.append('delete_source_after_copy', 'true');
-    }
-  }
+  fd.append('s3_bucket', document.getElementById('ab-bucket').value);
+  fd.append('s3_region', document.getElementById('ab-region').value);
+  fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
+  fd.append('s3_prefix', document.getElementById('ab-prefix').value);
+  fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
+  fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
   msg.style.color = '';
-  msg.textContent = 'Submitting…';
-  fetch(config.archiveBackendUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+  msg.textContent = 'Configuring (may take 10-30s)…';
+  document.getElementById('ab-submit-btn').disabled = true;
+  fetch(config.archiveBackendConfigureUrl, {method: 'POST', credentials: 'same-origin', body: fd})
     .then(function(r) { return r.json().then(function(b) { return [r.status, b]; }); })
     .then(function(pair) {
-      if (pair[0] === 202) {
-        msg.style.color = '#d97706';
-        msg.textContent = 'Switch in progress…';
-        document.getElementById('archive-backend-form').style.display = 'none';
-        pollArchiveBackend();
+      if (pair[0] === 200) {
+        loadArchiveBackend();
       } else {
         msg.style.color = '#dc3545';
         msg.textContent = 'Failed: ' + (pair[1].error || pair[1]);
+        document.getElementById('ab-submit-btn').disabled = false;
       }
     })
     .catch(function(err) {
       msg.style.color = '#dc3545';
       msg.textContent = 'Network error: ' + err;
+      document.getElementById('ab-submit-btn').disabled = false;
     });
-}
-
-function pollArchiveBackend() {
-  loadArchiveBackend().then(function(state) {
-    if (state && state.state === 'switching') {
-      setTimeout(pollArchiveBackend, 1500);
-    }
-  }, function(err) {
-    var el = document.getElementById('archive-backend-status');
-    if (el) {
-      el.innerHTML = '<p class="error"><strong>Archive backend status unavailable.</strong> '
-        + escHtml(String(err)) + '</p>';
-    }
-  });
 }
 
 function loadArchiveBackend() {
@@ -475,6 +372,13 @@ function loadArchiveBackend() {
     .then(function(data) {
       renderArchiveBackend(data);
       return data;
+    })
+    .catch(function(err) {
+      var el = document.getElementById('archive-backend-status');
+      if (el) {
+        el.innerHTML = '<p class="error"><strong>Archive backend status unavailable.</strong> '
+          + escHtml(String(err)) + '</p>';
+      }
     });
 }
 

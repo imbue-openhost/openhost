@@ -130,19 +130,13 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
--- Archive backend state.  Single-row table — exactly one backend per
--- zone.  See ``compute_space/core/archive_backend.py`` and the
--- ``v0005_archive_backend`` migration for the threat model around
--- the plaintext credential columns.
+-- Archive backend state.  Single-row table.  Fresh zones come up at
+-- backend='disabled'; the operator configures S3 once.  Apps that
+-- opt into the ``app_archive`` data tier refuse to install until
+-- the backend is set to 's3'.
 CREATE TABLE IF NOT EXISTS archive_backend (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    -- backend = 'disabled' on a fresh install: the operator has not
-    -- chosen an archive backend yet.  Apps that opt into the
-    -- ``app_archive`` data tier refuse to install while disabled.
-    -- Existing zones at backend='local' from before the v7 migration
-    -- are left as-is on upgrade so nothing breaks for them.
-    backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 'local', 's3')),
-    state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('idle', 'switching')),
+    backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 's3')),
     s3_bucket TEXT,
     s3_region TEXT,
     s3_endpoint TEXT,
@@ -150,8 +144,8 @@ CREATE TABLE IF NOT EXISTS archive_backend (
     s3_access_key_id TEXT,
     s3_secret_access_key TEXT,
     juicefs_volume_name TEXT NOT NULL DEFAULT 'openhost',
-    last_switched_at TEXT,
+    configured_at TEXT,
     state_message TEXT
 );
 
-INSERT OR IGNORE INTO archive_backend (id, backend) VALUES (1, 'disabled');
+INSERT OR IGNORE INTO archive_backend (id) VALUES (1);

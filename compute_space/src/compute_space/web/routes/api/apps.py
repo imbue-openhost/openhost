@@ -167,19 +167,18 @@ async def api_add_app() -> ResponseReturnValue:
         shutil.rmtree(clone_dir, ignore_errors=True)
         return jsonify({"error": validation_error}), 400
 
-    # 400 for backend=disabled (operator must pick one); 503 for
-    # configured-but-unhealthy (transient, retry).
+    # 400 when the operator hasn't configured S3 (action: visit the System
+    # page); 503 when configured-but-unhealthy (action: retry transient).
     if manifest.app_archive:
         backend_state = archive_backend.read_state(db)
-        if backend_state.backend == "disabled":
+        if backend_state.backend != "s3":
             shutil.rmtree(clone_dir, ignore_errors=True)
             return jsonify(
                 {
                     "error": "This app uses the app_archive data tier, but "
-                    "the archive backend has not been configured on "
-                    "this zone.  Visit the System page and pick an "
-                    "archive backend (local disk or S3) before "
-                    "deploying this app."
+                    "S3 archive storage has not been configured on "
+                    "this zone.  Visit the System page to configure an "
+                    "S3 backend before deploying this app."
                 }
             ), 400
         if not archive_backend.is_archive_dir_healthy(config, db):
@@ -187,9 +186,8 @@ async def api_add_app() -> ResponseReturnValue:
             return jsonify(
                 {
                     "error": "Archive backend is not healthy; refusing to deploy "
-                    "an archive-using app until the operator-configured "
-                    "archive mount is live again (see the dashboard's "
-                    "Archive backend panel)."
+                    "an archive-using app until the JuiceFS mount is live "
+                    "again (see the dashboard's Archive backend panel)."
                 }
             ), 503
 
@@ -549,17 +547,20 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
 
-    # Refuse rename on an unhealthy archive: the archive subdir would
-    # be silently skipped while other tiers are renamed, orphaning the
-    # archive contents under the old name.
-    if not archive_backend.is_archive_dir_healthy(config, db):
-        return jsonify(
-            {
-                "error": "Archive backend is not healthy; refusing to rename "
-                "until the operator-configured archive mount is live "
-                "again (see the dashboard's Archive backend panel)."
-            }
-        ), 503
+    # Refuse rename on an unhealthy archive ONLY if this app actually
+    # uses the archive — otherwise the archive subdir would be silently
+    # skipped while other tiers are renamed, orphaning the archive
+    # contents under the old name.  Apps that don't use the archive
+    # tier are unaffected and can rename freely on any backend state.
+    if _manifest_uses_archive(app_row["manifest_raw"] or ""):
+        if not archive_backend.is_archive_dir_healthy(config, db):
+            return jsonify(
+                {
+                    "error": "Archive backend is not healthy; refusing to rename "
+                    "an archive-using app until the JuiceFS mount is live "
+                    "again (see the dashboard's Archive backend panel)."
+                }
+            ), 503
 
     if new_name == app_name:
         return jsonify({"ok": True, "name": new_name})

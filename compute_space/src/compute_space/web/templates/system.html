@@ -67,7 +67,8 @@
   "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
   "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}",
   "archiveBackendUrl": "{{ url_for('api_archive_backend.get_archive_backend') }}",
-  "archiveBackendTestUrl": "{{ url_for('api_archive_backend.test_connection') }}"
+  "archiveBackendTestUrl": "{{ url_for('api_archive_backend.test_connection') }}",
+  "archiveBackendConfigureUrl": "{{ url_for('api_archive_backend.configure_archive_backend') }}"
 }
 </script>
 <script src="{{ static_url('js/system.js') }}"></script>
