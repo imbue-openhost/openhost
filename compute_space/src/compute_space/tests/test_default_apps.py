@@ -87,16 +87,18 @@ def _make_app_dir(apps_dir: Path, dir_name: str, manifest_name: str | None = Non
 @pytest.fixture
 def cfg_with_apps(tmp_path: Path):
     """Build a Config whose ``apps_dir`` contains two builtin apps,
-    plus a fresh sqlite DB at the canonical path."""
+    plus a fresh sqlite DB at the canonical path.  Mirrors the
+    production naming convention: directory names use underscores
+    (``secrets_v2``), manifest ``name`` uses hyphens (``secrets-v2``)."""
     apps_dir = tmp_path / "apps"
     apps_dir.mkdir()
-    _make_app_dir(apps_dir, "secrets-v2")
-    _make_app_dir(apps_dir, "file-browser")
+    _make_app_dir(apps_dir, "secrets_v2", manifest_name="secrets-v2")
+    _make_app_dir(apps_dir, "file_browser", manifest_name="file-browser")
 
     cfg = _make_cfg(
         tmp_path,
         apps_dir=apps_dir,
-        default_apps=["secrets-v2", "file-browser"],
+        default_apps=["secrets_v2", "file_browser"],
     )
     _seed_db(cfg.db_path)
     return cfg
@@ -150,10 +152,10 @@ def test_deploy_default_apps_installs_each(cfg_with_apps, monkeypatch):
     assert result.ok_count == 2
     assert result.failed_count == 0
     statuses = {o.name: o.status for o in result.outcomes}
-    assert statuses == {"secrets-v2": "ok", "file-browser": "ok"}
+    assert statuses == {"secrets_v2": "ok", "file_browser": "ok"}
 
     sentinel = _read_sentinel(cfg_with_apps)
-    assert set(sentinel.keys()) == {"secrets-v2", "file-browser"}
+    assert set(sentinel.keys()) == {"secrets_v2", "file_browser"}
     assert all(entry["status"] == "ok" for entry in sentinel.values())
 
 
@@ -208,13 +210,8 @@ def test_existing_db_row_short_circuits_install(cfg_with_apps, monkeypatch):
         db.close()
 
     by_name = {o.name: o for o in result.outcomes}
-    assert by_name["secrets-v2"].status == "skipped"
-    assert by_name["file-browser"].status == "ok"
-
-
-# ---------------------------------------------------------------------------
-# Failure handling: retries, sentinel persistence, error capture
-# ---------------------------------------------------------------------------
+    assert by_name["secrets_v2"].status == "skipped"
+    assert by_name["file_browser"].status == "ok"
 
 
 def test_failure_records_attempt_count_and_error(cfg_with_apps, monkeypatch):
@@ -226,10 +223,10 @@ def test_failure_records_attempt_count_and_error(cfg_with_apps, monkeypatch):
         db.close()
 
     by_name = {o.name: o for o in result.outcomes}
-    assert by_name["secrets-v2"].status == "failed"
-    assert by_name["secrets-v2"].attempts == 1
-    assert by_name["secrets-v2"].error is not None
-    assert by_name["file-browser"].status == "ok"
+    assert by_name["secrets_v2"].status == "failed"
+    assert by_name["secrets_v2"].attempts == 1
+    assert by_name["secrets_v2"].error is not None
+    assert by_name["file_browser"].status == "ok"
 
 
 def test_retries_until_max_attempts(cfg_with_apps, monkeypatch):
@@ -268,7 +265,7 @@ def test_retry_succeeds_on_second_attempt(cfg_with_apps, monkeypatch):
         db.close()
 
     sentinel = _read_sentinel(cfg_with_apps)
-    assert sentinel["secrets-v2"]["status"] == "failed"
+    assert sentinel["secrets_v2"]["status"] == "failed"
 
     _patch_insert_and_deploy(monkeypatch, fail_for=set())
     db = sqlite3.connect(cfg_with_apps.db_path)
@@ -277,7 +274,7 @@ def test_retry_succeeds_on_second_attempt(cfg_with_apps, monkeypatch):
     finally:
         db.close()
     by_name = {o.name: o for o in result.outcomes}
-    assert by_name["secrets-v2"].status == "ok"
+    assert by_name["secrets_v2"].status == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -348,8 +345,8 @@ def test_non_numeric_attempts_does_not_crash(cfg_with_apps, monkeypatch):
     with open(cfg_with_apps.default_apps_sentinel_path, "w") as f:
         json.dump(
             {
-                "secrets-v2": {"status": "failed", "attempts": "garbage"},
-                "file-browser": {"status": "failed", "attempts": None},
+                "secrets_v2": {"status": "failed", "attempts": "garbage"},
+                "file_browser": {"status": "failed", "attempts": None},
             },
             f,
         )
@@ -363,8 +360,8 @@ def test_non_numeric_attempts_does_not_crash(cfg_with_apps, monkeypatch):
 
     assert result.ok_count == 2
     sentinel = _read_sentinel(cfg_with_apps)
-    assert sentinel["secrets-v2"]["attempts"] == 1
-    assert sentinel["file-browser"]["attempts"] == 1
+    assert sentinel["secrets_v2"]["attempts"] == 1
+    assert sentinel["file_browser"]["attempts"] == 1
 
 
 def test_skipped_sentinel_is_terminal(cfg_with_apps, monkeypatch):
@@ -375,8 +372,8 @@ def test_skipped_sentinel_is_terminal(cfg_with_apps, monkeypatch):
     with open(cfg_with_apps.default_apps_sentinel_path, "w") as f:
         json.dump(
             {
-                "secrets-v2": {"status": "skipped", "attempts": 0},
-                "file-browser": {"status": "ok", "attempts": 1},
+                "secrets_v2": {"status": "skipped", "attempts": 0},
+                "file_browser": {"status": "ok", "attempts": 1},
             },
             f,
         )
@@ -393,8 +390,8 @@ def test_skipped_sentinel_is_terminal(cfg_with_apps, monkeypatch):
         db.close()
 
     by_name = {o.name: o for o in result.outcomes}
-    assert by_name["secrets-v2"].status == "skipped"
-    assert by_name["file-browser"].status == "ok"
+    assert by_name["secrets_v2"].status == "skipped"
+    assert by_name["file_browser"].status == "ok"
 
 
 def test_sentinel_survives_partial_failure(cfg_with_apps, monkeypatch):
@@ -408,8 +405,8 @@ def test_sentinel_survives_partial_failure(cfg_with_apps, monkeypatch):
         db.close()
 
     sentinel = _read_sentinel(cfg_with_apps)
-    assert sentinel["file-browser"]["status"] == "ok"
-    assert sentinel["secrets-v2"]["status"] == "failed"
+    assert sentinel["file_browser"]["status"] == "ok"
+    assert sentinel["secrets_v2"]["status"] == "failed"
 
     seen_names = []
     real_install = da._install_one
@@ -426,4 +423,4 @@ def test_sentinel_survives_partial_failure(cfg_with_apps, monkeypatch):
     finally:
         db.close()
 
-    assert seen_names == ["secrets-v2"]
+    assert seen_names == ["secrets_v2"]

@@ -178,7 +178,11 @@ class DefaultConfig(Config):
     port_range_end: int = 9999
 
     # Apps to deploy on first boot (see ``Config.default_apps``).
-    default_apps: list[str] = attr.Factory(lambda: ["secrets-v2", "file-browser"])
+    # Each entry is the directory name under ``apps_dir`` — the
+    # ``apps/`` tree uses Python-import-style underscores, while the
+    # manifest's ``[app].name`` field uses hyphens; this list keys
+    # on the directory name.
+    default_apps: list[str] = attr.Factory(lambda: ["secrets_v2", "file_browser"])
 
 
 def load_config() -> Config:
