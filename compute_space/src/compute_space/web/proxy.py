@@ -10,6 +10,7 @@ from werkzeug.datastructures import Headers
 
 from compute_space.core.auth import COOKIE_REFRESH
 from compute_space.core.logging import logger
+from compute_space.core.updates import wait_for_shutdown
 
 
 async def proxy_request(
@@ -181,9 +182,18 @@ async def ws_proxy(
     # `websockets` client to emit an empty `Sec-WebSocket-Protocol:` header, which strict backends
     # (including `websockets`' own server, as used by Selkies / the linuxserver webtop image) reject
     # with `InvalidHeaderFormat: expected token at 0 in`.
+    #
+    # `max_size=None` lifts the default 1 MiB incoming-message cap: the proxy shouldn't impose its
+    # own size policy — apps decide their own limits, and a 1 MiB ceiling here silently kills any
+    # backend that legitimately sends a larger frame (e.g. a CRDT's initial-state sync).
+    #
+    # Compression is left at the websockets default (permessage-deflate offered): the previous
+    # `compression=None` was overly cautious — RFC 7692 already mandates graceful fallback if the
+    # backend rejects the extension, and enabling it dramatically reduces transfer sizes for the
+    # text-heavy traffic this proxy commonly carries.
     ws_kwargs: dict[str, Any] = {
         "additional_headers": extra_headers,
-        "compression": None,  # avoid permessage-deflate mismatches with backend
+        "max_size": None,
         "open_timeout": 10,
         "close_timeout": 5,
     }
@@ -214,10 +224,15 @@ async def ws_proxy(
                 except Exception:
                     pass
 
-            # Run both directions concurrently; when either ends, cancel the other.
+            # Run both directions concurrently. Also race against the global
+            # shutdown event so that long-lived websocket sessions don't hold
+            # hypercorn's graceful_timeout open during a restart — without this
+            # the proxy will sit on each open connection until either side
+            # closes naturally, dragging out shutdown by minutes.
             tasks = [
                 asyncio.ensure_future(backend_to_client()),
                 asyncio.ensure_future(client_to_backend()),
+                asyncio.ensure_future(wait_for_shutdown()),
             ]
             try:
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
