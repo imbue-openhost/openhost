@@ -10,6 +10,7 @@ from werkzeug.datastructures import Headers
 
 from compute_space.core.auth import COOKIE_REFRESH
 from compute_space.core.logging import logger
+from compute_space.core.updates import wait_for_shutdown
 
 
 async def proxy_request(
@@ -223,10 +224,15 @@ async def ws_proxy(
                 except Exception:
                     pass
 
-            # Run both directions concurrently; when either ends, cancel the other.
+            # Run both directions concurrently. Also race against the global
+            # shutdown event so that long-lived websocket sessions don't hold
+            # hypercorn's graceful_timeout open during a restart — without this
+            # the proxy will sit on each open connection until either side
+            # closes naturally, dragging out shutdown by minutes.
             tasks = [
                 asyncio.ensure_future(backend_to_client()),
                 asyncio.ensure_future(client_to_backend()),
+                asyncio.ensure_future(wait_for_shutdown()),
             ]
             try:
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
