@@ -215,6 +215,8 @@ def format_volume(
     chunk lands under ``<bucket>/<volume>/...``), so two zones can share
     one bucket safely.
     """
+    # JuiceFS's sqlite3 meta backend opens the file but won't mkdir its parent.
+    os.makedirs(_juicefs_state_dir(config), exist_ok=True)
     bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint)
     cmd = [
         _juicefs_binary(config),

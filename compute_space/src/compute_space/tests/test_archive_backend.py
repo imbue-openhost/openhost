@@ -132,6 +132,33 @@ def test_format_volume_passes_no_agent_flag(cfg):
     assert cmd.index("--no-agent") < cmd.index("format")
 
 
+def test_format_volume_creates_state_dir_for_meta_db(cfg):
+    """JuiceFS's sqlite3 meta backend won't mkdir its parent; format_volume must.
+    Regression: a fresh zone with no legacy meta.db otherwise fails with
+    'unable to open database file: no such file or directory'."""
+    state_dir = archive_backend.juicefs_state_dir(cfg)
+    assert not os.path.exists(state_dir)
+    captured = {}
+
+    def fake_run(cmd, env, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        captured["state_dir_exists"] = os.path.isdir(state_dir)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
+        with mock.patch.object(subprocess, "run", side_effect=fake_run):
+            archive_backend.format_volume(
+                cfg,
+                s3_bucket="b",
+                s3_region="us-east-1",
+                s3_endpoint=None,
+                s3_access_key_id="ak",
+                s3_secret_access_key="sk",
+                juicefs_volume_name="zone",
+            )
+    assert captured["state_dir_exists"] is True
+
+
 def test_mount_passes_no_agent_flag(cfg):
     captured = {}
 
