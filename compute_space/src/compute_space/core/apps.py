@@ -245,6 +245,7 @@ def insert_and_deploy(
         manifest,
         config.persistent_data_dir,
         config.temporary_data_dir,
+        config.app_archive_dir,
         port=config.port,
         zone_domain=config.zone_domain,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
@@ -402,6 +403,7 @@ def deploy_app_background(
             env_vars,
             config.persistent_data_dir,
             config.temporary_data_dir,
+            config.app_archive_dir,
             port_mappings=port_mappings,
         )
         db.execute(
@@ -523,6 +525,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         manifest,
         config.persistent_data_dir,
         config.temporary_data_dir,
+        config.app_archive_dir,
         port=config.port,
         zone_domain=config.zone_domain,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
@@ -568,6 +571,7 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         env_vars,
         config.persistent_data_dir,
         config.temporary_data_dir,
+        config.app_archive_dir,
         port_mappings=port_mappings,
     )
     db.execute(
@@ -769,7 +773,12 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
             if keep_data:
                 deprovision_temp_data(app_name, config.temporary_data_dir)
             else:
-                deprovision_data(app_name, config.persistent_data_dir, config.temporary_data_dir)
+                deprovision_data(
+                    app_name,
+                    config.persistent_data_dir,
+                    config.temporary_data_dir,
+                    config.app_archive_dir,
+                )
         except Exception:
             logger.exception("Failed to deprovision data for %s", app_name)
 

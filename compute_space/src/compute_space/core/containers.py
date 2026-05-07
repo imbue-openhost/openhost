@@ -205,20 +205,24 @@ def run_container(
     env_vars: dict[str, str],
     data_dir: str,
     temp_data_dir: str,
+    archive_dir: str,
     port_mappings: list[PortMapping] | None = None,
 ) -> str:
     """Start a detached container for an app.  Returns the container ID."""
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
+    app_archive_dir = os.path.join(archive_dir, app_name)
     vm_data_dir = os.path.join(data_dir, "vm_data")
     container_name = f"openhost-{app_name}"
 
     has_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
     has_app_temp = manifest.app_temp_data or manifest.access_all_data
+    has_app_archive = manifest.app_archive or manifest.access_all_data
     has_vm_data = manifest.access_vm_data or manifest.access_all_data
 
     c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
     c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
+    c_app_archive = f"{CONTAINER_ROOT}/app_archive/{app_name}"
     c_vm_data = f"{CONTAINER_ROOT}/vm_data"
 
     # Translate host paths in env vars to their in-container equivalents.
@@ -231,6 +235,8 @@ def run_container(
             container_env[key] = c_app_data
         elif key == "OPENHOST_APP_TEMP_DIR":
             container_env[key] = c_app_temp
+        elif key == "OPENHOST_APP_ARCHIVE_DIR":
+            container_env[key] = c_app_archive
         else:
             container_env[key] = value
 
@@ -270,6 +276,10 @@ def run_container(
                 ),
             ]
         )
+        # access_all_data is permissive — skip the archive mount when
+        # the tier isn't configured rather than refusing to start.
+        if os.path.isdir(archive_dir):
+            cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
         os.makedirs(vm_data_dir, exist_ok=True)
         cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data)])
     else:
@@ -277,6 +287,8 @@ def run_container(
             cmd.extend(["-v", _bind_mount_arg(app_data_dir, c_app_data)])
         if has_app_temp:
             cmd.extend(["-v", _bind_mount_arg(app_temp_dir, c_app_temp)])
+        if has_app_archive:
+            cmd.extend(["-v", _bind_mount_arg(app_archive_dir, c_app_archive)])
         if has_vm_data:
             os.makedirs(vm_data_dir, exist_ok=True)
             cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)])

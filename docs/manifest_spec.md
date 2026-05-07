@@ -57,21 +57,25 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 |-------|------|----------|---------|-------------|
 | `app_data` | boolean | no | false | Request access to permanent filesystem directory (backed up) |
 | `app_temp_data` | boolean | no | false | Request access to temporary filesystem directory (not backed up) |
+| `app_archive` | boolean | no | false | Request access to the elastic archive directory for bulk content. Backed by S3 (via JuiceFS) once the operator configures it from the dashboard; apps with this flag won't install until S3 is configured. |
 | `sqlite` | string[] | no | [] | SQLite database names to provision (implicitly enables `app_data`) |
 | `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory |
-| `access_all_data` | boolean | no | false | Full access to permanent data, temp data, and vm data |
+| `access_all_data` | boolean | no | false | Full access to permanent data, temp data, archive, and vm data |
 
 ## Data Directory Structure
 
-Apps have two storage areas on the same disk. **By default, apps have no filesystem access.** Each must be explicitly requested:
+Apps have three storage areas, each with different durability + size + latency tradeoffs. **By default, apps have no filesystem access.** Each must be explicitly requested:
 
-- **Permanent data** (`/data/app_data/{app_name}/`) — backed up, user-visible. Enabled by `app_data = true` or by requesting `sqlite` entries.
-- **Temporary data** (`/data/app_temp_data/{app_name}/`) — not backed up, recreatable. Enabled by `app_temp_data = true`.
+- **Permanent data** (`/data/app_data/{app_name}/`) — local disk. Small, fast, backed up. Enabled by `app_data = true` or by requesting `sqlite` entries. **SQLite databases must live here**, not in `app_archive`: the archive tier may be backed by a network FS with close-to-open consistency that corrupts SQLite WAL.
+- **Temporary data** (`/data/app_temp_data/{app_name}/`) — local disk scratch. Not backed up, recreatable. Enabled by `app_temp_data = true`.
+- **Archive data** (`/data/app_archive/{app_name}/`) — elastic, S3-backed via JuiceFS. Disabled by default on fresh zones; the operator configures the backend one-shot from the dashboard. Large, higher-latency on uncached reads, durability tied to the operator's S3 provider SLA. Intended for bulk content (videos, photos, attachments) — anything that needs near-unlimited capacity but tolerates network-FS latency. Enabled by `app_archive = true`. Apps with this flag are blocked from install/reload until the operator configures the S3 backend.
 - **VM data** (`/data/vm_data/`) — router database and VM-level shared data. Only accessible if `access_vm_data = true`.
+
+The archive tier is disabled by default. The operator configures it one-shot from the dashboard, supplying S3 credentials and a per-zone prefix; archive bytes then route through a JuiceFS mount of the operator-supplied bucket. Apps see `/data/app_archive/<app>/` as a normal POSIX directory and don't need to know JuiceFS is involved.
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, the storage guard stops running apps until space is freed.
 
-All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_data`, the parent dirs are mounted instead (`/data/app_data/`, `/data/app_temp_data/`) so the app can see all apps' data.
+All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_data`, the parent dirs are mounted instead (`/data/app_data/`, `/data/app_temp_data/`, `/data/app_archive/`) so the app can see all apps' data.
 
 ## Environment Variable Injection
 
@@ -80,6 +84,7 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_SQLITE_<NAME>` — filesystem path to the named sqlite database (only if `sqlite` entries requested)
 - `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
 - `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
+- `OPENHOST_APP_ARCHIVE_DIR` — `/data/app_archive/{app_name}` (only if app_archive access granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
 - `OPENHOST_ROUTER_URL` — URL of the router's HTTP server, reachable from inside the container.
 

@@ -43,7 +43,11 @@ requires_containers = pytest.mark.requires_containers
 
 def test_sqlite_provisioning():
     """SQLite databases declared in a manifest are provisioned correctly."""
-    with tempfile.TemporaryDirectory() as data_dir, tempfile.TemporaryDirectory() as temp_dir:
+    with (
+        tempfile.TemporaryDirectory() as data_dir,
+        tempfile.TemporaryDirectory() as temp_dir,
+        tempfile.TemporaryDirectory() as archive_dir,
+    ):
         manifest = AppManifest(
             name="testapp",
             version="0.1.0",
@@ -57,6 +61,7 @@ def test_sqlite_provisioning():
             manifest,
             data_dir,
             temp_dir,
+            archive_dir,
             my_openhost_redirect_domain="my.test.example.com",
             zone_domain="test.example.com",
             port=manifest.container_port,

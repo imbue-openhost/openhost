@@ -49,6 +49,7 @@ class TestDefaults:
         manifest = parse_manifest_from_string(MINIMAL)
         assert manifest.app_data is False
         assert manifest.app_temp_data is False
+        assert manifest.app_archive is False
         assert manifest.access_vm_data is False
         assert manifest.access_all_data is False
 
@@ -550,6 +551,42 @@ class TestUnprivilegedPortFloor:
         toml = MINIMAL + '\n[[ports]]\nlabel = "auto"\ncontainer_port = 9000\nhost_port = 0\n'
         manifest = parse_manifest_from_string(toml)
         assert manifest.port_mappings[0].host_port == 0
+
+
+class TestAppArchive:
+    """Verify the [data].app_archive opt-in behaves correctly.
+
+    The archive tier is a host-level abstraction backed by either
+    local disk or a JuiceFS-on-S3 mount; the manifest opt-in is
+    backing-agnostic.  These tests pin the manifest-level contract.
+    """
+
+    def test_app_archive_default_is_false(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.app_archive is False
+
+    def test_app_archive_explicit_true_with_app_data(self):
+        toml = MINIMAL + "\n[data]\napp_data = true\napp_archive = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.app_data is True
+
+    def test_app_archive_with_sqlite(self):
+        toml = MINIMAL + '\n[data]\nsqlite = ["main"]\napp_archive = true\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.sqlite_dbs == ["main"]
+
+    def test_app_archive_alone(self):
+        toml = MINIMAL + "\n[data]\napp_archive = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+
+    def test_app_archive_with_access_all_data(self):
+        toml = MINIMAL + "\n[data]\naccess_all_data = true\napp_archive = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.app_archive is True
+        assert manifest.access_all_data is True
 
 
 class TestShmMb:

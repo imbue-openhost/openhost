@@ -128,7 +128,12 @@ def test_remove_full_calls_full_deprovision(tmp_path: Path) -> None:
         remove_app_background("myapp", keep_data=False, config=cfg)
 
     temp_only.assert_not_called()
-    full.assert_called_once_with("myapp", cfg.persistent_data_dir, cfg.temporary_data_dir)
+    full.assert_called_once_with(
+        "myapp",
+        cfg.persistent_data_dir,
+        cfg.temporary_data_dir,
+        cfg.app_archive_dir,
+    )
 
 
 def test_remove_proceeds_when_deprovision_raises(tmp_path: Path) -> None:

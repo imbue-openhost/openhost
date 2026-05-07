@@ -5,47 +5,53 @@
 <table id="security-table">
   <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
   <tbody id="security-body">
-    <tr><td colspan="3" style="color:#888;">Loading&hellip;</td></tr>
+    <tr><td colspan="3" class="muted">Loading&hellip;</td></tr>
   </tbody>
 </table>
 
-<h2 style="margin-top: 2em;">Listening Ports</h2>
+<h2>Listening Ports</h2>
 <table id="ports-table">
   <thead><tr><th>Port</th><th>Address</th><th>Classification</th><th>Detail</th></tr></thead>
   <tbody id="ports-body">
-    <tr><td colspan="4" style="color:#888;">Loading&hellip;</td></tr>
+    <tr><td colspan="4" class="muted">Loading&hellip;</td></tr>
   </tbody>
 </table>
 
-<h2 style="margin-top: 2em;">Storage</h2>
+<h2>Storage</h2>
 <table id="storage-table">
   <tbody id="storage-body">
-    <tr><td colspan="2" style="color:#888;">Loading&hellip;</td></tr>
+    <tr><td colspan="2" class="muted">Loading&hellip;</td></tr>
   </tbody>
 </table>
-<div id="storage-guard-row" style="margin-bottom:1em;"></div>
+<div id="storage-guard-row"></div>
 
-<h2 style="margin-top: 2em;">Maintenance</h2>
+<h2>Archive Backend</h2>
+<p class="hint">Where the <code>app_archive</code> data tier lives. Disabled by default; configure an S3 bucket here once and apps with <code>app_archive = true</code> get a JuiceFS-backed mount whose contents survive a zone reinstall. The prefix lets multiple zones share one bucket. Configuration is one-shot per zone.</p>
+<div id="archive-backend-status">
+  <div class="muted">Loading&hellip;</div>
+</div>
+
+<h2>Maintenance</h2>
 <table>
   <tr>
-    <th style="width:14em;">Restart router</th>
+    <th class="label-col">Restart router</th>
     <td>
       <button class="btn" onclick="restartRouter()">Restart Router</button>
-      <span id="restart-msg" style="color:#d97706;margin-left:0.5em;"></span>
+      <span id="restart-msg" class="muted"></span>
     </td>
   </tr>
   <tr>
-    <th>Build cache</th>
+    <th class="label-col">Build cache</th>
     <td>
       <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
-      <span id="drop-build-cache-msg" style="color:#d97706;margin-left:0.5em;"></span>
+      <span id="drop-build-cache-msg" class="muted"></span>
     </td>
   </tr>
   <tr>
-    <th>SSH</th>
+    <th class="label-col">SSH</th>
     <td>
       <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
-      <span id="ssh-status" style="margin-left:0.5em;color:#6b7280;"></span>
+      <span id="ssh-status" class="muted"></span>
     </td>
   </tr>
 </table>
@@ -59,7 +65,10 @@
   "dropBuildCacheUrl": "{{ url_for('api_system.drop_docker_cache') }}",
   "sshStatusUrl": "{{ url_for('api_system.ssh_status') }}",
   "toggleSshUrl": "{{ url_for('api_system.toggle_ssh') }}",
-  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}"
+  "toggleStorageGuardUrl": "{{ url_for('api_system.toggle_storage_guard') }}",
+  "archiveBackendUrl": "{{ url_for('api_archive_backend.get_archive_backend') }}",
+  "archiveBackendTestUrl": "{{ url_for('api_archive_backend.test_connection') }}",
+  "archiveBackendConfigureUrl": "{{ url_for('api_archive_backend.configure_archive_backend') }}"
 }
 </script>
 <script src="{{ static_url('js/system.js') }}"></script>

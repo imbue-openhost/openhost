@@ -69,6 +69,13 @@ class Config:
         return os.path.join(self.data_root_dir, "temporary_data")
 
     @property
+    def app_archive_dir(self) -> str:
+        # JuiceFS FUSE mount; lives under data_root_dir (NOT persistent_data_dir)
+        # so restic backups don't double-store bytes that already live in S3.
+        # Empty/non-existent until archive_backend.configure_backend has run.
+        return os.path.join(self.data_root_dir, "app_archive")
+
+    @property
     def apps_dir(self) -> str:
         # where openhost/apps/ is mounted
         if self.apps_dir_override:
@@ -122,6 +129,8 @@ class Config:
         assert os.path.exists(self.data_root_dir)
         os.makedirs(self.persistent_data_dir, exist_ok=True)
         os.makedirs(self.temporary_data_dir, exist_ok=True)
+        # Skip app_archive_dir: a stray local dir at that path would shadow
+        # the JuiceFS mount once attach_on_startup brings it up.
         os.makedirs(self.apps_dir, exist_ok=True)
         os.makedirs(self.openhost_data_path, exist_ok=True)
         os.makedirs(self.keys_dir, exist_ok=True)

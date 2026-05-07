@@ -126,6 +126,7 @@ class AppManifest:
     sqlite_dbs: list[str] = attr.Factory(list)
     app_data: bool = False
     app_temp_data: bool = False
+    app_archive: bool = False
     access_vm_data: bool = False
     access_all_data: bool = False
 
@@ -318,6 +319,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         sqlite_dbs=data_section.get("sqlite", []),
         app_data=data_section.get("app_data", False),
         app_temp_data=data_section.get("app_temp_data", False),
+        app_archive=data_section.get("app_archive", False),
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_data=data_section.get("access_all_data", False),
         provides_services=services.get("provides", []),

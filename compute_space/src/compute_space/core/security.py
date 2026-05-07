@@ -167,6 +167,12 @@ def _secure_ports() -> dict[int, str]:
     return secure
 
 
+def _is_loopback(addr: str) -> bool:
+    host = addr.rsplit(":", 1)[0]
+    host = host.strip("[]")
+    return host in ("127.0.0.1", "::1") or host.startswith("127.")
+
+
 def list_listening_ports(db: sqlite3.Connection | None = None) -> list[ListeningPort]:
     """Return every TCP port the VM is listening on, classified.
 
@@ -219,6 +225,8 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
             classification, label = "allocated", f"App: {app_by_port[port]}"
         elif 9000 <= port <= 9999:
             classification, label = "app_range", "App range (9000-9999)"
+        elif _is_loopback(addr) and 6060 <= port <= 6099:
+            classification, label = "secure", "JuiceFS pprof agent (loopback)"
         else:
             classification, label = "unexpected", "Unexpected"
 

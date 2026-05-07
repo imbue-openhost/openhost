@@ -77,6 +77,7 @@ def provision_data(
     manifest: AppManifest,
     data_dir: str,
     temp_data_dir: str,
+    archive_dir: str,
     my_openhost_redirect_domain: str,
     zone_domain: str,
     port: int,
@@ -85,11 +86,12 @@ def provision_data(
     Returns a dict of environment variable name -> value.
 
     Apps only get filesystem access to directories they explicitly request
-    via app_data and app_temp_data flags in [data]. SQLite entries
-    implicitly enable app_data.
+    via app_data, app_temp_data, and app_archive flags in [data].  SQLite
+    entries implicitly enable app_data.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
+    app_archive_dir = os.path.join(archive_dir, app_name)
     env_vars = {}
 
     # Determine if permanent data dir is needed:
@@ -116,6 +118,26 @@ def provision_data(
     if manifest.app_temp_data or manifest.access_all_data:
         os.makedirs(app_temp_dir, exist_ok=True)
         env_vars["OPENHOST_APP_TEMP_DIR"] = app_temp_dir
+
+    archive_available = os.path.isdir(archive_dir)
+    if manifest.app_archive:
+        # Do NOT auto-mkdir a missing archive_dir: a local path created
+        # here would be shadowed once the JuiceFS mount lands, silently
+        # losing whatever apps wrote in the meantime.  Fail loudly.
+        if not archive_available:
+            raise RuntimeError(
+                f"archive_dir {archive_dir!r} does not exist or is not a "
+                f"directory.  If the S3 backend is configured, check "
+                f"that ``juicefs-mount`` is healthy; otherwise check "
+                f"that ``Config.make_all_dirs()`` ran on startup."
+            )
+        os.makedirs(app_archive_dir, exist_ok=True)
+        env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
+    elif manifest.access_all_data and archive_available:
+        # access_all_data is permissive — skip the archive mount when
+        # the tier isn't configured rather than refusing to provision.
+        os.makedirs(app_archive_dir, exist_ok=True)
+        env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
 
     # Always create temp dir for internal use (repo clone, logs) even if
     # the app doesn't get access to it
@@ -147,7 +169,13 @@ def deprovision_temp_data(app_name: str, temp_data_dir: str) -> None:
     rmtree_with_sudo_fallback(os.path.join(temp_data_dir, "app_temp_data", app_name))
 
 
-def deprovision_data(app_name: str, data_dir: str, temp_data_dir: str) -> None:
-    """Remove all data for an app from both permanent and temp disks."""
+def deprovision_data(
+    app_name: str,
+    data_dir: str,
+    temp_data_dir: str,
+    archive_dir: str,
+) -> None:
+    """Remove all data for an app from persistent, archive, and temp disks."""
     rmtree_with_sudo_fallback(os.path.join(data_dir, "app_data", app_name))
+    rmtree_with_sudo_fallback(os.path.join(archive_dir, app_name))
     deprovision_temp_data(app_name, temp_data_dir)
