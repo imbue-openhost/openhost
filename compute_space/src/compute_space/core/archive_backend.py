@@ -229,6 +229,15 @@ def mount(
             "--no-agent",
             "mount",
             "--no-usage-report",
+            # -o allow_other: rootless podman maps container uids into a
+            # subuid range (e.g. container 1000 -> host 100999), so without
+            # allow_other those container processes can't traverse the FUSE
+            # mount at all.  POSIX dir-mode permissions on per-app subdirs
+            # still gate writes; this just opens up FUSE-level traversal.
+            # Requires user_allow_other in /etc/fuse.conf, which the
+            # ansible setup playbook configures.
+            "-o",
+            "allow_other",
             _format_meta_dsn(config),
             mount_point,
         ]

@@ -175,6 +175,45 @@ def test_mount_passes_no_agent_flag(cfg):
     assert cmd.index("--no-agent") < cmd.index("mount")
 
 
+def test_mount_passes_allow_other(cfg):
+    """Without -o allow_other the FUSE handler rejects requests from any
+    uid except the mount owner; rootless-podman remaps container uids into
+    a host subuid range, so app containers would all get EACCES on
+    /data/app_archive.  Regression test."""
+    captured: dict[str, list[str]] = {}
+
+    class _FakeProc:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            self.returncode = self.returncode or 0
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(cmd, env, stdout, stderr):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    is_mounted_calls = [False, True]
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
+        with mock.patch.object(
+            archive_backend, "is_mounted", side_effect=lambda mp: is_mounted_calls.pop(0) if is_mounted_calls else True
+        ):
+            with mock.patch.object(subprocess, "Popen", side_effect=fake_popen):
+                archive_backend.mount(cfg, "ak", "sk")
+    cmd = captured["cmd"]
+    o_idx = cmd.index("-o")
+    assert cmd[o_idx + 1] == "allow_other"
+
+
 # --- on-disk layout helpers ----------------------------------------------
 
 
