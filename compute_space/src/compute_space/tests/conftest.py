@@ -47,6 +47,15 @@ def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
         zone_domain=overrides.pop("zone_domain", "testzone.local"),
         tls_enabled=overrides.pop("tls_enabled", False),
         start_caddy=overrides.pop("start_caddy", False),
+        # Disable the auto-deploy hook by default for integration tests.
+        # Otherwise every test that spawns a router and walks /setup also
+        # triggers parallel image builds for every entry in
+        # DefaultConfig.default_apps (currently secrets_v2, file_browser,
+        # catalog).  Those builds compete with the test's own fixture
+        # builds for CPU/disk and turn timing-sensitive tests like
+        # TestContainerGone flaky.  Tests that specifically want to
+        # exercise the auto-deploy path can override this.
+        default_apps=overrides.pop("default_apps", []),
         **overrides,
     )
     cfg.make_all_dirs()
