@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Publish {{.Publish.Title}} · OpenHost Catalog</title>
+  <link rel="stylesheet" href="{{withBase .BasePath "/static/style.css"}}">
+</head>
+<body>
+  <h1>OpenHost Catalog</h1>
+  <nav>
+    <a href="{{withBase .BasePath "/"}}">Catalog</a>
+    <a href="{{withBase .BasePath "/sources"}}">Sources</a>
+    <span class="spacer"></span>
+  </nav>
+  <hr>
+
+  <div id="publish-page"
+       data-status-url="{{withBase .BasePath (printf "/publishes/%s/status.json" .Publish.ID)}}"
+       data-logs-url="{{withBase .BasePath (printf "/publishes/%s/logs.txt" .Publish.ID)}}"
+       data-terminal="{{if .Terminal}}1{{else}}0{{end}}">
+
+    <p><a href="{{withBase .BasePath "/"}}">&larr; Back to catalog</a></p>
+    <h2>Publish: {{.Publish.Title}}</h2>
+
+    <table>
+      <tr><th>Publish ID</th><td style="font-family: monospace;">{{.Publish.ID}}</td></tr>
+      <tr><th>App name</th><td style="font-family: monospace;" id="router-app-name">{{.Publish.RouterAppName}}</td></tr>
+      <tr><th>Status</th><td><span id="publish-status" class="{{statusClass .Publish.Status}}">{{.Publish.Status}}</span></td></tr>
+      <tr><th>Repository</th><td style="font-family: monospace; word-break: break-word;">{{.Publish.RepoURL}}{{if .Publish.RepoRef}}@{{.Publish.RepoRef}}{{end}}</td></tr>
+      <tr><th>Requested at</th><td>{{.Publish.CreatedAt}}</td></tr>
+    </table>
+
+    <p id="publish-error" class="error {{if not .Publish.ErrorMessage}}hidden{{end}}">{{.Publish.ErrorMessage}}</p>
+
+    <div id="manual-install" style="background: #fff8e1; border: 1px solid #f59e0b; border-radius: 4px; padding: 0.8em 1em; {{if ne .Publish.Status "redirect_required"}}display: none;{{end}}">
+      <p>One-click deploy is not configured yet for this app instance.</p>
+      {{if .Publish.ManualInstallURL}}
+        <p><a id="manual-install-link" href="{{.Publish.ManualInstallURL}}">Open OpenHost installer</a></p>
+      {{end}}
+    </div>
+
+    <div id="router-links" style="margin-bottom: 1em; display: flex; gap: 0.5em; align-items: center;">
+      {{if .RouterAppURL}}
+        <a id="router-app-url" class="btn" href="{{.RouterAppURL}}" target="_blank" rel="noopener">Open app</a>
+      {{else}}
+        <a id="router-app-url" class="btn hidden" href="#" target="_blank" rel="noopener">Open app</a>
+      {{end}}
+
+      {{if .RouterPage}}
+        <a id="router-page-url" class="btn" href="{{.RouterPage}}" target="_blank" rel="noopener">Open OpenHost app page</a>
+      {{else}}
+        <a id="router-page-url" class="btn hidden" href="#" target="_blank" rel="noopener">Open OpenHost app page</a>
+      {{end}}
+    </div>
+
+    <h2 style="margin-top: 2em;">Logs</h2>
+    <pre id="publish-logs" class="logs">Waiting for logs...</pre>
+  </div>
+
+  <script src="{{withBase .BasePath "/static/publish.js"}}"></script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Setup · OpenHost Catalog</title>
+  <link rel="stylesheet" href="{{withBase .BasePath "/static/style.css"}}">
+</head>
+<body>
+  <h1>OpenHost Catalog</h1>
+  <nav>
+    <a href="{{withBase .BasePath "/"}}">Catalog</a>
+    <a href="{{withBase .BasePath "/sources"}}">Sources</a>
+    <span class="spacer"></span>
+  </nav>
+  <hr>
+
+  <h2>Setup</h2>
+
+  {{if eq .CurrentMode "deploy"}}
+    <p>Current mode: <strong>one-click deploy</strong>. The catalog currently deploys apps directly via the OpenHost router token.</p>
+  {{else if eq .CurrentMode "manual"}}
+    <p>Current mode: <strong>manual install links</strong>. The catalog currently redirects you to the OpenHost dashboard to install apps.</p>
+  {{else}}
+    <p>Welcome to the OpenHost Catalog. Choose how you want to install apps:</p>
+  {{end}}
+
+  <ul>
+    <li><strong>One-click deploy:</strong> The catalog deploys apps directly to your OpenHost instance. Requires permission to read the router token from the Secrets app.</li>
+    <li><strong>Manual install links:</strong> The catalog links you to the OpenHost dashboard where you install apps yourself. No router token needed.</li>
+  </ul>
+
+  <p style="color: #666; font-size: 0.9em;">
+    Changing modes only affects how the catalog deploys new apps. It does not change your OpenHost login, password, or any already-deployed apps.
+  </p>
+
+  {{if .SecretsMissing}}
+    <div style="background: #fff8e1; border: 1px solid #f59e0b; border-radius: 4px; padding: 0.8em 1em; margin-top: 1em;">
+      <p><strong>The Secrets app is not installed on this OpenHost instance.</strong></p>
+      <p style="margin-top: 0.5em;">One-click deploy needs the Secrets app to read the router token. Click below to install it, then return here and click <em>Enable one-click deploy</em> again.</p>
+      <p style="margin-top: 0.5em;">
+        <a class="btn-primary btn" href="{{.SecretsInstallURL}}" target="_blank" rel="noopener">Install the Secrets app</a>
+      </p>
+    </div>
+  {{else if .Error}}
+    <p class="error" style="margin-top: 1em;">{{.Error}}</p>
+  {{end}}
+
+  <div style="display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap; margin-top: 1.5em;">
+    <form method="post" action="{{withBase .BasePath "/setup"}}">
+      <input type="hidden" name="action" value="deploy">
+      <button type="submit" class="btn-primary" style="padding: 0.6em 1.5em;">Enable one-click deploy</button>
+    </form>
+
+    <form method="post" action="{{withBase .BasePath "/setup"}}">
+      <input type="hidden" name="action" value="skip">
+      <button type="submit" style="padding: 0.6em 1.5em;">Skip &mdash; use manual install links</button>
+    </form>
+  </div>
+</body>
+</html>

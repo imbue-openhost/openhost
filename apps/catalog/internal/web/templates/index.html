@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OpenHost Catalog</title>
+  <link rel="stylesheet" href="{{withBase .BasePath "/static/style.css"}}">
+</head>
+<body>
+  <h1>OpenHost Catalog</h1>
+  <nav>
+    <a href="{{withBase .BasePath "/"}}">Catalog</a>
+    <a href="{{withBase .BasePath "/sources"}}">Sources</a>
+    <span class="spacer"></span>
+    <a href="{{withBase .BasePath "/setup"}}">Re-run Setup</a>
+  </nav>
+  <hr>
+
+  <h2>Available Apps</h2>
+
+  {{if .FailedSyncNames}}
+  <div style="background: #fff8e1; border: 1px solid #f59e0b; border-radius: 4px; padding: 0.6em 1em; margin-bottom: 1em;">
+    <strong>Showing possibly stale data.</strong> Could not sync source{{if gt (len .FailedSyncNames) 1}}s{{end}}: {{join .FailedSyncNames ", "}}. See the <a href="{{withBase .BasePath "/sources"}}">Sources page</a> for details.
+  </div>
+  {{end}}
+
+  <div style="margin-bottom: 1em; display: flex; gap: 0.5em; align-items: end; flex-wrap: wrap;">
+    <form method="get" action="{{withBase .BasePath "/"}}" style="display: flex; gap: 0.5em; align-items: end; flex-wrap: wrap;">
+      <label>Search<br><input type="text" name="q" value="{{.Query}}" placeholder="Name, id, or description" style="width: 250px;"></label>
+      <label>Source<br>
+        <select name="source" style="width: 150px;">
+          <option value="">All</option>
+          {{range .Sources}}
+            <option value="{{.ID}}" {{if eq $.SourceFilter .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label>Tag<br><input type="text" name="tag" value="{{.TagFilter}}" placeholder="filter" style="width: 120px;"></label>
+      <button type="submit">Filter</button>
+    </form>
+  </div>
+
+  {{if .Error}}
+    <p class="error">{{.Error}}</p>
+  {{end}}
+
+  {{if .Apps}}
+  <table>
+    <tr>
+      <th>App</th>
+      <th>Source</th>
+      <th title="OpenHost integration rating">Rating</th>
+      <th>Tags</th>
+      <th>Actions</th>
+    </tr>
+    {{range .Apps}}
+    <tr>
+      <td>
+        <a href="{{withBase $.BasePath (printf "/apps/%s/%s" .SourceID .AppID)}}"><strong>{{.Title}}</strong></a>
+        <div style="color: #666;">{{.Description}}</div>
+        <div style="color: #666; font-family: monospace; font-size: 0.85em;">{{.RepoURL}}{{if .RepoRef}}@{{.RepoRef}}{{end}}</div>
+      </td>
+      <td>{{.SourceName}}</td>
+      <td class="rating">
+        {{if .OpenhostIntegrationScore}}<span class="stars" title="OpenHost integration: {{.OpenhostIntegrationScore}}/5">{{stars .OpenhostIntegrationScore}}</span>{{end}}
+      </td>
+      <td>{{if .Tags}}{{join .Tags ", "}}{{else}}-{{end}}</td>
+      <td>
+        <div style="display: flex; gap: 0.5em; align-items: center;">
+          {{if $.CanDeploy}}
+          <form method="post" action="{{withBase $.BasePath "/publish"}}" style="display: inline;">
+            <input type="hidden" name="source_id" value="{{.SourceID}}">
+            <input type="hidden" name="app_id" value="{{.AppID}}">
+            <input type="hidden" name="app_name" value="{{.AppID}}">
+            <button type="submit" class="btn-primary">Publish</button>
+          </form>
+          {{else}}
+          <a class="btn-primary btn" href="{{$.RouterBaseURL}}/add_app?repo={{.RepoURL}}">Install</a>
+          {{end}}
+          <a class="btn" href="{{withBase $.BasePath (printf "/apps/%s/%s" .SourceID .AppID)}}">Details</a>
+        </div>
+      </td>
+    </tr>
+    {{end}}
+  </table>
+  {{else}}
+    <p style="color: #888;">No catalog entries yet. Add a source on the Sources page.</p>
+  {{end}}
+</body>
+</html>

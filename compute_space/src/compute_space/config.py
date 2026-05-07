@@ -180,7 +180,7 @@ class DefaultConfig(Config):
 
     # Directory names under apps_dir (note: dirs use underscores,
     # manifest [app].name uses hyphens; this keys on the dirname).
-    default_apps: list[str] = attr.Factory(lambda: ["secrets_v2", "file_browser"])
+    default_apps: list[str] = attr.Factory(lambda: ["secrets_v2", "file_browser", "catalog"])
 
 
 def load_config() -> Config:

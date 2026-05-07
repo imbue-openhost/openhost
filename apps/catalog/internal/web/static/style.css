@@ -1,0 +1,27 @@
+body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 0.5em 0.8em; text-align: left; }
+th { background: #f5f5f5; }
+input[type="text"], input[type="password"], input[type="url"], select { padding: 0.4em; width: 100%; box-sizing: border-box; }
+button, input[type="submit"], .btn { padding: 0.4em 1em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; text-decoration: none; color: #222; display: inline-block; }
+.btn-danger { background: #fee; border-color: #c00; color: #c00; }
+.btn-primary { background: #e8f0fe; border-color: #36c; color: #36c; }
+nav { display: flex; }
+nav a { margin-right: 1.5em; }
+nav .spacer { flex: 1; }
+.error { color: #c00; }
+.status-running { color: #080; font-weight: bold; }
+.status-error { color: #c00; font-weight: bold; }
+.status-stopped { color: #888; }
+.status-building, .status-starting, .status-active { color: #c80; }
+.status-warn { color: #c80; }
+.status-neutral { color: #888; }
+.error-inline { background: #fff0f0; border: 1px solid #fcc; padding: 0.5em; margin-top: 0.3em; font-size: 0.85em; white-space: pre-wrap; word-break: break-word; max-height: 6em; overflow-y: auto; }
+.log-output, .logs { background: #1e1e1e; color: #d4d4d4; padding: 1em; font-size: 0.85em; overflow-x: auto; max-height: 30em; overflow-y: auto; border-radius: 4px; min-height: 180px; font-family: monospace; }
+.hidden { display: none; }
+
+/* Integration rating ---------------------------------------------------- */
+
+.stars { color: #d48806; font-family: serif; letter-spacing: 1px; font-size: 1.05em; white-space: nowrap; }
+.rating { text-align: center; white-space: nowrap; }
+.rating-num { color: #666; font-weight: normal; font-size: 0.9em; margin-left: 0.3em; }

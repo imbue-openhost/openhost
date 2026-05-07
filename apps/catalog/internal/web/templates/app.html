@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{{.App.Title}} · OpenHost Catalog</title>
+  <link rel="stylesheet" href="{{withBase .BasePath "/static/style.css"}}">
+</head>
+<body>
+  <h1>OpenHost Catalog</h1>
+  <nav>
+    <a href="{{withBase .BasePath "/"}}">Catalog</a>
+    <a href="{{withBase .BasePath "/sources"}}">Sources</a>
+    <span class="spacer"></span>
+  </nav>
+  <hr>
+
+  <p><a href="{{withBase .BasePath "/"}}">&larr; Back to catalog</a></p>
+  <h2>{{.App.Title}}</h2>
+  <p style="color: #666;">{{.App.Description}}</p>
+
+  <table>
+    <tr><th>Catalog ID</th><td style="font-family: monospace;">{{.App.SourceID}}/{{.App.AppID}}</td></tr>
+    <tr><th>Source</th><td>{{.App.SourceName}}</td></tr>
+    <tr><th>Repository</th><td style="font-family: monospace; word-break: break-word;">{{.App.RepoURL}}{{if .App.RepoRef}}@{{.App.RepoRef}}{{end}}</td></tr>
+    <tr><th>OpenHost integration</th><td>{{if .App.OpenhostIntegrationScore}}<span class="stars">{{stars .App.OpenhostIntegrationScore}}</span> <span class="rating-num">{{.App.OpenhostIntegrationScore}}/5</span>{{else}}-{{end}}</td></tr>
+    <tr><th>Tags</th><td>{{if .App.Tags}}{{join .App.Tags ", "}}{{else}}-{{end}}</td></tr>
+    <tr><th>Categories</th><td>{{if .App.Categories}}{{join .App.Categories ", "}}{{else}}-{{end}}</td></tr>
+    <tr><th>Website</th><td>{{if .App.WebsiteURL}}<a href="{{.App.WebsiteURL}}" target="_blank" rel="noopener">{{.App.WebsiteURL}}</a>{{else}}-{{end}}</td></tr>
+    <tr><th>Docs</th><td>{{if .App.DocsURL}}<a href="{{.App.DocsURL}}" target="_blank" rel="noopener">{{.App.DocsURL}}</a>{{else}}-{{end}}</td></tr>
+  </table>
+
+  <h2 style="margin-top: 2em;">Install</h2>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+
+  {{if .CanDeploy}}
+  <form method="post" action="{{withBase .BasePath "/publish"}}">
+    <input type="hidden" name="source_id" value="{{.App.SourceID}}">
+    <input type="hidden" name="app_id" value="{{.App.AppID}}">
+
+    <label>App name<br>
+      <input type="text" name="app_name" value="{{.App.AppID}}" required style="font-family: monospace; width: 15em;">
+    </label>
+
+    <p style="color: #666; font-size: 0.9em;">Deployment config is read from the target repo's <code>openhost.toml</code>.</p>
+    <button type="submit" class="btn-primary">Publish</button>
+  </form>
+  {{else}}
+  <p style="color: #666; font-size: 0.9em;">Click below to install this app via the OpenHost dashboard.</p>
+  <a class="btn-primary btn" href="{{.RouterBaseURL}}/add_app?repo={{.App.RepoURL}}">Install on OpenHost</a>
+  {{end}}
+</body>
+</html>

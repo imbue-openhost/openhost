@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Sources · OpenHost Catalog</title>
+  <link rel="stylesheet" href="{{withBase .BasePath "/static/style.css"}}">
+</head>
+<body>
+  <h1>OpenHost Catalog</h1>
+  <nav>
+    <a href="{{withBase .BasePath "/"}}">Catalog</a>
+    <a href="{{withBase .BasePath "/sources"}}">Sources</a>
+    <span class="spacer"></span>
+    <a href="{{withBase .BasePath "/setup"}}">Re-run Setup</a>
+  </nav>
+  <hr>
+
+  <h2>Add Source</h2>
+  {{if .Message}}<p style="color: #080;">{{.Message}}</p>{{end}}
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+
+  <div style="margin-bottom: 1em;">
+    <form method="post" action="{{withBase .BasePath "/sources"}}">
+      <label>Source URL<br><input type="url" name="url" required placeholder="https://example.com/catalog.json" style="width: 400px; margin-bottom: 0.5em;"></label><br>
+      <label>Name (optional)<br><input type="text" name="name" placeholder="Official Catalog" style="width: 250px; margin-bottom: 0.5em;"></label><br>
+      <button type="submit" class="btn-primary">Add Source</button>
+    </form>
+  </div>
+
+  <h2 style="margin-top: 2em;">Configured Sources</h2>
+  {{if .Sources}}
+  <table>
+    <tr>
+      <th>Name</th>
+      <th>URL</th>
+      <th>Status</th>
+      <th>Last Sync</th>
+      <th>Actions</th>
+    </tr>
+    {{range .Sources}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td style="font-family: monospace; word-break: break-word;">{{.URL}}</td>
+      <td>{{if .Enabled}}enabled{{else}}disabled{{end}}</td>
+      <td>{{if .LastSyncAt}}{{.LastSyncAt}}{{else}}-{{end}}</td>
+      <td>
+        <div style="display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;">
+          <form method="post" action="{{withBase $.BasePath (printf "/sources/%s/toggle" .ID)}}" style="display: inline;">
+            <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+          </form>
+          <form method="post" action="{{withBase $.BasePath (printf "/sources/%s/delete" .ID)}}" style="display: inline;" onsubmit="return confirm('Delete source {{.Name}} and all synced entries?');">
+            <button type="submit" class="btn-danger">Delete</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {{if .LastError}}
+    <tr>
+      <td colspan="5" class="error">{{.LastError}}</td>
+    </tr>
+    {{end}}
+    {{end}}
+  </table>
+  {{else}}
+    <p style="color: #888;">No sources configured.</p>
+  {{end}}
+</body>
+</html>
