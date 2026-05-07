@@ -5,6 +5,7 @@ import threading
 from quart import Quart
 
 from compute_space.config import Config
+from compute_space.core import archive_backend
 from compute_space.core import identity
 from compute_space.core.apps import start_app_process
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
@@ -142,6 +143,11 @@ def init_app(app: Quart) -> None:
     """Initialize DB and app state. Call after data directories are ready."""
     config = app.openhost_config  # type: ignore[attr-defined]
     init_db(app)
+    db = sqlite3.connect(config.db_path)
+    try:
+        archive_backend.attach_on_startup(config, db)
+    finally:
+        db.close()
     _check_app_status(config)
     identity.load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)

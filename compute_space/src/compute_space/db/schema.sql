@@ -129,3 +129,23 @@ CREATE TABLE IF NOT EXISTS schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
+
+-- Archive backend state.  Single-row table.  Fresh zones come up at
+-- backend='disabled'; the operator configures S3 once.  Apps that
+-- opt into the ``app_archive`` data tier refuse to install until
+-- the backend is set to 's3'.
+CREATE TABLE IF NOT EXISTS archive_backend (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 's3')),
+    s3_bucket TEXT,
+    s3_region TEXT,
+    s3_endpoint TEXT,
+    s3_prefix TEXT,
+    s3_access_key_id TEXT,
+    s3_secret_access_key TEXT,
+    juicefs_volume_name TEXT NOT NULL DEFAULT 'openhost',
+    configured_at TEXT,
+    state_message TEXT
+);
+
+INSERT OR IGNORE INTO archive_backend (id) VALUES (1);

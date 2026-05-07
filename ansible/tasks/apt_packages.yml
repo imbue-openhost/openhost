@@ -23,4 +23,21 @@
       - openssh-server
       - ca-certificates
       - gnupg
+      # fuse3 ships fusermount3, which JuiceFS uses for the
+      # archive-tier mount.  Already a transitive dep of plenty
+      # of things on Ubuntu but pin it explicitly so the
+      # archive backend can't fail-to-mount on a stripped image.
+      - fuse3
     state: present
+
+# JuiceFS mounts the archive tier with -o allow_other so apps
+# running under rootless-podman's subuid namespace can traverse
+# it.  fusermount refuses allow_other unless this option is set
+# in /etc/fuse.conf.  Idempotent.
+- name: Enable user_allow_other in /etc/fuse.conf
+  lineinfile:
+    path: /etc/fuse.conf
+    regexp: '^#?\s*user_allow_other\s*$'
+    line: 'user_allow_other'
+    state: present
+    create: false
