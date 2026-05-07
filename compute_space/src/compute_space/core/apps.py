@@ -166,6 +166,24 @@ async def clone_and_read_manifest(
         return None, None, f"Clone failed: {e}"
 
 
+def move_clone_to_app_temp_dir(clone_dir: str, app_name: str, config: Config) -> str:
+    """Move a clone tempdir into the persistent <temp>/app_temp_data/<name>/repo
+    location and return the destination path.  Used by both /api/add_app
+    and the default-apps deploy hook so the on-disk layout matches.
+
+    Also rmtree's the now-empty mkdtemp parent of clone_dir to avoid
+    leaking ``openhost-clone-*`` shells.
+    """
+    final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
+    if os.path.exists(final_dir):
+        rmtree_with_sudo_fallback(final_dir, raise_on_failure=True)
+    os.makedirs(os.path.dirname(final_dir), exist_ok=True)
+    tmp_parent = os.path.dirname(clone_dir)
+    shutil.move(clone_dir, final_dir)
+    shutil.rmtree(tmp_parent, ignore_errors=True)
+    return final_dir
+
+
 async def clone_with_github_fallback(
     repo_url: str, return_to: str
 ) -> tuple[AppManifest | None, str | None, str | None, str | None]:

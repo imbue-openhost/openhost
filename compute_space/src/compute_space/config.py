@@ -43,6 +43,10 @@ class Config:
     port_range_start: int
     port_range_end: int
 
+    # Builtin app directory names to deploy at /setup completion (set
+    # to [] to opt out).  Keyed on dirname under apps_dir.
+    default_apps: list[str]
+
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
 
@@ -124,6 +128,10 @@ class Config:
     def claim_token_path(self) -> str:
         return str(Path(self.openhost_data_path) / "claim_token")
 
+    @property
+    def default_apps_sentinel_path(self) -> str:
+        return str(Path(self.openhost_data_path) / "default_apps.json")
+
     def make_all_dirs(self) -> None:
         """Make all necessary directories for the config."""
         assert os.path.exists(self.data_root_dir)
@@ -169,6 +177,10 @@ class DefaultConfig(Config):
     # Ports
     port_range_start: int = 9000
     port_range_end: int = 9999
+
+    # Directory names under apps_dir (note: dirs use underscores,
+    # manifest [app].name uses hyphens; this keys on the dirname).
+    default_apps: list[str] = attr.Factory(lambda: ["secrets_v2", "file_browser"])
 
 
 def load_config() -> Config:

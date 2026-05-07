@@ -21,6 +21,7 @@ from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
+from compute_space.core.apps import move_clone_to_app_temp_dir
 from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import remove_app_background
 from compute_space.core.apps import start_app_process
@@ -29,7 +30,6 @@ from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
-from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.ports import check_port_available
@@ -38,16 +38,6 @@ from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
-
-
-def _rmtree_force(path: str) -> None:
-    """Remove a directory tree, re-raising on failure.
-
-    Thin wrapper over ``rmtree_with_sudo_fallback`` for the code-sync /
-    redeploy path where a failed rmtree must propagate (as opposed to
-    data-dir deprovision, which swallows cleanup errors).
-    """
-    rmtree_with_sudo_fallback(path, raise_on_failure=True)
 
 
 def _is_removing(app_row: sqlite3.Row | None) -> bool:
@@ -187,11 +177,7 @@ async def api_add_app() -> ResponseReturnValue:
                 }
             ), 503
 
-    final_dir = os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "repo")
-    if os.path.exists(final_dir):
-        _rmtree_force(final_dir)
-    os.makedirs(os.path.dirname(final_dir), exist_ok=True)
-    shutil.move(clone_dir, final_dir)
+    final_dir = move_clone_to_app_temp_dir(clone_dir, app_name, config)
 
     if grant_permissions_raw is None:
         logger.warning("add_app called without grant_permissions field")

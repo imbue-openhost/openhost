@@ -11,6 +11,7 @@ from compute_space.core.apps import start_app_process
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
+from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
 from compute_space.db import init_db
@@ -120,6 +121,24 @@ def _restart_apps_sequential(app_names: list[str], config: Config) -> None:
         db.close()
 
 
+def _retry_pending_default_apps(config: Config) -> None:
+    """Retry failed default-app installs on each boot (no-op if no
+    owner row or no sentinel)."""
+    db = sqlite3.connect(config.db_path)
+    try:
+        owner = db.execute("SELECT 1 FROM owner WHERE id = 1").fetchone()
+        if owner is None:
+            return
+        if not os.path.isfile(config.default_apps_sentinel_path):
+            return
+        try:
+            deploy_default_apps(config, db)
+        except Exception as exc:
+            logger.error("default_apps retry on startup raised: %s", exc)
+    finally:
+        db.close()
+
+
 def init_app(app: Quart) -> None:
     """Initialize DB and app state. Call after data directories are ready."""
     config = app.openhost_config  # type: ignore[attr-defined]
@@ -132,3 +151,4 @@ def init_app(app: Quart) -> None:
     _check_app_status(config)
     identity.load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)
+    _retry_pending_default_apps(config)
