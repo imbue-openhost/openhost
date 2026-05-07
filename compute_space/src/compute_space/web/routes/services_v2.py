@@ -28,14 +28,14 @@ services_v2_bp = Blueprint("services_v2", __name__)
 
 @services_v2_bp.after_request
 async def add_cors_to_services_v2(response: Response) -> Response:
-    if request.path == "/_services_v2/service_request":
+    if request.path == "/api/services/v2/service_request":
         origin = _cors_origin()
         if origin:
             _add_cors_headers(response, origin)
     return response
 
 
-@services_v2_bp.route("/_services_v2/service_request", methods=["OPTIONS"])
+@services_v2_bp.route("/api/services/v2/service_request", methods=["OPTIONS"])
 async def service_v2_cors() -> Response:
     origin = _cors_origin()
     if not origin:
@@ -47,7 +47,7 @@ async def service_v2_cors() -> Response:
 
 
 @services_v2_bp.route(
-    "/_services_v2/service_request",
+    "/api/services/v2/service_request",
     methods=["GET", "POST"],
 )
 @app_auth_required
@@ -181,7 +181,7 @@ def _json_error(error: str, message: str, status: int) -> Response:
     )
 
 
-@services_v2_bp.route("/_services_v2/oauth/callback")
+@services_v2_bp.route("/api/services/v2/oauth_callback")
 async def oauth_callback_proxy_v2() -> Response:
     """Proxy OAuth provider callbacks to the correct oauth service app.
 

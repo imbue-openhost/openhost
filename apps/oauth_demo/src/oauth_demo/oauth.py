@@ -8,7 +8,7 @@ APP_NAME = os.environ.get("OPENHOST_APP_NAME")
 ZONE_DOMAIN = os.environ.get("OPENHOST_ZONE_DOMAIN")
 
 OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
-SERVICE_REQUEST_URL = f"{ROUTER_URL}/_services_v2/service_request"
+SERVICE_REQUEST_URL = f"{ROUTER_URL}/api/services/v2/service_request"
 
 _mock_base_url: str | None = None
 _mock_provider_api_url: str | None = None

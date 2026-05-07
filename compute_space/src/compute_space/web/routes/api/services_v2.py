@@ -9,7 +9,7 @@ from compute_space.web.middleware import login_required
 api_services_v2_bp = Blueprint("api_services_v2", __name__)
 
 
-@api_services_v2_bp.route("/api/services_v2", methods=["GET"])
+@api_services_v2_bp.route("/api/services/v2", methods=["GET"])
 @login_required
 async def list_services_v2() -> Response:
     """List all registered V2 service providers."""
@@ -22,7 +22,7 @@ async def list_services_v2() -> Response:
     return jsonify([dict(r) for r in rows])
 
 
-@api_services_v2_bp.route("/api/services_v2/providers", methods=["GET"])
+@api_services_v2_bp.route("/api/services/v2/providers", methods=["GET"])
 @login_required
 async def discover_providers() -> Response | tuple[Response, int]:
     """Discover providers for a service, optionally filtered by version specifier."""
@@ -61,7 +61,7 @@ async def discover_providers() -> Response | tuple[Response, int]:
     )
 
 
-@api_services_v2_bp.route("/api/services_v2/defaults", methods=["GET"])
+@api_services_v2_bp.route("/api/services/v2/defaults", methods=["GET"])
 @login_required
 async def list_defaults() -> Response:
     """List all default provider settings."""
@@ -70,7 +70,7 @@ async def list_defaults() -> Response:
     return jsonify([dict(r) for r in rows])
 
 
-@api_services_v2_bp.route("/api/services_v2/defaults", methods=["POST"])
+@api_services_v2_bp.route("/api/services/v2/defaults", methods=["POST"])
 @login_required
 async def set_default() -> Response | tuple[Response, int]:
     """Set the default provider for a service."""
@@ -95,7 +95,7 @@ async def set_default() -> Response | tuple[Response, int]:
     return jsonify({"ok": True})
 
 
-@api_services_v2_bp.route("/api/services_v2/defaults", methods=["DELETE"])
+@api_services_v2_bp.route("/api/services/v2/defaults", methods=["DELETE"])
 @login_required
 async def remove_default() -> Response | tuple[Response, int]:
     """Remove the default provider for a service (falls back to highest version)."""

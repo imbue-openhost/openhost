@@ -2,7 +2,7 @@
  * Client-side OAuth helper library.
  *
  * Talks to the router's V2 service proxy via cross-origin fetch:
- *   POST /_services_v2/service_request (with X-OpenHost-* headers)
+ *   POST /api/services/v2/service_request (with X-OpenHost-* headers)
  *
  * Usage:
  *   const oauth = new OAuthClient({
@@ -37,7 +37,7 @@ class OAuthClient {
 
   /** POST to the V2 service proxy with credentials. */
   _serviceFetch(endpoint, body) {
-    var url = "//" + this.zoneDomain + "/_services_v2/service_request";
+    var url = "//" + this.zoneDomain + "/api/services/v2/service_request";
     return fetch(url, {
       method: "POST",
       headers: {

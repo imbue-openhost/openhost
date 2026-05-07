@@ -17,7 +17,7 @@ document.getElementById("grant-btn").addEventListener("click", async () => {
   btn.disabled = true;
   btn.textContent = "Granting…";
   try {
-    const resp = await fetch("/api/permissions_v2/grant-global-scoped", {
+    const resp = await fetch("/api/permissions/v2/grant_global_scoped", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({

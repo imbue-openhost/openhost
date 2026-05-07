@@ -48,7 +48,7 @@ async def get_provider_creds(provider_name: str) -> tuple[str, str]:
 async def _fetch_secrets(keys: list[str]) -> dict[str, str]:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            f"{ROUTER_URL}/_services_v2/service_request",
+            f"{ROUTER_URL}/api/services/v2/service_request",
             json={"keys": keys},
             headers={
                 "Authorization": f"Bearer {APP_TOKEN}",
