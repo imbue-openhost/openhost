@@ -135,10 +135,10 @@ class AppManifest:
     requires_services: dict[str, list[dict[str, Any]]] = attr.Factory(dict)
     # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
 
-    # [services_v2]
+    # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
-    # [[permissions_v2]]
+    # [[permissions.v2]]
     permissions_v2: list[PermissionV2Request] = attr.Factory(list)
 
     # [app] metadata
@@ -240,12 +240,12 @@ def _structure_list(data: list[Any], cls: type[Any], label: str) -> list[Any]:
 
 
 def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
-    entries = data.get("services_v2", {}).get("provides", [])
-    return _structure_list(entries, ServiceProvides, "services_v2.provides")
+    entries = data.get("services", {}).get("v2", {}).get("provides", [])
+    return _structure_list(entries, ServiceProvides, "services.v2.provides")
 
 
 def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
-    return _structure_list(data.get("permissions_v2", []), PermissionV2Request, "permissions_v2")
+    return _structure_list(data.get("permissions", {}).get("v2", []), PermissionV2Request, "permissions.v2")
 
 
 def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

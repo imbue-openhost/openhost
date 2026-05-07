@@ -239,7 +239,7 @@ def insert_and_deploy(
     Returns app_name. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
-    grant_permissions_v2: if True, grant all [[permissions_v2]] entries
+    grant_permissions_v2: if True, grant all [[permissions.v2]] entries
         from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     """

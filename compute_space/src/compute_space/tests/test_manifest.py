@@ -344,13 +344,13 @@ class TestValidation:
 
 
 class TestServicesV2Parsing:
-    """Verify [[services_v2.provides]] and [[permissions_v2]] parsing."""
+    """Verify [[services.v2.provides]] and [[permissions.v2]] parsing."""
 
     def test_single_service_provides(self):
         toml = (
             MINIMAL
             + """
-[[services_v2.provides]]
+[[services.v2.provides]]
 service = "github.com/org/repo/services/secrets"
 version = "0.1.0"
 endpoint = "/_service_v2/"
@@ -367,12 +367,12 @@ endpoint = "/_service_v2/"
         toml = (
             MINIMAL
             + """
-[[services_v2.provides]]
+[[services.v2.provides]]
 service = "github.com/org/repo/services/secrets"
 version = "0.1.0"
 endpoint = "/_service_v2/"
 
-[[services_v2.provides]]
+[[services.v2.provides]]
 service = "github.com/org/repo/services/oauth"
 version = "0.1.0"
 endpoint = "/_oauth_v2/"
@@ -388,7 +388,7 @@ endpoint = "/_oauth_v2/"
         toml = (
             MINIMAL
             + """
-[[permissions_v2]]
+[[permissions.v2]]
 service = "github.com/org/repo/services/oauth"
 grants = [
     {provider = "google", scope = "https://www.googleapis.com/auth/gmail.readonly"},
@@ -404,13 +404,13 @@ grants = [
         assert perm.grants[0] == {"provider": "google", "scope": "https://www.googleapis.com/auth/gmail.readonly"}
 
     def test_permissions_v2_missing_service_raises(self):
-        toml = MINIMAL + '\n[[permissions_v2]]\ngrants = [{key = "X"}]\n'
-        with pytest.raises(ValueError, match="permissions_v2"):
+        toml = MINIMAL + '\n[[permissions.v2]]\ngrants = [{key = "X"}]\n'
+        with pytest.raises(ValueError, match=r"permissions\.v2"):
             parse_manifest_from_string(toml)
 
     def test_services_v2_missing_version_raises(self):
-        toml = MINIMAL + '\n[[services_v2.provides]]\nservice = "github.com/x"\nendpoint = "/"\n'
-        with pytest.raises(ValueError, match="services_v2"):
+        toml = MINIMAL + '\n[[services.v2.provides]]\nservice = "github.com/x"\nendpoint = "/"\n'
+        with pytest.raises(ValueError, match=r"services\.v2"):
             parse_manifest_from_string(toml)
 
 

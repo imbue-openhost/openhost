@@ -14,7 +14,7 @@ cpu_millicores = 1000
 [data]
 sqlite = ["main"]
 
-[[services_v2.provides]]
+[[services.v2.provides]]
 service = "github.com/imbue-openhost/openhost/services/secrets"
 version = "0.1.0"
 endpoint = "/_service_v2/"

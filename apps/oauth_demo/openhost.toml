@@ -11,7 +11,7 @@ port = 8080
 memory_mb = 256
 cpu_millicores = 500
 
-[[permissions_v2]]
+[[permissions.v2]]
 service = "github.com/imbue-openhost/openhost/services/oauth"
 grants = [
     {provider = "google", scopes = ["https://www.googleapis.com/auth/gmail.readonly"]},

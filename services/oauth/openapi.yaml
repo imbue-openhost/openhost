@@ -56,7 +56,7 @@ info:
 
     OAuth providers redirect to a fixed callback URL on the zone's
     redirect domain (`MY_REDIRECT_DOMAIN`). The router intercepts this
-    at `/secrets_v2/oauth/callback` and must forward it to whichever
+    at `/api/services/v2/oauth_callback` and must forward it to whichever
     oauth app initiated the flow.
 
     To make this work, the oauth app encodes its identity in the OAuth
