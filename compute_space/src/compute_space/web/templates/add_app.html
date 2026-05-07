@@ -67,6 +67,22 @@
     </table>
   </div>
 
+  <div id="router-permissions" style="display:none; margin-top:1em;">
+    <h3>Privileged Router Permissions</h3>
+    <p style="background:#f8d7da; border:1px solid #dc3545; padding:0.6em 0.8em; border-radius:4px;">
+      This app requests <b>privileged access</b> to the OpenHost router itself.
+      Granting any of the permissions below lets the app drive parts of OpenHost
+      that are normally only available to you.  Only grant these to apps you fully trust.
+      You can leave them unchecked here and grant them later if you change your mind.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Permission</th><th>Effect</th><th>Action</th></tr>
+      </thead>
+      <tbody id="router-perm-body"></tbody>
+    </table>
+  </div>
+
   <div id="service-permissions" style="display:none; margin-top:1em;">
     <h3>Service Permissions</h3>
     <p>This app requests access to the following service keys. Uncheck any you don't want to grant now (you can grant them later from the app detail page).</p>
@@ -208,6 +224,29 @@ function renderManifest(m, url) {
 
   // Render port mappings section
   renderPortMappings(m.port_mappings || []);
+
+  // Render privileged router permissions (deploy_apps, etc.).  These are
+  // distinct from the per-service [services] grants below: they let the
+  // app drive the router's own admin surface, so we render them in a
+  // separately-styled "danger" section and start them UNCHECKED so the
+  // owner has to explicitly opt in (vs. service grants which default to
+  // checked because the manifest already justifies each one with a
+  // ``reason`` string).
+  const routerPermsEl = document.getElementById('router-permissions');
+  const routerPermRows = [];
+  if (m.deploy_apps_permission) {
+    routerPermRows.push(`<tr>
+      <td><code>deploy_apps</code></td>
+      <td>Drive OpenHost's app-management API: list / install / reload / remove apps on this zone.  Equivalent in scope to an owner API token, but scoped to one app.</td>
+      <td><label><input type="checkbox" class="router-perm-grant" data-perm="deploy_apps"> Grant</label></td>
+    </tr>`);
+  }
+  if (routerPermRows.length) {
+    routerPermsEl.style.display = '';
+    document.getElementById('router-perm-body').innerHTML = routerPermRows.join('');
+  } else {
+    routerPermsEl.style.display = 'none';
+  }
 
   // Render service permissions (secrets, etc.) with grant checkboxes
   const permsEl = document.getElementById('service-permissions');
@@ -366,6 +405,13 @@ async function deployApp() {
     if (cb.checked) approved.push(cb.dataset.service + '/' + cb.dataset.key);
   });
   form.append('grant_permissions', approved.join(','));
+
+  // Privileged router permissions — each as its own form field so the
+  // server doesn't have to parse a comma-separated string and can fail
+  // closed on unknown values.
+  document.querySelectorAll('.router-perm-grant:checked').forEach(cb => {
+    form.append(`grant_router_permission.${cb.dataset.perm}`, '1');
+  });
 
   // Collect port overrides as individual form fields
   document.querySelectorAll('.port-host-input').forEach(input => {

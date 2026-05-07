@@ -62,6 +62,14 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 | `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory |
 | `access_all_data` | boolean | no | false | Full access to permanent data, temp data, archive, and vm data |
 
+### `[permissions]` — optional
+
+Per-app grants of router-managed capabilities, distinct from the per-service `[services]` / `[[permissions_v2]]` grants that mediate cross-app access.  Each field is a manifest *request*; grants are applied only when the owner explicitly approves them at install time on the dashboard's "Privileged Router Permissions" panel (defaults unchecked, opt-in).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `deploy_apps` | boolean | no | false | Request permission to drive OpenHost's app-management API: list / install / reload / remove apps on this zone.  Roughly equivalent in scope to an owner API token, but scoped to one app.  Used by the catalog app and any future automation consumer (CI deployers, agent-host integrations) that would otherwise need a hand-rolled owner-equivalent token. |
+
 ## Data Directory Structure
 
 Apps have three storage areas, each with different durability + size + latency tradeoffs. **By default, apps have no filesystem access.** Each must be explicitly requested:

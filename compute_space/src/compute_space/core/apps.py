@@ -233,6 +233,7 @@ def insert_and_deploy(
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
+    deploy_apps_granted: bool = False,
 ) -> str:
     """Insert app into DB and start background deploy.
 
@@ -242,6 +243,13 @@ def insert_and_deploy(
     grant_permissions_v2: if True, grant all [[permissions_v2]] entries
         from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
+    deploy_apps_granted: if True, the owner has approved this app's
+        ``[permissions].deploy_apps`` request at install time.  Stored
+        on the app row so a follow-up PR can mint and validate a
+        deploy-scoped router token without re-prompting.  Caller is
+        responsible for ensuring the manifest actually requested the
+        permission before passing True; this function persists what
+        it's told and trusts the caller.
     """
     if app_name is None:
         app_name = manifest.name
@@ -273,8 +281,8 @@ def insert_and_deploy(
         """INSERT INTO apps
            (name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
-            gpu, public_paths, manifest_raw, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gpu, public_paths, manifest_raw, status, deploy_apps_permission)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             app_name,
             manifest.name,
@@ -292,6 +300,7 @@ def insert_and_deploy(
             json.dumps(manifest.public_paths),
             manifest.raw_toml,
             "building",
+            int(bool(deploy_apps_granted and manifest.deploy_apps_permission)),
         ),
     )
 

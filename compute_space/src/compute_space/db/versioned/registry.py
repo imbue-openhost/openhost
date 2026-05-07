@@ -12,6 +12,7 @@ from compute_space.db.versioned.migrations.v0002_noop import Migration0002Noop
 from compute_space.db.versioned.migrations.v0003_drop_password_needs_set import Migration0003DropPasswordNeedsSet
 from compute_space.db.versioned.migrations.v0004_apps_removing_status import Migration0004AppsRemovingStatus
 from compute_space.db.versioned.migrations.v0005_archive_backend import Migration0005ArchiveBackend
+from compute_space.db.versioned.migrations.v0006_apps_router_permissions import Migration0006AppsRouterPermissions
 
 # Numbered migrations in apply order. Versions MUST start at 2 and be
 # contiguous. v0 (legacy) and v1 (baseline produced by the existing
@@ -21,4 +22,5 @@ REGISTRY: list[Migration] = [
     Migration0003DropPasswordNeedsSet(),
     Migration0004AppsRemovingStatus(),
     Migration0005ArchiveBackend(),
+    Migration0006AppsRouterPermissions(),
 ]

@@ -50,7 +50,7 @@ CREATE TABLE "apps" (
     manifest_raw TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, deploy_apps_permission INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE archive_backend (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 's3')),
@@ -96,7 +96,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,5);
+INSERT INTO "schema_version" VALUES(1,6);
 CREATE TABLE service_defaults (
             service_url TEXT PRIMARY KEY,
             app_name TEXT NOT NULL,

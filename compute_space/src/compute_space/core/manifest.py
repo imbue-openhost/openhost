@@ -141,6 +141,22 @@ class AppManifest:
     # [[permissions_v2]]
     permissions_v2: list[PermissionV2Request] = attr.Factory(list)
 
+    # [permissions]
+    #
+    # Per-app grants of router-managed capabilities, distinct from the
+    # service-level [services] / [[permissions_v2]] grants which mediate
+    # cross-app access.  Each field is a manifest *request*; grants are
+    # only applied when the owner explicitly approves at install time.
+    #
+    # ``deploy_apps``: when granted, the app is permitted to drive
+    # OpenHost's app-management surface (clone / install / reload /
+    # remove / status / list).  Used by the catalog app and any future
+    # automation consumer (CI deployers, agent-host integrations) that
+    # would otherwise need a hand-rolled owner-equivalent api_token.
+    # The corresponding token issuance + API gating land in a follow-up
+    # PR; this field is the manifest contract apps agree to before then.
+    deploy_apps_permission: bool = False
+
     # [app] metadata
     hidden: bool = False
 
@@ -273,6 +289,11 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     if runtime_type not in ("serverless", "serverfull"):
         raise ValueError(f"Invalid runtime type: {runtime_type}")
 
+    permissions_section = data.get("permissions", {})
+    deploy_apps_permission = permissions_section.get("deploy_apps", False)
+    if not isinstance(deploy_apps_permission, bool):
+        raise ValueError("[permissions].deploy_apps must be a boolean")
+
     container = runtime.get("container", {})
     if not container.get("image"):
         raise ValueError("[runtime.container].image is required")
@@ -326,6 +347,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         requires_services=_parse_requires_services(services),
         provides_services_v2=_parse_services_v2(data),
         permissions_v2=_parse_permissions_v2(data),
+        deploy_apps_permission=deploy_apps_permission,
         raw_toml=raw_text,
     )
 

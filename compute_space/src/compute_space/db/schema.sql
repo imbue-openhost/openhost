@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS apps (
     gpu INTEGER NOT NULL DEFAULT 0,
     public_paths TEXT NOT NULL DEFAULT '[]',
     manifest_raw TEXT,
+    -- Owner-approved router-level grants.  Boolean columns rather than
+    -- a separate table because the cardinality is small and fixed at
+    -- one row per app.  Adding a permission is two changes (a new
+    -- column here plus a migration), and old apps end up with a 0
+    -- default which means "not granted".
+    deploy_apps_permission INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

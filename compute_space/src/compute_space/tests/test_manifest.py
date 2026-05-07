@@ -589,6 +589,53 @@ class TestAppArchive:
         assert manifest.access_all_data is True
 
 
+class TestRouterPermissions:
+    """Verify the ``[permissions]`` manifest section.
+
+    Apps may request privileged grants on the router itself (deploy
+    other apps, etc.).  The manifest only carries the *request*; whether
+    a grant is actually applied is the install-time consent flow's job.
+    These tests pin the parsing contract.
+    """
+
+    def test_deploy_apps_default_is_false(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.deploy_apps_permission is False
+
+    def test_deploy_apps_explicit_true(self):
+        toml = MINIMAL + "\n[permissions]\ndeploy_apps = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.deploy_apps_permission is True
+
+    def test_deploy_apps_explicit_false(self):
+        toml = MINIMAL + "\n[permissions]\ndeploy_apps = false\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.deploy_apps_permission is False
+
+    def test_deploy_apps_non_bool_rejected(self):
+        # Catches the common typo ``deploy_apps = "true"`` (TOML strings
+        # would otherwise parse without complaint and end up being
+        # treated as truthy in Python — fail closed instead).
+        toml = MINIMAL + '\n[permissions]\ndeploy_apps = "true"\n'
+        with pytest.raises(ValueError, match=r"\[permissions\]\.deploy_apps must be a boolean"):
+            parse_manifest_from_string(toml)
+
+    def test_permissions_section_absent_no_grants(self):
+        # No [permissions] table at all should be equivalent to all
+        # router permissions defaulting to False.
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.deploy_apps_permission is False
+
+    def test_unrelated_keys_in_permissions_section_are_ignored(self):
+        # Forward-compat: unknown keys should not crash; the manifest is
+        # the source of truth for *requests*, the server's
+        # KNOWN_ROUTER_PERMISSIONS set is the source of truth for what's
+        # actually grantable.
+        toml = MINIMAL + "\n[permissions]\ndeploy_apps = true\nfuture_thing = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.deploy_apps_permission is True
+
+
 class TestShmMb:
     """[runtime.container].shm_mb."""
 

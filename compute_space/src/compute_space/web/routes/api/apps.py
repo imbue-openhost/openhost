@@ -39,6 +39,12 @@ from compute_space.core.services import get_oauth_token
 from compute_space.db import get_db
 from compute_space.web.middleware import login_required
 
+# Router-level permissions an app may request via ``[permissions]`` in
+# its ``openhost.toml`` and the owner may grant at install time.
+# Adding entries here is the manifest contract; the runtime token
+# issuance + API gating that *enforce* them lands in a follow-up PR.
+KNOWN_ROUTER_PERMISSIONS: frozenset[str] = frozenset({"deploy_apps"})
+
 
 def _is_removing(app_row: sqlite3.Row | None) -> bool:
     """True if the row is being torn down by remove_app_background.
@@ -185,6 +191,32 @@ async def api_add_app() -> ResponseReturnValue:
     else:
         grant_permissions = {k.strip() for k in grant_permissions_raw.split(",") if k.strip()}
 
+    # Privileged router permissions are per-perm form fields shaped
+    # ``grant_router_permission.<name>=1``.  We accumulate the set of
+    # granted names and validate against ``KNOWN_ROUTER_PERMISSIONS`` so a
+    # client typo or a future-version client doesn't accidentally grant
+    # something we don't know how to enforce.
+    granted_router_permissions: set[str] = set()
+    for key in form:
+        if not key.startswith("grant_router_permission."):
+            continue
+        perm_name = key.removeprefix("grant_router_permission.")
+        if perm_name not in KNOWN_ROUTER_PERMISSIONS:
+            return jsonify({"error": f"Unknown router permission: {perm_name!r}"}), 400
+        if (form.get(key) or "").strip().lower() not in ("1", "true", "yes"):
+            continue
+        granted_router_permissions.add(perm_name)
+
+    # Refuse grants the manifest doesn't request — the consent UI never
+    # offers them, but a hand-rolled API client could try.  Fail closed.
+    if "deploy_apps" in granted_router_permissions and not manifest.deploy_apps_permission:
+        shutil.rmtree(final_dir, ignore_errors=True)
+        return jsonify(
+            {"error": "deploy_apps router permission was granted but the manifest does not request it"}
+        ), 400
+
+    deploy_apps_granted = "deploy_apps" in granted_router_permissions
+
     # Parse port overrides from individual form fields: port_override.<label>=<host_port>
     port_overrides: dict[str, int] | None = None
     for key in form:
@@ -207,6 +239,7 @@ async def api_add_app() -> ResponseReturnValue:
             app_name=app_name,
             repo_url=repo_url,
             port_overrides=port_overrides,
+            deploy_apps_granted=deploy_apps_granted,
         )
     except (RuntimeError, ValueError) as e:
         # ValueError covers uid_map pool exhaustion (see compute_uid_map_base)
