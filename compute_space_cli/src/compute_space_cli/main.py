@@ -79,6 +79,12 @@ class AppCmd:
         port: Annotated[
             list[str] | None, cappa.Arg(long=True, help="Port override: label=host_port (repeatable)")
         ] = None,
+        grant_permissions_v2: Annotated[
+            bool,
+            cappa.Arg(
+                long="--grant-permissions-v2", help="Grant all [[permissions_v2]] entries declared in the manifest"
+            ),
+        ] = False,
     ) -> None:
         """Deploy an app from a git repo."""
         data: dict[str, str] = {"repo_url": repo_url}
@@ -88,6 +94,8 @@ class AppCmd:
             for p in port:
                 label, _, val = p.partition("=")
                 data[f"port_override.{label}"] = val
+        if grant_permissions_v2:
+            data["grant_permissions_v2"] = "true"
         result = make_api_request(cfg.url, cfg.token, "POST", "/api/add_app", data=data, raw=True)
         try:
             body = result.json()
