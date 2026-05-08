@@ -94,8 +94,10 @@ class ServiceConsumes:
     service: str
     shortname: str
     version: str
-    # TODO: unsure of correct format.
-    grants: list[dict[str, Any]] = attr.Factory(list)
+    # Each grant is either an opaque string (e.g. "read") or a JSON object
+    # (e.g. {"key": "DB_URL"}). The shape is defined by the service, not by
+    # us — providers receive the raw grants and decide what they mean.
+    grants: list[str | dict[str, Any]] = attr.Factory(list)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -252,11 +254,31 @@ def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
 
 
 def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
-    perms: list[ServiceConsumes] = _structure_list(
-        data.get("services", {}).get("v2", {}).get("consumes", []), ServiceConsumes, "services.v2.consumes"
-    )
+    raw_entries = data.get("services", {}).get("v2", {}).get("consumes", [])
+    perms: list[ServiceConsumes] = []
     seen_shortnames: set[str] = set()
-    for p in perms:
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid [[services.v2.consumes]] entry: must be a table, got {type(entry).__name__}")
+        for required in ("service", "shortname", "version"):
+            if required not in entry:
+                raise ValueError(f"Invalid [[services.v2.consumes]] entry: missing required field {required!r}")
+        grants_raw = entry.get("grants", [])
+        if not isinstance(grants_raw, list):
+            raise ValueError("[[services.v2.consumes]] grants must be a list")
+        grants: list[str | dict[str, Any]] = []
+        for g in grants_raw:
+            if not isinstance(g, (str, dict)):
+                raise ValueError(
+                    f"[[services.v2.consumes]] grant entry must be a string or table, got {type(g).__name__}"
+                )
+            grants.append(g)
+        p = ServiceConsumes(
+            service=entry["service"],
+            shortname=entry["shortname"],
+            version=entry["version"],
+            grants=grants,
+        )
         if not _SHORTNAME_RE.match(p.shortname):
             raise ValueError(
                 f"Invalid [[services.v2.consumes]] shortname {p.shortname!r}: must match {_SHORTNAME_RE.pattern}"
@@ -270,6 +292,7 @@ def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
             raise ValueError(
                 f"Invalid [[services.v2.consumes]] version specifier {p.version!r} for shortname {p.shortname!r}: {e}"
             ) from e
+        perms.append(p)
     return perms
 
 

@@ -40,7 +40,9 @@ grants = [
 ]
 ```
 
-`shortname` must match `^[a-z][a-z0-9_-]{0,31}$` and be unique within the manifest. `grants` is a list of opaque JSON payloads — the structure is defined by the service, not the router.
+Each entry in `grants` is either an opaque string (e.g. `"read"`) or a TOML/JSON object (e.g. `{key = "DB_URL"}`). Strings work well for simple flag-style permissions; objects are for grants with structured fields. The shape is defined by the service, not the router — providers receive the raw grants verbatim and decide what they mean.
+
+`shortname` must match `^[a-z][a-z0-9_-]{0,31}$` and be unique within the manifest.
 
 ### Authentication
 
@@ -51,37 +53,19 @@ The router identifies the calling app two ways:
 
 ### Calling a service
 
-There are two endpoints. Most apps use the shortname-based one.
-
-**Shortname-based (preferred):**
-
 ```
 GET|POST|... /api/services/v2/call/<shortname>/<rest>
 ```
 
 The router loads the consumer's manifest, finds the `[[services.v2.consumes]]` entry matching `<shortname>`, resolves the provider, and proxies to `<provider_endpoint>/<rest>`. WebSockets are supported on the same path.
 
-**Header-based (full form):**
-
-```
-GET|POST /api/services/v2/service_request
-X-OpenHost-Service-URL:      github.com/imbue-openhost/openhost/services/secrets
-X-OpenHost-Service-Version:  >=0.1.0
-X-OpenHost-Service-Endpoint: /get?foo=bar
-X-OpenHost-Provider-App:     secrets-v2          # optional, pin to a specific provider
-```
-
-Use the header form when calling a service that isn't in the consumer's manifest, or when you need to override the provider per request.
-
 ### Provider selection
 
-By default, calls go to the service's default provider (the first app to register that service URL). Pin to a specific provider by passing `X-OpenHost-Provider-App` on the header form.
-
-If the resolved provider's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
+Calls go to the service's default provider (the first app to register that service URL). If the resolved provider's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
 
 ### Permissions
 
-Permissions in v2 are **opaque JSON grant payloads**, scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
+Permissions in v2 are **opaque grant payloads** (strings or JSON objects), scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
 
 **Grant scope** is one of:
 - `global`: applies to all consumer apps that ask for the same payload (e.g. "any app may read this secret").

@@ -10,7 +10,7 @@ from compute_space.db import get_db
 
 @attr.s(auto_attribs=True, frozen=True)
 class GrantedPermission:
-    grant: dict[str, Any]
+    grant: str | dict[str, Any]
     scope: str
     provider_app: str | None
 
@@ -19,7 +19,7 @@ class GrantedPermission:
 class PermissionRecord:
     consumer_app: str
     service_url: str
-    grant: dict[str, Any]
+    grant: str | dict[str, Any]
     scope: str
     provider_app: str | None
 
@@ -49,7 +49,7 @@ def get_granted_permissions_v2(
 def grant_permission_v2(
     consumer_app: str,
     service_url: str,
-    grant_payload: dict[str, Any],
+    grant_payload: str | dict[str, Any],
     scope: str = "global",
     provider_app: str | None = None,
 ) -> None:
@@ -68,7 +68,7 @@ def grant_permission_v2(
 def revoke_permission_v2(
     consumer_app: str,
     service_url: str,
-    grant_payload: dict[str, Any],
+    grant_payload: str | dict[str, Any],
     scope: str = "global",
     provider_app: str | None = None,
 ) -> bool:

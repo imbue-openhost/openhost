@@ -21,3 +21,12 @@ sqlite = ["main"]
 service = "github.com/imbue-openhost/openhost/services/oauth"
 version = "0.1.0"
 endpoint = "/oauth_service/"
+
+[[services.v2.consumes]]
+service = "github.com/imbue-openhost/openhost/services/secrets"
+shortname = "secrets"
+version = ">=0.1.0"
+grants = [
+    {key = "GOOGLE_OAUTH_CLIENT_ID"},
+    {key = "GOOGLE_OAUTH_CLIENT_SECRET"},
+]
