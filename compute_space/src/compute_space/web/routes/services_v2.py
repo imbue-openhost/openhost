@@ -223,7 +223,7 @@ async def oauth_callback_proxy_v2() -> Response:
 
 # ─── Shortname-based call proxy ───
 #
-# Apps declare services they consume in [[permissions.v2]] with a shortname; clients call
+# Apps declare services they consume in [[services.v2.consumes]] with a shortname; clients call
 # /api/services/v2/call/<shortname>/<path> instead of constructing the full service URL +
 # headers themselves. The router identifies the consumer (Bearer for server-side, Origin for
 # browser) and looks up the shortname in that consumer's stored manifest.
@@ -247,7 +247,7 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
 
     Resolution flow:
       1. Identify consumer from Bearer token or Origin subdomain (handled by @app_auth_required).
-      2. Load consumer's manifest and find the [[permissions.v2]] entry where shortname matches.
+      2. Load consumer's manifest and find the [[services.v2.consumes]] entry where shortname matches.
       3. Resolve the provider for that service URL + version specifier.
       4. Proxy to <provider_endpoint>/<rest>, injecting X-OpenHost-Permissions and X-OpenHost-Consumer.
     """

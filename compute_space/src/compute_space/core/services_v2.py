@@ -28,7 +28,7 @@ def lookup_shortname(consumer_app: str, shortname: str, db: sqlite3.Connection) 
     if not row or not row["manifest_raw"]:
         raise ShortnameNotDeclared(f"No manifest stored for app '{consumer_app}'")
     manifest = parse_manifest_from_string(row["manifest_raw"])
-    for perm in manifest.permissions_v2:
+    for perm in manifest.consumes_services_v2:
         if perm.shortname == shortname:
             return perm.service, perm.version
     raise ShortnameNotDeclared(f"Shortname '{shortname}' not declared in '{consumer_app}' manifest")

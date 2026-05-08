@@ -1,71 +1,142 @@
 ## Cross-App Services
 
-Apps can expose services that other apps consume. The router mediates all cross-app communication — apps never talk directly to each other.
+Apps can expose services that other apps consume. The router (compute_space) mediates all cross-app communication — apps never talk directly to each other.
 
-### How it works
+A **service** is identified by a URL (typically a git URL pointing at a spec) plus a SemVer version. Multiple apps can implement the same service; the router resolves which provider to use per call.
 
-**Provider apps** declare what services they offer in their manifest:
+### Service identity
+
+Services are identified by URL, e.g. `github.com/imbue-openhost/openhost/services/secrets`. The URL is conventionally a git path containing the service spec (`openhost_service.toml` + an OpenAPI document), but the router treats it as an opaque identifier — only string equality matters at lookup time.
+
+Versions follow SemVer. Providers declare a concrete version; consumers declare a SemVer specifier (e.g. `>=0.1.0`).
+
+### Provider apps
+
+Provider apps declare what services they offer in their manifest:
+
 ```toml
-[services]
-provides = ["secrets"]
+[[services.v2.provides]]
+service = "github.com/imbue-openhost/openhost/services/secrets"
+version = "0.1.0"
+endpoint = "/_service_v2/"
 ```
 
-**Consumer apps** declare what they need, with fine-grained per-key permissions:
+`endpoint` is the path prefix on the provider where service requests land. The router proxies `<endpoint>/<rest>` to the provider container.
+
+When the same service URL is provided by multiple apps, the first one to register becomes the **default provider** for that service. Consumers can pin to a specific provider per call (see "Provider selection" below).
+
+### Consumer apps
+
+Consumer apps declare what they consume, with a `shortname` they'll use to call it and the grants they're requesting:
+
 ```toml
-[services.secrets]
-keys = [
-    { key = "DATABASE_URL", reason = "Connect to the production database", required = true },
-    { key = "STRIPE_SECRET_KEY", reason = "Process payments", required = true },
-    { key = "SENTRY_DSN", reason = "Error reporting", required = false },
+[[services.v2.consumes]]
+service = "github.com/imbue-openhost/openhost/services/oauth"
+shortname = "oauth"
+version = ">=0.1.0"
+grants = [
+    {provider = "google", scopes = ["https://www.googleapis.com/auth/gmail.readonly"]},
+    {provider = "github", scopes = ["repo"]},
 ]
 ```
 
+`shortname` must match `^[a-z][a-z0-9_-]{0,31}$` and be unique within the manifest. `grants` is a list of opaque JSON payloads — the structure is defined by the service, not the router.
+
 ### Authentication
 
-Each app gets a unique `OPENHOST_APP_TOKEN` (random opaque string) injected as an env var at deploy time. Apps use this token to authenticate service requests to the router.
+The router identifies the calling app two ways:
 
-### Request flow
+- **Server-side calls:** `Authorization: Bearer {OPENHOST_APP_TOKEN}`. Each app gets a unique token injected as an env var at deploy time.
+- **Browser calls:** the request's `Origin` is matched against the app's subdomain, with the JWT cookie verifying the user.
 
-1. Consumer app sends HTTP request to `{OPENHOST_ROUTER_URL}/_services/{service_name}/{action}` with `Authorization: Bearer {OPENHOST_APP_TOKEN}`
-2. Router verifies the token, identifies the calling app
-3. Router looks up which app provides the requested service
-4. Router checks which permission keys are granted for this consumer+service pair
-5. Router proxies the request to the provider app at `/_service/{action}`.
-6. Provider app handles the request, filtering data based on granted keys
+### Calling a service
+
+There are two endpoints. Most apps use the shortname-based one.
+
+**Shortname-based (preferred):**
+
+```
+GET|POST|... /api/services/v2/call/<shortname>/<rest>
+```
+
+The router loads the consumer's manifest, finds the `[[services.v2.consumes]]` entry matching `<shortname>`, resolves the provider, and proxies to `<provider_endpoint>/<rest>`. WebSockets are supported on the same path.
+
+**Header-based (full form):**
+
+```
+GET|POST /api/services/v2/service_request
+X-OpenHost-Service-URL:      github.com/imbue-openhost/openhost/services/secrets
+X-OpenHost-Service-Version:  >=0.1.0
+X-OpenHost-Service-Endpoint: /get?foo=bar
+X-OpenHost-Provider-App:     secrets-v2          # optional, pin to a specific provider
+```
+
+Use the header form when calling a service that isn't in the consumer's manifest, or when you need to override the provider per request.
+
+### Provider selection
+
+By default, calls go to the service's default provider (the first app to register that service URL). Pin to a specific provider by passing `X-OpenHost-Provider-App` on the header form.
+
+If the resolved provider's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
 
 ### Permissions
 
-**Static (deploy-time):** When a consumer app is deployed, the router creates permission rows for each key declared in the manifest (initially not granted).
+Permissions in v2 are **opaque JSON grant payloads**, scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
 
-**Dynamic (runtime):** Apps can also request new permissions at runtime:
+**Grant scope** is one of:
+- `global`: applies to all consumer apps that ask for the same payload (e.g. "any app may read this secret").
+- `app`: applies only to a specific consumer.
 
-1. App calls `POST {OPENHOST_ROUTER_URL}/_services/request-permission` with its app token
-   - Body: `{"service": "secrets", "key": "NEW_KEY", "reason": "Why I need it"}`
-   - Response: `{"status": "pending", "approve_url": "https://..."}` (or `{"status": "granted"}` if already approved)
-2. If the owner is interacting with the app, the app redirects them to the `approve_url`
-3. The owner sees the permission request with the reason and can grant or deny it
-4. After approval, the owner is redirected back (via `?next=` param if the app provided one)
-5. The app retries the service call — now it has access
+**On every proxied call, the router injects:**
+- `X-OpenHost-Consumer: <consumer_app>`
+- `X-OpenHost-Permissions: <json array of granted payloads>`
 
-If the owner isn't around, the app should handle the "pending" status gracefully (e.g. show a message saying "waiting for owner approval").
+Each entry in the permissions array is `{"grant": <payload>, "scope": "global"|"app", "provider_app": <name or null>}`.
 
-**Management APIs:**
-- `GET /api/service-permissions` — list all permission requests
-- `POST /api/service-permissions/{id}/grant` — grant a permission
-- `POST /api/service-permissions/{id}/revoke` — revoke a permission
-- `GET /approve-permissions` — owner-facing approval page (supports `?app=` filter)
+**Requesting a missing permission.** When a consumer calls without sufficient grants, the provider returns:
+
+```json
+HTTP 403
+{
+  "error": "permission_required",
+  "required_grant": {
+    "grant_payload": { ... },
+    "scope": "global"
+  }
+}
+```
+
+For `scope: "global"`, the router rewrites the response to add a `grant_url` pointing at the owner-facing approval page. For `scope: "app"`, the provider must include its own `grant_url` (pointing back through the router to its own approval flow).
+
+The consumer redirects the owner to `grant_url`; after approval, the call can be retried.
+
+**Granting at deploy time.** The compute_space CLI's `--grant-permissions-v2` flag pre-grants every entry in a manifest's `[[services.v2.consumes]]` list, useful for trusted built-in apps.
+
+### OAuth callback
+
+`/api/services/v2/oauth_callback` is a fixed redirect target for third-party OAuth providers (Google, GitHub, etc). The OAuth app encodes its app name in the `state` parameter (`{"app": "<name>", "nonce": "..."}`); the router parses that and proxies the callback to that app's `/callback`.
+
+### Service specs
+
+Service definitions live under `services/<name>/`:
+
+```
+services/secrets/
+  openhost_service.toml   # [service] name + description
+  openapi.yaml            # request/response schemas, grant payload shape
+```
+
+This is documentation — the router doesn't read these files. They exist so consumers and providers agree on the service's wire format and grant payload structure.
 
 ### Built-in services
 
-**secrets** — stores environment variables (key-value pairs). Owner manages values via the secrets app dashboard. Consumer apps request specific keys by name. The secrets app returns only the values for keys the consumer has been granted access to.
+- **secrets** (`github.com/imbue-openhost/openhost/services/secrets`) — key-value secret storage. Grant payload: `{"key": "<NAME>"}` or `{"key": "*"}` for full access. Provider returns only the values for keys in the granted set.
+- **oauth** (`github.com/imbue-openhost/openhost/services/oauth`) — OAuth token acquisition/refresh for third-party APIs. Grant payload: `{"provider": "<name>", "scopes": [...]}`.
 
-Service API:
-- `POST /_services/secrets/get` — body: `{"keys": ["DATABASE_URL", "STRIPE_SECRET_KEY"]}` — returns granted values
-- `GET /_services/secrets/list` — returns available key names (no values)
+### Design notes
 
-### Design notes (historical context)
-
-- router mediates everything centrally (vs apps talking directly) because router already enforces auth and the owner needs a single place to manage permissions
-- apps authenticate via opaque tokens (no public/private keypairs needed — router is local and trusted)
-- permissions are per-key so the owner can grant fine-grained access (eg grant DATABASE_URL but not STRIPE_SECRET_KEY)
-- all service calls are normal HTTP requests, no special injection — apps fetch what they need at runtime
+- Router mediates everything centrally because it already enforces auth and the owner needs a single place to manage permissions.
+- Apps authenticate via opaque tokens (no public/private keypairs) — the router is local and trusted.
+- Permission payloads are opaque JSON: services own their permission shape, the router just stores and forwards.
+- Provider-side enforcement (vs router-side) keeps the router stupid about service semantics; whatever a service decides "permitted" means is up to it.
+- Versioning lets multiple incompatible versions of a service coexist; consumers pin via SemVer specifier.

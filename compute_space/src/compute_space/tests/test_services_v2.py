@@ -243,7 +243,7 @@ port = 8080
 
 
 def _install_consumer(db, name: str, perms_toml: str = "") -> None:
-    """Insert a consumer app row whose manifest_raw contains the given [[permissions.v2]] entries."""
+    """Insert a consumer app row whose manifest_raw contains the given [[services.v2.consumes]] entries."""
     raw = _MINIMAL_MANIFEST.format(name=name) + perms_toml
     db.execute(
         """INSERT OR REPLACE INTO apps (name, version, repo_path, local_port, status, manifest_raw)
@@ -258,7 +258,7 @@ class TestShortnameLookup:
         _install_consumer(
             db,
             "consumer",
-            f'\n[[permissions.v2]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
+            f'\n[[services.v2.consumes]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
         )
         service_url, version = lookup_shortname("consumer", "oauth", db)
         assert service_url == SVC_OAUTH
@@ -268,7 +268,7 @@ class TestShortnameLookup:
         _install_consumer(
             db,
             "consumer",
-            f'\n[[permissions.v2]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
+            f'\n[[services.v2.consumes]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
         )
         with pytest.raises(ShortnameNotDeclared, match="not declared"):
             lookup_shortname("consumer", "missing", db)
@@ -290,8 +290,8 @@ class TestShortnameLookup:
 
     def test_picks_correct_entry_among_many(self, db):
         perms = (
-            f'\n[[permissions.v2]]\nservice = "{SVC_SECRETS}"\nshortname = "secrets"\nversion = ">=0.1.0"\ngrants = []\n'
-            f'\n[[permissions.v2]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = "==1.0.0"\ngrants = []\n'
+            f'\n[[services.v2.consumes]]\nservice = "{SVC_SECRETS}"\nshortname = "secrets"\nversion = ">=0.1.0"\ngrants = []\n'
+            f'\n[[services.v2.consumes]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = "==1.0.0"\ngrants = []\n'
         )
         _install_consumer(db, "multi", perms)
         assert lookup_shortname("multi", "secrets", db) == (SVC_SECRETS, ">=0.1.0")

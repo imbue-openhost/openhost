@@ -90,7 +90,7 @@ class ServiceProvides:
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class PermissionV2Request:
+class ServiceConsumes:
     service: str
     shortname: str
     version: str
@@ -145,8 +145,8 @@ class AppManifest:
     # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
-    # [[permissions.v2]]
-    permissions_v2: list[PermissionV2Request] = attr.Factory(list)
+    # [[services.v2.consumes]]
+    consumes_services_v2: list[ServiceConsumes] = attr.Factory(list)
 
     # [app] metadata
     hidden: bool = False
@@ -251,24 +251,24 @@ def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
     return _structure_list(entries, ServiceProvides, "services.v2.provides")
 
 
-def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
-    perms: list[PermissionV2Request] = _structure_list(
-        data.get("permissions", {}).get("v2", []), PermissionV2Request, "permissions.v2"
+def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
+    perms: list[ServiceConsumes] = _structure_list(
+        data.get("services", {}).get("v2", {}).get("consumes", []), ServiceConsumes, "services.v2.consumes"
     )
     seen_shortnames: set[str] = set()
     for p in perms:
         if not _SHORTNAME_RE.match(p.shortname):
             raise ValueError(
-                f"Invalid [[permissions.v2]] shortname {p.shortname!r}: must match {_SHORTNAME_RE.pattern}"
+                f"Invalid [[services.v2.consumes]] shortname {p.shortname!r}: must match {_SHORTNAME_RE.pattern}"
             )
         if p.shortname in seen_shortnames:
-            raise ValueError(f"Duplicate [[permissions.v2]] shortname {p.shortname!r}")
+            raise ValueError(f"Duplicate [[services.v2.consumes]] shortname {p.shortname!r}")
         seen_shortnames.add(p.shortname)
         try:
             SpecifierSet(p.version)
         except InvalidSpecifier as e:
             raise ValueError(
-                f"Invalid [[permissions.v2]] version specifier {p.version!r} for shortname {p.shortname!r}: {e}"
+                f"Invalid [[services.v2.consumes]] version specifier {p.version!r} for shortname {p.shortname!r}: {e}"
             ) from e
     return perms
 
@@ -350,7 +350,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         provides_services=services.get("provides", []),
         requires_services=_parse_requires_services(services),
         provides_services_v2=_parse_services_v2(data),
-        permissions_v2=_parse_permissions_v2(data),
+        consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,
     )
 

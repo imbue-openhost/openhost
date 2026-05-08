@@ -11,7 +11,7 @@ port = 8080
 memory_mb = 256
 cpu_millicores = 500
 
-[[permissions.v2]]
+[[services.v2.consumes]]
 service = "github.com/imbue-openhost/openhost/services/oauth"
 shortname = "oauth"
 version = ">=0.1.0"
