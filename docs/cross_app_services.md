@@ -4,11 +4,18 @@ Apps can expose services that other apps consume. The router (compute_space) med
 
 A **service** is identified by a URL (typically a git URL pointing at a spec) plus a SemVer version. Multiple apps can implement the same service; the router resolves which provider to use per call.
 
-### Service identity
+### Service identity + spec
 
-Services are identified by URL, e.g. `github.com/imbue-openhost/openhost/services/secrets`. The URL is conventionally a git path containing the service spec (`openhost_service.toml` + an OpenAPI document), but the router treats it as an opaque identifier — only string equality matters at lookup time.
+Services are identified by URL, e.g. `github.com/imbue-openhost/openhost/services/secrets`. The URL is a git path (and optional subdirectory).
 
-Versions follow SemVer. Providers declare a concrete version; consumers declare a SemVer specifier (e.g. `>=0.1.0`).
+Currently the URL is only used comparatively, to match providers and consumers. But probably in the future we'll fetch the git URL to lookup details about the service, eg from a manifest file.
+You should put documentation on the service specification at the service URL - ideally a formal openAPI spec, but informal documentation is allowable also.
+
+Versions follow SemVer. Providers declare a specific version; consumers declare a SemVer specifier (e.g. `>=0.1.0`). Major version indicate breaking changes; minor versions indicate backward-compatible changes. The git repo should have tags for each version (eg v1.1.1, or sub/dir:v1.1.1 if at a subdir).
+
+Some example specs live in this repo's `services/` folder:
+- **secrets** (`github.com/imbue-openhost/openhost/services/secrets`) — key-value secret storage. Grant payload: `{"key": "<NAME>"}` or `{"key": "*"}` for full access. Provider returns only the values for keys in the granted set.
+- **oauth** (`github.com/imbue-openhost/openhost/services/oauth`) — OAuth token acquisition/refresh for third-party APIs. Grant payload: `{"provider": "<name>", "scopes": [...]}`.
 
 ### Provider apps
 
@@ -18,16 +25,14 @@ Provider apps declare what services they offer in their manifest:
 [[services.v2.provides]]
 service = "github.com/imbue-openhost/openhost/services/secrets"
 version = "0.1.0"
-endpoint = "/_service_v2/"
+endpoint = "/api/"
 ```
 
-`endpoint` is the path prefix on the provider where service requests land. The router proxies `<endpoint>/<rest>` to the provider container.
-
-When the same service URL is provided by multiple apps, the first one to register becomes the **default provider** for that service. Consumers can pin to a specific provider per call (see "Provider selection" below).
+Service requests land rooted at `endpoint` in the provider app, ie `app_name.openhost_space.com/<endpoint>/<whatever_api_route>`.
 
 ### Consumer apps
 
-Consumer apps declare what they consume, with a `shortname` they'll use to call it and the grants they're requesting:
+Consumer apps declare what they consume, with a `shortname` they'll use to call it and the permission grants they're requesting:
 
 ```toml
 [[services.v2.consumes]]
@@ -44,32 +49,36 @@ Each entry in `grants` is either an opaque string (e.g. `"read"`) or a TOML/JSON
 
 `shortname` must match `^[a-z][a-z0-9_-]{0,31}$` and be unique within the manifest.
 
-### Authentication
-
-The router identifies the calling app two ways:
-
-- **Server-side calls:** `Authorization: Bearer {OPENHOST_APP_TOKEN}`. Each app gets a unique token injected as an env var at deploy time.
-- **Browser calls:** the request's `Origin` is matched against the app's subdomain, with the JWT cookie verifying the user.
-
 ### Calling a service
 
 ```
-GET|POST|... /api/services/v2/call/<shortname>/<rest>
+GET|POST|WS|... [OPENHOST_ROUTER_URL]/api/services/v2/call/<shortname>/<rest>
 ```
+along with `Authorization: Bearer $OPENHOST_APP_TOKEN` header for server-side requests.
+`OPENHOST_ROUTER_URL` is provided to apps as an env var.
 
-The router loads the consumer's manifest, finds the `[[services.v2.consumes]]` entry matching `<shortname>`, resolves the provider, and proxies to `<provider_endpoint>/<rest>`. WebSockets are supported on the same path.
+This endpoint is app-specific - the router loads the consumer's manifest, finds the `[[services.v2.consumes]]` entry matching `<shortname>`, resolves the correct provider of the requested service, and proxies to `provider_app.OPENHOST_ROUTER_URL/<provider_endpoint>/<rest>`.
+
+The router identifies and authenticates the calling app two ways:
+- **Server-side calls:** must include `Authorization: Bearer $OPENHOST_APP_TOKEN`. Each app gets a unique `OPENHOST_APP_TOKEN` injected as an env var at deploy time.
+- **Browser calls:** the request's `Origin` is matched against the app's subdomain, with the JWT cookie authenticating the user. No bearer token is needed for these — the browser provides the cookie automatically.
+
+Service calls should be API-only - the user's browser should never be redirected to a service endpoint, with the exception of permission grant pages.
 
 ### Provider selection
 
-Calls go to the service's default provider (the first app to register that service URL). If the resolved provider's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
+Each service URL has a configured default provider - by default it's first app installed providing that service, but can be configured in openhost's settings.
+
+If the resolved default's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
+
 
 ### Permissions
 
-Permissions in v2 are **opaque grant payloads** (strings or JSON objects), scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
+Permissions are **opaque grant payloads** (strings or JSON objects), scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
 
 **Grant scope** is one of:
-- `global`: applies to all consumer apps that ask for the same payload (e.g. "any app may read this secret").
-- `app`: applies only to a specific consumer.
+- `global`: applies to all providers of the given service. This is the scope for manifest-declared permission grants.
+- `app`: applies only to a specific provider. These are often data-dependent permissions, eg "access email for me@example.com", where that data only lives in a specific provider app, so a global scoped permission wouldn't make sense.
 
 **On every proxied call, the router injects:**
 - `X-OpenHost-Consumer: <consumer_app>`
@@ -94,33 +103,38 @@ For `scope: "global"`, the router rewrites the response to add a `grant_url` poi
 
 The consumer redirects the owner to `grant_url`; after approval, the call can be retried.
 
-**Granting at deploy time.** The compute_space CLI's `--grant-permissions-v2` flag pre-grants every entry in a manifest's `[[services.v2.consumes]]` list, useful for trusted built-in apps.
+**Granting at deploy time.** Global-scoped permissions specified in the consumer app manifest (`grants`) can be granted as part of the app install, either in the openhost web UI or via the compute_space CLI's `--grant-permissions-v2` flag.
 
-### OAuth callback
+### Retrofitting existing apps
 
-`/api/services/v2/oauth_callback` is a fixed redirect target for third-party OAuth providers (Google, GitHub, etc). The OAuth app encodes its app name in the `state` parameter (`{"app": "<name>", "nonce": "..."}`); the router parses that and proxies the callback to that app's `/callback`.
+Many existing apps provide or consume APIs in a non-openhost-native way, and can be adapted readily to consume or expose these through the service interface.
 
-### Service specs
+#### Consumer apps
 
-Service definitions live under `services/<name>/`:
+Consumer apps need to include the `Authorization` header on server-side requests. This can be added by a little reverse proxy running in in the application container, like [`mitmproxy`](https://github.com/mitmproxy/mitmproxy).
+
+```sh
+# <shortname> matches the [[services.v2.consumes]] entry in your manifest.
+mitmdump -p 9000 \
+  --mode reverse:$OPENHOST_ROUTER_URL/api/services/v2/call/<shortname> \
+  --set "modify_headers=/~q/Authorization/Bearer $OPENHOST_APP_TOKEN"
+```
+
+Then point the app at `http://localhost:9000` and a request to `http://localhost:9000/target_api_endpoint` will reach `$OPENHOST_ROUTER_URL/api/services/v2/call/<shortname>/target_api_endpoint` with the bearer token attached.
+
+#### Provider apps
+
+Provider apps should verify permissions attached to inbound requests. This can be done eg with a simple Caddyfile rule:
 
 ```
-services/secrets/
-  openhost_service.toml   # [service] name + description
-  openapi.yaml            # request/response schemas, grant payload shape
+:8080 {
+  @missing not header HeaderName HeaderValue
+  handle @missing {
+      header Content-Type application/json
+      respond `{"error":"missing required header"}` 403
+  }
+  reverse_proxy localhost:3000
+}
 ```
 
-This is documentation — the router doesn't read these files. They exist so consumers and providers agree on the service's wire format and grant payload structure.
 
-### Built-in services
-
-- **secrets** (`github.com/imbue-openhost/openhost/services/secrets`) — key-value secret storage. Grant payload: `{"key": "<NAME>"}` or `{"key": "*"}` for full access. Provider returns only the values for keys in the granted set.
-- **oauth** (`github.com/imbue-openhost/openhost/services/oauth`) — OAuth token acquisition/refresh for third-party APIs. Grant payload: `{"provider": "<name>", "scopes": [...]}`.
-
-### Design notes
-
-- Router mediates everything centrally because it already enforces auth and the owner needs a single place to manage permissions.
-- Apps authenticate via opaque tokens (no public/private keypairs) — the router is local and trusted.
-- Permission payloads are opaque JSON: services own their permission shape, the router just stores and forwards.
-- Provider-side enforcement (vs router-side) keeps the router stupid about service semantics; whatever a service decides "permitted" means is up to it.
-- Versioning lets multiple incompatible versions of a service coexist; consumers pin via SemVer specifier.
