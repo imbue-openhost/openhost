@@ -120,20 +120,28 @@ async def proxy_request(
 
 
 async def ws_proxy(
-    target_port: int, base_path: str, client_ws: Websocket, identity_headers: dict[str, str] | None = None
+    target_port: int,
+    base_path: str,
+    client_ws: Websocket,
+    identity_headers: dict[str, str] | None = None,
+    override_path: str | None = None,
 ) -> None:
     """Bidirectionally proxy a WebSocket connection to a backend app.
 
     Uses Quart's native websocket object and the async websockets library.
+    If override_path is set, use it instead of the (base_path-stripped) client path.
     """
-    # Prefer raw (percent-encoded) path to preserve URL encoding
-    raw_path = client_ws.scope.get("raw_path")
-    if raw_path is not None:
-        path = raw_path.decode("ascii")
+    if override_path is not None:
+        path = override_path
     else:
-        path = client_ws.path
-    if base_path and path.startswith(base_path):
-        path = path[len(base_path) :]
+        # Prefer raw (percent-encoded) path to preserve URL encoding
+        raw_path = client_ws.scope.get("raw_path")
+        if raw_path is not None:
+            path = raw_path.decode("ascii")
+        else:
+            path = client_ws.path
+        if base_path and path.startswith(base_path):
+            path = path[len(base_path) :]
     if not path.startswith("/"):
         path = "/" + path
 

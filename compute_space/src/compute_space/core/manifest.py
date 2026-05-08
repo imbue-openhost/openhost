@@ -1,11 +1,16 @@
 import os
+import re
 import tomllib
 from typing import Any
 
 import attr
 import cattrs
+from packaging.specifiers import InvalidSpecifier
+from packaging.specifiers import SpecifierSet
 
 from compute_space.core.logging import logger
+
+_SHORTNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/containers.yml.
 # host_port values below this are rejected at parse time.
@@ -87,6 +92,8 @@ class ServiceProvides:
 @attr.s(auto_attribs=True, frozen=True)
 class PermissionV2Request:
     service: str
+    shortname: str
+    version: str
     # TODO: unsure of correct format.
     grants: list[dict[str, Any]] = attr.Factory(list)
 
@@ -245,7 +252,25 @@ def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
 
 
 def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
-    return _structure_list(data.get("permissions", {}).get("v2", []), PermissionV2Request, "permissions.v2")
+    perms: list[PermissionV2Request] = _structure_list(
+        data.get("permissions", {}).get("v2", []), PermissionV2Request, "permissions.v2"
+    )
+    seen_shortnames: set[str] = set()
+    for p in perms:
+        if not _SHORTNAME_RE.match(p.shortname):
+            raise ValueError(
+                f"Invalid [[permissions.v2]] shortname {p.shortname!r}: must match {_SHORTNAME_RE.pattern}"
+            )
+        if p.shortname in seen_shortnames:
+            raise ValueError(f"Duplicate [[permissions.v2]] shortname {p.shortname!r}")
+        seen_shortnames.add(p.shortname)
+        try:
+            SpecifierSet(p.version)
+        except InvalidSpecifier as e:
+            raise ValueError(
+                f"Invalid [[permissions.v2]] version specifier {p.version!r} for shortname {p.shortname!r}: {e}"
+            ) from e
+    return perms
 
 
 def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

@@ -390,6 +390,8 @@ endpoint = "/_oauth_v2/"
             + """
 [[permissions.v2]]
 service = "github.com/org/repo/services/oauth"
+shortname = "oauth"
+version = ">=0.1.0"
 grants = [
     {provider = "google", scope = "https://www.googleapis.com/auth/gmail.readonly"},
     {provider = "github", scope = "repo"},
@@ -400,12 +402,43 @@ grants = [
         assert len(manifest.permissions_v2) == 1
         perm = manifest.permissions_v2[0]
         assert perm.service == "github.com/org/repo/services/oauth"
+        assert perm.shortname == "oauth"
+        assert perm.version == ">=0.1.0"
         assert len(perm.grants) == 2
         assert perm.grants[0] == {"provider": "google", "scope": "https://www.googleapis.com/auth/gmail.readonly"}
 
     def test_permissions_v2_missing_service_raises(self):
-        toml = MINIMAL + '\n[[permissions.v2]]\ngrants = [{key = "X"}]\n'
+        toml = MINIMAL + '\n[[permissions.v2]]\nshortname = "x"\nversion = ">=0"\ngrants = [{key = "X"}]\n'
         with pytest.raises(ValueError, match=r"permissions\.v2"):
+            parse_manifest_from_string(toml)
+
+    def test_permissions_v2_missing_shortname_raises(self):
+        toml = MINIMAL + '\n[[permissions.v2]]\nservice = "github.com/x"\nversion = ">=0"\ngrants = []\n'
+        with pytest.raises(ValueError, match=r"permissions\.v2"):
+            parse_manifest_from_string(toml)
+
+    def test_permissions_v2_invalid_shortname_raises(self):
+        toml = (
+            MINIMAL
+            + '\n[[permissions.v2]]\nservice = "github.com/x"\nshortname = "Bad-Name"\nversion = ">=0"\ngrants = []\n'
+        )
+        with pytest.raises(ValueError, match="shortname"):
+            parse_manifest_from_string(toml)
+
+    def test_permissions_v2_duplicate_shortname_raises(self):
+        toml = MINIMAL + (
+            '\n[[permissions.v2]]\nservice = "github.com/a"\nshortname = "dup"\nversion = ">=0"\ngrants = []\n'
+            '\n[[permissions.v2]]\nservice = "github.com/b"\nshortname = "dup"\nversion = ">=0"\ngrants = []\n'
+        )
+        with pytest.raises(ValueError, match="Duplicate"):
+            parse_manifest_from_string(toml)
+
+    def test_permissions_v2_invalid_version_raises(self):
+        toml = (
+            MINIMAL
+            + '\n[[permissions.v2]]\nservice = "github.com/x"\nshortname = "x"\nversion = "not a spec"\ngrants = []\n'
+        )
+        with pytest.raises(ValueError, match="version"):
             parse_manifest_from_string(toml)
 
     def test_services_v2_missing_version_raises(self):

@@ -5,3 +5,4 @@
 - don't write file-level docstrings unless the file is particularly confusing or the intent is especially obscure. these just get out of date and confusing. just keep the file simple and readable and concise instead.
 - prefer many small code files, well organized in folders, than fewer long files.
 - docstrings should line-wrap at the same width as the code, ie 119 chars.
+- don't use an Any type or similar lazy typing unless there's truly no better way.

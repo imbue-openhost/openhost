@@ -11,6 +11,8 @@ from compute_space.core.permissions_v2 import revoke_permission_v2
 from compute_space.core.service_access_rules import ServiceAccessDenied
 from compute_space.core.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
+from compute_space.core.services_v2 import ShortnameNotDeclared
+from compute_space.core.services_v2 import lookup_shortname
 from compute_space.core.services_v2 import resolve_provider
 
 SVC_SECRETS = "github.com/org/repo/services/secrets"
@@ -222,6 +224,78 @@ class TestVersionResolutionEdgeCases:
         _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
         with pytest.raises(ServiceNotAvailable, match="Invalid version specifier"):
             resolve_provider(SVC_SECRETS, "not_a_version!!", db)
+
+
+# ---------------------------------------------------------------------------
+# Shortname lookup (consumer manifest → service URL + version)
+# ---------------------------------------------------------------------------
+
+
+_MINIMAL_MANIFEST = """
+[app]
+name = "{name}"
+version = "0.1.0"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+"""
+
+
+def _install_consumer(db, name: str, perms_toml: str = "") -> None:
+    """Insert a consumer app row whose manifest_raw contains the given [[permissions.v2]] entries."""
+    raw = _MINIMAL_MANIFEST.format(name=name) + perms_toml
+    db.execute(
+        """INSERT OR REPLACE INTO apps (name, version, repo_path, local_port, status, manifest_raw)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (name, "0.1.0", f"/tmp/{name}", 9100, "running", raw),
+    )
+    db.commit()
+
+
+class TestShortnameLookup:
+    def test_resolves_declared_shortname(self, db):
+        _install_consumer(
+            db,
+            "consumer",
+            f'\n[[permissions.v2]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
+        )
+        service_url, version = lookup_shortname("consumer", "oauth", db)
+        assert service_url == SVC_OAUTH
+        assert version == ">=0.1.0"
+
+    def test_unknown_shortname_raises(self, db):
+        _install_consumer(
+            db,
+            "consumer",
+            f'\n[[permissions.v2]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
+        )
+        with pytest.raises(ShortnameNotDeclared, match="not declared"):
+            lookup_shortname("consumer", "missing", db)
+
+    def test_no_manifest_raises(self, db):
+        # Consumer row without manifest_raw at all.
+        db.execute(
+            """INSERT INTO apps (name, version, repo_path, local_port, status)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("bare", "0.1.0", "/tmp/bare", 9101, "running"),
+        )
+        db.commit()
+        with pytest.raises(ShortnameNotDeclared, match="No manifest"):
+            lookup_shortname("bare", "anything", db)
+
+    def test_unknown_consumer_raises(self, db):
+        with pytest.raises(ShortnameNotDeclared, match="No manifest"):
+            lookup_shortname("does-not-exist", "oauth", db)
+
+    def test_picks_correct_entry_among_many(self, db):
+        perms = (
+            f'\n[[permissions.v2]]\nservice = "{SVC_SECRETS}"\nshortname = "secrets"\nversion = ">=0.1.0"\ngrants = []\n'
+            f'\n[[permissions.v2]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = "==1.0.0"\ngrants = []\n'
+        )
+        _install_consumer(db, "multi", perms)
+        assert lookup_shortname("multi", "secrets", db) == (SVC_SECRETS, ">=0.1.0")
+        assert lookup_shortname("multi", "oauth", db) == (SVC_OAUTH, "==1.0.0")
 
 
 # ---------------------------------------------------------------------------
