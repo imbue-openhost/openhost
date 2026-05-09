@@ -9,7 +9,7 @@ A **service** is identified by a URL (typically a git URL pointing at a spec) pl
 Services are identified by URL, e.g. `github.com/imbue-openhost/openhost/services/secrets`. The URL is a git path (and optional subdirectory).
 
 Currently the URL is only used comparatively, to match providers and consumers. But probably in the future we'll fetch the git URL to lookup details about the service, eg from a manifest file.
-You should put documentation on the service specification at the service URL - ideally a formal openAPI spec, but informal documentation is allowable also.
+You should put documentation on the service specification at the service URL - ideally a formal openAPI spec, but informal documentation is allowable also. This should document the API endpoints, and also the structure of the permission grants consumer apps must acquire to use the service (these are up to the service to define).
 
 Versions follow SemVer. Providers declare a specific version; consumers declare a SemVer specifier (e.g. `>=0.1.0`). Major version indicate breaking changes; minor versions indicate backward-compatible changes. The git repo should have tags for each version (eg v1.1.1, or sub/dir:v1.1.1 if at a subdir).
 
@@ -124,17 +124,15 @@ Then point the app at `http://localhost:9000` and a request to `http://localhost
 
 #### Provider apps
 
-Provider apps should verify permissions attached to inbound requests. This can be done eg with a simple Caddyfile rule:
+Provider apps should verify permissions attached to inbound requests. A simple permission structure might just requires a string grant `FULL_ACCESS`, and can be implemented with a Caddyfile rule that verifies that the request header (something like `X-OpenHost-Permissions=[{"grant": "FULL_ACCESS", "scope": "global", ...}]`) contains this permission before passing on to the app's existing API:
 
 ```
 :8080 {
-  @missing not header HeaderName HeaderValue
-  handle @missing {
-      header Content-Type application/json
-      respond `{"error":"missing required header"}` 403
+  @denied not header_regexp X-OpenHost-Permissions "\"grant\"\\s*:\\s*\"FULL_ACCESS\""
+  handle @denied {
+    header Content-Type application/json
+    respond `{"error":"permission_required","required_grant":{"grant_payload":"FULL_ACCESS","scope":"global"}}` 403
   }
   reverse_proxy localhost:3000
-}
-```
-
+}```
 
