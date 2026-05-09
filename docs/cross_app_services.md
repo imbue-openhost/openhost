@@ -93,7 +93,7 @@ HTTP 403
 {
   "error": "permission_required",
   "required_grant": {
-    "grant_payload": { ... },
+    "grant": { ... },
     "scope": "global"
   }
 }
@@ -131,7 +131,7 @@ Provider apps should verify permissions attached to inbound requests. A simple p
   @denied not header_regexp X-OpenHost-Permissions "\"grant\"\\s*:\\s*\"FULL_ACCESS\""
   handle @denied {
     header Content-Type application/json
-    respond `{"error":"permission_required","required_grant":{"grant_payload":"FULL_ACCESS","scope":"global"}}` 403
+    respond `{"error":"permission_required","required_grant":{"grant":"FULL_ACCESS","scope":"global"}}` 403
   }
   reverse_proxy localhost:3000
 }```

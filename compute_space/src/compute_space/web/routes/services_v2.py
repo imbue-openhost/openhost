@@ -57,8 +57,8 @@ async def _add_grant_url_if_global_grant_needed(
     """Add grant_url to service provider 403 responses that indicate a missing globally-scoped permission grant.
 
     Providers return 403 when the consumer lacks a required permission. Expected format:
-        Global:  {"error": "permission_required", "required_grant": { "grant_payload": ..., "scope": "global" }}
-        App:     {"error": "permission_required", "required_grant": { "grant_payload": ...,
+        Global:  {"error": "permission_required", "required_grant": { "grant": ..., "scope": "global" }}
+        App:     {"error": "permission_required", "required_grant": { "grant": ...,
                      "scope": "app", "grant_url": "https://..." }}
 
     For global grants, this fn adds a grant_url that points to the owner-facing approval page for the required grant.
@@ -78,8 +78,8 @@ async def _add_grant_url_if_global_grant_needed(
     if required_grant.get("scope", "global") != "global":
         return response
 
-    grant_payload = required_grant.get("grant_payload")
-    if not isinstance(grant_payload, (str, dict)):
+    grant = required_grant.get("grant")
+    if not isinstance(grant, (str, dict)):
         # we can't make a grant URL without a valid grant payload, so just return the original response even if it's malformed
         return response
 
@@ -88,7 +88,7 @@ async def _add_grant_url_if_global_grant_needed(
         "pages_permissions_v2.approve_permissions_v2",
         app=consumer_app,
         service=service_url,
-        grant=json.dumps(grant_payload, sort_keys=True),
+        grant=json.dumps(grant, sort_keys=True),
     )
     required_grant["grant_url"] = f"https://{config.zone_domain}{approve_path}"
 
