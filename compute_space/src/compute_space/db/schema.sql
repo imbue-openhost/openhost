@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS apps (
     gpu INTEGER NOT NULL DEFAULT 0,
     public_paths TEXT NOT NULL DEFAULT '[]',
     manifest_raw TEXT,
+    installed_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
