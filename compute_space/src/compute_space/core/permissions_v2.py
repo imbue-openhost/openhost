@@ -1,16 +1,22 @@
 """V2 permission operations: grant, revoke, query with JSON payloads and scopes."""
 
 import json
-from typing import Any
 
 import attr
 
 from compute_space.db import get_db
 
+# Grant payloads are JSON-shaped values defined by each service. A grant is
+# either an opaque string (e.g. "FULL_ACCESS") or a JSON structure
+# (e.g. {"key": "DB_URL"}); top-level numbers are excluded since a bare
+# scalar isn't a meaningful grant identity.
+type GrantAtom = list[GrantAtom] | dict[str, GrantAtom] | str | int | float | bool
+type Grant = list[GrantAtom] | dict[str, GrantAtom] | str
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class GrantedPermission:
-    grant: dict[str, Any]
+    grant: Grant
     scope: str
     provider_app: str | None
 
@@ -19,7 +25,7 @@ class GrantedPermission:
 class PermissionRecord:
     consumer_app: str
     service_url: str
-    grant: dict[str, Any]
+    grant: Grant
     scope: str
     provider_app: str | None
 
@@ -49,7 +55,7 @@ def get_granted_permissions_v2(
 def grant_permission_v2(
     consumer_app: str,
     service_url: str,
-    grant_payload: dict[str, Any],
+    grant_payload: Grant,
     scope: str = "global",
     provider_app: str | None = None,
 ) -> None:
@@ -68,7 +74,7 @@ def grant_permission_v2(
 def revoke_permission_v2(
     consumer_app: str,
     service_url: str,
-    grant_payload: dict[str, Any],
+    grant_payload: Grant,
     scope: str = "global",
     provider_app: str | None = None,
 ) -> bool:

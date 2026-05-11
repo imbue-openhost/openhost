@@ -7,8 +7,8 @@ APP_TOKEN = os.environ.get("OPENHOST_APP_TOKEN")
 APP_NAME = os.environ.get("OPENHOST_APP_NAME")
 ZONE_DOMAIN = os.environ.get("OPENHOST_ZONE_DOMAIN")
 
-OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
-SERVICE_REQUEST_URL = f"{ROUTER_URL}/_services_v2/service_request"
+OAUTH_SHORTNAME = "oauth"
+SERVICE_CALL_BASE = f"{ROUTER_URL}/api/services/v2/call/{OAUTH_SHORTNAME}"
 
 _mock_base_url: str | None = None
 _mock_provider_api_url: str | None = None
@@ -28,8 +28,9 @@ def get_mock_provider_api_url() -> str | None:
     return _mock_provider_api_url
 
 
-def _request_url() -> str:
-    return _mock_base_url or SERVICE_REQUEST_URL
+def _request_url(endpoint: str) -> str:
+    base = _mock_base_url or SERVICE_CALL_BASE
+    return f"{base}/{endpoint.lstrip('/')}"
 
 
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -121,14 +122,9 @@ async def get_accounts(provider: str) -> list[str]:
         raise ValueError(f"Unknown provider: {provider}")
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            _request_url(),
+            _request_url("accounts"),
             json={"provider": provider, "scopes": scopes},
-            headers={
-                **AUTH_HEADERS,
-                "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
-                "X-OpenHost-Service-Version": ">=0.1.0",
-                "X-OpenHost-Service-Endpoint": "accounts",
-            },
+            headers=AUTH_HEADERS,
         )
         try:
             _check_error_response(resp)
@@ -156,19 +152,14 @@ async def get_oauth_token(provider: str, scopes: list[str], account: str = "defa
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                _request_url(),
+                _request_url("token"),
                 json={
                     "provider": provider,
                     "scopes": scopes,
                     "return_to": return_to,
                     "account": account,
                 },
-                headers={
-                    **AUTH_HEADERS,
-                    "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
-                    "X-OpenHost-Service-Version": ">=0.1.0",
-                    "X-OpenHost-Service-Endpoint": "token",
-                },
+                headers=AUTH_HEADERS,
             )
     except httpx.HTTPError as e:
         raise OAuthError(f"Token request failed: {e}") from e

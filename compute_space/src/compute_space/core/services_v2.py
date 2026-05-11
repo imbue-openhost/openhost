@@ -6,8 +6,32 @@ from packaging.version import InvalidVersion
 from packaging.version import Version
 
 from compute_space.core.manifest import AppManifest
+from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.db.connection import make_atomic_with_savepoint
+
+
+class ShortnameNotDeclared(Exception):
+    """Consumer's manifest does not declare the requested shortname."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def lookup_shortname(consumer_app: str, shortname: str, db: sqlite3.Connection) -> tuple[str, str]:
+    """Resolve (service_url, version_spec) by shortname from the consumer's stored manifest.
+
+    Manifest is read from apps.manifest_raw and parsed on each call (typically a few KB of TOML).
+    """
+    row = db.execute("SELECT manifest_raw FROM apps WHERE name = ?", (consumer_app,)).fetchone()
+    if not row or not row["manifest_raw"]:
+        raise ShortnameNotDeclared(f"No manifest stored for app '{consumer_app}'")
+    manifest = parse_manifest_from_string(row["manifest_raw"])
+    for perm in manifest.consumes_services_v2:
+        if perm.shortname == shortname:
+            return perm.service, perm.version
+    raise ShortnameNotDeclared(f"Shortname '{shortname}' not declared in '{consumer_app}' manifest")
 
 
 def register_v2_service_providers(

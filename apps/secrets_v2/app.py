@@ -193,7 +193,7 @@ async def service_v2_get():
                 {
                     "error": "permission_required",
                     "required_grant": {
-                        "grant_payload": {"key": missing_perms[0]},
+                        "grant": {"key": missing_perms[0]},
                     },
                 }
             ), 403

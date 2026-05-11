@@ -76,7 +76,7 @@ def permission_denied_response(
     return PermissionDeniedResponse(
         error="permission_required",
         required_grant=RequiredGrant(
-            grant_payload=GrantPayload(provider=provider, scopes=missing_scopes),
+            grant=GrantPayload(provider=provider, scopes=missing_scopes),
             scope="app",
             grant_url=f"https://{APP_NAME}.{ZONE_DOMAIN}/grant?{params}",
         ),
@@ -87,7 +87,7 @@ async def grant_app_scoped_permission(consumer_app: str, service_url: str, grant
     """Ask the router to create an app-scoped permission grant for the consumer after a successful OAuth flow."""
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            f"{ROUTER_URL}/api/permissions_v2/grant-app-scoped",
+            f"{ROUTER_URL}/api/permissions/v2/grant_app_scoped",
             json={
                 "consumer_app": consumer_app,
                 "service_url": service_url,

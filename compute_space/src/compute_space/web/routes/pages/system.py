@@ -44,7 +44,7 @@ async def terminal_ws() -> None:
         await ws_catch_all("terminal/ws")
         return
 
-    claims: dict[str, str] | None = auth.get_current_user_from_request(websocket)  # type: ignore[arg-type]
+    claims: dict[str, str] | None = auth.get_current_user_from_request(websocket)
     if claims is None:
         return
     await handle_terminal_ws(websocket)
