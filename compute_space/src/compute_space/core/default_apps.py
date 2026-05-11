@@ -35,6 +35,15 @@ from compute_space.core.manifest import parse_manifest
 
 MAX_RETRY_ATTEMPTS = 3
 
+# Hard upper bound on a single remote clone attempt before
+# ``_run_clone_in_thread`` gives up and returns a failure.  ``clone_and_read_manifest``
+# already imposes a 120s timeout on the ``git clone`` subprocess; this is a
+# defence-in-depth ceiling on the whole worker (DNS, manifest parse,
+# token-strip subcommand, etc.) so a stuck clone cannot freeze the ``/setup``
+# request indefinitely.  Failures here are retried by ``deploy_default_apps``
+# up to ``MAX_RETRY_ATTEMPTS``.
+REMOTE_CLONE_TIMEOUT_SECONDS = 180
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class DefaultAppOutcome:
@@ -95,17 +104,33 @@ def _install_vendored(dir_name: str, config: Config, db: sqlite3.Connection) -> 
     return _finalize_install(manifest, clone_dir, tmp_parent, config, db, repo_url=f"file://{app_dir}")
 
 
-def _run_clone_in_thread(repo_url: str) -> tuple[AppManifest | None, str | None, str | None]:
+def _run_clone_in_thread(
+    repo_url: str, timeout_seconds: float | None = None
+) -> tuple[AppManifest | None, str | None, str | None]:
     """Run ``clone_and_read_manifest`` from a sync context.
 
     Cannot use ``asyncio.run`` directly because this module is called
     from an already-running event loop (the ``/setup`` Quart handler).
     A fresh thread with its own event loop sidesteps that.
+
+    Bounded by ``timeout_seconds`` (defaults to
+    ``REMOTE_CLONE_TIMEOUT_SECONDS``, resolved at call time so tests can
+    monkeypatch the module constant) so a hung clone (DNS stall,
+    unresponsive git remote past its own subprocess timeout, etc.) cannot
+    block the caller indefinitely.  On timeout the worker thread is left
+    running as a daemon — it will exit when the underlying ``git clone``
+    subprocess eventually returns — and the caller sees a ``RuntimeError``.
     """
+    if timeout_seconds is None:
+        timeout_seconds = REMOTE_CLONE_TIMEOUT_SECONDS
     result: dict[str, Any] = {}
 
     def _worker() -> None:
-        loop = asyncio.new_event_loop()
+        try:
+            loop = asyncio.new_event_loop()
+        except Exception as exc:  # noqa: BLE001 — surfaced via result["error"]
+            result["error"] = exc
+            return
         try:
             result["value"] = loop.run_until_complete(clone_and_read_manifest(repo_url))
         except Exception as exc:  # noqa: BLE001 — surfaced via result["error"]
@@ -115,7 +140,9 @@ def _run_clone_in_thread(repo_url: str) -> tuple[AppManifest | None, str | None,
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
-    t.join()
+    t.join(timeout=timeout_seconds)
+    if t.is_alive():
+        raise RuntimeError(f"clone exceeded {timeout_seconds}s timeout")
     if "error" in result:
         raise result["error"]
     return result["value"]  # type: ignore[no-any-return]

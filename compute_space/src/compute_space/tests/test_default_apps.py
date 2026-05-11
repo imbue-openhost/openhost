@@ -311,3 +311,29 @@ def test_mixed_local_and_remote_entries(cfg_with_apps, monkeypatch):
         "secrets_v2": "ok",
         "https://github.com/example/from-remote": "ok",
     }
+
+
+def test_remote_clone_timeout_returns_failed(cfg_with_apps, monkeypatch):
+    """A hung clone must not block /setup indefinitely; the worker thread
+    times out and the entry is recorded as failed (and retried on next boot)."""
+    _patch_insert_and_deploy(monkeypatch)
+
+    async def hang_forever(repo_url, github_token=None):  # noqa: ANN001
+        await asyncio.sleep(60)  # Far longer than the patched timeout.
+        return None, None, None  # never reached
+
+    monkeypatch.setattr(da, "clone_and_read_manifest", hang_forever)
+    # Shrink the timeout so the test doesn't take 3 minutes.
+    monkeypatch.setattr(da, "REMOTE_CLONE_TIMEOUT_SECONDS", 0.2)
+
+    cfg = cfg_with_apps.evolve(default_apps=["https://github.com/foo/bar"])
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        result = da.deploy_default_apps(cfg, db)
+    finally:
+        db.close()
+
+    assert len(result) == 1
+    assert result[0].status == "failed"
+    assert "timeout" in (result[0].error or "").lower()
