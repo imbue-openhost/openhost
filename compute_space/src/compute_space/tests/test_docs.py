@@ -45,12 +45,8 @@ def _make_app(repo_root_override: Path):  # noqa: ANN202
 def _populate_fake_book(book_dir: Path) -> None:
     """Drop a minimal valid mdBook output tree at ``book_dir``."""
     book_dir.mkdir(parents=True, exist_ok=True)
-    (book_dir / "index.html").write_text(
-        "<!doctype html><html><body><h1>OpenHost Manual</h1></body></html>"
-    )
-    (book_dir / "manifest_spec.html").write_text(
-        "<!doctype html><html><body><h1>Manifest</h1></body></html>"
-    )
+    (book_dir / "index.html").write_text("<!doctype html><html><body><h1>OpenHost Manual</h1></body></html>")
+    (book_dir / "manifest_spec.html").write_text("<!doctype html><html><body><h1>Manifest</h1></body></html>")
     css_dir = book_dir / "css"
     css_dir.mkdir(exist_ok=True)
     (css_dir / "general.css").write_text("body{font-family:sans-serif}")
@@ -185,8 +181,7 @@ async def test_empty_book_dir_returns_503_on_subpath(tmp_path: Path):
 
     resp = await client.get("/docs/manifest_spec.html")
     assert resp.status_code == 503, (
-        "subpath into an empty book dir should also return the 503 "
-        "build hint, matching what /docs/ returns"
+        "subpath into an empty book dir should also return the 503 build hint, matching what /docs/ returns"
     )
     assert "mdbook build" in (await resp.get_data()).decode()
 
@@ -230,12 +225,9 @@ async def test_path_traversal_blocked(tmp_path: Path):
     sentinels = {
         # path → unique sentinel string we'd see if the file
         # leaked into a response body.
-        tmp_path / "repo" / "docs" / "secret-docs.txt":
-            "ZONE-SECRET-DOCS-LEVEL",
-        tmp_path / "repo" / "secret-repo.txt":
-            "ZONE-SECRET-REPO-LEVEL",
-        tmp_path / "secret-tmp.txt":
-            "ZONE-SECRET-TMP-LEVEL",
+        tmp_path / "repo" / "docs" / "secret-docs.txt": "ZONE-SECRET-DOCS-LEVEL",
+        tmp_path / "repo" / "secret-repo.txt": "ZONE-SECRET-REPO-LEVEL",
+        tmp_path / "secret-tmp.txt": "ZONE-SECRET-TMP-LEVEL",
     }
     for path, content in sentinels.items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,9 +253,7 @@ async def test_path_traversal_blocked(tmp_path: Path):
         resp = await client.get(evil_path, follow_redirects=True)
         body = (await resp.get_data()).decode()
         for sentinel in sentinels.values():
-            assert sentinel not in body, (
-                f"PATH TRAVERSAL: {evil_path} leaked {sentinel}"
-            )
+            assert sentinel not in body, f"PATH TRAVERSAL: {evil_path} leaked {sentinel}"
         # Final response must not be a 200 — a 200 would mean we
         # successfully read SOMETHING outside the book dir, which
         # we never want regardless of whether the body matched
@@ -359,8 +349,7 @@ async def test_docs_accessible_before_owner_setup(tmp_path: Path):
     # check the wrong code path).
     resp = await client.get("/")
     assert resp.status_code in (301, 302, 303, 307, 308), (
-        "expected pre-setup redirect from /; test fixture is "
-        f"misconfigured (got {resp.status_code})"
+        f"expected pre-setup redirect from /; test fixture is misconfigured (got {resp.status_code})"
     )
     assert "/setup" in resp.headers.get("Location", "")
 
@@ -371,10 +360,5 @@ async def test_docs_accessible_before_owner_setup(tmp_path: Path):
         f"(location: {resp.headers.get('Location', '<none>')})"
     )
     # And a chapter sub-path that we DEFINITELY put in our fake book:
-    resp = await client.get(
-        "/docs/manifest_spec.html", follow_redirects=False
-    )
-    assert resp.status_code == 200, (
-        f"/docs/<chapter> should return 200 pre-setup, got "
-        f"{resp.status_code}"
-    )
+    resp = await client.get("/docs/manifest_spec.html", follow_redirects=False)
+    assert resp.status_code == 200, f"/docs/<chapter> should return 200 pre-setup, got {resp.status_code}"
