@@ -16,6 +16,7 @@ import httpx
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
+from compute_space.config import get_config
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
 from compute_space.core.containers import remove_image
@@ -38,6 +39,7 @@ from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
 from compute_space.core.services_v2 import register_v2_service_providers
+from compute_space.db import get_db
 
 RESERVED_PATHS = {
     "/",
@@ -815,3 +817,40 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
             logger.exception("Could not record removal failure for %s", app_name)
     finally:
         db.close()
+
+
+def parse_app_from_host(host: str) -> str | None:
+    """Extract app name from a Host header value.
+
+    ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
+    zplizzi.host.imbue.com -> None
+    localhost:8080 -> None
+    """
+    config = get_config()
+    if not config.zone_domain:
+        return None
+    zone_domain = config.zone_domain
+    if host == zone_domain:
+        return None
+    if host.endswith("." + zone_domain):
+        app_name = host[: -(len(zone_domain) + 1)]
+        if "." not in app_name:
+            return app_name
+    return None
+
+
+def find_app_by_name(name: str) -> sqlite3.Row | None:
+    row: sqlite3.Row | None = (
+        get_db()
+        .execute(
+            "SELECT name, local_port, status, public_paths FROM apps WHERE name = ?",
+            (name,),
+        )
+        .fetchone()
+    )
+    return row
+
+
+def is_public_path(app_row: sqlite3.Row, request_path: str) -> bool:
+    public_paths = json.loads(app_row["public_paths"] or "[]")
+    return any(request_path == pp or request_path.startswith(pp.rstrip("/") + "/") for pp in public_paths)
