@@ -1,0 +1,86 @@
+name: docs
+
+# Build the user-facing manual (docs/src/*.md) with mdBook on
+# every commit + PR.  The job exists for two reasons:
+#
+#   1. CATCH-BREAKS: if a PR adds a markdown link that's broken,
+#      or a new chapter that isn't referenced from SUMMARY.md,
+#      mdBook will warn or fail.  Catching this in CI keeps the
+#      docs always-buildable.
+#   2. RELEASE-ARTIFACT: the rendered HTML is uploaded as a
+#      build artifact (on main branch only).  The OpenHost
+#      release script can fetch it from the latest successful
+#      run, avoiding the need to bundle mdbook into the
+#      release build image itself.
+#
+# The compute_space ``/docs/`` route serves whatever is in
+# ``docs/book/`` on disk.  In production that's populated by
+# the OpenHost installer (which downloads the CI artifact and
+# unpacks it into the running zone).  Developers running from
+# ``git clone`` can build locally with ``mdbook build docs/``.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Pin mdBook version for reproducible builds.  Bump when
+  # we want a newer mdBook (e.g. for new theme features).
+  # The README at repo root tells contributors how to install
+  # mdBook for local builds.
+  MDBOOK_VERSION: "0.4.40"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install mdBook from the official release tarball.  We
+      # avoid `cargo install` (slow + needs a Rust toolchain)
+      # and `apt install mdbook` (not in stock ubuntu apt).
+      # The release tarball is a static binary, ~5 MB, ready
+      # to run.
+      #
+      # Extract into ~/.local/bin (always writable by the
+      # GitHub runner user, no sudo required) and prepend to
+      # PATH for subsequent steps in this job.  Using a user-
+      # writable dir is more portable across GitHub runner
+      # images than /usr/local/bin, which may or may not be
+      # writable depending on the runner version.
+      - name: Install mdBook
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -sL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+              | tar -xz -C "$HOME/.local/bin/"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/mdbook" --version
+
+      - name: Build docs
+        run: |
+          mdbook build docs/
+          # Sanity-check: the build directory should now contain
+          # rendered HTML.  If mdBook ran without errors but
+          # produced no output (config typo, etc.) this catches
+          # it.
+          test -f docs/book/index.html
+          test -f docs/book/searchindex.json
+          # Print a brief inventory so the CI log is useful when
+          # diagnosing future doc-build regressions.
+          echo "Built $(find docs/book -type f | wc -l) files"
+          ls docs/book/ | head -20
+
+      - name: Upload rendered docs as artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-rendered
+          path: docs/book/
+          # 30-day retention is plenty for "the most recent
+          # main build" use case.  Older artifacts are
+          # auto-cleaned and don't need to live forever.
+          retention-days: 30

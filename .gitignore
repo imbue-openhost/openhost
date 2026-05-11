@@ -41,3 +41,7 @@ specs/
 # Beads (local only — not shared via git)
 .beads/
 
+
+# mdBook build output (rebuilt by CI / on container start;
+# never committed)
+docs/book/

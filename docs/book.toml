@@ -1,0 +1,67 @@
+# mdBook config for the OpenHost manual.
+#
+# Renders the Markdown files in this directory into a static
+# HTML site under docs/book/.  The rendered output is then
+# served by compute_space at https://<zone>/docs/ so every
+# OpenHost zone ships with the docs for the version it is
+# running.
+#
+# Build: from the repo root, run
+#   mdbook build docs/
+# (mdBook will pick up book.toml automatically.)  See the
+# .github/workflows/docs.yml CI workflow for the automated
+# build that runs on every PR + commit to main.
+
+[book]
+title = "The OpenHost Manual"
+description = "Documentation for OpenHost — selfhosted application platform"
+authors = ["The OpenHost Authors"]
+language = "en"
+# Markdown source lives in docs/src/, the standard mdBook
+# layout.  src/SUMMARY.md is the table of contents.  Other
+# project docs (changelogs, ansible READMEs, etc.) live
+# elsewhere in the repo and are not rendered into the
+# book.
+src = "src"
+
+[build]
+# Render to docs/book/ inside the repo.  This directory is
+# in .gitignore at the repo root — the rendered HTML is never
+# committed.  CI (.github/workflows/docs.yml) builds the
+# book on every commit and uploads the result as an artifact;
+# compute_space serves whatever the running OpenHost has on
+# disk (built by the installer from that artifact, or by a
+# developer running ``mdbook build docs/`` locally).
+build-dir = "book"
+
+[output.html]
+# Default mdBook theme — clean, light/dark toggle, working
+# search box, copy-button on code blocks.  No custom CSS for
+# now; can be styled to match the rest of the OpenHost
+# dashboard later if we want a tighter visual brand.
+default-theme = "rust"
+preferred-dark-theme = "navy"
+
+# When the user is on https://<zone>/docs/, internal links
+# resolve relative to that path.  mdBook handles this fine
+# by default; site-url is only needed for absolute-URL
+# generation (e.g. sitemaps, og:url), which we don't use.
+
+# Show "Edit this page on GitHub" links pointing at the
+# canonical source.  Helps both contributors and people who
+# want to grok the raw markdown alongside the rendered view.
+edit-url-template = "https://github.com/imbue-openhost/openhost/edit/main/docs/src/{path}"
+git-repository-url = "https://github.com/imbue-openhost/openhost"
+git-repository-icon = "fa-github"
+
+[output.html.search]
+# mdBook's built-in client-side search.  The index is a small
+# JSON file shipped alongside the HTML.  Works fully offline
+# (entire docs payload is static).
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1

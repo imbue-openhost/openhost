@@ -130,13 +130,13 @@ See the [manifest spec](manifest_spec.md) for the full reference.
 
 ### Services
 
-See [docs/cross_app_services.md](docs/cross_app_services.md) for how services work.
+See [Cross-App Services](./cross_app_services.md) for how services work.
 
-See [oauth.md](docs/oauth.md) for an example - getting oauth tokens to external services (eg gmail or github).
+See [OAuth in Apps](./oauth.md) for an example - getting oauth tokens to external services (eg gmail or github).
 
 ### Identity
 
-For apps that should be available to multiple users and require more than trivial publicly routes or token-protected public routes, see [docs/user_identity.md](docs/user_identity.md) for how to implement this with the OpenHost user identity provider.
+For apps that should be available to multiple users and require more than trivial publicly routes or token-protected public routes, see [User Identity](./user_identity.md) for how to implement this with the OpenHost user identity provider.
 
 
 ## Development / Debugging workflow
