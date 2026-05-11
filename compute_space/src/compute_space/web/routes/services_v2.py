@@ -52,7 +52,7 @@ async def service_call_cors(shortname: str, rest: str) -> Response:
 async def _add_grant_url_if_global_grant_needed(
     response: Response,
     service_url: str,
-    consumer_app: str,
+    consumer_app_id: str,
 ) -> Response:
     """Add grant_url to service provider 403 responses that indicate a missing globally-scoped permission grant.
 
@@ -86,7 +86,7 @@ async def _add_grant_url_if_global_grant_needed(
     config = get_config()
     approve_path = url_for(
         "pages_permissions_v2.approve_permissions_v2",
-        app=consumer_app,
+        app=consumer_app_id,
         service=service_url,
         grant=json.dumps(grant, sort_keys=True),
     )
@@ -157,12 +157,23 @@ def _resolve_consumer_from_ws() -> str | None:
     return _app_from_origin(websocket)
 
 
+def _consumer_name_for_header(consumer_app_id: str) -> str:
+    """Look up the consumer app's current name for the X-OpenHost-Consumer header.
+
+    The header carries the human-readable name (not app_id) so provider apps can
+    log who's calling them in a friendly form. Provider apps that need stable
+    identity should switch to app_id once we expose it as a separate header.
+    """
+    row = get_db().execute("SELECT name FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
+    return row["name"] if row else consumer_app_id
+
+
 @services_v2_bp.route(
     "/api/services/v2/call/<shortname>/<path:rest>",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
 )
 @app_auth_required
-async def service_call(shortname: str, rest: str, app_name: str) -> Response:
+async def service_call(shortname: str, rest: str, app_id: str) -> Response:
     """Proxy a request to the provider declared under <shortname> in the consumer's manifest.
 
     Resolution flow:
@@ -171,11 +182,11 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
       3. Resolve the provider for that service URL + version specifier.
       4. Proxy to <provider_endpoint>/<rest>, injecting X-OpenHost-Permissions and X-OpenHost-Consumer.
     """
-    consumer_app = app_name
+    consumer_app_id = app_id
     db = get_db()
 
     try:
-        service_url, version_spec = lookup_shortname(consumer_app, shortname, db)
+        service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
     except ShortnameNotDeclared as e:
         return _json_error("shortname_not_declared", e.message, 404)
 
@@ -184,7 +195,7 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 
-    grants = get_granted_permissions_v2(consumer_app, service_url)
+    grants = get_granted_permissions_v2(consumer_app_id, service_url)
     grants_json = json.dumps([attr.asdict(g) for g in grants])
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
@@ -197,26 +208,26 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
         extra_headers={
             "Authorization": None,
             "X-OpenHost-Permissions": grants_json,
-            "X-OpenHost-Consumer": consumer_app,
+            "X-OpenHost-Consumer": _consumer_name_for_header(consumer_app_id),
         },
     )
 
     if response.status_code == 403:
-        return await _add_grant_url_if_global_grant_needed(response, service_url, consumer_app)
+        return await _add_grant_url_if_global_grant_needed(response, service_url, consumer_app_id)
     return response
 
 
 @services_v2_bp.websocket("/api/services/v2/call/<shortname>/<path:rest>")
 async def service_call_ws(shortname: str, rest: str) -> None:
     """WebSocket variant of service_call. Same auth + resolution; lifts the request/response proxy to ws_proxy."""
-    consumer_app = _resolve_consumer_from_ws()
-    if not consumer_app:
+    consumer_app_id = _resolve_consumer_from_ws()
+    if not consumer_app_id:
         await websocket.close(code=4401, reason="Missing or invalid authorization")
         return
 
     db = get_db()
     try:
-        service_url, version_spec = lookup_shortname(consumer_app, shortname, db)
+        service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
     except ShortnameNotDeclared as e:
         await websocket.close(code=4404, reason=e.message)
         return
@@ -227,7 +238,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         await websocket.close(code=4503, reason=e.message)
         return
 
-    grants = get_granted_permissions_v2(consumer_app, service_url)
+    grants = get_granted_permissions_v2(consumer_app_id, service_url)
     grants_json = json.dumps([attr.asdict(g) for g in grants])
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
@@ -237,7 +248,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         client_ws=websocket,
         identity_headers={
             "X-OpenHost-Permissions": grants_json,
-            "X-OpenHost-Consumer": consumer_app,
+            "X-OpenHost-Consumer": _consumer_name_for_header(consumer_app_id),
         },
         override_path=target_path,
     )

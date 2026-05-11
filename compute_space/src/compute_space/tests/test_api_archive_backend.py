@@ -13,6 +13,7 @@ from quart import Quart
 import compute_space.web.routes.api.apps as apps_routes
 import compute_space.web.routes.api.archive_backend as routes
 from compute_space.core import archive_backend
+from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import AppManifest
 from compute_space.db.connection import init_db
 
@@ -445,15 +446,17 @@ async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
     unhealthy; without this guard, provision_data would write to the
     underlying empty mount-point and lose those writes once the mount
     came back."""
+    archived_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
     try:
         db.execute(
             "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
         )
         db.execute(
-            "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
-            "VALUES ('archived', '1.0', '/r/archived', 19601, 'running', "
-            "'[data]\napp_archive = true\n')"
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES (?, 'archived', '1.0', '/r/archived', 19601, 'running', "
+            "'[data]\napp_archive = true\n')",
+            (archived_id,),
         )
         db.commit()
     finally:
@@ -463,12 +466,12 @@ async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
     test_app.config["DB_PATH"] = cfg.db_path
     test_app.openhost_config = cfg  # type: ignore[attr-defined]
     test_app.add_url_rule(
-        "/reload_app/<app_name>",
+        "/reload_app/<app_id>",
         view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
         methods=["POST"],
     )
     client = test_app.test_client()
-    resp = await client.post("/reload_app/archived")
+    resp = await client.post(f"/reload_app/{archived_id}")
     assert resp.status_code == 503
 
 
@@ -476,15 +479,17 @@ async def test_reload_app_refuses_when_archive_unhealthy(app, cfg):
 async def test_reload_app_allows_access_all_data_when_archive_unhealthy(app, cfg):
     """access_all_data apps can still reload while the archive is unhealthy
     — they just see the archive when it's available."""
+    seer_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
     try:
         db.execute(
             "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_access_key_id='a', s3_secret_access_key='s'"
         )
         db.execute(
-            "INSERT INTO apps (name, version, repo_path, local_port, status, manifest_raw) "
-            "VALUES ('seer', '1.0', '/r/seer', 19603, 'running', "
-            "'[data]\naccess_all_data = true\n')"
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES (?, 'seer', '1.0', '/r/seer', 19603, 'running', "
+            "'[data]\naccess_all_data = true\n')",
+            (seer_id,),
         )
         db.commit()
     finally:
@@ -494,7 +499,7 @@ async def test_reload_app_allows_access_all_data_when_archive_unhealthy(app, cfg
     test_app.config["DB_PATH"] = cfg.db_path
     test_app.openhost_config = cfg  # type: ignore[attr-defined]
     test_app.add_url_rule(
-        "/reload_app/<app_name>",
+        "/reload_app/<app_id>",
         view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
         methods=["POST"],
     )
@@ -503,6 +508,6 @@ async def test_reload_app_allows_access_all_data_when_archive_unhealthy(app, cfg
         mock.patch("compute_space.web.routes.api.apps.stop_app_process"),
         mock.patch("compute_space.web.routes.api.apps.reload_app_background"),
     ):
-        resp = await client.post("/reload_app/seer")
+        resp = await client.post(f"/reload_app/{seer_id}")
         body = await resp.get_data(as_text=True)
         assert resp.status_code != 503 or "archive" not in body.lower()

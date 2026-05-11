@@ -231,8 +231,8 @@ def enforce_storage_guard(config: Config) -> None:
             logger.warning("Stopping app %s due to low storage", row["name"])
             _stop_app_process_safe(row)
             db.execute(
-                "UPDATE apps SET status = 'error', error_message = ?, container_id = NULL WHERE name = ?",
-                (detail, row["name"]),
+                "UPDATE apps SET status = 'error', error_message = ?, container_id = NULL WHERE app_id = ?",
+                (detail, row["app_id"]),
             )
             db.commit()
     finally:

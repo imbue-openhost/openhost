@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from compute_space.core.app_id import new_app_id
 from compute_space.core.permissions_v2 import get_all_permissions_v2
 from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.permissions_v2 import grant_permission_v2
@@ -19,24 +20,25 @@ SVC_SECRETS = "github.com/org/repo/services/secrets"
 SVC_OAUTH = "github.com/org/repo/services/oauth"
 
 
-def _add_provider(db, service_url, app_name, version, endpoint, port=9000, status="running", default=True):
-    # Insert a minimal apps row. Most NOT NULL columns have defaults; the few
-    # that don't (version, repo_path, local_port) we supply explicitly.
+def _add_provider(db, service_url, app_name, version, endpoint, port=9000, status="running", default=True) -> str:
+    """Insert a provider app row + service_providers_v2 entry. Returns the minted app_id."""
+    app_id = new_app_id()
     db.execute(
-        """INSERT OR REPLACE INTO apps (name, version, repo_path, local_port, status)
-           VALUES (?, ?, ?, ?, ?)""",
-        (app_name, "0.0.0", f"/tmp/{app_name}", port, status),
+        """INSERT OR REPLACE INTO apps (app_id, name, version, repo_path, local_port, status)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (app_id, app_name, "0.0.0", f"/tmp/{app_name}", port, status),
     )
     db.execute(
-        "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) VALUES (?, ?, ?, ?)",
-        (service_url, app_name, version, endpoint),
+        "INSERT INTO service_providers_v2 (service_url, app_id, service_version, endpoint) VALUES (?, ?, ?, ?)",
+        (service_url, app_id, version, endpoint),
     )
     if default:
         db.execute(
-            "INSERT OR REPLACE INTO service_defaults (service_url, app_name) VALUES (?, ?)",
-            (service_url, app_name),
+            "INSERT OR REPLACE INTO service_defaults (service_url, app_id) VALUES (?, ?)",
+            (service_url, app_id),
         )
     db.commit()
+    return app_id
 
 
 # ---------------------------------------------------------------------------
@@ -46,15 +48,15 @@ def _add_provider(db, service_url, app_name, version, endpoint, port=9000, statu
 
 class TestVersionResolution:
     def test_compatible_version_resolves(self, db):
-        _add_provider(db, SVC_SECRETS, "secrets", "0.2.0", "/_svc/")
-        app, port, ver, ep = resolve_provider(SVC_SECRETS, ">=0.1.0", db)
-        assert app == "secrets"
+        provider_id = _add_provider(db, SVC_SECRETS, "secrets", "0.2.0", "/_svc/")
+        app_id, port, ver, ep = resolve_provider(SVC_SECRETS, ">=0.1.0", db)
+        assert app_id == provider_id
         assert ver == "0.2.0"
         assert ep == "/_svc/"
 
     def test_exact_version(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "1.0.0", "/_svc/")
-        app, _, ver, _ = resolve_provider(SVC_SECRETS, "==1.0.0", db)
+        _, _, ver, _ = resolve_provider(SVC_SECRETS, "==1.0.0", db)
         assert ver == "1.0.0"
 
     def test_no_provider_raises(self, db):
@@ -73,28 +75,28 @@ class TestVersionResolution:
 
     def test_explicit_provider_app(self, db):
         _add_provider(db, SVC_SECRETS, "secrets-a", "0.1.0", "/_a/", port=9001)
-        _add_provider(db, SVC_SECRETS, "secrets-b", "0.2.0", "/_b/", port=9002, default=False)
+        b_id = _add_provider(db, SVC_SECRETS, "secrets-b", "0.2.0", "/_b/", port=9002, default=False)
 
-        app, _, ver, ep = resolve_provider(SVC_SECRETS, ">=0.1.0", db, provider_app="secrets-b")
-        assert app == "secrets-b"
+        app_id, _, ver, ep = resolve_provider(SVC_SECRETS, ">=0.1.0", db, provider_app_id=b_id)
+        assert app_id == b_id
         assert ep == "/_b/"
 
     def test_explicit_provider_app_not_found(self, db):
         _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
         with pytest.raises(ServiceNotAvailable, match="not found"):
-            resolve_provider(SVC_SECRETS, ">=0.1.0", db, provider_app="nonexistent")
+            resolve_provider(SVC_SECRETS, ">=0.1.0", db, provider_app_id=new_app_id())
 
     def test_explicit_provider_app_version_mismatch(self, db):
-        _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
+        provider_id = _add_provider(db, SVC_SECRETS, "secrets", "0.1.0", "/_svc/")
         with pytest.raises(ServiceNotAvailable, match="does not match"):
-            resolve_provider(SVC_SECRETS, ">=99.0.0", db, provider_app="secrets")
+            resolve_provider(SVC_SECRETS, ">=99.0.0", db, provider_app_id=provider_id)
 
     def test_uses_default_provider(self, db):
-        _add_provider(db, SVC_SECRETS, "secrets-a", "0.1.0", "/_a/", port=9001)
+        a_id = _add_provider(db, SVC_SECRETS, "secrets-a", "0.1.0", "/_a/", port=9001)
         _add_provider(db, SVC_SECRETS, "secrets-b", "0.2.0", "/_b/", port=9002, default=False)
 
-        app, _, _, _ = resolve_provider(SVC_SECRETS, ">=0.1.0", db)
-        assert app == "secrets-a"
+        app_id, _, _, _ = resolve_provider(SVC_SECRETS, ">=0.1.0", db)
+        assert app_id == a_id
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +140,7 @@ class TestPermissionsV2:
             SVC_OAUTH,
             {"provider": "google", "scope": "email"},
             scope="app",
-            provider_app="secrets",
+            provider_app_id="secrets",
         )
         # Wrong scope
         assert (
@@ -149,14 +151,14 @@ class TestPermissionsV2:
             )
             is False
         )
-        # Wrong provider_app
+        # Wrong provider_app_id
         assert (
             revoke_permission_v2(
                 "test-app",
                 SVC_OAUTH,
                 {"provider": "google", "scope": "email"},
                 scope="app",
-                provider_app="other",
+                provider_app_id="other",
             )
             is False
         )
@@ -167,7 +169,7 @@ class TestPermissionsV2:
                 SVC_OAUTH,
                 {"provider": "google", "scope": "email"},
                 scope="app",
-                provider_app="secrets",
+                provider_app_id="secrets",
             )
             is True
         )
@@ -194,7 +196,7 @@ class TestPermissionsV2:
         all_perms = get_all_permissions_v2()
         assert len(all_perms) == 3
 
-        app_a_perms = get_all_permissions_v2(consumer_app="app-a")
+        app_a_perms = get_all_permissions_v2(consumer_app_id="app-a")
         assert len(app_a_perms) == 2
         assert {p.service_url for p in app_a_perms} == {SVC_SECRETS, SVC_OAUTH}
 
@@ -242,60 +244,64 @@ port = 8080
 """
 
 
-def _install_consumer(db, name: str, perms_toml: str = "") -> None:
-    """Insert a consumer app row whose manifest_raw contains the given [[services.v2.consumes]] entries."""
+def _install_consumer(db, name: str, perms_toml: str = "") -> str:
+    """Insert a consumer app row whose manifest_raw contains the given [[services.v2.consumes]] entries.
+    Returns the minted app_id."""
     raw = _MINIMAL_MANIFEST.format(name=name) + perms_toml
+    app_id = new_app_id()
     db.execute(
-        """INSERT OR REPLACE INTO apps (name, version, repo_path, local_port, status, manifest_raw)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (name, "0.1.0", f"/tmp/{name}", 9100, "running", raw),
+        """INSERT OR REPLACE INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (app_id, name, "0.1.0", f"/tmp/{name}", 9100, "running", raw),
     )
     db.commit()
+    return app_id
 
 
 class TestShortnameLookup:
     def test_resolves_declared_shortname(self, db):
-        _install_consumer(
+        consumer_id = _install_consumer(
             db,
             "consumer",
             f'\n[[services.v2.consumes]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
         )
-        service_url, version = lookup_shortname("consumer", "oauth", db)
+        service_url, version = lookup_shortname(consumer_id, "oauth", db)
         assert service_url == SVC_OAUTH
         assert version == ">=0.1.0"
 
     def test_unknown_shortname_raises(self, db):
-        _install_consumer(
+        consumer_id = _install_consumer(
             db,
             "consumer",
             f'\n[[services.v2.consumes]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = ">=0.1.0"\ngrants = []\n',
         )
         with pytest.raises(ShortnameNotDeclared, match="not declared"):
-            lookup_shortname("consumer", "missing", db)
+            lookup_shortname(consumer_id, "missing", db)
 
     def test_no_manifest_raises(self, db):
         # Consumer row without manifest_raw at all.
+        bare_id = new_app_id()
         db.execute(
-            """INSERT INTO apps (name, version, repo_path, local_port, status)
-               VALUES (?, ?, ?, ?, ?)""",
-            ("bare", "0.1.0", "/tmp/bare", 9101, "running"),
+            """INSERT INTO apps (app_id, name, version, repo_path, local_port, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (bare_id, "bare", "0.1.0", "/tmp/bare", 9101, "running"),
         )
         db.commit()
         with pytest.raises(ShortnameNotDeclared, match="No manifest"):
-            lookup_shortname("bare", "anything", db)
+            lookup_shortname(bare_id, "anything", db)
 
     def test_unknown_consumer_raises(self, db):
         with pytest.raises(ShortnameNotDeclared, match="No manifest"):
-            lookup_shortname("does-not-exist", "oauth", db)
+            lookup_shortname(new_app_id(), "oauth", db)
 
     def test_picks_correct_entry_among_many(self, db):
         perms = (
             f'\n[[services.v2.consumes]]\nservice = "{SVC_SECRETS}"\nshortname = "secrets"\nversion = ">=0.1.0"\ngrants = []\n'
             f'\n[[services.v2.consumes]]\nservice = "{SVC_OAUTH}"\nshortname = "oauth"\nversion = "==1.0.0"\ngrants = []\n'
         )
-        _install_consumer(db, "multi", perms)
-        assert lookup_shortname("multi", "secrets", db) == (SVC_SECRETS, ">=0.1.0")
-        assert lookup_shortname("multi", "oauth", db) == (SVC_OAUTH, "==1.0.0")
+        multi_id = _install_consumer(db, "multi", perms)
+        assert lookup_shortname(multi_id, "secrets", db) == (SVC_SECRETS, ">=0.1.0")
+        assert lookup_shortname(multi_id, "oauth", db) == (SVC_OAUTH, "==1.0.0")
 
 
 # ---------------------------------------------------------------------------

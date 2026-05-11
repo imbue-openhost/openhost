@@ -15,9 +15,9 @@ async def list_services_v2() -> Response:
     """List all registered V2 service providers."""
     db = get_db()
     rows = db.execute(
-        """SELECT sp.service_url, sp.app_name, sp.service_version, sp.endpoint, a.status
+        """SELECT sp.service_url, sp.app_id, a.name AS app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
-           JOIN apps a ON a.name = sp.app_name"""
+           JOIN apps a ON a.app_id = sp.app_id"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -32,28 +32,29 @@ async def discover_providers() -> Response | tuple[Response, int]:
 
     db = get_db()
     rows = db.execute(
-        """SELECT sp.app_name, sp.service_version, sp.endpoint, a.status
+        """SELECT sp.app_id, a.name AS app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
-           JOIN apps a ON a.name = sp.app_name
+           JOIN apps a ON a.app_id = sp.app_id
            WHERE sp.service_url = ?""",
         (service_url,),
     ).fetchall()
 
     default = db.execute(
-        "SELECT app_name FROM service_defaults WHERE service_url = ?",
+        "SELECT app_id FROM service_defaults WHERE service_url = ?",
         (service_url,),
     ).fetchone()
-    default_app = default["app_name"] if default else None
+    default_app_id = default["app_id"] if default else None
 
     return jsonify(
         {
             "providers": [
                 {
+                    "app_id": r["app_id"],
                     "app_name": r["app_name"],
                     "service_version": r["service_version"],
                     "endpoint": r["endpoint"],
                     "status": r["status"],
-                    "is_default": r["app_name"] == default_app,
+                    "is_default": r["app_id"] == default_app_id,
                 }
                 for r in rows
             ]
@@ -66,7 +67,11 @@ async def discover_providers() -> Response | tuple[Response, int]:
 async def list_defaults() -> Response:
     """List all default provider settings."""
     db = get_db()
-    rows = db.execute("SELECT service_url, app_name FROM service_defaults").fetchall()
+    rows = db.execute(
+        """SELECT sd.service_url, sd.app_id, a.name AS app_name
+           FROM service_defaults sd
+           JOIN apps a ON a.app_id = sd.app_id"""
+    ).fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -75,21 +80,21 @@ async def list_defaults() -> Response:
 async def set_default() -> Response | tuple[Response, int]:
     """Set the default provider for a service."""
     data = await request.get_json()
-    if not data or not data.get("service_url") or not data.get("app_name"):
-        return jsonify({"error": "service_url and app_name are required"}), 400
+    if not data or not data.get("service_url") or not data.get("app_id"):
+        return jsonify({"error": "service_url and app_id are required"}), 400
 
     db = get_db()
     # Verify the provider actually exists
     row = db.execute(
-        "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_name = ?",
-        (data["service_url"], data["app_name"]),
+        "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_id = ?",
+        (data["service_url"], data["app_id"]),
     ).fetchone()
     if not row:
         return jsonify({"error": "No such provider"}), 404
 
     db.execute(
-        "INSERT OR REPLACE INTO service_defaults (service_url, app_name) VALUES (?, ?)",
-        (data["service_url"], data["app_name"]),
+        "INSERT OR REPLACE INTO service_defaults (service_url, app_id) VALUES (?, ?)",
+        (data["service_url"], data["app_id"]),
     )
     db.commit()
     return jsonify({"ok": True})

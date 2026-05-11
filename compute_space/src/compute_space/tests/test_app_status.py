@@ -16,6 +16,7 @@ from quart import Quart
 
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.config import get_config
+from compute_space.core.app_id import new_app_id
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
 
@@ -30,12 +31,13 @@ async def _app_status_response(tmp_path: Path, *, error_message: str, port: int)
     init_db(_FakeApp(cfg.db_path))
 
     # Insert one app row with the error_message of interest.
+    app_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
     try:
         db.execute(
-            """INSERT INTO apps (name, version, repo_path, local_port, status, error_message)
-               VALUES ('notes', '1.0', '/repo/notes', ?, 'error', ?)""",
-            (port + 10, error_message),
+            """INSERT INTO apps (app_id, name, version, repo_path, local_port, status, error_message)
+               VALUES (?, 'notes', '1.0', '/repo/notes', ?, 'error', ?)""",
+            (app_id, port + 10, error_message),
         )
         db.commit()
     finally:
@@ -46,8 +48,8 @@ async def _app_status_response(tmp_path: Path, *, error_message: str, port: int)
     app.openhost_config = cfg  # type: ignore[attr-defined]
     # apps_routes uses a login_required middleware; bypass it here by
     # calling the unwrapped view function directly.
-    async with app.app_context(), app.test_request_context("/api/app_status/notes"):
-        response = apps_routes.app_status.__wrapped__("notes")  # type: ignore[attr-defined]
+    async with app.app_context(), app.test_request_context(f"/api/app_status/{app_id}"):
+        response = apps_routes.app_status.__wrapped__(app_id)  # type: ignore[attr-defined]
         payload = await response.get_json()
         status = response.status_code
     return status, payload

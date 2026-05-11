@@ -14,6 +14,7 @@ from cappa import Dep
 
 from compute_space_cli import config
 from compute_space_cli.helpers import make_api_request
+from compute_space_cli.helpers import resolve_app_id_by_name
 from compute_space_cli.helpers import wait_for_app_removed
 from compute_space_cli.helpers import wait_for_app_running
 
@@ -119,13 +120,14 @@ class AppCmd:
                 file=sys.stderr,
             )
             raise SystemExit(1)
+        app_id = body.get("app_id")
         app_name = body.get("app_name")
         print(f"Deploying {app_name}...")
-        print(f"  {cfg.url}/app_detail/{app_name}")
+        print(f"  {cfg.url}/app_detail/{app_id}")
         if not wait:
             print(f"Status: {body.get('status', 'submitted')}")
             return
-        wait_for_app_running(cfg.url, cfg.token, app_name)
+        wait_for_app_running(cfg.url, cfg.token, app_id, app_name)
 
     @cappa.command(name="status")
     def status(
@@ -134,7 +136,8 @@ class AppCmd:
         cfg: Annotated[config.Instance, Dep(resolve_instance)],
     ) -> None:
         """Get app status."""
-        result = make_api_request(cfg.url, cfg.token, "GET", f"/api/app_status/{app_name}").json()
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
+        result = make_api_request(cfg.url, cfg.token, "GET", f"/api/app_status/{app_id}").json()
         print(f"{app_name}: {result.get('status', 'unknown')}")
         if result.get("error"):
             print(f"  error: {result['error']}")
@@ -148,12 +151,13 @@ class AppCmd:
         interval: Annotated[int, cappa.Arg(long=True, help="Poll interval in seconds")] = 5,
     ) -> None:
         """View app logs."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
         if not follow:
-            print(make_api_request(cfg.url, cfg.token, "GET", f"/app_logs/{app_name}").text)
+            print(make_api_request(cfg.url, cfg.token, "GET", f"/app_logs/{app_id}").text)
             return
         seen = ""
         while True:
-            text = make_api_request(cfg.url, cfg.token, "GET", f"/app_logs/{app_name}").text
+            text = make_api_request(cfg.url, cfg.token, "GET", f"/app_logs/{app_id}").text
             if text != seen:
                 print(text[len(seen) :], end="", flush=True)
                 seen = text
@@ -168,12 +172,13 @@ class AppCmd:
         wait: Annotated[bool, cappa.Arg(long=True, help="Wait for reload to finish")] = False,
     ) -> None:
         """Reload (rebuild + restart) an app."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
         action = "Updating and reloading" if update else "Reloading"
         print(f"{action} {app_name}...")
         data = {"update": "1"} if update else None
-        make_api_request(cfg.url, cfg.token, "POST", f"/reload_app/{app_name}", data=data)
+        make_api_request(cfg.url, cfg.token, "POST", f"/reload_app/{app_id}", data=data)
         if wait:
-            wait_for_app_running(cfg.url, cfg.token, app_name)
+            wait_for_app_running(cfg.url, cfg.token, app_id, app_name)
         else:
             print("OK")
 
@@ -184,7 +189,8 @@ class AppCmd:
         cfg: Annotated[config.Instance, Dep(resolve_instance)],
     ) -> None:
         """Stop a running app."""
-        make_api_request(cfg.url, cfg.token, "POST", f"/stop_app/{app_name}")
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
+        make_api_request(cfg.url, cfg.token, "POST", f"/stop_app/{app_id}")
         print(f"Stopped {app_name}")
 
     @cappa.command(name="remove")
@@ -195,12 +201,13 @@ class AppCmd:
         keep_data: Annotated[bool, cappa.Arg(long=True, help="Keep app data on disk")] = False,
     ) -> None:
         """Remove an app."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
         data = {"keep_data": "1"} if keep_data else None
         # /remove_app returns 202; poll until the row is actually gone.
-        make_api_request(cfg.url, cfg.token, "POST", f"/remove_app/{app_name}", data=data)
+        make_api_request(cfg.url, cfg.token, "POST", f"/remove_app/{app_id}", data=data)
         suffix = " (data kept)" if keep_data else ""
         print(f"Removing {app_name}{suffix}...")
-        wait_for_app_removed(cfg.url, cfg.token, app_name)
+        wait_for_app_removed(cfg.url, cfg.token, app_id, app_name)
         print(f"Removed {app_name}{suffix}")
 
     @cappa.command(name="rename")
@@ -211,11 +218,12 @@ class AppCmd:
         cfg: Annotated[config.Instance, Dep(resolve_instance)],
     ) -> None:
         """Rename an app."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
         result = make_api_request(
             cfg.url,
             cfg.token,
             "POST",
-            f"/rename_app/{app_name}",
+            f"/rename_app/{app_id}",
             data={"name": new_name},
         ).json()
         print(f"Renamed {app_name} → {result.get('name', new_name)}")
@@ -230,10 +238,11 @@ class AppCmd:
         if not apps:
             print("No apps installed.")
             return
-        max_name = max(len(n) for n in apps)
-        for name, info in sorted(apps.items()):
-            s = info.get("status", "unknown")
-            err = info.get("error_message", "")
+        max_name = max(len(a.get("name", "")) for a in apps)
+        for app in sorted(apps, key=lambda a: a.get("name", "")):
+            name = app.get("name", "?")
+            s = app.get("status", "unknown")
+            err = app.get("error_message", "")
             line = f"  {name:<{max_name}}  {s}"
             if err:
                 line += f"  ({err})"

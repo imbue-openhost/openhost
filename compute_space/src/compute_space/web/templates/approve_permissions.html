@@ -14,7 +14,7 @@
 
 <button class="btn btn-primary" onclick="grantAll(this)">Grant All</button>
 <script>
-var appName = {{ app_name | tojson }};
+var appId = {{ app_id | tojson }};
 var keys = {{ permissions | tojson }};
 var redirectUrl = {{ redirect_url | tojson }};
 function grantAll(btn) {
@@ -23,7 +23,7 @@ function grantAll(btn) {
     method: 'POST',
     credentials: 'same-origin',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({app: appName, permissions: keys})
+    body: JSON.stringify({app_id: appId, permissions: keys})
   })
     .then(function(r) { return r.json(); })
     .then(function() {

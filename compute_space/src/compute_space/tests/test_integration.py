@@ -394,7 +394,8 @@ class TestRouterCore:
             headers={"Authorization": f"Bearer {raw_token}"},
         )
         assert r.status_code == 200
-        assert isinstance(r.json(), dict)
+        # /api/apps returns a list of {app_id, name, status, error_message}.
+        assert isinstance(r.json(), list)
 
         # Verify the token appears in the list
         r = admin_session.get(f"{base}/api/tokens")

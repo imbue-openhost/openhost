@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 
+from compute_space.core.app_id import new_app_id
 from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
 
 
@@ -17,6 +18,10 @@ def _recreate_table(db: sqlite3.Connection, table_name: str, keep_cols: list[str
     with UNIQUE constraints, or changing NOT NULL on existing columns).
     ``keep_cols`` is the list of column names to copy from the old table;
     only columns that also exist in the new schema are actually copied.
+
+    Special case: when recreating ``apps``, the new schema requires a
+    ``app_id`` value (NOT NULL UNIQUE). If the old shape lacks the column,
+    rows are mid-copied through Python so we can mint a fresh id per row.
     """
     with open(_schema_path()) as f:
         schema_sql = f.read()
@@ -37,23 +42,80 @@ def _recreate_table(db: sqlite3.Connection, table_name: str, keep_cols: list[str
     db.execute(create_sql)
     new_col_info = {row[1]: row for row in db.execute(f"PRAGMA table_info({tmp_name})").fetchall()}
     common_cols = [c for c in keep_cols if c in new_col_info]
-    cols_csv = ", ".join(common_cols)
 
-    # Build SELECT expressions: wrap NOT NULL columns with COALESCE so that
-    # NULL values in old rows get replaced by the column's default rather
-    # than violating the constraint.  (SQLite only applies DEFAULT on INSERT
-    # when a column is omitted, not when it's explicitly NULL.)
-    select_exprs = []
-    for c in common_cols:
-        info = new_col_info[c]
-        notnull, dflt = info[3], info[4]
-        if notnull and dflt is not None:
-            select_exprs.append(f"COALESCE({c}, {dflt})")
+    # Apps gained a NOT NULL UNIQUE app_id column in v0006. When legacy
+    # migrate() recreates apps before v0006 runs, mint an app_id per row
+    # via Python so the new shape's constraint is satisfied. v0006 itself
+    # uses the same logic — this just keeps the legacy path working.
+    needs_app_id_backfill = table_name == "apps" and "app_id" in new_col_info and "app_id" not in common_cols
+
+    # FK-bearing tables (e.g. app_tokens) likewise gained an app_id column
+    # in v0006 in place of app_name. When the legacy migrate recreates one
+    # of these against the new schema.sql shape, look up the app_id by
+    # joining apps.name -> app_id so the FK column is populated correctly.
+    needs_app_id_fk_backfill = (
+        table_name != "apps" and "app_id" in new_col_info and "app_id" not in common_cols and "app_name" in keep_cols
+    )
+
+    if needs_app_id_fk_backfill:
+        # Copy every shared column EXCEPT app_name, and translate app_name -> app_id via JOIN.
+        shared_minus_app_name = [c for c in common_cols if c != "app_name"]
+        select_csv = ", ".join([f"src.{c}" for c in shared_minus_app_name])
+        target_cols = ["app_id", *shared_minus_app_name]
+        target_cols_csv = ", ".join(target_cols)
+        if shared_minus_app_name:
+            db.execute(
+                f"INSERT INTO {tmp_name} ({target_cols_csv}) "
+                f"SELECT a.app_id, {select_csv} FROM {table_name} src "
+                f"JOIN apps a ON a.name = src.app_name"
+            )
         else:
-            select_exprs.append(c)
-    select_csv = ", ".join(select_exprs)
+            db.execute(
+                f"INSERT INTO {tmp_name} (app_id) "
+                f"SELECT a.app_id FROM {table_name} src JOIN apps a ON a.name = src.app_name"
+            )
+    elif needs_app_id_backfill:
+        # Same COALESCE-on-NOT-NULL logic as the SQL path below, so that
+        # NULL values in old rows get replaced by the column's default
+        # (sqlite only applies DEFAULT on omitted columns, not on NULL).
+        select_exprs = []
+        for c in common_cols:
+            info = new_col_info[c]
+            notnull, dflt = info[3], info[4]
+            if notnull and dflt is not None:
+                select_exprs.append(f"COALESCE({c}, {dflt})")
+            else:
+                select_exprs.append(c)
+        select_csv = ", ".join(select_exprs)
+        rows = db.execute(f"SELECT {select_csv} FROM {table_name}").fetchall()
+        cols_with_id = ["app_id", *common_cols]
+        cols_csv_with_id = ", ".join(cols_with_id)
+        placeholders = ", ".join(["?"] * len(cols_with_id))
+        seen: set[str] = set()
+        for r in rows:
+            while True:
+                candidate = new_app_id()
+                if candidate not in seen:
+                    seen.add(candidate)
+                    break
+            db.execute(f"INSERT INTO {tmp_name} ({cols_csv_with_id}) VALUES ({placeholders})", (candidate, *r))
+    else:
+        cols_csv = ", ".join(common_cols)
+        # Build SELECT expressions: wrap NOT NULL columns with COALESCE so that
+        # NULL values in old rows get replaced by the column's default rather
+        # than violating the constraint.  (SQLite only applies DEFAULT on INSERT
+        # when a column is omitted, not when it's explicitly NULL.)
+        select_exprs = []
+        for c in common_cols:
+            info = new_col_info[c]
+            notnull, dflt = info[3], info[4]
+            if notnull and dflt is not None:
+                select_exprs.append(f"COALESCE({c}, {dflt})")
+            else:
+                select_exprs.append(c)
+        select_csv = ", ".join(select_exprs)
+        db.execute(f"INSERT INTO {tmp_name} ({cols_csv}) SELECT {select_csv} FROM {table_name}")
 
-    db.execute(f"INSERT INTO {tmp_name} ({cols_csv}) SELECT {select_csv} FROM {table_name}")
     db.execute(f"DROP TABLE {table_name}")
     db.execute(f"ALTER TABLE {tmp_name} RENAME TO {table_name}")
     db.commit()

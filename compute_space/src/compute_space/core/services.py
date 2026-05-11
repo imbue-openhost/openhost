@@ -14,15 +14,15 @@ class ServiceNotAvailable(Exception):
 def get_service_provider(service_name: str) -> tuple[str, int]:
     """Look up the provider app for a service, checking it's installed and running.
 
-    Returns (app_name, local_port).
+    Returns (app_id, local_port).
 
     Raises:
         ServiceNotAvailable: Service is not installed or not running.
     """
     db = get_db()
     row = db.execute(
-        """SELECT sp.app_name, a.local_port, a.status FROM service_providers sp
-           JOIN apps a ON a.name = sp.app_name
+        """SELECT sp.app_id, a.local_port, a.status FROM service_providers sp
+           JOIN apps a ON a.app_id = sp.app_id
            WHERE sp.service_name = ?""",
         (service_name,),
     ).fetchone()
@@ -30,11 +30,11 @@ def get_service_provider(service_name: str) -> tuple[str, int]:
         raise ServiceNotAvailable(f"No provider for service '{service_name}'. Is the '{service_name}' app installed?")
     if row["status"] != "running":
         raise ServiceNotAvailable(f"The '{service_name}' app is not running. Please start it from the dashboard.")
-    app_name = row["app_name"]
-    assert isinstance(app_name, str)
+    app_id = row["app_id"]
+    assert isinstance(app_id, str)
     app_port = row["local_port"]
     assert isinstance(app_port, int)
-    return app_name, app_port
+    return app_id, app_port
 
 
 class OAuthAuthorizationRequired(Exception):

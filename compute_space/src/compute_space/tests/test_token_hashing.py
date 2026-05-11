@@ -3,6 +3,7 @@
 import hashlib
 import sqlite3
 
+from compute_space.core.app_id import new_app_id
 from compute_space.db.connection import init_db
 
 
@@ -84,21 +85,23 @@ class TestAppTokenHashing:
         db.row_factory = sqlite3.Row
 
         # Need an app row for the FK
+        app_id = new_app_id()
         db.execute(
-            "INSERT INTO apps (name, version, runtime_type, repo_path, local_port) "
-            "VALUES ('testapp', '1.0', 'serverfull', '/repo', 9000)"
+            "INSERT INTO apps (app_id, name, version, runtime_type, repo_path, local_port) "
+            "VALUES (?, 'testapp', '1.0', 'serverfull', '/repo', 9000)",
+            (app_id,),
         )
 
         raw_token = "test-app-token-xyz789"
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
         db.execute(
-            "INSERT INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
-            ("testapp", token_hash),
+            "INSERT INTO app_tokens (app_id, token_hash) VALUES (?, ?)",
+            (app_id, token_hash),
         )
         db.commit()
 
-        row = db.execute("SELECT token_hash FROM app_tokens WHERE app_name = 'testapp'").fetchone()
+        row = db.execute("SELECT token_hash FROM app_tokens WHERE app_id = ?", (app_id,)).fetchone()
         assert row["token_hash"] != raw_token
         assert row["token_hash"] == token_hash
         assert len(row["token_hash"]) == 64
@@ -110,31 +113,33 @@ class TestAppTokenHashing:
         db = sqlite3.connect(db_path)
         db.row_factory = sqlite3.Row
 
+        app_id = new_app_id()
         db.execute(
-            "INSERT INTO apps (name, version, runtime_type, repo_path, local_port) "
-            "VALUES ('myapp', '1.0', 'serverfull', '/repo', 9001)"
+            "INSERT INTO apps (app_id, name, version, runtime_type, repo_path, local_port) "
+            "VALUES (?, 'myapp', '1.0', 'serverfull', '/repo', 9001)",
+            (app_id,),
         )
 
         raw_token = "bearer-app-token"
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
         db.execute(
-            "INSERT INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
-            ("myapp", token_hash),
+            "INSERT INTO app_tokens (app_id, token_hash) VALUES (?, ?)",
+            (app_id, token_hash),
         )
         db.commit()
 
         # Simulate services.py lookup: hash bearer token, then query
         lookup_hash = hashlib.sha256(raw_token.encode()).hexdigest()
         row = db.execute(
-            "SELECT app_name FROM app_tokens WHERE token_hash = ?",
+            "SELECT app_id FROM app_tokens WHERE token_hash = ?",
             (lookup_hash,),
         ).fetchone()
         assert row is not None
-        assert row["app_name"] == "myapp"
+        assert row["app_id"] == app_id
 
         # Raw token should NOT match
         row_raw = db.execute(
-            "SELECT app_name FROM app_tokens WHERE token_hash = ?",
+            "SELECT app_id FROM app_tokens WHERE token_hash = ?",
             (raw_token,),
         ).fetchone()
         assert row_raw is None

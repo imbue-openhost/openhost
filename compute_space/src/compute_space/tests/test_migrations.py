@@ -496,7 +496,12 @@ class TestRouterMigrations:
         assert "token_hash" in cols
         assert "token" not in cols
 
-        row = db.execute("SELECT token_hash FROM app_tokens WHERE app_name = 'myapp'").fetchone()
+        # After v0006 the FK column is app_id; join through apps to find the
+        # token row that belonged to 'myapp'.
+        row = db.execute(
+            """SELECT t.token_hash FROM app_tokens t
+               JOIN apps a ON a.app_id = t.app_id WHERE a.name = 'myapp'"""
+        ).fetchone()
         expected = hashlib.sha256(b"plaintext-app-token").hexdigest()
         assert row["token_hash"] == expected
         assert row["token_hash"] != "plaintext-app-token"

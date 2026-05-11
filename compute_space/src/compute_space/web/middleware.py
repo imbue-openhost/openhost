@@ -28,11 +28,11 @@ def _wants_json() -> bool:
     return "application/json" in request.headers.get("Accept", "")
 
 
-def _app_action_response(app_name: str) -> ResponseReturnValue:
+def _app_action_response(app_id: str) -> ResponseReturnValue:
     """Return JSON for fetch/API calls, redirect for regular form submits."""
     if _wants_json():
         return jsonify({"ok": True})
-    return redirect(url_for("apps.app_detail", app_name=app_name))
+    return redirect(url_for("apps.app_detail", app_id=app_id))
 
 
 async def _ensure_async(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -78,7 +78,7 @@ def _try_refresh() -> dict[str, Any] | None:
 
 
 def _app_from_origin(req_or_ws: Request | Websocket) -> str | None:
-    """Resolve app name from Origin/Referer subdomain + valid JWT cookie.
+    """Resolve app_id from Origin/Referer subdomain + valid JWT cookie.
 
     Accepts either a quart Request or Websocket — both expose .headers and are accepted
     by auth.get_current_user_from_request.
@@ -100,8 +100,8 @@ def _app_from_origin(req_or_ws: Request | Websocket) -> str | None:
     if "." in app_name:
         return None
 
-    row = get_db().execute("SELECT name FROM apps WHERE name = ?", (app_name,)).fetchone()
-    return row["name"] if row else None
+    row = get_db().execute("SELECT app_id FROM apps WHERE name = ?", (app_name,)).fetchone()
+    return row["app_id"] if row else None
 
 
 def app_auth_required(
@@ -110,28 +110,28 @@ def app_auth_required(
     """Identify+authenticate which app is making the request.
 
     Cross-app requests can come from two contexts: server-side (app-to-app via Bearer token) or client-side
-    (browser JS calling the service proxy on behalf of an app). Both need to resolve to an app name so the
+    (browser JS calling the service proxy on behalf of an app). Both need to resolve to an app_id so the
     router can look up permissions and pass the caller's identity to the provider.
 
     Bearer token:   The app authenticates directly with its issued token.
-    Browser cookie: The user is logged in (JWT) and the request originates from an app subdomain — the app
-                    name is derived from the Origin header.
+    Browser cookie: The user is logged in (JWT) and the request originates from an app subdomain — the app_id
+                    is derived from the Origin header (looked up by subdomain → name → app_id).
 
-    Injects `app_name` as a keyword argument to the wrapped function.
+    Injects `app_id` as a keyword argument to the wrapped function.
     """
 
     @wraps(f)
     async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            app_name = resolve_app_from_token(auth_header.removeprefix("Bearer ").strip())
+            app_id = resolve_app_from_token(auth_header.removeprefix("Bearer ").strip())
         else:
-            app_name = _app_from_origin(request)
+            app_id = _app_from_origin(request)
 
-        if not app_name:
+        if not app_id:
             return jsonify({"error": "Missing or invalid authorization"}), 401
 
-        kwargs["app_name"] = app_name
+        kwargs["app_id"] = app_id
         return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
     return decorated

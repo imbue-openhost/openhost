@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
+from compute_space.core.app_id import new_app_id
 from compute_space.core.apps import remove_app_background
 from compute_space.db.connection import init_db
 
@@ -13,47 +14,48 @@ from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
-def _seed_app_with_children(db_path: str, app_name: str = "myapp") -> None:
-    """Insert an app row plus one row in each ON-DELETE-CASCADE child."""
+def _seed_app_with_children(db_path: str, app_name: str = "myapp") -> str:
+    """Insert an app row plus one row in each ON-DELETE-CASCADE child. Returns app_id."""
+    app_id = new_app_id()
     db = sqlite3.connect(db_path)
     try:
         db.execute("PRAGMA foreign_keys = ON")
         db.execute(
-            "INSERT INTO apps (name, version, repo_path, local_port, status) "
-            "VALUES (?, '1.0', '/repo', 19500, 'removing')",
-            (app_name,),
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status) "
+            "VALUES (?, ?, '1.0', '/repo', 19500, 'removing')",
+            (app_id, app_name),
         )
         db.execute(
-            "INSERT INTO app_databases (app_name, db_name, db_path) VALUES (?, 'main', '/data/main.db')",
-            (app_name,),
+            "INSERT INTO app_databases (app_id, db_name, db_path) VALUES (?, 'main', '/data/main.db')",
+            (app_id,),
         )
         db.execute(
-            "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) "
-            "VALUES (?, 'http', 8080, 19501)",
-            (app_name,),
+            "INSERT INTO app_port_mappings (app_id, label, container_port, host_port) VALUES (?, 'http', 8080, 19501)",
+            (app_id,),
         )
-        db.execute("INSERT INTO app_tokens (app_name, token_hash) VALUES (?, 'fakehash')", (app_name,))
-        db.execute("INSERT INTO service_providers (service_name, app_name) VALUES ('s1', ?)", (app_name,))
+        db.execute("INSERT INTO app_tokens (app_id, token_hash) VALUES (?, 'fakehash')", (app_id,))
+        db.execute("INSERT INTO service_providers (service_name, app_id) VALUES ('s1', ?)", (app_id,))
         db.execute(
-            "INSERT INTO service_providers_v2 (service_url, app_name, service_version, endpoint) "
+            "INSERT INTO service_providers_v2 (service_url, app_id, service_version, endpoint) "
             "VALUES ('https://e.x/s', ?, '1.0', '/svc')",
-            (app_name,),
+            (app_id,),
         )
-        db.execute("INSERT INTO permissions (consumer_app, permission_key) VALUES (?, 'k')", (app_name,))
+        db.execute("INSERT INTO permissions (consumer_app_id, permission_key) VALUES (?, 'k')", (app_id,))
         db.execute(
-            "INSERT INTO permissions_v2 (consumer_app, service_url, grant_payload) VALUES (?, 'u', '{}')",
-            (app_name,),
+            "INSERT INTO permissions_v2 (consumer_app_id, service_url, grant_payload) VALUES (?, 'u', '{}')",
+            (app_id,),
         )
-        db.execute("INSERT INTO service_defaults (service_url, app_name) VALUES ('https://e.x/s', ?)", (app_name,))
+        db.execute("INSERT INTO service_defaults (service_url, app_id) VALUES ('https://e.x/s', ?)", (app_id,))
         db.commit()
     finally:
         db.close()
+    return app_id
 
 
-def _table_has_app(db_path: str, table: str, app_name: str, key_col: str = "app_name") -> bool:
+def _table_has_app(db_path: str, table: str, app_id: str, key_col: str = "app_id") -> bool:
     db = sqlite3.connect(db_path)
     try:
-        cur = db.execute(f"SELECT 1 FROM {table} WHERE {key_col} = ?", (app_name,))
+        cur = db.execute(f"SELECT 1 FROM {table} WHERE {key_col} = ?", (app_id,))
         return cur.fetchone() is not None
     finally:
         db.close()
@@ -69,7 +71,7 @@ def test_remove_cascades_to_all_child_tables(tmp_path: Path) -> None:
     """
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_with_children(cfg.db_path, "myapp")
+    app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
         patch("compute_space.core.apps.stop_app_process"),
@@ -77,21 +79,21 @@ def test_remove_cascades_to_all_child_tables(tmp_path: Path) -> None:
         patch("compute_space.core.apps.deprovision_data"),
         patch("compute_space.core.apps.deprovision_temp_data"),
     ):
-        remove_app_background("myapp", keep_data=False, config=cfg)
+        remove_app_background(app_id, keep_data=False, config=cfg)
 
-    assert not _table_has_app(cfg.db_path, "apps", "myapp", key_col="name")
+    assert not _table_has_app(cfg.db_path, "apps", app_id, key_col="app_id")
     for table, key_col in [
-        ("app_databases", "app_name"),
-        ("app_port_mappings", "app_name"),
-        ("app_tokens", "app_name"),
-        ("service_providers", "app_name"),
-        ("service_providers_v2", "app_name"),
-        ("permissions", "consumer_app"),
-        ("permissions_v2", "consumer_app"),
-        ("service_defaults", "app_name"),
+        ("app_databases", "app_id"),
+        ("app_port_mappings", "app_id"),
+        ("app_tokens", "app_id"),
+        ("service_providers", "app_id"),
+        ("service_providers_v2", "app_id"),
+        ("permissions", "consumer_app_id"),
+        ("permissions_v2", "consumer_app_id"),
+        ("service_defaults", "app_id"),
     ]:
-        assert not _table_has_app(cfg.db_path, table, "myapp", key_col=key_col), (
-            f"{table}.{key_col} still has a row for 'myapp' — FK cascade did not fire"
+        assert not _table_has_app(cfg.db_path, table, app_id, key_col=key_col), (
+            f"{table}.{key_col} still has a row for app_id={app_id!r} — FK cascade did not fire"
         )
 
 
@@ -99,7 +101,7 @@ def test_remove_keep_data_calls_temp_only(tmp_path: Path) -> None:
     """``keep_data=True`` must hit the temp-only deprovision path."""
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_with_children(cfg.db_path, "myapp")
+    app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
         patch("compute_space.core.apps.stop_app_process"),
@@ -107,7 +109,7 @@ def test_remove_keep_data_calls_temp_only(tmp_path: Path) -> None:
         patch("compute_space.core.apps.deprovision_data") as full,
         patch("compute_space.core.apps.deprovision_temp_data") as temp_only,
     ):
-        remove_app_background("myapp", keep_data=True, config=cfg)
+        remove_app_background(app_id, keep_data=True, config=cfg)
 
     full.assert_not_called()
     temp_only.assert_called_once_with("myapp", cfg.temporary_data_dir)
@@ -117,7 +119,7 @@ def test_remove_full_calls_full_deprovision(tmp_path: Path) -> None:
     """``keep_data=False`` must hit the full deprovision."""
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_with_children(cfg.db_path, "myapp")
+    app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
         patch("compute_space.core.apps.stop_app_process"),
@@ -125,7 +127,7 @@ def test_remove_full_calls_full_deprovision(tmp_path: Path) -> None:
         patch("compute_space.core.apps.deprovision_data") as full,
         patch("compute_space.core.apps.deprovision_temp_data") as temp_only,
     ):
-        remove_app_background("myapp", keep_data=False, config=cfg)
+        remove_app_background(app_id, keep_data=False, config=cfg)
 
     temp_only.assert_not_called()
     full.assert_called_once_with(
@@ -142,7 +144,7 @@ def test_remove_proceeds_when_deprovision_raises(tmp_path: Path) -> None:
     never re-deploy."""
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_with_children(cfg.db_path, "myapp")
+    app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
         patch("compute_space.core.apps.stop_app_process"),
@@ -150,9 +152,9 @@ def test_remove_proceeds_when_deprovision_raises(tmp_path: Path) -> None:
         patch("compute_space.core.apps.deprovision_data", side_effect=OSError("disk on fire")),
         patch("compute_space.core.apps.deprovision_temp_data"),
     ):
-        remove_app_background("myapp", keep_data=False, config=cfg)
+        remove_app_background(app_id, keep_data=False, config=cfg)
 
-    assert not _table_has_app(cfg.db_path, "apps", "myapp", key_col="name")
+    assert not _table_has_app(cfg.db_path, "apps", app_id, key_col="app_id")
 
 
 def test_remove_returns_quietly_when_app_already_gone(tmp_path: Path) -> None:
@@ -166,7 +168,7 @@ def test_remove_returns_quietly_when_app_already_gone(tmp_path: Path) -> None:
         patch("compute_space.core.apps.deprovision_data") as full,
         patch("compute_space.core.apps.deprovision_temp_data") as temp_only,
     ):
-        remove_app_background("ghost", keep_data=False, config=cfg)
+        remove_app_background(new_app_id(), keep_data=False, config=cfg)
 
     stop.assert_not_called()
     rmi.assert_not_called()
@@ -180,7 +182,7 @@ def test_remove_records_error_when_db_delete_path_explodes(tmp_path: Path) -> No
     """
     cfg = _make_test_config(tmp_path)
     init_db(_FakeApp(cfg.db_path))
-    _seed_app_with_children(cfg.db_path, "myapp")
+    app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     real_connect = sqlite3.connect
 
@@ -215,11 +217,11 @@ def test_remove_records_error_when_db_delete_path_explodes(tmp_path: Path) -> No
         patch("compute_space.core.apps.deprovision_temp_data"),
         patch("compute_space.core.apps.sqlite3.connect", side_effect=_wrap),
     ):
-        remove_app_background("myapp", keep_data=False, config=cfg)
+        remove_app_background(app_id, keep_data=False, config=cfg)
 
     db = sqlite3.connect(cfg.db_path)
     try:
-        row = db.execute("SELECT status, error_message FROM apps WHERE name = ?", ("myapp",)).fetchone()
+        row = db.execute("SELECT status, error_message FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     finally:
         db.close()
     assert row is not None

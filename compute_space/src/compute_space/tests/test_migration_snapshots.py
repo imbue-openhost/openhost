@@ -60,11 +60,22 @@ from pathlib import Path
 
 import pytest
 
+from compute_space.core import app_id as _app_id_module
 from compute_space.db.versioned import REGISTRY
 from compute_space.db.versioned import apply_migrations
 from compute_space.db.versioned import read_version
 from compute_space.tests.schema_helpers import assert_schemas_equal
 from compute_space.tests.schema_helpers import get_schema_snapshot
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_app_ids(monkeypatch):
+    """Force migrations to mint reproducible app_ids so snapshot dumps stay stable across runs."""
+    monkeypatch.setenv(_app_id_module._DETERMINISTIC_ENV, "1")
+    _app_id_module._reset_deterministic_counter()
+    yield
+    _app_id_module._reset_deterministic_counter()
+
 
 SNAPSHOTS_DIR = Path(__file__).resolve().parent / "snapshots"
 _VERSION_FILE_RE = re.compile(r"^v(\d+)\.sql$")

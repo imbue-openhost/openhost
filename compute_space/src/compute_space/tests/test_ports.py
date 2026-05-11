@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import PortMapping
 from compute_space.core.ports import check_port_available
 from compute_space.core.ports import resolve_port_mappings
@@ -18,22 +19,31 @@ def db():
     conn.row_factory = sqlite3.Row
     conn.execute(
         """CREATE TABLE apps (
-            name TEXT PRIMARY KEY,
+            app_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
             local_port INTEGER NOT NULL UNIQUE
         )"""
     )
     conn.execute(
         """CREATE TABLE app_port_mappings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            app_name TEXT NOT NULL,
+            app_id TEXT NOT NULL,
             label TEXT NOT NULL,
             container_port INTEGER NOT NULL,
             host_port INTEGER NOT NULL,
-            UNIQUE(app_name, label)
+            UNIQUE(app_id, label)
         )"""
     )
     conn.commit()
     return conn
+
+
+def _seed(db, name: str, local_port: int) -> str:
+    """Insert an app row and return its app_id."""
+    app_id = new_app_id()
+    db.execute("INSERT INTO apps (app_id, name, local_port) VALUES (?, ?, ?)", (app_id, name, local_port))
+    db.commit()
+    return app_id
 
 
 class TestCheckPortAvailable:
@@ -44,17 +54,18 @@ class TestCheckPortAvailable:
         assert isinstance(available, bool)
 
     def test_port_used_by_app_main(self, db):
-        db.execute("INSERT INTO apps (name, local_port) VALUES ('myapp', 9500)")
-        db.commit()
+        _seed(db, "myapp", 9500)
         available, used_by = check_port_available(9500, db)
         assert available is False
         assert used_by["app_name"] == "myapp"
         assert used_by["type"] == "main_port"
 
     def test_port_used_by_mapping(self, db):
-        db.execute("INSERT INTO apps (name, local_port) VALUES ('myapp', 9500)")
+        app_id = _seed(db, "myapp", 9500)
         db.execute(
-            "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES ('myapp', 'metrics', 9090, 9600)"
+            "INSERT INTO app_port_mappings (app_id, label, container_port, host_port) "
+            "VALUES (?, 'metrics', 9090, 9600)",
+            (app_id,),
         )
         db.commit()
         available, used_by = check_port_available(9600, db)
@@ -64,24 +75,24 @@ class TestCheckPortAvailable:
         assert used_by["type"] == "port_mapping"
 
     def test_exclude_app_skips_own_main_port(self, db):
-        db.execute("INSERT INTO apps (name, local_port) VALUES ('myapp', 9500)")
-        db.commit()
-        available, used_by = check_port_available(9500, db, exclude_app="myapp")
+        app_id = _seed(db, "myapp", 9500)
+        available, used_by = check_port_available(9500, db, exclude_app_id=app_id)
         assert available is True
 
     def test_exclude_app_skips_own_mapping(self, db):
-        db.execute("INSERT INTO apps (name, local_port) VALUES ('myapp', 9500)")
+        app_id = _seed(db, "myapp", 9500)
         db.execute(
-            "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES ('myapp', 'metrics', 9090, 9600)"
+            "INSERT INTO app_port_mappings (app_id, label, container_port, host_port) "
+            "VALUES (?, 'metrics', 9090, 9600)",
+            (app_id,),
         )
         db.commit()
-        available, used_by = check_port_available(9600, db, exclude_app="myapp")
+        available, used_by = check_port_available(9600, db, exclude_app_id=app_id)
         assert available is True
 
     def test_exclude_app_still_blocks_other_app(self, db):
-        db.execute("INSERT INTO apps (name, local_port) VALUES ('other', 9500)")
-        db.commit()
-        available, used_by = check_port_available(9500, db, exclude_app="myapp")
+        _seed(db, "other", 9500)
+        available, used_by = check_port_available(9500, db, exclude_app_id=new_app_id())
         assert available is False
 
 
@@ -122,8 +133,7 @@ class TestResolvePortMappings:
         assert 59200 <= resolved[0].host_port <= 59300
 
     def test_conflict_with_db_raises(self, db):
-        db.execute("INSERT INTO apps (name, local_port) VALUES ('other', 9500)")
-        db.commit()
+        _seed(db, "other", 9500)
         mappings = [PortMapping(label="conflict", container_port=80, host_port=9500)]
         with pytest.raises(RuntimeError, match="already in use"):
             resolve_port_mappings(mappings, db)
