@@ -65,12 +65,13 @@ The router identifies and authenticates the calling app two ways:
 
 Service calls should be API-only - the user's browser should never be redirected to a service endpoint, with the exception of permission grant pages.
 
+If permission is needed to access the service, a 403 is returned - see the Permissions section below.
+
 ### Provider selection
 
 Each service URL has a configured default provider - by default it's first app installed providing that service, but can be configured in openhost's settings.
 
 If the resolved default's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
-
 
 ### Permissions
 
@@ -86,7 +87,9 @@ Permissions are **opaque grant payloads** (strings or JSON objects), scoped per 
 
 Each entry in the permissions array is `{"grant": <payload>, "scope": "global"|"app", "provider_app": <name or null>}`.
 
-**Requesting a missing permission.** When a consumer calls without sufficient grants, the provider returns:
+#### Global-scoped grants
+
+When a consumer calls without sufficient grants, the provider returns:
 
 ```json
 HTTP 403
@@ -99,11 +102,55 @@ HTTP 403
 }
 ```
 
-For `scope: "global"`, the router rewrites the response to add a `grant_url` pointing at the owner-facing approval page. For `scope: "app"`, the provider must include its own `grant_url` (pointing back through the router to its own approval flow).
+For `scope: "global"`, the router rewrites the response to add a `grant_url` pointing at the owner-facing approval page. For `scope: "app"`, the provider must include its own `grant_url` (see below).
 
 The consumer redirects the owner to `grant_url`; after approval, the call can be retried.
 
 **Granting at deploy time.** Global-scoped permissions specified in the consumer app manifest (`grants`) can be granted as part of the app install, either in the openhost web UI or via the compute_space CLI's `--grant-permissions-v2` flag.
+
+#### Provider-app-scoped permissions
+
+Because app-scoped grants are often data-dependent — "this consumer may access photos in *this* folder", "*this* email inbox", "*this* set of files" — the provider is responsible for the whole approval UX. The router only stores the resulting grant. This also allows a provider to ensure that its data can't be accessed by a permission granted to a different provider of this service, if that's desired. It gives this provider full control over access to its own data.
+
+There's currently no way to grant these at install time of a consumer app (since consumers can potentially interact with multiple providers).
+
+When a consumer calls without sufficient grants, the provider returns:
+
+```json
+HTTP 403
+{
+  "error": "permission_required",
+  "required_grant": {
+    "grant": { ... },
+    "scope": "global"
+  },
+  "grant_url": GRANT_URL
+}
+```
+
+Note for `scope: "app"`, the provider must include its own `grant_url`.
+
+1. **Consumer hands the user off.** The consumer redirects the user's browser to the `grant_url` returned in the 403. The consumer should arrange for a `return_to` URL on its own subdomain to be propagated to that page (typical convention: include `return_to=https://<consumer>.<zone>/...` on the request to `grant_url`)
+
+2. **Provider renders a consent page.** This is a normal page in the provider app — the user is on `<provider_app>.<zone>` with the owner cookie. The page should:
+   - State plainly *which consumer app* is asking and *exactly what data* it's asking for. The narrower and more concrete, the better ("Grant *photos-app* read access to the folder `Vacation/Italy`?" beats "Grant *photos-app* read access?").
+   - Let the user shape the grant where it makes sense (pick which folder, which inbox, which subset of items, etc.).
+   - Run any side flows the grant needs — e.g. an OAuth dance with a third party, picking a row from the provider's own DB, prompting for a passphrase.
+
+3. **Provider creates the grant.** Once the user confirms (and any side flow has completed), the provider's backend calls:
+
+   ```
+   POST [OPENHOST_ROUTER_URL]/api/permissions/v2/grant_app_scoped
+   Authorization: Bearer $OPENHOST_APP_TOKEN
+   Content-Type: application/json
+
+   {"consumer_app": "<name>", "service_url": "<url>", "grant": <grant>}
+   ```
+
+   The router takes `provider_app` from the bearer token, so the provider can only grant permissions *for itself* — it can't create grants attributed to another provider. The grant body is the same shape the provider will later see in `X-OpenHost-Permissions`. str or json can be used.
+
+4. **Provider sends the user back.** After the grant call succeeds, the provider should redirect the user's browser to the consumer-supplied `return_to`. The consumer can then retry the original service call, which will now succeed. If the user declines, the provider should also redirect to `return_to` (without creating a grant) so the consumer can show its own "permission denied" UI rather than leaving the user stranded on the provider's page.
+
 
 ### Management API
 
