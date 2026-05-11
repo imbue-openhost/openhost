@@ -43,8 +43,13 @@ class Config:
     port_range_start: int
     port_range_end: int
 
-    # Builtin app directory names to deploy at /setup completion (set
-    # to [] to opt out).  Keyed on dirname under apps_dir.
+    # Apps to deploy at /setup completion (set to [] to opt out).
+    # Each entry is either:
+    #   - a bare dirname under apps_dir (vendored builtin, e.g. "secrets_v2"), or
+    #   - a remote git URL the router will clone on first boot
+    #     (e.g. "https://github.com/imbue-openhost/openhost-catalog").
+    # Remote URLs are dispatched through the same clone path as
+    # /api/add_app and do not need to be present on disk ahead of time.
     default_apps: list[str]
 
     def evolve(self, **kwargs: Any) -> Self:
