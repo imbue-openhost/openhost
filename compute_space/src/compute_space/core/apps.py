@@ -825,15 +825,19 @@ def parse_app_from_host(host: str) -> str | None:
     ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
     zplizzi.host.imbue.com -> None
     localhost:8080 -> None
+
+    Strips any ``:port`` suffix on the incoming Host header before comparing,
+    since ``zone_domain`` in config is bare (no port).
     """
     config = get_config()
     if not config.zone_domain:
         return None
-    zone_domain = config.zone_domain
-    if host == zone_domain:
+    zone_domain = config.zone_domain.split(":", 1)[0]
+    host_no_port = host.split(":", 1)[0]
+    if host_no_port == zone_domain:
         return None
-    if host.endswith("." + zone_domain):
-        app_name = host[: -(len(zone_domain) + 1)]
+    if host_no_port.endswith("." + zone_domain):
+        app_name = host_no_port[: -(len(zone_domain) + 1)]
         if "." not in app_name:
             return app_name
     return None
