@@ -6,9 +6,8 @@ info:
     third-party APIs (Google, GitHub, etc.).
 
     **Service URL:** `github.com/imbue-openhost/openhost/services/oauth`
-
-    All requests are proxied through the router at
-    `/_services_v2/<url-encoded-service-url>/<endpoint>?version=<specifier>`.
+    
+    All requests are proxied through the openhost router.
     The router injects an `X-OpenHost-Permissions` header containing the
     consumer app's granted permissions. The service validates these
     provider-side before returning data.
@@ -56,7 +55,7 @@ info:
 
     OAuth providers redirect to a fixed callback URL on the zone's
     redirect domain (`MY_REDIRECT_DOMAIN`). The router intercepts this
-    at `/secrets_v2/oauth/callback` and must forward it to whichever
+    at `/api/services/v2/oauth_callback` and must forward it to whichever
     oauth app initiated the flow.
 
     To make this work, the oauth app encodes its identity in the OAuth

@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from quart import Request
 from quart import Response
+from quart.wrappers import Websocket
 
 from compute_space.config import get_config
 from compute_space.core.logging import logger
@@ -247,9 +248,10 @@ def resolve_app_from_token(token: str) -> str | None:
     return row["app_name"] if row else None
 
 
-def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
+def get_current_user_from_request(request: Request | Websocket) -> dict[str, Any] | None:
     """Extract and verify identity from request cookies or Authorization header.
 
+    Accepts either an HTTP Request or a Websocket — both expose .headers and .cookies.
     Checks JWT cookie first, then falls back to Authorization: Bearer token.
     Returns claims dict or None.
 
@@ -267,7 +269,7 @@ def get_current_user_from_request(request: Request) -> dict[str, Any] | None:
             "The user should clear cookies to fix this.",
             COOKIE_ACCESS,
             dupes,
-            request.method,
+            getattr(request, "method", "WS"),
             request.path,
         )
 

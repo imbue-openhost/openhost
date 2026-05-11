@@ -14,6 +14,8 @@ from quart import redirect
 from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
+from quart.wrappers import Request
+from quart.wrappers import Websocket
 
 from compute_space.config import get_config
 from compute_space.core import auth
@@ -75,12 +77,16 @@ def _try_refresh() -> dict[str, Any] | None:
     return auth.decode_access_token(new_access_token)
 
 
-def _resolve_app_from_origin() -> str | None:
-    """Resolve app name from Origin/Referer subdomain + valid JWT cookie."""
-    if not auth.get_current_user_from_request(request):
+def _app_from_origin(req_or_ws: Request | Websocket) -> str | None:
+    """Resolve app name from Origin/Referer subdomain + valid JWT cookie.
+
+    Accepts either a quart Request or Websocket — both expose .headers and are accepted
+    by auth.get_current_user_from_request.
+    """
+    if not auth.get_current_user_from_request(req_or_ws):
         return None
 
-    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    origin = req_or_ws.headers.get("Origin", "") or req_or_ws.headers.get("Referer", "")
     if not origin:
         return None
 
@@ -120,7 +126,7 @@ def app_auth_required(
         if auth_header.startswith("Bearer "):
             app_name = resolve_app_from_token(auth_header.removeprefix("Bearer ").strip())
         else:
-            app_name = _resolve_app_from_origin()
+            app_name = _app_from_origin(request)
 
         if not app_name:
             return jsonify({"error": "Missing or invalid authorization"}), 401

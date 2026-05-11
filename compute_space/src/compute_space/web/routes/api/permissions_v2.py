@@ -13,7 +13,7 @@ from compute_space.web.middleware import login_required
 api_permissions_v2_bp = Blueprint("api_permissions_v2", __name__)
 
 
-@api_permissions_v2_bp.route("/api/permissions_v2", methods=["GET"])
+@api_permissions_v2_bp.route("/api/permissions/v2", methods=["GET"])
 @login_required
 async def list_permissions_v2() -> Response:
     """List all V2 permissions, optionally filtered by app."""
@@ -21,7 +21,7 @@ async def list_permissions_v2() -> Response:
     return jsonify([attr.asdict(p) for p in get_all_permissions_v2(app_name)])
 
 
-@api_permissions_v2_bp.route("/api/permissions_v2/grant-global-scoped", methods=["POST"])
+@api_permissions_v2_bp.route("/api/permissions/v2/grant_global_scoped", methods=["POST"])
 @login_required
 async def grant_global_scoped() -> Response | tuple[Response, int]:
     """Grant a global-scoped V2 permission (owner-authed)."""
@@ -44,7 +44,7 @@ async def grant_global_scoped() -> Response | tuple[Response, int]:
     return jsonify({"ok": True})
 
 
-@api_permissions_v2_bp.route("/api/permissions_v2/revoke", methods=["POST"])
+@api_permissions_v2_bp.route("/api/permissions/v2/revoke", methods=["POST"])
 @login_required
 async def revoke_v2() -> Response | tuple[Response, int]:
     """Revoke a V2 permission."""
@@ -70,7 +70,7 @@ async def revoke_v2() -> Response | tuple[Response, int]:
     return jsonify({"ok": True})
 
 
-@api_permissions_v2_bp.route("/api/permissions_v2/grant-app-scoped", methods=["POST"])
+@api_permissions_v2_bp.route("/api/permissions/v2/grant_app_scoped", methods=["POST"])
 @app_auth_required
 async def grant_app_scoped(app_name: str) -> Response | tuple[Response, int]:
     """Grant an app-scoped V2 permission, authenticated with the provider's app token.

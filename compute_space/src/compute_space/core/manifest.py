@@ -1,11 +1,17 @@
 import os
+import re
 import tomllib
 from typing import Any
 
 import attr
 import cattrs
+from packaging.specifiers import InvalidSpecifier
+from packaging.specifiers import SpecifierSet
 
 from compute_space.core.logging import logger
+from compute_space.core.permissions_v2 import Grant
+
+_SHORTNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/containers.yml.
 # host_port values below this are rejected at parse time.
@@ -85,10 +91,14 @@ class ServiceProvides:
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class PermissionV2Request:
+class ServiceConsumes:
     service: str
-    # TODO: unsure of correct format.
-    grants: list[dict[str, Any]] = attr.Factory(list)
+    shortname: str
+    version: str
+    # Each grant is either an opaque string (e.g. "read") or a JSON structure
+    # (e.g. {"key": "DB_URL"} or a list). The shape is defined by the service,
+    # not by us — providers receive the raw grants and decide what they mean.
+    grants: list[Grant] = attr.Factory(list)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -135,11 +145,11 @@ class AppManifest:
     requires_services: dict[str, list[dict[str, Any]]] = attr.Factory(dict)
     # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
 
-    # [services_v2]
+    # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
-    # [[permissions_v2]]
-    permissions_v2: list[PermissionV2Request] = attr.Factory(list)
+    # [[services.v2.consumes]]
+    consumes_services_v2: list[ServiceConsumes] = attr.Factory(list)
 
     # [app] metadata
     hidden: bool = False
@@ -240,12 +250,51 @@ def _structure_list(data: list[Any], cls: type[Any], label: str) -> list[Any]:
 
 
 def _parse_services_v2(data: dict[str, Any]) -> list[ServiceProvides]:
-    entries = data.get("services_v2", {}).get("provides", [])
-    return _structure_list(entries, ServiceProvides, "services_v2.provides")
+    entries = data.get("services", {}).get("v2", {}).get("provides", [])
+    return _structure_list(entries, ServiceProvides, "services.v2.provides")
 
 
-def _parse_permissions_v2(data: dict[str, Any]) -> list[PermissionV2Request]:
-    return _structure_list(data.get("permissions_v2", []), PermissionV2Request, "permissions_v2")
+def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
+    raw_entries = data.get("services", {}).get("v2", {}).get("consumes", [])
+    perms: list[ServiceConsumes] = []
+    seen_shortnames: set[str] = set()
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid [[services.v2.consumes]] entry: must be a table, got {type(entry).__name__}")
+        for required in ("service", "shortname", "version"):
+            if required not in entry:
+                raise ValueError(f"Invalid [[services.v2.consumes]] entry: missing required field {required!r}")
+        grants_raw = entry.get("grants", [])
+        if not isinstance(grants_raw, list):
+            raise ValueError("[[services.v2.consumes]] grants must be a list")
+        grants: list[Grant] = []
+        for g in grants_raw:
+            if not isinstance(g, (str, dict, list)):
+                raise ValueError(
+                    f"[[services.v2.consumes]] grant entry must be a string, table, or array, got {type(g).__name__}"
+                )
+            grants.append(g)
+        p = ServiceConsumes(
+            service=entry["service"],
+            shortname=entry["shortname"],
+            version=entry["version"],
+            grants=grants,
+        )
+        if not _SHORTNAME_RE.match(p.shortname):
+            raise ValueError(
+                f"Invalid [[services.v2.consumes]] shortname {p.shortname!r}: must match {_SHORTNAME_RE.pattern}"
+            )
+        if p.shortname in seen_shortnames:
+            raise ValueError(f"Duplicate [[services.v2.consumes]] shortname {p.shortname!r}")
+        seen_shortnames.add(p.shortname)
+        try:
+            SpecifierSet(p.version)
+        except InvalidSpecifier as e:
+            raise ValueError(
+                f"Invalid [[services.v2.consumes]] version specifier {p.version!r} for shortname {p.shortname!r}: {e}"
+            ) from e
+        perms.append(p)
+    return perms
 
 
 def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -325,7 +374,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         provides_services=services.get("provides", []),
         requires_services=_parse_requires_services(services),
         provides_services_v2=_parse_services_v2(data),
-        permissions_v2=_parse_permissions_v2(data),
+        consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,
     )
 

@@ -82,7 +82,8 @@ class AppCmd:
         grant_permissions_v2: Annotated[
             bool,
             cappa.Arg(
-                long="--grant-permissions-v2", help="Grant all [[permissions_v2]] entries declared in the manifest"
+                long="--grant-permissions-v2",
+                help="Grant all [[services.v2.consumes]] entries declared in the manifest",
             ),
         ] = False,
     ) -> None:

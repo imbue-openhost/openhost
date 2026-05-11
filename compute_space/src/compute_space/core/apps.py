@@ -241,7 +241,7 @@ def insert_and_deploy(
     Returns app_name. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
-    grant_permissions_v2: if True, grant all [[permissions_v2]] entries
+    grant_permissions_v2: if True, grant all [[services.v2.consumes]] entries
         from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     """
@@ -345,8 +345,8 @@ def insert_and_deploy(
     if unknown:
         logger.warning("App %s granted unknown permissions not in manifest: %s", app_name, unknown)
 
-    if grant_permissions_v2 and manifest.permissions_v2:
-        for perm in manifest.permissions_v2:
+    if grant_permissions_v2 and manifest.consumes_services_v2:
+        for perm in manifest.consumes_services_v2:
             for grant_payload in perm.grants:
                 grant_permission_v2(
                     consumer_app=app_name,

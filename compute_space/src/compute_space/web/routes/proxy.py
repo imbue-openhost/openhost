@@ -91,7 +91,7 @@ async def _app_subdomain_routing_ws() -> str | None:
         return None
     app_row = find_app_by_name(app_subdomain)
     if app_row and app_row["status"] in ("running", "starting"):
-        claims = auth.get_current_user_from_request(websocket)  # type: ignore[arg-type]
+        claims = auth.get_current_user_from_request(websocket)
         if claims is not None or is_public_path(app_row, websocket.path):
             await ws_proxy(app_row["local_port"], websocket, identity_headers=_identity_headers(claims))
     return ""  # non-None to skip dispatch

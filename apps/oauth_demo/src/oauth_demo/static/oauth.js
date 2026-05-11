@@ -2,7 +2,10 @@
  * Client-side OAuth helper library.
  *
  * Talks to the router's V2 service proxy via cross-origin fetch:
- *   POST /_services_v2/service_request (with X-OpenHost-* headers)
+ *   POST /api/services/v2/call/oauth/<endpoint>
+ *
+ * The "oauth" segment is the shortname declared under [[services.v2.consumes]]
+ * in the consuming app's manifest.
  *
  * Usage:
  *   const oauth = new OAuthClient({
@@ -15,7 +18,7 @@
  *   await oauth.connect('google');  // must be called from a click handler
  */
 
-var OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth";
+var OAUTH_SHORTNAME = "oauth";
 
 class OAuthClient {
   constructor({ scopes, appName, zoneDomain }) {
@@ -37,15 +40,10 @@ class OAuthClient {
 
   /** POST to the V2 service proxy with credentials. */
   _serviceFetch(endpoint, body) {
-    var url = "//" + this.zoneDomain + "/_services_v2/service_request";
+    var url = "//" + this.zoneDomain + "/api/services/v2/call/" + OAUTH_SHORTNAME + "/" + endpoint;
     return fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-OpenHost-Service-URL": OAUTH_SERVICE_URL,
-        "X-OpenHost-Service-Version": ">=0.1.0",
-        "X-OpenHost-Service-Endpoint": endpoint,
-      },
+      headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: typeof body === "string" ? body : JSON.stringify(body),
     });

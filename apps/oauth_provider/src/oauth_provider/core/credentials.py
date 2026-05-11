@@ -10,8 +10,7 @@ log = logging.getLogger(__name__)
 
 DYNAMIC_CRED_PROVIDERS = {"google"}
 
-SECRETS_SERVICE_URL = "github.com/imbue-openhost/openhost/services/secrets"
-SECRETS_SERVICE_VERSION = ">=0.1.0"
+SECRETS_SHORTNAME = "secrets"
 
 
 class CredentialsNotAvailable(Exception):
@@ -48,14 +47,9 @@ async def get_provider_creds(provider_name: str) -> tuple[str, str]:
 async def _fetch_secrets(keys: list[str]) -> dict[str, str]:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            f"{ROUTER_URL}/_services_v2/service_request",
+            f"{ROUTER_URL}/api/services/v2/call/{SECRETS_SHORTNAME}/get",
             json={"keys": keys},
-            headers={
-                "Authorization": f"Bearer {APP_TOKEN}",
-                "X-OpenHost-Service-URL": SECRETS_SERVICE_URL,
-                "X-OpenHost-Service-Version": SECRETS_SERVICE_VERSION,
-                "X-OpenHost-Service-Endpoint": "get",
-            },
+            headers={"Authorization": f"Bearer {APP_TOKEN}"},
         )
         resp.raise_for_status()
         data: dict[str, str] = resp.json().get("secrets", {})

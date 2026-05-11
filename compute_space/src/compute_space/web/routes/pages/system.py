@@ -33,7 +33,7 @@ async def terminal_page() -> str:
 @pages_system_bp.websocket("/terminal/ws")
 async def terminal_ws() -> None:
     """WebSocket endpoint for the terminal PTY bridge."""
-    claims: dict[str, str] | None = auth.get_current_user_from_request(websocket)  # type: ignore[arg-type]
+    claims: dict[str, str] | None = auth.get_current_user_from_request(websocket)
     if claims is None:
         return
     await handle_terminal_ws(websocket)

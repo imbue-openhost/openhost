@@ -1,6 +1,8 @@
 """Unit tests for port allocation and availability checking."""
 
 import sqlite3
+from collections.abc import Iterator
+from unittest import mock
 
 import pytest
 
@@ -83,7 +85,30 @@ class TestCheckPortAvailable:
         assert available is False
 
 
+@pytest.fixture
+def _always_bindable() -> Iterator[None]:
+    """Pretend every port is OS-bindable so resolve_port_mappings tests
+    don't depend on what's actually bound on the CI runner.
+
+    Without this mock, resolve_port_mappings tests that hardcode
+    high ports (e.g., 59200) can fail intermittently on shared
+    CI runners where some unrelated process — kernel-allocated
+    ephemeral source ports, runner-installed services, etc. —
+    happens to occupy the chosen number.  The tests want to
+    exercise resolve_port_mappings' DB-bookkeeping logic, not
+    its OS-side bindability check, so mocking _port_is_bindable
+    out is the right scope of fix.
+    """
+    with mock.patch("compute_space.core.ports._port_is_bindable", return_value=True):
+        yield
+
+
 class TestResolvePortMappings:
+    @pytest.fixture(autouse=True)
+    def _bindable(self, _always_bindable: None) -> None:
+        """Apply the bindable-port mock to every test in this class."""
+        return None
+
     def test_fixed_ports_pass_through(self, db):
         mappings = [PortMapping(label="web", container_port=80, host_port=59200)]
         resolved = resolve_port_mappings(mappings, db, 59200, 59300)

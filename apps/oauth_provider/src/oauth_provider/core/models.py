@@ -82,7 +82,7 @@ class GrantPayload:
 
 @attr.s(auto_attribs=True, frozen=True)
 class RequiredGrant:
-    grant_payload: GrantPayload
+    grant: GrantPayload
     scope: str
     grant_url: str
 
