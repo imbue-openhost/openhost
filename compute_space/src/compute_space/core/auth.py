@@ -236,6 +236,7 @@ def _validate_api_token(token: str) -> dict[str, str] | None:
     owner = db.execute("SELECT username FROM owner WHERE id = 1").fetchone()
     if not owner:
         return None
+    # TODO: give this a proper type?
     return {"sub": owner["username"], "username": owner["username"]}
 
 
@@ -253,6 +254,8 @@ def get_current_user_from_request(request: Request | Websocket) -> dict[str, Any
     Accepts either an HTTP Request or a Websocket — both expose .headers and .cookies.
     Checks JWT cookie first, then falls back to Authorization: Bearer token.
     Returns claims dict or None.
+
+    TODO: return something with proper typing!
     """
     # Warn on duplicate auth cookies — this happens when cookies were set with
     # different Domain attributes (e.g. after a config change). The browser

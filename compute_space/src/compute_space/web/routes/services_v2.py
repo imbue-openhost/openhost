@@ -11,6 +11,7 @@ from quart import url_for
 from quart import websocket
 
 from compute_space.config import get_config
+from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth import resolve_app_from_token
 from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
@@ -22,7 +23,6 @@ from compute_space.web.middleware import _app_from_origin
 from compute_space.web.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
-from compute_space.web.routes.proxy import _find_app_by_name
 from compute_space.web.routes.services import _add_cors_headers
 from compute_space.web.routes.services import _cors_origin
 
@@ -132,13 +132,13 @@ async def oauth_callback_proxy_v2() -> Response:
     if not app_name or not isinstance(app_name, str):
         return _json_error("bad_request", "Missing app in state", 400)
 
-    app_row = _find_app_by_name(app_name)
+    app_row = find_app_by_name(app_name)
     if not app_row:
         return _json_error("service_not_available", f"App '{app_name}' not found", 503)
     if app_row["status"] != "running":
         return _json_error("service_not_available", f"App '{app_name}' is not running", 503)
 
-    return await proxy_request(request, app_row["local_port"], "", override_path="/callback")
+    return await proxy_request(request, app_row["local_port"], override_path="/callback")
 
 
 # ─── Shortname-based call proxy ───
@@ -192,7 +192,6 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
     response = await proxy_request(
         request,
         provider_port,
-        base_path="",
         override_path=target_path,
         extra_headers={
             "Authorization": None,
@@ -233,7 +232,6 @@ async def service_call_ws(shortname: str, rest: str) -> None:
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
     await ws_proxy(
         provider_port,
-        base_path="",
         client_ws=websocket,
         identity_headers={
             "X-OpenHost-Permissions": grants_json,

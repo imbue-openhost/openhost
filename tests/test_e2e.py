@@ -157,40 +157,44 @@ class TestSelfHost:
         """Poll app status until test-app reports 'running'."""
         wait_app_running(session, router_url, "test-app", timeout=APP_DEPLOY_TIMEOUT_S)
 
-    # -- 6. Path-based routing ---------------------------------------------
+    # -- 6. Unknown-path 404 ----------------------------------------------
 
-    def test_06_path_routing_health(self, session, router_url):
-        """test-app health check works through path-based proxy."""
-        r = poll_endpoint(
-            session, f"{router_url}/test-app/health", fail_msg="test-app not responding through path-based proxy"
-        )
+    def test_06_unknown_app_404(self, router_url, session):
+        """Requests to unknown zone paths return 404."""
+        r = session.get(f"{router_url}/no-such-app/anything", timeout=5)
+        assert r.status_code == 404
+
+    # -- 7. Subdomain routing ----------------------------------------------
+
+    def test_07_subdomain_routing(self, session, domain):
+        """test-app responds via subdomain routing (test-app.<domain>)."""
+        app_url = f"https://test-app.{domain}"
+        r = poll_endpoint(session, f"{app_url}/health", fail_msg=f"test-app not responding via subdomain at {app_url}")
         assert r.json() == {"status": "ok"}
 
-    def test_06b_path_routing_root(self, session, router_url):
-        """GET / through proxy returns app metadata."""
-        r = session.get(f"{router_url}/test-app/", timeout=5)
+    def test_07b_subdomain_root(self, session, domain):
+        """Subdomain routing returns app metadata."""
+        app_url = f"https://test-app.{domain}"
+        r = session.get(f"{app_url}/", timeout=5)
         assert r.status_code == 200
         data = r.json()
         assert data["app"] == "test-app"
-        assert data["app_name"] == "test-app"
 
-    def test_06c_path_routing_post(self, session, router_url):
-        """POST request is proxied correctly with body."""
-        r = session.post(
-            f"{router_url}/test-app/submit",
-            data="hello world",
-            timeout=5,
-        )
+    def test_07c_subdomain_post(self, session, domain):
+        """POST request is proxied to the app via subdomain."""
+        app_url = f"https://test-app.{domain}"
+        r = session.post(f"{app_url}/submit", data="hello world", timeout=5)
         assert r.status_code == 200
         data = r.json()
         assert data["method"] == "POST"
         assert data["body"] == "hello world"
         assert data["path"] == "/submit"
 
-    def test_06d_forwarded_headers(self, session, router_url):
+    def test_07d_subdomain_forwarded_headers(self, session, domain):
         """Proxy sets X-Forwarded-* headers and strips spoofed ones."""
+        app_url = f"https://test-app.{domain}"
         r = session.get(
-            f"{router_url}/test-app/echo-headers",
+            f"{app_url}/echo-headers",
             headers={
                 "X-Custom-Test": "test-value",
                 "X-Forwarded-For": "attacker-ip",
@@ -211,33 +215,7 @@ class TestSelfHost:
         assert headers.get("X-Forwarded-Proto") != "evil"
         assert headers.get("X-Forwarded-Host") != "evil.example.com"
 
-    def test_06e_path_routing_404(self, session, router_url):
-        """Unknown paths within the app return the app's 404."""
-        r = session.get(f"{router_url}/test-app/no-such-path", timeout=5)
-        assert r.status_code == 404
-
-    def test_06f_unknown_app_404(self, router_url, session):
-        """Requests to unknown app paths return 404."""
-        r = session.get(f"{router_url}/no-such-app/anything", timeout=5)
-        assert r.status_code == 404
-
-    # -- 7. Subdomain routing ----------------------------------------------
-
-    def test_07_subdomain_routing(self, session, domain):
-        """test-app responds via subdomain routing (test-app.<domain>)."""
-        app_url = f"https://test-app.{domain}"
-        r = poll_endpoint(session, f"{app_url}/health", fail_msg=f"test-app not responding via subdomain at {app_url}")
-        assert r.json() == {"status": "ok"}
-
-    def test_07b_subdomain_root(self, session, domain):
-        """Subdomain routing returns app metadata (no base_path prefix)."""
-        app_url = f"https://test-app.{domain}"
-        r = session.get(f"{app_url}/", timeout=5)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["app"] == "test-app"
-
-    def test_07c_subdomain_unauth_rejected(self, domain):
+    def test_07e_subdomain_unauth_rejected(self, domain):
         """Unauthenticated subdomain request to a non-public path is rejected."""
         app_url = f"https://test-app.{domain}"
         r = requests.get(
@@ -250,21 +228,21 @@ class TestSelfHost:
 
     # -- 8. App lifecycle: stop and reload ---------------------------------
 
-    def test_08_stop_app(self, session, router_url):
+    def test_08_stop_app(self, session, router_url, domain):
         """Stop the app -- proxied requests should fail afterward."""
         r = session.post(f"{router_url}/stop_app/test-app", timeout=30)
         assert r.status_code == 200
         time.sleep(2)
-        r = session.get(f"{router_url}/test-app/health", timeout=5)
+        r = session.get(f"https://test-app.{domain}/health", timeout=5)
         assert r.status_code in (404, 502, 503)
 
-    def test_08b_reload_app(self, session, router_url):
+    def test_08b_reload_app(self, session, router_url, domain):
         """Reload the app -- rebuilds and restarts the container."""
         r = session.post(f"{router_url}/reload_app/test-app", timeout=120)
         assert r.status_code == 200
         r = poll_endpoint(
             session,
-            f"{router_url}/test-app/health",
+            f"https://test-app.{domain}/health",
             timeout=APP_DEPLOY_TIMEOUT_S,
             interval=5,
             fail_msg="test-app did not come back after reload",
@@ -284,23 +262,15 @@ class TestSelfHost:
         assert r.json().get("app_name") == "test-app-2"
         wait_app_running(session, router_url, "test-app-2", timeout=APP_DEPLOY_TIMEOUT_S)
 
-    def test_09b_both_apps_routable(self, session, router_url):
-        """Both apps respond independently through path-based routing."""
-        r1 = session.get(f"{router_url}/test-app/health", timeout=5)
-        assert r1.status_code == 200
-        assert r1.json() == {"status": "ok"}
-
-        r2 = session.get(f"{router_url}/test-app-2/health", timeout=5)
-        assert r2.status_code == 200
-        assert r2.json() == {"status": "ok"}
-
-    def test_09c_subdomain_isolation(self, session, domain):
+    def test_09b_subdomain_isolation(self, session, domain):
         """Both apps respond via their own subdomains."""
         r1 = session.get(f"https://test-app.{domain}/health", timeout=5)
         assert r1.status_code == 200
+        assert r1.json() == {"status": "ok"}
 
         r2 = session.get(f"https://test-app-2.{domain}/health", timeout=5)
         assert r2.status_code == 200
+        assert r2.json() == {"status": "ok"}
 
     def test_09d_apps_list(self, session, router_url):
         """GET /api/apps returns both deployed apps."""
@@ -311,18 +281,18 @@ class TestSelfHost:
         assert "test-app" in data, f"test-app not in /api/apps response: {list(data.keys())}"
         assert "test-app-2" in data, f"test-app-2 not in /api/apps response: {list(data.keys())}"
 
-    def test_09e_remove_second_app(self, session, router_url):
+    def test_09e_remove_second_app(self, session, router_url, domain):
         """Remove the second app; first app still works."""
         r = session.post(f"{router_url}/remove_app/test-app-2", timeout=30)
         assert r.status_code == 202
         wait_app_removed(session, router_url, "test-app-2")
 
         # Second app is gone
-        r = session.get(f"{router_url}/test-app-2/health", timeout=5)
+        r = session.get(f"https://test-app-2.{domain}/health", timeout=5)
         assert r.status_code == 404
 
         # First app still works
-        r = session.get(f"{router_url}/test-app/health", timeout=5)
+        r = session.get(f"https://test-app.{domain}/health", timeout=5)
         assert r.status_code == 200
 
     # -- 10. API tokens ----------------------------------------------------
@@ -541,7 +511,7 @@ class TestSelfHost:
         assert r.status_code == 202
         wait_app_removed(session, router_url, "test-app")
 
-    def test_14b_app_gone(self, session, router_url):
+    def test_14b_app_gone(self, session, domain):
         """After removal, app routes return 404."""
-        r = session.get(f"{router_url}/test-app/health", timeout=5)
+        r = session.get(f"https://test-app.{domain}/health", timeout=5)
         assert r.status_code == 404

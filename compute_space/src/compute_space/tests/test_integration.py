@@ -165,7 +165,7 @@ class TestRouterCore:
     """Tests that only need the router running, no external runtimes."""
 
     def test_health(self, router_process, config):
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.get(f"{base_url}/health")
         assert r.status_code == 200
         data = r.json()
@@ -174,7 +174,7 @@ class TestRouterCore:
 
     def test_post_setup_security_audit(self, admin_session, config):
         """Post-setup audit returns valid structure from /api/security-audit."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/api/security-audit")
         assert r.status_code == 200
         data = r.json()
@@ -191,7 +191,7 @@ class TestRouterCore:
 
     def test_dashboard_requires_auth(self, admin_session, config):
         """Unauthenticated requests to /dashboard redirect to /login."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         # Use a fresh session (no cookies) to test auth redirect
         r = requests.get(
             f"{base_url}/dashboard",
@@ -202,7 +202,7 @@ class TestRouterCore:
 
     def test_login_bad_credentials(self, admin_session, config):
         """Bad credentials on /login show error (owner must exist first)."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.post(
             f"{base_url}/login",
             data={"username": "wrong", "password": "wrong"},
@@ -211,7 +211,7 @@ class TestRouterCore:
         assert "Invalid password" in r.text
 
     def test_dashboard_after_login(self, admin_session, config):
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/dashboard")
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
@@ -227,7 +227,7 @@ class TestRouterCore:
 
     def test_system_page_requires_auth(self, admin_session, config):
         """Unauthenticated requests to /system/ redirect to /login."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.get(
             f"{base_url}/system/",
             allow_redirects=False,
@@ -236,7 +236,7 @@ class TestRouterCore:
         assert "/login" in r.headers["Location"]
 
     def test_system_page_after_login(self, admin_session, config):
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/system/")
         assert r.status_code == 200
         # The System page hosts the security audit, listening ports, storage,
@@ -248,7 +248,7 @@ class TestRouterCore:
 
     def test_listening_ports_endpoint(self, admin_session, config):
         """GET /api/listening-ports returns a list of classified ports."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/api/listening-ports")
         assert r.status_code == 200
         data = r.json()
@@ -263,14 +263,14 @@ class TestRouterCore:
 
     def test_setup_returns_403_if_already_set_up(self, admin_session, config):
         """GET /setup returns 403 when owner already exists."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.get(f"{base_url}/setup", allow_redirects=False)
         assert r.status_code == 403
         assert "already been set up" in r.text
 
     def test_setup_post_returns_403_if_already_set_up(self, admin_session, config):
         """POST /setup returns 403 when owner already exists."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.post(
             f"{base_url}/setup",
             data={"password": "newpass", "confirm_password": "newpass"},
@@ -281,7 +281,7 @@ class TestRouterCore:
 
     def test_add_app_page_hides_hidden_builtin_apps(self, admin_session, config):
         """Apps with hidden=true in their manifest must not appear on the Deploy page."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/add_app")
         assert r.status_code == 200
         # test_app has hidden = true — it must not show up
@@ -292,7 +292,7 @@ class TestRouterCore:
         )
 
     def test_add_app_no_url(self, admin_session, config):
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
             data={},
@@ -301,7 +301,7 @@ class TestRouterCore:
         assert "No repository URL provided" in r.json()["error"]
 
     def test_add_app_bad_path(self, admin_session, config):
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
             data={"repo_url": "file:///nonexistent/path"},
@@ -311,7 +311,7 @@ class TestRouterCore:
 
     def test_add_app_file_url_non_git_accepted(self, admin_session, config):
         """POST with a file:// URL to a non-git dir with openhost.toml succeeds."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         repo_url = f"file://{_FIXTURES_DIR}/test_app"
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
@@ -324,7 +324,7 @@ class TestRouterCore:
 
     def test_add_app_file_url_git_dir_manifest(self, admin_session, config, tmp_path):
         """POST with a file:// URL to a git-init'd dir fetches openhost.toml."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         git_dir = tmp_path / "test_repo"
         git_dir.mkdir()
         toml_path = git_dir / "openhost.toml"
@@ -358,7 +358,7 @@ class TestRouterCore:
 
     def test_add_app_file_url_bare_repo_manifest(self, admin_session, config, tmp_path):
         """POST with a file:// URL to a bare git repo fetches openhost.toml."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         bare_path = str(tmp_path / "bare_repo.git")
         _create_bare_git_repo(os.path.join(_FIXTURES_DIR, "test_app"), bare_path)
         repo_url = f"file://{bare_path}"
@@ -372,13 +372,13 @@ class TestRouterCore:
 
     def test_catch_all_404(self, router_process, config):
         """Requests to unknown paths return 404."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.get(f"{base_url}/no-such-app/anything")
         assert r.status_code == 404
 
     def test_api_token_create_and_use(self, admin_session, config):
         """Create an API token, then use it to access a protected endpoint."""
-        base = f"http://{config.host}:{config.port}"
+        base = _zone_url(config)
 
         # Create a token
         r = admin_session.post(f"{base}/api/tokens", data={"name": "test-token", "expiry_hours": "1"})
@@ -416,7 +416,7 @@ class TestRouterCore:
 
     def test_api_token_no_expiry(self, admin_session, config):
         """Tokens created with expiry_hours=never should work."""
-        base = f"http://{config.host}:{config.port}"
+        base = _zone_url(config)
         r = admin_session.post(f"{base}/api/tokens", data={"name": "no-expiry", "expiry_hours": "never"})
         data = r.json()
         assert data["expires_at"] is None
@@ -434,7 +434,7 @@ class TestRouterCore:
 
     def test_api_token_invalid_rejected(self, router_process, config):
         """A bogus Bearer token is rejected."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = requests.get(
             f"{base_url}/api/apps",
             headers={"Authorization": "Bearer bogus-token-value"},
@@ -444,7 +444,7 @@ class TestRouterCore:
 
     def test_expired_token_refresh(self, admin_session, config):
         """Expired access tokens are transparently refreshed via the refresh cookie."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
 
         # Read the private key the router generated at startup
         private_key = (Path(config.keys_dir) / "private.pem").read_text()
@@ -555,6 +555,16 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
 
 
+def _zone_url(config):
+    """Zone base URL — resolves to 127.0.0.1 via the DNS fixture in conftest.py."""
+    return f"http://{config.zone_domain}:{config.port}"
+
+
+def _app_url(config, app_name):
+    """App subdomain base URL — same DNS trick applies."""
+    return f"http://{app_name}.{config.zone_domain}:{config.port}"
+
+
 @requires_containers
 class TestContainerGone:
     """Test that apps recover when their container is completely gone.
@@ -569,7 +579,7 @@ class TestContainerGone:
     APP_NAME = "test-app"
     CONTAINER_NAME = "openhost-test-app"
     ROUTER_PORT = 18082
-    BASE_URL = "http://127.0.0.1:18082"
+    BASE_URL = "http://testzone.local:18082"
 
     def test_app_recovers_after_container_removed(self, tmp_path):
         """After container is completely removed, router should rebuild and restart.
@@ -770,7 +780,7 @@ class TestContainerRestart:
     APP_NAME = "test-app"
     CONTAINER_NAME = "openhost-test-app"
     ROUTER_PORT = 18081
-    BASE_URL = "http://127.0.0.1:18081"
+    BASE_URL = "http://testzone.local:18081"
 
     def test_app_status_after_container_restart(self, tmp_path):
         """After the engine restarts, router should rebuild and show app as 'running'.
@@ -837,7 +847,7 @@ class TestContainerRestart:
             # Verify proxy works
             _wait_for_url(
                 session,
-                f"{self.BASE_URL}/{self.APP_NAME}/health",
+                f"http://{self.APP_NAME}.{config.zone_domain}:{self.ROUTER_PORT}/health",
                 timeout=30,
             )
 
@@ -1024,13 +1034,13 @@ class TestContainerE2E:
 
     def test_deploy(self, admin_session, config):
         """Deploy the test app via the router dashboard."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = _deploy_app(admin_session, base_url, self.APP_PATH)
         assert "test-app" in r.text
 
     def test_app_detail(self, admin_session, config):
         """The app detail page shows correct metadata once build completes."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         # Wait for background deploy to finish
         deadline = time.time() + 120
         while time.time() < deadline:
@@ -1046,8 +1056,7 @@ class TestContainerE2E:
 
     def test_proxy_health(self, admin_session, config, router_process):
         """Wait for the app to become ready through the reverse proxy."""
-        base_url = f"http://{config.host}:{config.port}"
-        url = f"{base_url}/test-app/health"
+        url = f"{_app_url(config, 'test-app')}/health"
         deadline = time.time() + 120
         last_status = None
         last_err = None
@@ -1066,9 +1075,8 @@ class TestContainerE2E:
     # -- proxy: interact --
 
     def test_proxy_get(self, admin_session, config):
-        """GET request is proxied correctly with path stripping."""
-        base_url = f"http://{config.host}:{config.port}"
-        r = admin_session.get(f"{base_url}/test-app/")
+        """GET request is proxied via subdomain routing."""
+        r = admin_session.get(f"{_app_url(config, 'test-app')}/")
         assert r.status_code == 200
         data = r.json()
         assert data["app"] == "test-app"
@@ -1076,9 +1084,8 @@ class TestContainerE2E:
 
     def test_proxy_post(self, admin_session, config):
         """POST request is proxied correctly with body."""
-        base_url = f"http://{config.host}:{config.port}"
         r = admin_session.post(
-            f"{base_url}/test-app/submit",
+            f"{_app_url(config, 'test-app')}/submit",
             data="hello world",
         )
         assert r.status_code == 200
@@ -1089,9 +1096,8 @@ class TestContainerE2E:
 
     def test_proxy_forwards_headers(self, admin_session, config):
         """Proxy forwards custom headers and adds X-Forwarded-* headers."""
-        base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/test-app/echo-headers",
+            f"{_app_url(config, 'test-app')}/echo-headers",
             headers={"X-Custom-Test": "test-value"},
         )
         assert r.status_code == 200
@@ -1102,9 +1108,8 @@ class TestContainerE2E:
 
     def test_proxy_strips_spoofed_forwarded_headers(self, admin_session, config):
         """Client-supplied X-Forwarded-* headers are overwritten, not forwarded."""
-        base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/test-app/echo-headers",
+            f"{_app_url(config, 'test-app')}/echo-headers",
             headers={
                 "X-Forwarded-For": "attacker-ip",
                 "X-Forwarded-Proto": "evil",
@@ -1120,15 +1125,14 @@ class TestContainerE2E:
 
     def test_proxy_404(self, admin_session, config):
         """Unknown paths within the app return the app's 404."""
-        base_url = f"http://{config.host}:{config.port}"
-        r = admin_session.get(f"{base_url}/test-app/no-such-path")
+        r = admin_session.get(f"{_app_url(config, 'test-app')}/no-such-path")
         assert r.status_code == 404
 
     # -- stop / reload --
 
     def test_stop(self, admin_session, config):
         """Stop the app — container is killed, proxied requests fail."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/stop_app/test-app",
         )
@@ -1136,14 +1140,14 @@ class TestContainerE2E:
 
         # Proxied requests should now fail
         r = admin_session.get(
-            f"{base_url}/test-app/health",
+            f"{_app_url(config, 'test-app')}/health",
             timeout=2,
         )
         assert r.status_code in (404, 502)
 
     def test_reload(self, admin_session, config):
         """Reload the app — rebuilds image, restarts container."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/reload_app/test-app",
             timeout=120,
@@ -1152,7 +1156,7 @@ class TestContainerE2E:
 
         # Wait for it to come back (the rebuild may take a while under load)
         # Also poll the API for status to detect errors early.
-        url = f"{base_url}/test-app/health"
+        url = f"{_app_url(config, 'test-app')}/health"
         status_url = f"{base_url}/api/app_status/test-app"
         deadline = time.time() + 120
         while time.time() < deadline:
@@ -1184,7 +1188,7 @@ class TestContainerE2E:
 
     def test_remove(self, admin_session, config):
         """Remove the app — stops container, cleans data."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
@@ -1193,9 +1197,8 @@ class TestContainerE2E:
 
     def test_proxy_gone_after_remove(self, admin_session, config):
         """After removal, proxied requests should 404."""
-        base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/test-app/health",
+            f"{_app_url(config, 'test-app')}/health",
             timeout=2,
         )
         assert r.status_code == 404
@@ -1245,7 +1248,7 @@ class TestRemoveKeepData:
 
     def test_deploy(self, admin_session, config):
         """Deploy the test app."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         _deploy_app(admin_session, base_url, self.APP_PATH)
         wait_app_running(admin_session, base_url, "test-app", timeout=120)
 
@@ -1260,7 +1263,7 @@ class TestRemoveKeepData:
 
     def test_remove_keep_data(self, admin_session, config):
         """Remove app with keep_data=1, persistent data survives."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
             data={"keep_data": "1"},
@@ -1283,7 +1286,7 @@ class TestRemoveKeepData:
 
     def test_redeploy_picks_up_data(self, admin_session, config):
         """Re-deploy the same app; persistent data is still there."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         _deploy_app(admin_session, base_url, self.APP_PATH)
         wait_app_running(admin_session, base_url, "test-app", timeout=120)
 
@@ -1300,7 +1303,7 @@ class TestRemoveKeepData:
 
     def test_cleanup(self, admin_session, config):
         """Final cleanup: remove app fully (with data)."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/remove_app/test-app",
         )
@@ -1411,7 +1414,7 @@ class TestGitUrlDeployE2E:
 
     def test_deploy_from_git_url(self, admin_session, config):
         """Deploy an app from a file:// Git URL via the API."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         # Create bare git repo from the test fixture
         bare_path = os.path.join(config.temporary_data_dir, "test-git-deploy.git")
         _create_bare_git_repo(self.APP_PATH, bare_path)
@@ -1442,7 +1445,7 @@ class TestGitUrlDeployE2E:
 
     def test_app_detail_running(self, admin_session, config):
         """Wait for the Git-cloned app to finish building and reach running status."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         deadline = time.time() + 120
         while time.time() < deadline:
             r = admin_session.get(
@@ -1458,8 +1461,7 @@ class TestGitUrlDeployE2E:
 
     def test_proxy_works(self, admin_session, config):
         """Verify the app deployed from a Git URL is reachable through the proxy."""
-        base_url = f"http://{config.host}:{config.port}"
-        url = f"{base_url}/{self.APP_NAME}/health"
+        url = f"{_app_url(config, self.APP_NAME)}/health"
         deadline = time.time() + 30
         last_status = None
         last_err = None
@@ -1495,7 +1497,7 @@ class TestGitUrlDeployE2E:
 
     def test_reload_does_git_pull(self, admin_session, config):
         """Reload the Git-deployed app — should do 'git pull' instead of copytree."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/reload_app/{self.APP_NAME}",
             timeout=120,
@@ -1503,7 +1505,7 @@ class TestGitUrlDeployE2E:
         assert r.status_code == 200
 
         # Wait for the app to come back after reload
-        url = f"{base_url}/{self.APP_NAME}/health"
+        url = f"{_app_url(config, self.APP_NAME)}/health"
         deadline = time.time() + 60
         while time.time() < deadline:
             try:
@@ -1519,7 +1521,7 @@ class TestGitUrlDeployE2E:
 
     def test_remove(self, admin_session, config):
         """Remove the Git-deployed app."""
-        base_url = f"http://{config.host}:{config.port}"
+        base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/remove_app/{self.APP_NAME}",
         )
@@ -1528,9 +1530,8 @@ class TestGitUrlDeployE2E:
 
     def test_proxy_gone_after_remove(self, admin_session, config):
         """After removal, proxied requests should 404."""
-        base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/{self.APP_NAME}/health",
+            f"{_app_url(config, self.APP_NAME)}/health",
             timeout=2,
         )
         assert r.status_code == 404
