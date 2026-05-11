@@ -277,6 +277,23 @@ def test_remote_install_works_from_running_event_loop(cfg_with_apps, monkeypatch
     assert result[0].status == "ok", result[0].error
 
 
+def test_catalog_in_default_factory():
+    """openhost-catalog must be in the shipped DefaultConfig.default_apps
+    so every new instance auto-installs it at /setup completion.
+
+    Regression guard against accidental removal during config refactors.
+    """
+    cfg = DefaultConfig(
+        host="127.0.0.1",
+        data_root_dir="/tmp/fake",
+        zone_domain="test.local",
+        tls_enabled=False,
+        start_caddy=False,
+    )
+    catalog_entries = [s for s in cfg.default_apps if "openhost-catalog" in s.lower()]
+    assert catalog_entries, f"openhost-catalog not in default_apps: {cfg.default_apps}"
+
+
 def test_mixed_local_and_remote_entries(cfg_with_apps, monkeypatch):
     """A single deploy can contain both vendored and remote entries."""
     _patch_insert_and_deploy(monkeypatch)
