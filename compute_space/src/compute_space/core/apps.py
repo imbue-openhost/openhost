@@ -820,24 +820,22 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
 
 
 def parse_app_from_host(host: str) -> str | None:
-    """Extract app name from a Host header value.
+    """Extract app name from a Host header value, by assuming that app_name is a subdir of zone_domain (as is convention).
 
-    ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
-    zplizzi.host.imbue.com -> None
-    localhost:8080 -> None
+    returns None if an app_name cannot be parsed from the header.
 
-    Strips any ``:port`` suffix on the incoming Host header before comparing,
-    since ``zone_domain`` in config is bare (no port).
+    if zone_dir==host.imbue.com:
+        ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
+        zplizzi.host.imbue.com -> None
+        localhost:8080 -> None
     """
     config = get_config()
-    if not config.zone_domain:
-        return None
-    zone_domain = config.zone_domain.split(":", 1)[0]
+    zone_domain_no_port = config.zone_domain.split(":", 1)[0]
     host_no_port = host.split(":", 1)[0]
-    if host_no_port == zone_domain:
+    if host_no_port == zone_domain_no_port:
         return None
-    if host_no_port.endswith("." + zone_domain):
-        app_name = host_no_port[: -(len(zone_domain) + 1)]
+    if host_no_port.endswith("." + zone_domain_no_port):
+        app_name = host_no_port[: -(len(zone_domain_no_port) + 1)]
         if "." not in app_name:
             return app_name
     return None
