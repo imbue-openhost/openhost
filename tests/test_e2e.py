@@ -16,6 +16,7 @@ import pytest
 import requests
 import websockets
 
+from compute_space.tests.utils import app_id_for
 from compute_space.tests.utils import wait_app_removed
 from compute_space.tests.utils import wait_app_running
 from tests.helpers import poll_endpoint
@@ -230,7 +231,8 @@ class TestSelfHost:
 
     def test_08_stop_app(self, session, router_url, domain):
         """Stop the app -- proxied requests should fail afterward."""
-        r = session.post(f"{router_url}/stop_app/test-app", timeout=30)
+        app_id = app_id_for(session, router_url, "test-app")
+        r = session.post(f"{router_url}/stop_app/{app_id}", timeout=30)
         assert r.status_code == 200
         time.sleep(2)
         r = session.get(f"https://test-app.{domain}/health", timeout=5)
@@ -238,7 +240,8 @@ class TestSelfHost:
 
     def test_08b_reload_app(self, session, router_url, domain):
         """Reload the app -- rebuilds and restarts the container."""
-        r = session.post(f"{router_url}/reload_app/test-app", timeout=120)
+        app_id = app_id_for(session, router_url, "test-app")
+        r = session.post(f"{router_url}/reload_app/{app_id}", timeout=120)
         assert r.status_code == 200
         r = poll_endpoint(
             session,
@@ -277,13 +280,15 @@ class TestSelfHost:
         r = session.get(f"{router_url}/api/apps", timeout=10)
         assert r.status_code == 200
         data = r.json()
-        # /api/apps returns a dict keyed by app name
-        assert "test-app" in data, f"test-app not in /api/apps response: {list(data.keys())}"
-        assert "test-app-2" in data, f"test-app-2 not in /api/apps response: {list(data.keys())}"
+        # /api/apps returns a list of {app_id, name, status, error_message}
+        names = {entry.get("name") for entry in data}
+        assert "test-app" in names, f"test-app not in /api/apps response: {names}"
+        assert "test-app-2" in names, f"test-app-2 not in /api/apps response: {names}"
 
     def test_09e_remove_second_app(self, session, router_url, domain):
         """Remove the second app; first app still works."""
-        r = session.post(f"{router_url}/remove_app/test-app-2", timeout=30)
+        app_id = app_id_for(session, router_url, "test-app-2")
+        r = session.post(f"{router_url}/remove_app/{app_id}", timeout=30)
         assert r.status_code == 202
         wait_app_removed(session, router_url, "test-app-2")
 
@@ -323,7 +328,7 @@ class TestSelfHost:
             timeout=10,
         )
         assert r.status_code == 200
-        assert isinstance(r.json(), dict)
+        assert isinstance(r.json(), list)
 
     def test_10c_invalid_token_rejected(self, router_url):
         """A bogus Bearer token is rejected."""
@@ -434,8 +439,9 @@ class TestSelfHost:
         assert "temporary" not in data
 
     def test_12b_app_logs(self, session, router_url):
-        """GET /app_logs/<app_name> returns log content."""
-        r = session.get(f"{router_url}/app_logs/test-app", timeout=10)
+        """GET /app_logs/<app_id> returns log content."""
+        app_id = app_id_for(session, router_url, "test-app")
+        r = session.get(f"{router_url}/app_logs/{app_id}", timeout=10)
         assert r.status_code == 200
 
     def test_12c_compute_space_logs(self, session, router_url):
@@ -507,7 +513,8 @@ class TestSelfHost:
 
     def test_14_remove_app(self, session, router_url):
         """Remove the deployed test-app."""
-        r = session.post(f"{router_url}/remove_app/test-app", timeout=30)
+        app_id = app_id_for(session, router_url, "test-app")
+        r = session.post(f"{router_url}/remove_app/{app_id}", timeout=30)
         assert r.status_code == 202
         wait_app_removed(session, router_url, "test-app")
 
