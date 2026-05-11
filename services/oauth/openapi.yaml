@@ -6,9 +6,8 @@ info:
     third-party APIs (Google, GitHub, etc.).
 
     **Service URL:** `github.com/imbue-openhost/openhost/services/oauth`
-
-    All requests are proxied through the router at
-    `/api/services/v2/service_request` (with service URL, version, and endpoint passed as `X-OpenHost-Service-*` headers).
+    
+    All requests are proxied through the openhost router.
     The router injects an `X-OpenHost-Permissions` header containing the
     consumer app's granted permissions. The service validates these
     provider-side before returning data.
