@@ -74,11 +74,11 @@ If the resolved default's version doesn't satisfy the consumer's version specifi
 
 ### Permissions
 
-Permissions are **opaque grant payloads** (strings or JSON objects), scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
+Permissions are **opaque grant payloads** (strings or JSON objects), scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set (those that apply to the calling app and service URL) to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
 
 **Grant scope** is one of:
-- `global`: applies to all providers of the given service. This is the scope for manifest-declared permission grants.
-- `app`: applies only to a specific provider. These are often data-dependent permissions, eg "access email for me@example.com", where that data only lives in a specific provider app, so a global scoped permission wouldn't make sense.
+- `global`: applies to **all providers** of the given service. This is the scope for manifest-declared permission grants.
+- `app`: applies only to a **specific provider** app. These are often data-dependent permissions, eg "access email for me@example.com", where that data only lives in a specific provider app, so a global scoped permission wouldn't make sense.
 
 **On every proxied call, the router injects:**
 - `X-OpenHost-Consumer: <consumer_app>`
@@ -104,6 +104,28 @@ For `scope: "global"`, the router rewrites the response to add a `grant_url` poi
 The consumer redirects the owner to `grant_url`; after approval, the call can be retried.
 
 **Granting at deploy time.** Global-scoped permissions specified in the consumer app manifest (`grants`) can be granted as part of the app install, either in the openhost web UI or via the compute_space CLI's `--grant-permissions-v2` flag.
+
+### Management API
+
+These endpoints back the owner-facing UI and are authenticated by the owner login cookie unless otherwise noted. Bodies and responses are JSON.
+
+**Permissions**
+
+- `GET /api/permissions/v2[?app=<name>]` — list grants, optionally filtered to one consumer app. Returns an array of `{consumer_app, service_url, grant, scope, provider_app}`.
+- `POST /api/permissions/v2/grant_global_scoped` — grant a global-scoped permission. Body: `{app, service_url, grant}`.
+- `POST /api/permissions/v2/grant_app_scoped` — grant an app-scoped permission. **Authenticated with the calling provider's app token** (not the owner cookie); the `provider_app` is taken from the token. Body: `{consumer_app, service_url, grant}`. Used by provider apps after running their own user-facing approval flow (e.g. an OAuth dance).
+- `POST /api/permissions/v2/revoke` — revoke a permission. Body: `{app, service_url, grant, scope?, provider_app?}`. `scope` defaults to `"global"`. 404 if no matching row.
+
+The `grant` field on these endpoints is whatever shape the service defines — passed through the router verbatim.
+
+**Default provider**
+
+Each service URL has at most one default provider (set automatically to the first app to register; the owner can change it). Calls without an explicit provider use this default.
+
+- `GET /api/services/v2/defaults` — list all `(service_url, app_name)` defaults.
+- `GET /api/services/v2/providers?service=<url>` — list every registered provider for a service, with `is_default`, `service_version`, `endpoint`, and app `status`.
+- `POST /api/services/v2/defaults` — set the default. Body: `{service_url, app_name}`. 404 if `app_name` doesn't actually provide that service.
+- `DELETE /api/services/v2/defaults` — clear the default. Body: `{service_url}`. After this, calls to the service return 503 until a new default is set (or another provider is installed).
 
 ### Retrofitting existing apps
 
@@ -135,4 +157,6 @@ Provider apps should verify permissions attached to inbound requests. A simple p
   }
   reverse_proxy localhost:3000
 }```
+
+
 

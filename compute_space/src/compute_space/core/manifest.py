@@ -9,6 +9,7 @@ from packaging.specifiers import InvalidSpecifier
 from packaging.specifiers import SpecifierSet
 
 from compute_space.core.logging import logger
+from compute_space.core.permissions_v2 import Grant
 
 _SHORTNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
@@ -94,10 +95,10 @@ class ServiceConsumes:
     service: str
     shortname: str
     version: str
-    # Each grant is either an opaque string (e.g. "read") or a JSON object
-    # (e.g. {"key": "DB_URL"}). The shape is defined by the service, not by
-    # us — providers receive the raw grants and decide what they mean.
-    grants: list[str | dict[str, Any]] = attr.Factory(list)
+    # Each grant is either an opaque string (e.g. "read") or a JSON structure
+    # (e.g. {"key": "DB_URL"} or a list). The shape is defined by the service,
+    # not by us — providers receive the raw grants and decide what they mean.
+    grants: list[Grant] = attr.Factory(list)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -266,11 +267,11 @@ def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
         grants_raw = entry.get("grants", [])
         if not isinstance(grants_raw, list):
             raise ValueError("[[services.v2.consumes]] grants must be a list")
-        grants: list[str | dict[str, Any]] = []
+        grants: list[Grant] = []
         for g in grants_raw:
-            if not isinstance(g, (str, dict)):
+            if not isinstance(g, (str, dict, list)):
                 raise ValueError(
-                    f"[[services.v2.consumes]] grant entry must be a string or table, got {type(g).__name__}"
+                    f"[[services.v2.consumes]] grant entry must be a string, table, or array, got {type(g).__name__}"
                 )
             grants.append(g)
         p = ServiceConsumes(
