@@ -2,8 +2,13 @@
 provider-side permission validation."""
 
 import json
+import sqlite3
+from typing import Any
 
 import attr
+from packaging.specifiers import InvalidSpecifier
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 from quart import Blueprint
 from quart import Response
 from quart import request
@@ -13,6 +18,12 @@ from quart import websocket
 from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth import resolve_app_from_token
+from compute_space.core.containers import get_docker_logs
+from compute_space.core.installer import INSTALLER_SERVICE_URL
+from compute_space.core.installer import INSTALLER_SERVICE_VERSION
+from compute_space.core.installer import InstallError
+from compute_space.core.installer import check_install_allowed
+from compute_space.core.installer import install_from_repo_url
 from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
@@ -179,6 +190,11 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
     except ShortnameNotDeclared as e:
         return _json_error("shortname_not_declared", e.message, 404)
 
+    # Installer is a router-internal pseudo-service: it has no provider
+    # app and its handlers run in-process to share the router's DB.
+    if service_url == INSTALLER_SERVICE_URL:
+        return await _handle_installer_request(consumer_app, version_spec, rest, db)
+
     try:
         _, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
@@ -239,3 +255,135 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         },
         override_path=target_path,
     )
+
+
+# ─── Installer (router-internal v2 service) ───
+#
+# The installer has no provider app — its handlers run in-process so they
+# can share the router's DB and apps.* state.  Apps that consume it
+# declare:
+#
+#     [[services.v2.consumes]]
+#     service   = "github.com/imbue-openhost/openhost/services/installer"
+#     shortname = "installer"
+#     version   = ">=0.1.0"
+#     grants    = [{capability = "install", repo_url_prefix = "https://..."}]
+#
+# and call /api/services/v2/call/installer/{install,status/<name>,logs/<name>}.
+
+
+async def _handle_installer_request(
+    consumer_app: str, version_spec: str, rest: str, db: sqlite3.Connection
+) -> Response:
+    """Dispatch ``installer`` v2 service requests in-process.
+
+    Routes:
+        POST /install                — body: {repo_url, app_name?}
+        GET  /status/<app_name>      — only for apps this consumer installed
+        GET  /logs/<app_name>        — only for apps this consumer installed
+    """
+    try:
+        spec = SpecifierSet(version_spec)
+    except InvalidSpecifier:
+        return _json_error("bad_request", f"Invalid version specifier: {version_spec}", 400)
+    if Version(INSTALLER_SERVICE_VERSION) not in spec:
+        return _json_error(
+            "service_not_available",
+            f"installer version {INSTALLER_SERVICE_VERSION} does not match {version_spec}",
+            503,
+        )
+
+    parts = rest.strip("/").split("/")
+
+    # POST /install
+    if request.method == "POST" and parts == ["install"]:
+        body = await _read_json_body()
+        if not isinstance(body, dict):
+            return _json_error("bad_request", "request body must be JSON object", 400)
+        repo_url = (body.get("repo_url") or "").strip()
+        if not repo_url:
+            return _json_error("bad_request", "repo_url is required", 400)
+        app_name = (body.get("app_name") or "").strip() or None
+
+        grants = [g.grant for g in get_granted_permissions_v2(consumer_app, INSTALLER_SERVICE_URL)]
+        if (reason := check_install_allowed(repo_url, grants)) is not None:
+            return _installer_permission_denied(consumer_app, repo_url, reason)
+
+        try:
+            result = await install_from_repo_url(
+                repo_url, get_config(), db, app_name=app_name, installed_by=consumer_app
+            )
+        except InstallError as exc:
+            return _json_error("install_failed", exc.message, exc.status_code)
+        return _json_ok({"ok": True, "app_name": result.app_name, "status": result.status})
+
+    # GET /status/<app_name> and GET /logs/<app_name>
+    if request.method == "GET" and len(parts) == 2 and parts[0] in ("status", "logs"):
+        sub, app_name = parts
+        row, denied = _lookup_consumer_install(consumer_app, app_name, db)
+        if denied is not None:
+            return denied
+        assert row is not None
+        if sub == "status":
+            return _json_ok({"status": row["status"], "error": row["error_message"]})
+        logs = get_docker_logs(app_name, get_config().temporary_data_dir, row["container_id"])
+        return Response(logs, status=200, content_type="text/plain; charset=utf-8")
+
+    return _json_error("bad_request", f"Unknown installer endpoint: {request.method} /{rest}", 404)
+
+
+async def _read_json_body() -> Any:
+    try:
+        return await request.get_json()
+    except Exception:
+        return None
+
+
+def _lookup_consumer_install(
+    consumer_app: str, app_name: str, db: sqlite3.Connection
+) -> tuple[sqlite3.Row | None, Response | None]:
+    """Fetch the apps row only if ``consumer_app`` installed it.
+
+    Returns ``(row, None)`` on success or ``(None, error_response)`` on
+    not_found / forbidden.  The row carries every column callers need so
+    /status and /logs can share the lookup.
+    """
+    row = db.execute(
+        "SELECT status, error_message, container_id, installed_by FROM apps WHERE name = ?",
+        (app_name,),
+    ).fetchone()
+    if not row:
+        return None, _json_error("not_found", f"app {app_name!r} not found", 404)
+    if row["installed_by"] != consumer_app:
+        return None, _json_error("forbidden", f"{consumer_app} did not install {app_name!r}", 403)
+    return row, None
+
+
+def _json_ok(body: dict[str, Any]) -> Response:
+    return Response(json.dumps(body), status=200, content_type="application/json")
+
+
+def _installer_permission_denied(consumer_app: str, repo_url: str, reason: str) -> Response:
+    """Return the v2 standard permission_required shape with a grant URL.
+
+    Body matches the post-PR67 ``required_grant`` field name (``grant``
+    rather than ``grant_payload``).
+    """
+    grant = {"capability": "install", "repo_url_prefix": repo_url}
+    try:
+        approve_path = url_for(
+            "pages_permissions_v2.approve_permissions_v2",
+            app=consumer_app,
+            service=INSTALLER_SERVICE_URL,
+            grant=json.dumps(grant, sort_keys=True),
+        )
+        grant_url = f"https://{get_config().zone_domain}{approve_path}"
+    except Exception:
+        # In tests where the permissions blueprint isn't registered.
+        grant_url = ""
+    body = {
+        "error": "permission_required",
+        "message": reason,
+        "required_grant": {"grant": grant, "scope": "global", "grant_url": grant_url},
+    }
+    return Response(json.dumps(body), status=403, content_type="application/json")

@@ -235,6 +235,7 @@ def insert_and_deploy(
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
+    installed_by: str | None = None,
 ) -> str:
     """Insert app into DB and start background deploy.
 
@@ -244,6 +245,11 @@ def insert_and_deploy(
     grant_permissions_v2: if True, grant all [[services.v2.consumes]] entries
         from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
+    installed_by: consumer app name when the install came in via the
+        installer v2 service.  Stored on the apps row in the same
+        INSERT (so there's no race with the background build thread)
+        and used by the installer's /status and /logs endpoints to
+        scope visibility to the installs each caller initiated.
     """
     if app_name is None:
         app_name = manifest.name
@@ -275,8 +281,8 @@ def insert_and_deploy(
         """INSERT INTO apps
            (name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
-            gpu, public_paths, manifest_raw, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gpu, public_paths, manifest_raw, status, installed_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             app_name,
             manifest.name,
@@ -294,6 +300,7 @@ def insert_and_deploy(
             json.dumps(manifest.public_paths),
             manifest.raw_toml,
             "building",
+            installed_by,
         ),
     )
 
