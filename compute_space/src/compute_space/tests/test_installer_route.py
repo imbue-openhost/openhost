@@ -138,6 +138,10 @@ async def test_install_without_grant_returns_permission_required(app, cfg):
     body = await resp.get_json()
     assert body["error"] == "permission_required"
     assert body["required_grant"]["grant"]["capability"] == "install"
+    # The proposed grant must come from the consumer's manifest-declared
+    # prefix ("*" in CALLER_MANIFEST), not the verbatim requested URL —
+    # otherwise the owner gets a fresh approval prompt per repo.
+    assert body["required_grant"]["grant"]["repo_url_prefix"] == "*"
 
 
 @pytest.mark.asyncio
@@ -152,6 +156,81 @@ async def test_install_with_non_matching_grant_denied(app, cfg):
     assert resp.status_code == 403
     body = await resp.get_json()
     assert body["error"] == "permission_required"
+
+
+# Caller whose manifest declares the GitHub-org prefix the catalog actually ships
+# with.  Used by test_proposed_grant_uses_manifest_declared_prefix to exercise
+# the org-scoped (rather than wildcard) path.
+NARROW_CALLER_APP = "narrow-catalog"
+NARROW_CALLER_TOKEN = "narrow-test-token"
+NARROW_CALLER_MANIFEST = """
+[app]
+name = "narrow-catalog"
+version = "0.2.0"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[[services.v2.consumes]]
+service = "github.com/imbue-openhost/openhost/services/installer"
+shortname = "installer"
+version = ">=0.1.0"
+grants = [{capability = "install", repo_url_prefix = "https://github.com/imbue-openhost/"}]
+"""
+
+
+@pytest.mark.asyncio
+async def test_proposed_grant_uses_manifest_declared_prefix(cfg):
+    """When the consumer's manifest declares a broad prefix, a denial for an
+    URL that matches that prefix must propose the broad grant — not a fresh
+    per-URL grant — so a single approval covers every install."""
+    init_db(_FakeApp(cfg.db_path))
+    _seed_caller(
+        cfg.db_path,
+        app_name=NARROW_CALLER_APP,
+        token=NARROW_CALLER_TOKEN,
+        manifest_raw=NARROW_CALLER_MANIFEST,
+    )
+
+    app = _make_app(cfg)
+    client = app.test_client()
+    resp = await client.post(
+        _url("install"),
+        headers={"Authorization": f"Bearer {NARROW_CALLER_TOKEN}", "Content-Type": "application/json"},
+        data=json.dumps({"repo_url": "https://github.com/imbue-openhost/openhost-gemini"}),
+    )
+    assert resp.status_code == 403
+    body = await resp.get_json()
+    assert body["required_grant"]["grant"] == {
+        "capability": "install",
+        "repo_url_prefix": "https://github.com/imbue-openhost/",
+    }
+
+
+@pytest.mark.asyncio
+async def test_proposed_grant_falls_back_when_manifest_prefix_doesnt_match(cfg):
+    """If the consumer's manifest only declares a narrow prefix that does NOT
+    cover the requested URL, fall back to a per-URL grant rather than
+    suggesting a grant that wouldn't help."""
+    init_db(_FakeApp(cfg.db_path))
+    _seed_caller(
+        cfg.db_path,
+        app_name=NARROW_CALLER_APP,
+        token=NARROW_CALLER_TOKEN,
+        manifest_raw=NARROW_CALLER_MANIFEST,
+    )
+
+    app = _make_app(cfg)
+    client = app.test_client()
+    resp = await client.post(
+        _url("install"),
+        headers={"Authorization": f"Bearer {NARROW_CALLER_TOKEN}", "Content-Type": "application/json"},
+        data=json.dumps({"repo_url": "https://gitlab.com/something/else"}),
+    )
+    assert resp.status_code == 403
+    body = await resp.get_json()
+    assert body["required_grant"]["grant"]["repo_url_prefix"] == "https://gitlab.com/something/else"
 
 
 @pytest.mark.asyncio
