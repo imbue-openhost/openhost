@@ -1,5 +1,6 @@
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import time
@@ -21,6 +22,31 @@ from compute_space.tests.utils import router_cmd
 
 ROUTER_PORT = 18080
 OWNER_PASSWORD = "testpass123"
+TEST_ZONE_DOMAIN = "testzone.local"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _resolve_test_zone_to_localhost() -> Iterator[None]:
+    """Resolve ``testzone.local`` (and subdomains) to 127.0.0.1 in the test process.
+
+    This lets tests use real URLs like ``http://test-app.testzone.local:PORT/foo``
+    instead of forging Host headers — needed because ``requests`` silently drops
+    cookies on requests that override the Host header. Only patches lookups in
+    the test process; the router subprocess is unaffected (it binds to 127.0.0.1
+    and routes by the incoming ``Host`` header, which the URL sets correctly).
+    """
+    real_getaddrinfo = socket.getaddrinfo
+
+    def patched(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(host, str) and (host == TEST_ZONE_DOMAIN or host.endswith("." + TEST_ZONE_DOMAIN)):
+            host = "127.0.0.1"
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    socket.getaddrinfo = patched
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = real_getaddrinfo
 
 
 class _FakeApp:
@@ -138,8 +164,13 @@ def router_process(config: Config) -> subprocess.Popen[bytes]:
 
 @pytest.fixture(scope="module")
 def admin_session(router_process: subprocess.Popen[bytes], config: Config) -> requests.Session:
-    """A requests.Session authenticated as the router owner."""
-    base_url = f"http://{config.host}:{config.port}"
+    """A requests.Session authenticated as the router owner.
+
+    Uses the zone_domain in URLs (resolved to 127.0.0.1 via the autouse DNS
+    fixture) so /setup's auth cookies get ``Domain=testzone.local`` and are
+    automatically sent to app subdomains too.
+    """
+    base_url = f"http://{config.zone_domain}:{config.port}"
     s = requests.Session()
     r = s.post(
         f"{base_url}/setup",

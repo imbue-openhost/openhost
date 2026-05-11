@@ -16,6 +16,7 @@ import httpx
 
 import compute_space.core.storage as storage
 from compute_space.config import Config
+from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
@@ -39,6 +40,7 @@ from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
 from compute_space.core.services_v2 import register_v2_service_providers
+from compute_space.db import get_db
 
 RESERVED_PATHS = {
     "/",
@@ -245,6 +247,7 @@ def insert_and_deploy(
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
+    installed_by: str | None = None,
 ) -> str:
     """Insert app into DB and start background deploy.
 
@@ -254,6 +257,11 @@ def insert_and_deploy(
     grant_permissions_v2: if True, grant all [[services.v2.consumes]] entries
         from the manifest at install time.
     port_overrides: optional dict of label -> host_port from CLI/API.
+    installed_by: consumer app name when the install came in via the
+        installer v2 service.  Stored on the apps row in the same
+        INSERT (so there's no race with the background build thread)
+        and used by the installer's /status and /logs endpoints to
+        scope visibility to the installs each caller initiated.
     """
     if app_name is None:
         app_name = manifest.name
@@ -286,8 +294,8 @@ def insert_and_deploy(
         """INSERT INTO apps
            (app_id, name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
-            gpu, public_paths, manifest_raw, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gpu, public_paths, manifest_raw, status, installed_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             app_id,
             app_name,
@@ -306,6 +314,7 @@ def insert_and_deploy(
             json.dumps(manifest.public_paths),
             manifest.raw_toml,
             "building",
+            installed_by,
         ),
     )
 
@@ -838,3 +847,42 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
             logger.exception("Could not record removal failure for %s", app_id)
     finally:
         db.close()
+
+
+def parse_app_from_host(host: str) -> str | None:
+    """Extract app name from a Host header value, by assuming that app_name is a subdir of zone_domain (as is convention).
+
+    returns None if an app_name cannot be parsed from the header.
+
+    if zone_dir==host.imbue.com:
+        ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
+        zplizzi.host.imbue.com -> None
+        localhost:8080 -> None
+    """
+    config = get_config()
+    zone_domain_no_port = config.zone_domain.split(":", 1)[0]
+    host_no_port = host.split(":", 1)[0]
+    if host_no_port == zone_domain_no_port:
+        return None
+    if host_no_port.endswith("." + zone_domain_no_port):
+        app_name = host_no_port[: -(len(zone_domain_no_port) + 1)]
+        if "." not in app_name:
+            return app_name
+    return None
+
+
+def find_app_by_name(name: str) -> sqlite3.Row | None:
+    row: sqlite3.Row | None = (
+        get_db()
+        .execute(
+            "SELECT name, local_port, status, public_paths FROM apps WHERE name = ?",
+            (name,),
+        )
+        .fetchone()
+    )
+    return row
+
+
+def is_public_path(app_row: sqlite3.Row, request_path: str) -> bool:
+    public_paths = json.loads(app_row["public_paths"] or "[]")
+    return any(request_path == pp or request_path.startswith(pp.rstrip("/") + "/") for pp in public_paths)

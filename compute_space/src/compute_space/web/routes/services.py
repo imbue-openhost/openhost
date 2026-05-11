@@ -137,7 +137,6 @@ async def service_proxy(service_name: str, service_endpoint: str, app_id: str) -
     return await proxy_request(
         request,
         provider_port,
-        "",
         override_path=f"/_service/{service_endpoint}",
         extra_headers={"Authorization": None},
     )
@@ -160,4 +159,4 @@ async def oauth_callback_proxy() -> Response:
         _provider_app_id, provider_port = get_service_provider("secrets")
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
-    return await proxy_request(request, provider_port, "", override_path="/oauth/callback")
+    return await proxy_request(request, provider_port, override_path="/oauth/callback")

@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from quart import Quart
-from quart import Response
 from quart import current_app
 from quart import redirect
 from quart import request
@@ -51,14 +50,13 @@ def create_app(config: Config | None = None) -> Quart:
     from compute_space.web.routes.api.services_v2 import api_services_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.api.settings import api_settings_bp  # noqa: PLC0415
     from compute_space.web.routes.api.system import api_system_bp  # noqa: PLC0415
+    from compute_space.web.routes.identity import identity_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.auth import auth_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions import pages_permissions_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.settings import pages_settings_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.system import pages_system_bp  # noqa: PLC0415
-    from compute_space.web.routes.proxy import _parse_app_from_host  # noqa: PLC0415
-    from compute_space.web.routes.proxy import _proxy_to_app  # noqa: PLC0415
     from compute_space.web.routes.proxy import proxy_bp  # noqa: PLC0415
     from compute_space.web.routes.services import services_bp  # noqa: PLC0415
     from compute_space.web.routes.services_v2 import services_v2_bp  # noqa: PLC0415
@@ -79,7 +77,8 @@ def create_app(config: Config | None = None) -> Quart:
     app.register_blueprint(api_services_v2_bp)
     app.register_blueprint(api_permissions_v2_bp)
     app.register_blueprint(pages_permissions_v2_bp)
-    app.register_blueprint(proxy_bp)  # last — has catch-all
+    app.register_blueprint(identity_bp)
+    app.register_blueprint(proxy_bp)  # registers before_app_request / before_app_websocket subdomain hooks
 
     # Initialize DB and app state
     init_app(app)
@@ -100,26 +99,6 @@ def create_app(config: Config | None = None) -> Quart:
             return None
         claim = request.args.get("claim", "")
         return redirect(url_for("auth.setup", claim=claim) if claim else url_for("auth.setup"))
-
-    @app.before_request
-    async def _app_subdomain_routing() -> Response | None:
-        """When request is for an app subdomain, route directly to the app."""
-        # Skip subdomain routing until owner is set up
-        if not getattr(app, "_owner_verified", False):
-            return None
-        if request.headers.get("Upgrade", "").lower() == "websocket":
-            return None
-        app_subdomain = _parse_app_from_host(request.host)
-        if not app_subdomain:
-            return None
-        db = get_db()
-        app_row = db.execute(
-            "SELECT name, local_port, status, public_paths FROM apps WHERE name = ?",
-            (app_subdomain,),
-        ).fetchone()
-        if not app_row:
-            return Response(f"App '{app_subdomain}' not found", status=404)
-        return await _proxy_to_app(app_row, request.path, base_path="")
 
     # ─── Context processor ───
 

@@ -16,14 +16,13 @@ from compute_space.core.updates import wait_for_shutdown
 async def proxy_request(
     quart_request: Request,
     target_port: int,
-    base_path: str,
     override_path: str | None = None,
     extra_headers: dict[str, str | None] | None = None,
     timeout: float = 30,
 ) -> Response:
-    """Forward a request to a local port, stripping the base_path prefix.
+    """Forward a request to a local port.
 
-    If override_path is set, use it instead of the stripped request path.
+    If override_path is set, use it instead of the request path.
     If extra_headers is set, merge them into the forwarded headers.
     """
     if override_path is not None:
@@ -38,8 +37,6 @@ async def proxy_request(
             path = raw_path.decode("ascii")
         else:
             path = quart_request.path
-        if base_path and path.startswith(base_path):
-            path = path[len(base_path) :]
         if not path.startswith("/"):
             path = "/" + path
 
@@ -121,7 +118,6 @@ async def proxy_request(
 
 async def ws_proxy(
     target_port: int,
-    base_path: str,
     client_ws: Websocket,
     identity_headers: dict[str, str] | None = None,
     override_path: str | None = None,
@@ -129,7 +125,7 @@ async def ws_proxy(
     """Bidirectionally proxy a WebSocket connection to a backend app.
 
     Uses Quart's native websocket object and the async websockets library.
-    If override_path is set, use it instead of the (base_path-stripped) client path.
+    If override_path is set, use it instead of the client path.
     """
     if override_path is not None:
         path = override_path
@@ -140,8 +136,6 @@ async def ws_proxy(
             path = raw_path.decode("ascii")
         else:
             path = client_ws.path
-        if base_path and path.startswith(base_path):
-            path = path[len(base_path) :]
     if not path.startswith("/"):
         path = "/" + path
 
