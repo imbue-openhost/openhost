@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from compute_space.config import DefaultConfig
 from compute_space.core import default_apps as da
+from compute_space.core.manifest import parse_manifest
 from compute_space.db.migrations import _schema_path
 
 
@@ -161,3 +165,175 @@ def test_empty_default_apps_is_no_op(tmp_path: Path):
 
     assert result == []
     assert not os.path.isfile(cfg.default_apps_sentinel_path)
+
+
+# --- Remote URL support ---
+
+
+def test_is_remote_url_classification():
+    assert da._is_remote_url("https://github.com/foo/bar") is True
+    assert da._is_remote_url("http://example.com/repo") is True
+    assert da._is_remote_url("file:///tmp/foo") is True
+    assert da._is_remote_url("git+ssh://git@host/repo.git") is True
+    # Bare dirnames are NOT remote URLs.
+    assert da._is_remote_url("secrets_v2") is False
+    assert da._is_remote_url("file_browser") is False
+    assert da._is_remote_url("openhost-catalog") is False
+
+
+def test_remote_url_entry_dispatches_to_clone_path(cfg_with_apps, monkeypatch):
+    """A URL-form default_apps entry routes through clone_and_read_manifest,
+    not the local copytree path.  We patch the clone function to keep the
+    test hermetic."""
+    _patch_insert_and_deploy(monkeypatch)
+
+    # Make a fake "cloned" tree at a fresh tempdir so move_clone_to_app_temp_dir
+    # has something to operate on.
+    src_app_dir = Path(cfg_with_apps.apps_dir) / "secrets_v2"
+    fake_clone_parent = tempfile.mkdtemp(prefix="openhost-clone-")
+    fake_clone_dir = os.path.join(fake_clone_parent, "repo")
+    shutil.copytree(src_app_dir, fake_clone_dir)
+    fake_manifest = parse_manifest(fake_clone_dir)
+
+    calls: list[str] = []
+
+    async def fake_clone(repo_url, github_token=None):  # noqa: ANN001
+        calls.append(repo_url)
+        return fake_manifest, fake_clone_dir, None
+
+    monkeypatch.setattr(da, "clone_and_read_manifest", fake_clone)
+
+    # Replace the config's default_apps with a single remote URL entry.
+    cfg = cfg_with_apps.evolve(default_apps=["https://github.com/imbue-openhost/openhost-catalog"])
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        result = da.deploy_default_apps(cfg, db)
+    finally:
+        db.close()
+
+    assert calls == ["https://github.com/imbue-openhost/openhost-catalog"]
+    assert len(result) == 1
+    assert result[0].status == "ok"
+    assert result[0].name == "https://github.com/imbue-openhost/openhost-catalog"
+
+    # The sentinel keys on the spec string (the URL), not the manifest name.
+    with open(cfg.default_apps_sentinel_path) as f:
+        sentinel = json.load(f)
+    assert "https://github.com/imbue-openhost/openhost-catalog" in sentinel
+
+
+def test_remote_url_clone_failure_is_retried(cfg_with_apps, monkeypatch):
+    """Clone failures get the same retry-budget treatment as local failures."""
+    _patch_insert_and_deploy(monkeypatch)
+
+    async def always_fail(repo_url, github_token=None):  # noqa: ANN001
+        return None, None, "fake network error"
+
+    monkeypatch.setattr(da, "clone_and_read_manifest", always_fail)
+
+    cfg = cfg_with_apps.evolve(default_apps=["https://github.com/foo/bar"])
+
+    for i in range(da.MAX_RETRY_ATTEMPTS):
+        db = sqlite3.connect(cfg.db_path)
+        try:
+            result = da.deploy_default_apps(cfg, db)
+        finally:
+            db.close()
+        assert len(result) == 1
+        assert result[0].status == "failed"
+        assert result[0].attempts == i + 1
+        assert "fake network error" in (result[0].error or "")
+
+
+def test_remote_install_works_from_running_event_loop(cfg_with_apps, monkeypatch):
+    """deploy_default_apps is called from /setup (an async Quart handler).
+    Plain asyncio.run() would raise; the in-module thread wrapper must
+    isolate the clone's event loop from the caller's."""
+    _patch_insert_and_deploy(monkeypatch)
+
+    src_app_dir = Path(cfg_with_apps.apps_dir) / "secrets_v2"
+    fake_clone_parent = tempfile.mkdtemp(prefix="openhost-clone-")
+    fake_clone_dir = os.path.join(fake_clone_parent, "repo")
+    shutil.copytree(src_app_dir, fake_clone_dir)
+    fake_manifest = parse_manifest(fake_clone_dir)
+
+    async def fake_clone(repo_url, github_token=None):  # noqa: ANN001
+        return fake_manifest, fake_clone_dir, None
+
+    monkeypatch.setattr(da, "clone_and_read_manifest", fake_clone)
+
+    cfg = cfg_with_apps.evolve(default_apps=["https://github.com/foo/bar"])
+
+    async def runner():
+        db = sqlite3.connect(cfg.db_path)
+        try:
+            return da.deploy_default_apps(cfg, db)
+        finally:
+            db.close()
+
+    result = asyncio.run(runner())
+    assert len(result) == 1
+    assert result[0].status == "ok", result[0].error
+
+
+def test_mixed_local_and_remote_entries(cfg_with_apps, monkeypatch):
+    """A single deploy can contain both vendored and remote entries."""
+    _patch_insert_and_deploy(monkeypatch)
+
+    src_app_dir = Path(cfg_with_apps.apps_dir) / "file_browser"
+    fake_clone_parent = tempfile.mkdtemp(prefix="openhost-clone-")
+    fake_clone_dir = os.path.join(fake_clone_parent, "repo")
+    shutil.copytree(src_app_dir, fake_clone_dir)
+    # Rename the manifest so it doesn't collide with the vendored file_browser
+    (Path(fake_clone_dir) / "openhost.toml").write_text(
+        '[app]\nname = "from-remote"\nversion = "0.1"\n[runtime.container]\nimage = "Dockerfile"\nport = 8080\n'
+    )
+    fake_manifest = parse_manifest(fake_clone_dir)
+
+    async def fake_clone(repo_url, github_token=None):  # noqa: ANN001
+        return fake_manifest, fake_clone_dir, None
+
+    monkeypatch.setattr(da, "clone_and_read_manifest", fake_clone)
+
+    cfg = cfg_with_apps.evolve(
+        default_apps=["secrets_v2", "https://github.com/example/from-remote"],
+    )
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        result = da.deploy_default_apps(cfg, db)
+    finally:
+        db.close()
+
+    by_name = {o.name: o.status for o in result}
+    assert by_name == {
+        "secrets_v2": "ok",
+        "https://github.com/example/from-remote": "ok",
+    }
+
+
+def test_remote_clone_timeout_returns_failed(cfg_with_apps, monkeypatch):
+    """A hung clone must not block /setup indefinitely; the worker thread
+    times out and the entry is recorded as failed (and retried on next boot)."""
+    _patch_insert_and_deploy(monkeypatch)
+
+    async def hang_forever(repo_url, github_token=None):  # noqa: ANN001
+        await asyncio.sleep(60)  # Far longer than the patched timeout.
+        return None, None, None  # never reached
+
+    monkeypatch.setattr(da, "clone_and_read_manifest", hang_forever)
+    # Shrink the timeout so the test doesn't take 3 minutes.
+    monkeypatch.setattr(da, "REMOTE_CLONE_TIMEOUT_SECONDS", 0.2)
+
+    cfg = cfg_with_apps.evolve(default_apps=["https://github.com/foo/bar"])
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        result = da.deploy_default_apps(cfg, db)
+    finally:
+        db.close()
+
+    assert len(result) == 1
+    assert result[0].status == "failed"
+    assert "timeout" in (result[0].error or "").lower()
