@@ -539,13 +539,13 @@ def test_claim_token_deleted_after_setup(tmp_path):
 _FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
-def _wait_for_url(session, url, timeout=30, expect_status=200):
+def _wait_for_url(session, url, timeout=30, expect_status=200, headers=None):
     """Poll a URL until it returns the expected status code."""
     deadline = time.time() + timeout
     last_status = None
     while time.time() < deadline:
         try:
-            r = session.get(url, timeout=2)
+            r = session.get(url, timeout=2, headers=headers)
             last_status = r.status_code
             if r.status_code == expect_status:
                 return r
@@ -553,6 +553,15 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
             pass
         time.sleep(1)
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
+
+
+def _subdomain_headers(app_name, config):
+    """Headers that route a request to ``app_name`` via subdomain routing.
+
+    Tests connect to 127.0.0.1 but the router routes by Host header; this sets
+    the Host so the proxy matches ``app_name``'s subdomain.
+    """
+    return {"Host": f"{app_name}.{config.zone_domain}"}
 
 
 @requires_containers
@@ -837,8 +846,9 @@ class TestContainerRestart:
             # Verify proxy works
             _wait_for_url(
                 session,
-                f"{self.BASE_URL}/{self.APP_NAME}/health",
+                f"{self.BASE_URL}/health",
                 timeout=30,
+                headers=_subdomain_headers(self.APP_NAME, config),
             )
 
             # ---- Phase 2: Simulate container engine restart ----
@@ -1047,13 +1057,14 @@ class TestContainerE2E:
     def test_proxy_health(self, admin_session, config, router_process):
         """Wait for the app to become ready through the reverse proxy."""
         base_url = f"http://{config.host}:{config.port}"
-        url = f"{base_url}/test-app/health"
+        url = f"{base_url}/health"
+        headers = _subdomain_headers("test-app", config)
         deadline = time.time() + 120
         last_status = None
         last_err = None
         while time.time() < deadline:
             try:
-                r = admin_session.get(url, timeout=2)
+                r = admin_session.get(url, timeout=2, headers=headers)
                 last_status = r.status_code
                 if r.status_code == 200:
                     assert r.json() == {"status": "ok"}
@@ -1066,9 +1077,10 @@ class TestContainerE2E:
     # -- proxy: interact --
 
     def test_proxy_get(self, admin_session, config):
-        """GET request is proxied correctly with path stripping."""
+        """GET request is proxied via subdomain routing."""
         base_url = f"http://{config.host}:{config.port}"
-        r = admin_session.get(f"{base_url}/test-app/")
+        headers = _subdomain_headers("test-app", config)
+        r = admin_session.get(f"{base_url}/", headers=headers)
         assert r.status_code == 200
         data = r.json()
         assert data["app"] == "test-app"
@@ -1077,9 +1089,11 @@ class TestContainerE2E:
     def test_proxy_post(self, admin_session, config):
         """POST request is proxied correctly with body."""
         base_url = f"http://{config.host}:{config.port}"
+        headers = _subdomain_headers("test-app", config)
         r = admin_session.post(
-            f"{base_url}/test-app/submit",
+            f"{base_url}/submit",
             data="hello world",
+            headers=headers,
         )
         assert r.status_code == 200
         data = r.json()
@@ -1091,8 +1105,8 @@ class TestContainerE2E:
         """Proxy forwards custom headers and adds X-Forwarded-* headers."""
         base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/test-app/echo-headers",
-            headers={"X-Custom-Test": "test-value"},
+            f"{base_url}/echo-headers",
+            headers={**_subdomain_headers("test-app", config), "X-Custom-Test": "test-value"},
         )
         assert r.status_code == 200
         headers = r.json()["headers"]
@@ -1104,8 +1118,9 @@ class TestContainerE2E:
         """Client-supplied X-Forwarded-* headers are overwritten, not forwarded."""
         base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/test-app/echo-headers",
+            f"{base_url}/echo-headers",
             headers={
+                **_subdomain_headers("test-app", config),
                 "X-Forwarded-For": "attacker-ip",
                 "X-Forwarded-Proto": "evil",
                 "X-Forwarded-Host": "evil.example.com",
@@ -1121,7 +1136,10 @@ class TestContainerE2E:
     def test_proxy_404(self, admin_session, config):
         """Unknown paths within the app return the app's 404."""
         base_url = f"http://{config.host}:{config.port}"
-        r = admin_session.get(f"{base_url}/test-app/no-such-path")
+        r = admin_session.get(
+            f"{base_url}/no-such-path",
+            headers=_subdomain_headers("test-app", config),
+        )
         assert r.status_code == 404
 
     # -- stop / reload --
@@ -1136,7 +1154,8 @@ class TestContainerE2E:
 
         # Proxied requests should now fail
         r = admin_session.get(
-            f"{base_url}/test-app/health",
+            f"{base_url}/health",
+            headers=_subdomain_headers("test-app", config),
             timeout=2,
         )
         assert r.status_code in (404, 502)
@@ -1152,12 +1171,13 @@ class TestContainerE2E:
 
         # Wait for it to come back (the rebuild may take a while under load)
         # Also poll the API for status to detect errors early.
-        url = f"{base_url}/test-app/health"
+        url = f"{base_url}/health"
+        app_headers = _subdomain_headers("test-app", config)
         status_url = f"{base_url}/api/app_status/test-app"
         deadline = time.time() + 120
         while time.time() < deadline:
             try:
-                r = admin_session.get(url, timeout=2)
+                r = admin_session.get(url, timeout=2, headers=app_headers)
                 if r.status_code == 200:
                     return
             except (requests.ConnectionError, requests.Timeout):
@@ -1195,7 +1215,8 @@ class TestContainerE2E:
         """After removal, proxied requests should 404."""
         base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/test-app/health",
+            f"{base_url}/health",
+            headers=_subdomain_headers("test-app", config),
             timeout=2,
         )
         assert r.status_code == 404
@@ -1459,13 +1480,14 @@ class TestGitUrlDeployE2E:
     def test_proxy_works(self, admin_session, config):
         """Verify the app deployed from a Git URL is reachable through the proxy."""
         base_url = f"http://{config.host}:{config.port}"
-        url = f"{base_url}/{self.APP_NAME}/health"
+        url = f"{base_url}/health"
+        headers = _subdomain_headers(self.APP_NAME, config)
         deadline = time.time() + 30
         last_status = None
         last_err = None
         while time.time() < deadline:
             try:
-                r = admin_session.get(url, timeout=2)
+                r = admin_session.get(url, timeout=2, headers=headers)
                 last_status = r.status_code
                 if r.status_code == 200:
                     assert r.json() == {"status": "ok"}
@@ -1503,11 +1525,12 @@ class TestGitUrlDeployE2E:
         assert r.status_code == 200
 
         # Wait for the app to come back after reload
-        url = f"{base_url}/{self.APP_NAME}/health"
+        url = f"{base_url}/health"
+        headers = _subdomain_headers(self.APP_NAME, config)
         deadline = time.time() + 60
         while time.time() < deadline:
             try:
-                r = admin_session.get(url, timeout=2)
+                r = admin_session.get(url, timeout=2, headers=headers)
                 if r.status_code == 200:
                     return
             except (requests.ConnectionError, requests.Timeout):
@@ -1530,7 +1553,8 @@ class TestGitUrlDeployE2E:
         """After removal, proxied requests should 404."""
         base_url = f"http://{config.host}:{config.port}"
         r = admin_session.get(
-            f"{base_url}/{self.APP_NAME}/health",
+            f"{base_url}/health",
+            headers=_subdomain_headers(self.APP_NAME, config),
             timeout=2,
         )
         assert r.status_code == 404
