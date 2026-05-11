@@ -83,7 +83,9 @@ def create_app(config: Config | None = None) -> Quart:
     # always handled by the docs blueprint regardless of whether
     # a user happens to have deployed an app named "docs".
     app.register_blueprint(docs_bp)
-    app.register_blueprint(proxy_bp)  # last — has catch-all; registers before_app_request / before_app_websocket subdomain hooks
+    app.register_blueprint(
+        proxy_bp
+    )  # last — has catch-all; registers before_app_request / before_app_websocket subdomain hooks
 
     # Initialize DB and app state
     init_app(app)
