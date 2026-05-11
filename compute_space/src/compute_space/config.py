@@ -183,9 +183,16 @@ class DefaultConfig(Config):
     port_range_start: int = 9000
     port_range_end: int = 9999
 
-    # Directory names under apps_dir (note: dirs use underscores,
-    # manifest [app].name uses hyphens; this keys on the dirname).
-    default_apps: list[str] = attr.Factory(lambda: ["secrets_v2", "file_browser"])
+    # Apps to auto-deploy at /setup completion.  Entries are either:
+    #   - a bare dirname under apps_dir (vendored builtin), or
+    #   - a remote git URL cloned on demand (see core/default_apps).
+    default_apps: list[str] = attr.Factory(
+        lambda: [
+            "secrets_v2",
+            "file_browser",
+            "https://github.com/imbue-openhost/openhost-catalog",
+        ]
+    )
 
 
 def load_config() -> Config:
