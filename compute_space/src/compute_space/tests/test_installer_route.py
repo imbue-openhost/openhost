@@ -185,8 +185,6 @@ async def test_proposed_grant_uses_manifest_declared_prefix(cfg):
     """When the consumer's manifest declares a broad prefix, a denial for an
     URL that matches that prefix must propose the broad grant — not a fresh
     per-URL grant — so a single approval covers every install."""
-    from compute_space.db.connection import init_db
-
     init_db(_FakeApp(cfg.db_path))
     _seed_caller(
         cfg.db_path,
@@ -215,8 +213,6 @@ async def test_proposed_grant_falls_back_when_manifest_prefix_doesnt_match(cfg):
     """If the consumer's manifest only declares a narrow prefix that does NOT
     cover the requested URL, fall back to a per-URL grant rather than
     suggesting a grant that wouldn't help."""
-    from compute_space.db.connection import init_db
-
     init_db(_FakeApp(cfg.db_path))
     _seed_caller(
         cfg.db_path,

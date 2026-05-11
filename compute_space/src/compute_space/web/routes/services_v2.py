@@ -19,10 +19,10 @@ from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth import resolve_app_from_token
 from compute_space.core.containers import get_docker_logs
-from compute_space.core.installer import INSTALLER_SERVICE_URL
-from compute_space.core.installer import INSTALLER_SERVICE_VERSION
 from compute_space.core.installer import GRANT_KEY_CAPABILITY
 from compute_space.core.installer import GRANT_KEY_REPO_URL_PREFIX
+from compute_space.core.installer import INSTALLER_SERVICE_URL
+from compute_space.core.installer import INSTALLER_SERVICE_VERSION
 from compute_space.core.installer import INSTALL_CAPABILITY
 from compute_space.core.installer import InstallError
 from compute_space.core.installer import check_install_allowed
@@ -367,9 +367,7 @@ def _json_ok(body: dict[str, Any]) -> Response:
     return Response(json.dumps(body), status=200, content_type="application/json")
 
 
-def _proposed_install_grant_from_manifest(
-    consumer_app: str, repo_url: str, db: sqlite3.Connection
-) -> dict[str, str]:
+def _proposed_install_grant_from_manifest(consumer_app: str, repo_url: str, db: sqlite3.Connection) -> dict[str, str]:
     """Pick the install grant payload to offer the owner on a 403.
 
     Prefers a grant the consumer **already declared** in its
@@ -412,9 +410,7 @@ def _proposed_install_grant_from_manifest(
     return fallback
 
 
-def _installer_permission_denied(
-    consumer_app: str, repo_url: str, reason: str, db: sqlite3.Connection
-) -> Response:
+def _installer_permission_denied(consumer_app: str, repo_url: str, reason: str, db: sqlite3.Connection) -> Response:
     """Return the v2 standard permission_required shape with a grant URL.
 
     The proposed grant comes from the consumer's manifest-declared
