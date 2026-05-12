@@ -12,7 +12,7 @@ from compute_space.core import auth
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
-from compute_space.web.middleware import _try_refresh
+from compute_space.web.auth.middleware import _try_refresh
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
 

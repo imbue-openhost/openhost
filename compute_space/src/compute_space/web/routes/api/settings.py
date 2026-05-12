@@ -21,7 +21,7 @@ from compute_space.core.services import get_oauth_token
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 api_settings_bp = Blueprint("api_settings", __name__)
 

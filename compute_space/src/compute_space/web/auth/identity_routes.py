@@ -12,9 +12,9 @@ from quart import request
 from quart.typing import ResponseReturnValue
 
 from compute_space.core import auth
-from compute_space.core import identity
+from compute_space.core.auth import identity
 from compute_space.core.logging import logger
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 identity_bp = Blueprint("identity", __name__)
 

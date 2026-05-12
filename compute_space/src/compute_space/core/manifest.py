@@ -9,7 +9,7 @@ from packaging.specifiers import InvalidSpecifier
 from packaging.specifiers import SpecifierSet
 
 from compute_space.core.logging import logger
-from compute_space.core.permissions_v2 import Grant
+from compute_space.core.auth.permissions_v2 import Grant
 
 _SHORTNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 

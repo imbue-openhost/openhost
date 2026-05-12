@@ -4,7 +4,7 @@ from quart import websocket
 
 from compute_space.core import auth
 from compute_space.core.terminal import handle_terminal_ws
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 pages_system_bp = Blueprint("pages_system", __name__)
 
