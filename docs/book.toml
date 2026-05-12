@@ -13,7 +13,7 @@
 # build that runs on every PR + commit to main.
 
 [book]
-title = "The OpenHost Manual"
+title = "OpenHost Manual"
 description = "Documentation for OpenHost — selfhosted application platform"
 authors = ["The OpenHost Authors"]
 language = "en"
@@ -35,12 +35,13 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-# Default mdBook theme — clean, light/dark toggle, working
-# search box, copy-button on code blocks.  No custom CSS for
-# now; can be styled to match the rest of the OpenHost
-# dashboard later if we want a tighter visual brand.
-default-theme = "rust"
-preferred-dark-theme = "navy"
+# Use the ``light`` theme as the default since our custom
+# ``theme/css/variables.css`` matches it to the dashboard's
+# white-on-black, accent-#36c look.  The ``coal`` dark theme
+# is the closest analog to the dashboard's .log-output panel
+# (#1e1e1e bg, #d4d4d4 fg) so it makes a good preferred dark.
+default-theme = "light"
+preferred-dark-theme = "coal"
 
 # When the user is on https://<zone>/docs/, internal links
 # resolve relative to that path.  mdBook handles this fine
@@ -53,6 +54,11 @@ preferred-dark-theme = "navy"
 edit-url-template = "https://github.com/imbue-openhost/openhost/edit/main/docs/src/{path}"
 git-repository-url = "https://github.com/imbue-openhost/openhost"
 git-repository-icon = "fa-github"
+
+[output.html.fold]
+# Don't auto-collapse top-level sidebar entries.  Our manual
+# is small enough that there's no need to hide subsections.
+enable = false
 
 [output.html.search]
 # mdBook's built-in client-side search.  The index is a small

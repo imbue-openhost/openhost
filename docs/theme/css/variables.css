@@ -1,0 +1,210 @@
+/* OpenHost docs theme — overrides mdBook's default variables.css to
+ * match the OpenHost dashboard's minimal styling.  The dashboard's
+ * palette (see compute_space/web/templates/layout.html):
+ *   * body fg #222 on bg #fff
+ *   * subtle borders #ddd, muted greys #888 / #666
+ *   * accent #36c, danger #c00, success #080, warning #c80
+ *   * code/logs background #1e1e1e text #d4d4d4
+ *   * font stack: -apple-system, system-ui, sans-serif
+ *   * max-width 960px, mostly flat (no rounded corners, no shadows)
+ *
+ * We keep mdBook's structural variables (sidebar-width, page-padding,
+ * etc.) at their defaults and only override the colour + typography
+ * vars used by ``chrome.css``/``general.css`` so the docs feel
+ * visually contiguous with the dashboard.
+ */
+
+:root {
+    --sidebar-width: 280px;
+    --sidebar-resize-indicator-width: 6px;
+    --sidebar-resize-indicator-space: 2px;
+    --page-padding: 1.5em;
+    --content-max-width: 720px;
+    --menu-bar-height: 48px;
+    --mono-font: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    --code-font-size: 0.875em;
+}
+
+/* Default theme — matches the dashboard's light look exactly. */
+.light, html:not(.ayu):not(.coal):not(.navy):not(.rust) {
+    --bg: #ffffff;
+    --fg: #222222;
+
+    --sidebar-bg: #fafafa;
+    --sidebar-fg: #222222;
+    --sidebar-non-existant: #aaaaaa;
+    --sidebar-active: #3366cc;       /* dashboard accent */
+    --sidebar-spacer: #eeeeee;
+
+    --scrollbar: #cccccc;
+
+    --icons: #666666;
+    --icons-hover: #222222;
+
+    --links: #3366cc;                /* dashboard accent (#36c) */
+
+    --inline-code-color: #cc0000;    /* dashboard danger-red, used by dashboard for "removable" actions; here it just makes inline code pop without being shouty */
+
+    --theme-popup-bg: #ffffff;
+    --theme-popup-border: #dddddd;
+    --theme-hover: #f5f5f5;
+
+    --quote-bg: #fafafa;
+    --quote-border: #dddddd;
+
+    --warning-border: #cc8800;
+
+    --table-border-color: #dddddd;
+    --table-header-bg: #f5f5f5;
+    --table-alternate-bg: #fafafa;
+
+    --searchbar-border-color: #cccccc;
+    --searchbar-bg: #ffffff;
+    --searchbar-fg: #222222;
+    --searchbar-shadow-color: #dddddd;
+    --searchresults-header-fg: #666666;
+    --searchresults-border-color: #dddddd;
+    --searchresults-li-bg: #f5f5f5;
+    --search-mark-bg: #ffe6a0;
+
+    --color-scheme: light;
+}
+
+/* Dark themes — keep mdBook's defaults but tone down accent so they
+ * still feel restrained.  We retain all of the ayu/coal/navy themes
+ * because the theme picker in the top-left expects them to exist;
+ * the overrides below just nudge the link color and warning border
+ * toward neutrality.
+ */
+
+.ayu {
+    --bg: hsl(210, 25%, 8%);
+    --fg: #c5c5c5;
+    --sidebar-bg: #14191f;
+    --sidebar-fg: #c8c9db;
+    --sidebar-non-existant: #5c6773;
+    --sidebar-active: #6ea8e6;
+    --sidebar-spacer: #2d334f;
+    --scrollbar: var(--sidebar-fg);
+    --icons: #737480;
+    --icons-hover: #b7b9cc;
+    --links: #6ea8e6;
+    --inline-code-color: #e2bf6f;
+    --theme-popup-bg: #14191f;
+    --theme-popup-border: #5c6773;
+    --theme-hover: #191f26;
+    --quote-bg: hsl(226, 15%, 17%);
+    --quote-border: hsl(226, 15%, 22%);
+    --warning-border: #cc8800;
+    --table-border-color: hsl(210, 25%, 13%);
+    --table-header-bg: hsl(210, 25%, 18%);
+    --table-alternate-bg: hsl(210, 25%, 11%);
+    --searchbar-border-color: #848484;
+    --searchbar-bg: #2a2a2a;
+    --searchbar-fg: #ffffff;
+    --searchbar-shadow-color: #6ea8e6;
+    --searchresults-header-fg: #888;
+    --searchresults-border-color: #444;
+    --searchresults-li-bg: #1a1f25;
+    --search-mark-bg: #4a6b8a;
+    --color-scheme: dark;
+}
+
+.coal {
+    --bg: #1e1e1e;                   /* matches dashboard's .log-output bg */
+    --fg: #d4d4d4;                   /* matches dashboard's .log-output fg */
+    --sidebar-bg: #181818;
+    --sidebar-fg: #cccccc;
+    --sidebar-non-existant: #555555;
+    --sidebar-active: #6ea8e6;
+    --sidebar-spacer: #2a2a2a;
+    --scrollbar: #555555;
+    --icons: #888888;
+    --icons-hover: #cccccc;
+    --links: #6ea8e6;
+    --inline-code-color: #c5c8c6;
+    --theme-popup-bg: #1e1e1e;
+    --theme-popup-border: #444444;
+    --theme-hover: #2a2a2a;
+    --quote-bg: #252525;
+    --quote-border: #444444;
+    --warning-border: #cc8800;
+    --table-border-color: #333333;
+    --table-header-bg: #2a2a2a;
+    --table-alternate-bg: #232323;
+    --searchbar-border-color: #555555;
+    --searchbar-bg: #2a2a2a;
+    --searchbar-fg: #d4d4d4;
+    --searchbar-shadow-color: #555555;
+    --searchresults-header-fg: #888888;
+    --searchresults-border-color: #444444;
+    --searchresults-li-bg: #252525;
+    --search-mark-bg: #4a6b8a;
+    --color-scheme: dark;
+}
+
+.navy {
+    --bg: hsl(226, 23%, 11%);
+    --fg: #bcbdd0;
+    --sidebar-bg: #282d3f;
+    --sidebar-fg: #c8c9db;
+    --sidebar-non-existant: #505274;
+    --sidebar-active: #6ea8e6;
+    --sidebar-spacer: #2d334f;
+    --scrollbar: var(--sidebar-fg);
+    --icons: #737480;
+    --icons-hover: #b7b9cc;
+    --links: #6ea8e6;
+    --inline-code-color: #c5c8c6;
+    --theme-popup-bg: #161923;
+    --theme-popup-border: #737480;
+    --theme-hover: #282e40;
+    --quote-bg: hsl(226, 15%, 17%);
+    --quote-border: hsl(226, 15%, 22%);
+    --warning-border: #cc8800;
+    --table-border-color: hsl(226, 23%, 16%);
+    --table-header-bg: hsl(226, 23%, 21%);
+    --table-alternate-bg: hsl(226, 23%, 14%);
+    --searchbar-border-color: #848484;
+    --searchbar-bg: #aeaec6;
+    --searchbar-fg: #000000;
+    --searchbar-shadow-color: #aaaaaa;
+    --searchresults-header-fg: #5f5f71;
+    --searchresults-border-color: #5c5c68;
+    --searchresults-li-bg: #242430;
+    --search-mark-bg: #6ea8e6;
+    --color-scheme: dark;
+}
+
+.rust {
+    --bg: hsl(60, 9%, 87%);
+    --fg: #262625;
+    --sidebar-bg: #3b2e2a;
+    --sidebar-fg: #c8c9db;
+    --sidebar-non-existant: #505254;
+    --sidebar-active: #e69f56;
+    --sidebar-spacer: #45373a;
+    --scrollbar: var(--sidebar-fg);
+    --icons: #737480;
+    --icons-hover: #262625;
+    --links: #2b79a2;
+    --inline-code-color: #6e6b5e;
+    --theme-popup-bg: #e1e1db;
+    --theme-popup-border: #b38f6b;
+    --theme-hover: #99908a;
+    --quote-bg: hsl(60, 5%, 75%);
+    --quote-border: hsl(60, 5%, 70%);
+    --warning-border: #cc8800;
+    --table-border-color: hsl(60, 9%, 82%);
+    --table-header-bg: #b3a497;
+    --table-alternate-bg: hsl(60, 9%, 84%);
+    --searchbar-border-color: #aaa;
+    --searchbar-bg: #fafafa;
+    --searchbar-fg: #000;
+    --searchbar-shadow-color: #aaa;
+    --searchresults-header-fg: #666;
+    --searchresults-border-color: #888;
+    --searchresults-li-bg: #dec2a2;
+    --search-mark-bg: #e69f56;
+    --color-scheme: light;
+}
