@@ -7,12 +7,12 @@ from quart import request
 from quart import url_for
 
 from compute_space.config import get_config
-from compute_space.core.permissions import get_granted_permissions
-from compute_space.core.service_access_rules import ServiceAccessDenied
-from compute_space.core.service_access_rules import check_service_access_rules
+from compute_space.core.auth.permissions import get_granted_permissions
+from compute_space.core.auth.service_access_rules import ServiceAccessDenied
+from compute_space.core.auth.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_service_provider
-from compute_space.web.middleware import app_auth_required
+from compute_space.web.auth.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 
 services_bp = Blueprint("services", __name__)

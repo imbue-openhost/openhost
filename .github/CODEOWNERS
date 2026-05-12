@@ -1,0 +1,8 @@
+# Authentication, identity, and authorization.
+# Changes here require review from @zplizzi.
+/compute_space/src/compute_space/core/auth/    @zplizzi
+/compute_space/src/compute_space/web/auth/     @zplizzi
+
+# Proxy code that handles auth cookies and identity headers — same review requirement.
+/compute_space/src/compute_space/web/proxy.py           @zplizzi
+/compute_space/src/compute_space/web/routes/proxy.py    @zplizzi

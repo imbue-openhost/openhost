@@ -17,7 +17,7 @@ from compute_space.core import archive_backend
 from compute_space.core.archive_backend import BackendConfigureError
 from compute_space.core.archive_backend import BackendState
 from compute_space.db import get_db
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 api_archive_backend_bp = Blueprint("api_archive_backend", __name__)
 

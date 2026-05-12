@@ -10,12 +10,10 @@ Flow:
   3. If the DB has no tables: apply ``schema.sql`` inside a wrapping
      ``BEGIN EXCLUSIVE`` / ``COMMIT`` and stamp the highest registered
      version (no migrations replayed).
-  4. If the DB is at v0 (no ``schema_version`` row, or ``version = 0``):
-     run the legacy ``migrate()``, idempotently apply ``schema.sql`` to
-     cover tables added after the fixture's baseline, THEN stamp v1.
-     Stamping last keeps the v0 -> v1 transition effectively atomic —
-     both migrate() and schema.sql are idempotent, so any crash before
-     the stamp leaves the DB at v0 and retries cleanly.
+  4. If the DB has tables but no ``schema_version`` row (legacy v0):
+     refuse to start. The v0 -> v1 bootstrap was removed; operators on a
+     pre-versioned-migrations DB must upgrade through an earlier release
+     that still contains it before upgrading to this one.
   5. For each registered migration with version > current: call
      ``migration.apply(db)``. The migration's ``apply`` owns its own
      ``BEGIN EXCLUSIVE`` + ``COMMIT``; the runner just orders the calls.
@@ -30,9 +28,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from compute_space.db.migrations import _schema_path
-from compute_space.db.migrations import migrate as legacy_migrate
-from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
+from compute_space.db.schema import schema_path
 from compute_space.db.versioned.base import Migration
 from compute_space.db.versioned.registry import REGISTRY
 
@@ -70,15 +66,6 @@ def read_version(db: sqlite3.Connection) -> int:
     if row is None:
         return 0
     return int(row[0])
-
-
-def _ensure_version_table(db: sqlite3.Connection) -> None:
-    db.execute(SCHEMA_VERSION_DDL)
-
-
-def _set_version(db: sqlite3.Connection, version: int) -> None:
-    _ensure_version_table(db)
-    db.execute("INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)", (version,))
 
 
 def _has_any_tables(db: sqlite3.Connection) -> bool:
@@ -123,7 +110,12 @@ def _apply_under_lock(db_path: str, registry: list[Migration], highest: int) -> 
             return
 
         if current == 0:
-            current = _legacy_bootstrap(db)
+            raise RuntimeError(
+                "DB has tables but no schema_version row — this is a "
+                "pre-versioned-migrations (v0) database. The legacy v0 -> v1 "
+                "bootstrap was removed; upgrade through an earlier release "
+                "that still contains it, then upgrade to this release."
+            )
 
         for migration in registry:
             if migration.version <= current:
@@ -145,28 +137,6 @@ def _apply_under_lock(db_path: str, registry: list[Migration], highest: int) -> 
         db.close()
 
 
-def _legacy_bootstrap(db: sqlite3.Connection) -> int:
-    """Bring a v0 DB to v1.
-
-    Order is critical: migrate() -> schema.sql -> stamp v1. Both migrate()
-    and schema.sql are idempotent (CREATE TABLE IF NOT EXISTS etc.), so a
-    crash at any point before the final stamp leaves version == 0 and the
-    whole sequence replays cleanly on the next startup. Stamping last is
-    what makes the v0 -> v1 transition effectively atomic.
-    """
-    t0 = time.perf_counter()
-    logger.info("DB is at v0 (legacy); running one-shot migrate() bootstrap to v1")
-    legacy_migrate(db)
-    with open(_schema_path()) as f:
-        db.executescript(f.read())
-    _set_version(db, 1)
-    current = read_version(db)
-    if current != 1:
-        raise RuntimeError(f"Legacy bootstrap expected to produce v1, got v{current}")
-    logger.info(f"Legacy v0 \u2192 v1 bootstrap complete in {time.perf_counter() - t0:.3f}s")
-    return current
-
-
 def _init_fresh(db: sqlite3.Connection, highest: int) -> None:
     """Initialize a brand-new DB from schema.sql and stamp the version, atomically.
 
@@ -178,7 +148,7 @@ def _init_fresh(db: sqlite3.Connection, highest: int) -> None:
     EXCLUSIVE / COMMIT inside the script makes the fresh-init pass one
     atomic unit — a mid-init crash leaves no partial tables.
     """
-    with open(_schema_path()) as f:
+    with open(schema_path()) as f:
         schema_sql = f.read()
     wrapped = (
         "BEGIN EXCLUSIVE;\n"
