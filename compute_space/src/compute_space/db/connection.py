@@ -1,4 +1,5 @@
 import contextlib
+import os
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -46,3 +47,7 @@ def close_db(exception: BaseException | None = None) -> None:
 
 def init_db(app: Quart) -> None:
     apply_migrations(app.config["DB_PATH"])
+
+
+def schema_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "schema.sql")

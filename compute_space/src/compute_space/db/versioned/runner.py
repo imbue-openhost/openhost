@@ -28,7 +28,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from compute_space.db.migrations import _schema_path
+from compute_space.db.connection import schema_path
 from compute_space.db.versioned.base import Migration
 from compute_space.db.versioned.registry import REGISTRY
 
@@ -148,7 +148,7 @@ def _init_fresh(db: sqlite3.Connection, highest: int) -> None:
     EXCLUSIVE / COMMIT inside the script makes the fresh-init pass one
     atomic unit — a mid-init crash leaves no partial tables.
     """
-    with open(_schema_path()) as f:
+    with open(schema_path()) as f:
         schema_sql = f.read()
     wrapped = (
         "BEGIN EXCLUSIVE;\n"

@@ -15,7 +15,7 @@ from compute_space import COMPUTE_SPACE_PACKAGE_DIR
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
-from compute_space.db.migrations import _schema_path
+from compute_space.db.connection import schema_path
 from compute_space.tests.utils import kill_tree
 from compute_space.tests.utils import managed_router
 from compute_space.tests.utils import router_cmd
@@ -140,7 +140,7 @@ def db() -> Iterator[sqlite3.Connection]:
     """
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    with open(_schema_path()) as f:
+    with open(schema_path()) as f:
         conn.executescript(f.read())
     try:
         yield conn
