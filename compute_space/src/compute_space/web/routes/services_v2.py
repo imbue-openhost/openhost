@@ -19,11 +19,15 @@ from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth import resolve_app_from_token
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.installer import GRANT_KEY_CAPABILITY
+from compute_space.core.installer import GRANT_KEY_REPO_URL_PREFIX
 from compute_space.core.installer import INSTALLER_SERVICE_URL
 from compute_space.core.installer import INSTALLER_SERVICE_VERSION
+from compute_space.core.installer import INSTALL_CAPABILITY
 from compute_space.core.installer import InstallError
 from compute_space.core.installer import check_install_allowed
 from compute_space.core.installer import install_from_repo_url
+from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
@@ -318,7 +322,7 @@ async def _handle_installer_request(
 
         grants = [g.grant for g in get_granted_permissions_v2(consumer_app_id, INSTALLER_SERVICE_URL)]
         if (reason := check_install_allowed(repo_url, grants)) is not None:
-            return _installer_permission_denied(consumer_app_id, repo_url, reason)
+            return _installer_permission_denied(consumer_app_id, repo_url, reason, db)
 
         try:
             # installed_by stores the consumer's app_id (stable identity) so
@@ -376,13 +380,61 @@ def _json_ok(body: dict[str, Any]) -> Response:
     return Response(json.dumps(body), status=200, content_type="application/json")
 
 
-def _installer_permission_denied(consumer_app_id: str, repo_url: str, reason: str) -> Response:
+def _proposed_install_grant_from_manifest(
+    consumer_app_id: str, repo_url: str, db: sqlite3.Connection
+) -> dict[str, str]:
+    """Pick the install grant payload to offer the owner on a 403.
+
+    Prefers a grant the consumer **already declared** in its
+    ``[[services.v2.consumes]]`` block for the installer service whose
+    ``repo_url_prefix`` matches ``repo_url`` — so a manifest-declared
+    broad grant (e.g. ``"https://github.com/"``) gets approved once and
+    covers every subsequent install instead of producing one approval
+    prompt per repo.
+
+    Falls back to a per-URL grant only if the consumer's manifest
+    declares no installer grants at all, or none whose prefix covers the
+    requested URL.  This keeps behaviour sane for consumers that haven't
+    been updated to declare a broader prefix yet.
+    """
+    fallback = {GRANT_KEY_CAPABILITY: INSTALL_CAPABILITY, GRANT_KEY_REPO_URL_PREFIX: repo_url}
+    row = db.execute("SELECT manifest_raw FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
+    if not row or not row["manifest_raw"]:
+        return fallback
+    try:
+        manifest = parse_manifest_from_string(row["manifest_raw"])
+    except Exception:
+        return fallback
+
+    for consume in manifest.consumes_services_v2:
+        if consume.service != INSTALLER_SERVICE_URL:
+            continue
+        for g in consume.grants:
+            if not isinstance(g, dict):
+                continue
+            if g.get(GRANT_KEY_CAPABILITY) != INSTALL_CAPABILITY:
+                continue
+            prefix = g.get(GRANT_KEY_REPO_URL_PREFIX, "")
+            if not isinstance(prefix, str):
+                continue
+            if prefix in ("", "*") or repo_url.startswith(prefix):
+                return {
+                    GRANT_KEY_CAPABILITY: INSTALL_CAPABILITY,
+                    GRANT_KEY_REPO_URL_PREFIX: prefix,
+                }
+    return fallback
+
+
+def _installer_permission_denied(consumer_app_id: str, repo_url: str, reason: str, db: sqlite3.Connection) -> Response:
     """Return the v2 standard permission_required shape with a grant URL.
 
-    Body matches the post-PR67 ``required_grant`` field name (``grant``
-    rather than ``grant_payload``).
+    The proposed grant comes from the consumer's manifest-declared
+    ``[[services.v2.consumes]]`` block when possible, so approving once
+    covers every repo the consumer's manifest already declared a prefix
+    for.  Falls back to a per-URL grant only if the manifest declares
+    no matching prefix.
     """
-    grant = {"capability": "install", "repo_url_prefix": repo_url}
+    grant = _proposed_install_grant_from_manifest(consumer_app_id, repo_url, db)
     try:
         approve_path = url_for(
             "pages_permissions_v2.approve_permissions_v2",
