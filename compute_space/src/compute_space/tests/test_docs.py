@@ -94,7 +94,7 @@ def _populate_fake_docs(src_dir: Path) -> None:
         "\n"
         "```toml\n"
         "[runtime.container]\n"
-        "image = \"Dockerfile\"\n"
+        'image = "Dockerfile"\n'
         "```\n"
     )
     (src_dir / "routing.md").write_text("# Routing\n\nRouting prose here.\n")
@@ -176,10 +176,7 @@ async def test_active_sidebar_link_marked(app_with_docs: Quart):
     resp = await client.get("/docs/manifest_spec")
     body = (await resp.get_data()).decode()
     # Find the link to manifest_spec and verify it carries the active marker.
-    assert (
-        'href="/docs/manifest_spec"' in body
-        and "active" in body
-    )
+    assert 'href="/docs/manifest_spec"' in body and "active" in body
 
 
 @pytest.mark.asyncio
@@ -293,9 +290,7 @@ async def test_render_cache_invalidates_on_mtime_change(app_with_docs: Quart):
 
     # Mutate the source.  Sleep so mtime resolution definitely
     # increases (some filesystems have 1s resolution).
-    src = (
-        app_with_docs.openhost_config.openhost_repo_path / "docs" / "src" / "introduction.md"
-    )
+    src = app_with_docs.openhost_config.openhost_repo_path / "docs" / "src" / "introduction.md"
     time.sleep(1.05)
     src.write_text("# A New Heading\n\nFresh content.\n")
 

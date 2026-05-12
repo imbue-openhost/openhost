@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from markdown_it import MarkdownIt
-from markdown_it.token import Token
+from markupsafe import escape as html_escape
 from mdit_py_plugins.anchors import anchors_plugin
 from mdit_py_plugins.tasklists import tasklists_plugin
 from pygments import highlight
@@ -121,17 +121,27 @@ def _build_md() -> MarkdownIt:
     return md
 
 
-def _render_fence_with_pygments(self, tokens, idx, options, env) -> str:  # noqa: ANN001
+def _render_fence_with_pygments(
+    self: object,  # noqa: ARG001 — markdown-it's render-rule signature passes the renderer as the first arg; we don't need it.
+    tokens: list[object],
+    idx: int,
+    options: dict[str, object],  # noqa: ARG001
+    env: object,  # noqa: ARG001
+) -> str:
     """Render a ```fenced``` code block through Pygments.
 
     The info string after ``` becomes the lexer name (e.g. ``toml``,
     ``python``, ``bash``).  Unknown lexers fall back to no
     highlighting — we emit a plain ``<pre><code>...</code></pre>``
     that mdBook-style theme CSS can colour as a generic block.
+
+    The render-rule signature is fixed by markdown-it-py's plugin
+    protocol; we ignore the ``self``, ``options``, and ``env``
+    args (the only inputs we need are the token list + index).
     """
     token = tokens[idx]
-    code = token.content
-    info = (token.info or "").strip().split(None, 1)
+    code = getattr(token, "content", "")
+    info = (getattr(token, "info", "") or "").strip().split(None, 1)
     lang = info[0] if info else ""
     if lang:
         try:
@@ -142,10 +152,14 @@ def _render_fence_with_pygments(self, tokens, idx, options, env) -> str:  # noqa
         lexer = None
     if lexer is None:
         # No language tag (or unrecognised) — emit a plain block.
-        from markupsafe import escape as _esc  # local import for tiny boot win
-        return f'<pre><code>{_esc(code)}</code></pre>\n'
+        # ``html_escape`` (markupsafe) prevents the code contents
+        # from being interpreted as HTML markup.
+        return f"<pre><code>{html_escape(code)}</code></pre>\n"
     formatter = HtmlFormatter(nowrap=False, cssclass="codehilite")
-    return highlight(code, lexer, formatter)
+    # ``pygments.highlight`` is typed ``Any`` upstream; explicit
+    # cast keeps mypy strict-no-any-return happy.
+    rendered: str = highlight(code, lexer, formatter)
+    return rendered
 
 
 # Pygments CSS — embedded in the response so we don't need a
@@ -205,13 +219,15 @@ def _parse_summary(summary_text: str) -> tuple[_SidebarSection, ...]:
             return
         if current_title is None:
             return  # intro entries handled below
-        sections.append(
-            _SidebarSection(title=current_title, links=tuple(current_links))
-        )
+        sections.append(_SidebarSection(title=current_title, links=tuple(current_links)))
 
     for raw_line in summary_text.splitlines():
         line = raw_line.rstrip()
-        if not line.strip() or line.lstrip().startswith("#") and line.lstrip().lstrip("#").strip().lower() == "summary":
+        if (
+            not line.strip()
+            or line.lstrip().startswith("#")
+            and line.lstrip().lstrip("#").strip().lower() == "summary"
+        ):
             continue
         m_header = _SUMMARY_HEADER_RE.match(line)
         if m_header:
@@ -299,6 +315,7 @@ def _rewrite_internal_links(html: str) -> str:
     ``://`` schemes, no leading ``/``).  External links and
     in-page fragments (``#section``) are left alone.
     """
+
     def _repl(match: re.Match[str]) -> str:
         href = match.group(1)
         anchor = ""
@@ -549,9 +566,7 @@ def _flatten_links(sections: tuple[_SidebarSection, ...]) -> list[_SidebarLink]:
     return out
 
 
-def _find_neighbors(
-    slug: str, ordered: list[_SidebarLink]
-) -> tuple[_SidebarLink | None, _SidebarLink | None]:
+def _find_neighbors(slug: str, ordered: list[_SidebarLink]) -> tuple[_SidebarLink | None, _SidebarLink | None]:
     """Locate ``slug`` in ``ordered`` and return its (prev, next)
     siblings.  Both may be ``None`` (first or last page)."""
     for i, link in enumerate(ordered):
