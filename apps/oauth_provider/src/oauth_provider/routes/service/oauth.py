@@ -37,7 +37,7 @@ async def get_token_request(request: Request[Any, Any, Any], data: TokenRequest)
     if data.account == "NEW":
         # If the client explicitly wants a new token, send them through the auth flow.
         # this is used eg to get a second account for the same provider.
-        consumer_app = request.headers.get("x-openhost-consumer", "")
+        consumer_app = request.headers.get("x-openhost-consumer-id", "")
         return await _authorize_response(data.provider, data.scopes, data.return_to, consumer_app=consumer_app)
 
     missing = check_oauth_v2_permission(request, data.provider, data.scopes, data.account)

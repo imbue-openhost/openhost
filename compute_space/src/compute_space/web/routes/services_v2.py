@@ -172,15 +172,18 @@ def _resolve_consumer_from_ws() -> str | None:
     return _app_from_origin(websocket)
 
 
-def _consumer_name_for_header(consumer_app_id: str) -> str:
-    """Look up the consumer app's current name for the X-OpenHost-Consumer header.
+def _consumer_identity_headers(consumer_app_id: str) -> dict[str, str]:
+    """Build the X-OpenHost-Consumer-{Name,Id} headers for a consumer app.
 
-    The header carries the human-readable name (not app_id) so provider apps can
-    log who's calling them in a friendly form. Provider apps that need stable
-    identity should switch to app_id once we expose it as a separate header.
+    Provider apps get both: the human-readable name (good for logs/UI) and the
+    stable app_id (good for keying stored data that should survive renames).
     """
     row = get_db().execute("SELECT name FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
-    return row["name"] if row else consumer_app_id
+    name = row["name"] if row else consumer_app_id
+    return {
+        "X-OpenHost-Consumer-Name": name,
+        "X-OpenHost-Consumer-Id": consumer_app_id,
+    }
 
 
 @services_v2_bp.route(
@@ -195,7 +198,8 @@ async def service_call(shortname: str, rest: str, app_id: str) -> Response:
       1. Identify consumer from Bearer token or Origin subdomain (handled by @app_auth_required).
       2. Load consumer's manifest and find the [[services.v2.consumes]] entry where shortname matches.
       3. Resolve the provider for that service URL + version specifier.
-      4. Proxy to <provider_endpoint>/<rest>, injecting X-OpenHost-Permissions and X-OpenHost-Consumer.
+      4. Proxy to <provider_endpoint>/<rest>, injecting X-OpenHost-Permissions and
+         X-OpenHost-Consumer-{Name,Id}.
     """
     consumer_app_id = app_id
     db = get_db()
@@ -227,7 +231,7 @@ async def service_call(shortname: str, rest: str, app_id: str) -> Response:
         extra_headers={
             "Authorization": None,
             "X-OpenHost-Permissions": grants_json,
-            "X-OpenHost-Consumer": _consumer_name_for_header(consumer_app_id),
+            **_consumer_identity_headers(consumer_app_id),
         },
     )
 
@@ -266,7 +270,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         client_ws=websocket,
         identity_headers={
             "X-OpenHost-Permissions": grants_json,
-            "X-OpenHost-Consumer": _consumer_name_for_header(consumer_app_id),
+            **_consumer_identity_headers(consumer_app_id),
         },
         override_path=target_path,
     )
