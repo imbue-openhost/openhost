@@ -6,8 +6,8 @@ from quart import Quart
 
 from compute_space.config import Config
 from compute_space.core import archive_backend
-from compute_space.core.auth import identity
 from compute_space.core.apps import start_app_process
+from compute_space.core.auth import identity
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running

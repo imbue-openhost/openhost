@@ -17,6 +17,8 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
+from compute_space.core.auth.permissions import grant_permissions as grant_permissions_fn
+from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
 from compute_space.core.containers import remove_image
@@ -31,8 +33,6 @@ from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
-from compute_space.core.auth.permissions import grant_permissions as grant_permissions_fn
-from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.ports import allocate_port
 from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services import OAuthAuthorizationRequired
