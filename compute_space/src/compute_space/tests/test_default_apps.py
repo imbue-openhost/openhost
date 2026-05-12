@@ -15,7 +15,7 @@ import pytest
 from compute_space.config import DefaultConfig
 from compute_space.core import default_apps as da
 from compute_space.core.manifest import parse_manifest
-from compute_space.db.connection import schema_path
+from compute_space.db.schema import schema_path
 
 
 def _make_cfg(tmp_path: Path, *, apps_dir: Path, default_apps: list[str]) -> DefaultConfig:

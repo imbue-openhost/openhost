@@ -28,7 +28,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from compute_space.db.connection import schema_path
+from compute_space.db.schema import schema_path
 from compute_space.db.versioned.base import Migration
 from compute_space.db.versioned.registry import REGISTRY
 

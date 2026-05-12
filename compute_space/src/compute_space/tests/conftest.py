@@ -15,7 +15,7 @@ from compute_space import COMPUTE_SPACE_PACKAGE_DIR
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
-from compute_space.db.connection import schema_path
+from compute_space.db.schema import schema_path
 from compute_space.tests.utils import kill_tree
 from compute_space.tests.utils import managed_router
 from compute_space.tests.utils import router_cmd
