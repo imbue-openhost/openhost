@@ -110,8 +110,7 @@ CREATE TABLE IF NOT EXISTS service_providers_v2 (
 );
 
 -- V2: permissions with JSON grants and scope.
--- ``provider_app_id = ''`` is the explicit "global / any provider" marker;
--- a non-empty value scopes the grant to one specific provider app.
+-- provider_app_id should be '' (which will be mapped to None in python) if scope==global
 CREATE TABLE IF NOT EXISTS permissions_v2 (
     consumer_app_id TEXT NOT NULL,
     service_url TEXT NOT NULL,

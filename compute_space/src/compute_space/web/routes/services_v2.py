@@ -325,8 +325,6 @@ async def _handle_installer_request(
             return _installer_permission_denied(consumer_app_id, repo_url, reason, db)
 
         try:
-            # installed_by stores the consumer's app_id (stable identity) so
-            # subsequent /status and /logs lookups still work after a rename.
             result = await install_from_repo_url(
                 repo_url, get_config(), db, app_name=app_name, installed_by=consumer_app_id
             )
