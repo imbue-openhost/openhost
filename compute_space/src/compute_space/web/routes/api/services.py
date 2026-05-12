@@ -3,7 +3,7 @@ from quart import Response
 from quart import jsonify
 
 from compute_space.db import get_db
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 api_services_bp = Blueprint("api_services", __name__)
 

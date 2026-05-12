@@ -18,10 +18,10 @@ from unittest import mock
 import pytest
 from quart import Quart
 
+from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.installer import INSTALLER_SERVICE_URL
 from compute_space.core.installer import InstallError
 from compute_space.core.installer import InstallResult
-from compute_space.core.permissions_v2 import grant_permission_v2
 from compute_space.db.connection import init_db
 from compute_space.web.routes.services_v2 import services_v2_bp
 
@@ -92,7 +92,7 @@ def _grant_installer(db_path: str, app_name: str, repo_url_prefix: str = "*") ->
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        with mock.patch("compute_space.core.permissions_v2.get_db", return_value=conn):
+        with mock.patch("compute_space.core.auth.permissions_v2.get_db", return_value=conn):
             grant_permission_v2(
                 app_name,
                 INSTALLER_SERVICE_URL,
