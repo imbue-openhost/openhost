@@ -44,4 +44,3 @@ specs/
 
 # mdBook build output (rebuilt by CI / on container start;
 # never committed)
-docs/book/

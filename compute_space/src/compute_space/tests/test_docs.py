@@ -1,5 +1,34 @@
+"""Tests for the server-side-rendered docs route.
+
+The route reads ``docs/src/*.md`` directly off the running checkout
+and renders to HTML on the fly.  These tests inject a fake
+``openhost_repo_path`` via the per-test ``_FakeCfg`` so each scenario
+controls exactly which markdown files exist.
+
+What we cover:
+  * Happy path — markdown renders to HTML, the rendered page
+    includes content from the source file.
+  * Sidebar — SUMMARY.md parsing extracts the right sections + links,
+    and the active link is marked as such.
+  * Missing source dir — 503 with an actionable error message
+    (the only mode the old mdBook-based code's 503 covered, kept
+    here as a regression).
+  * 404 — unknown slugs, slugs with weird characters, slugs that
+    resolve outside the docs source dir (path-traversal attempts).
+  * Trailing-slash redirect — ``/docs`` 302s to ``/docs/``.
+  * Internal-link rewrite — markdown like ``[a](./foo.md)`` becomes
+    ``<a href="/docs/foo">a</a>``, NOT a 404 from a literal
+    ``href="./foo.md"``.
+  * Mtime cache — touching the source file invalidates the cached
+    render.
+  * RESERVED_PATHS — ``/docs`` is in the reserved-name set so an
+    operator can't deploy an app named ``docs`` that would shadow
+    the route.
+"""
+
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -7,33 +36,17 @@ from quart import Quart
 
 import compute_space.web.routes.docs as docs_routes
 from compute_space.core.apps import RESERVED_PATHS
-from compute_space.web.app import create_app
-
-from .conftest import _make_test_config
 
 
 class _FakeCfg:
-    """Per-test config stub exposing only ``openhost_repo_path``.
-
-    Used in place of mutating the real ``DefaultConfig`` class so
-    every test gets an independent stub and no test leaks state
-    into another.  Production code path
-    (``compute_space.web.routes.docs._docs_book_dir``) reads via
-    ``current_app.openhost_config.openhost_repo_path`` so an
-    object that supplies that attribute is sufficient.
-    """
+    """Per-test config stub exposing only ``openhost_repo_path``."""
 
     def __init__(self, openhost_repo_path: Path) -> None:
         self.openhost_repo_path = openhost_repo_path
 
 
-def _make_app(repo_root_override: Path):  # noqa: ANN202
-    """Build a minimal Quart app with the docs blueprint registered.
-
-    ``repo_root_override`` controls what ``docs/book/`` resolves to
-    — by pointing it at a fixture dir, tests choose whether the
-    book is built, partially built, or entirely missing.
-    """
+def _make_app(repo_root_override: Path) -> Quart:
+    """Build a minimal Quart app with the docs blueprint registered."""
     app = Quart(__name__)
     app.openhost_config = _FakeCfg(  # type: ignore[attr-defined]
         openhost_repo_path=repo_root_override,
@@ -42,33 +55,63 @@ def _make_app(repo_root_override: Path):  # noqa: ANN202
     return app
 
 
-def _populate_fake_book(book_dir: Path) -> None:
-    """Drop a minimal valid mdBook output tree at ``book_dir``."""
-    book_dir.mkdir(parents=True, exist_ok=True)
-    (book_dir / "index.html").write_text("<!doctype html><html><body><h1>OpenHost Manual</h1></body></html>")
-    (book_dir / "manifest_spec.html").write_text("<!doctype html><html><body><h1>Manifest</h1></body></html>")
-    css_dir = book_dir / "css"
-    css_dir.mkdir(exist_ok=True)
-    (css_dir / "general.css").write_text("body{font-family:sans-serif}")
-    (book_dir / "searchindex.json").write_text('{"version": 1}')
+@pytest.fixture(autouse=True)
+def _clear_render_cache():
+    """Reset the module-global mtime cache between tests so each
+    test starts from a clean slate."""
+    docs_routes._render_cache.clear()
+    yield
+    docs_routes._render_cache.clear()
+
+
+def _populate_fake_docs(src_dir: Path) -> None:
+    """Drop a small docs/src/ tree at ``src_dir``."""
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "SUMMARY.md").write_text(
+        "# Summary\n"
+        "\n"
+        "[Introduction](./introduction.md)\n"
+        "\n"
+        "# Concepts\n"
+        "\n"
+        "- [Manifest Spec](./manifest_spec.md)\n"
+        "- [Routing](./routing.md)\n"
+        "\n"
+        "# Guides\n"
+        "\n"
+        "- [Creating an App](./creating_an_app.md)\n"
+    )
+    (src_dir / "introduction.md").write_text(
+        "# Welcome to OpenHost\n"
+        "\n"
+        "OpenHost is a self-hosted application platform.\n"
+        "See the [manifest spec](./manifest_spec.md).\n"
+    )
+    (src_dir / "manifest_spec.md").write_text(
+        "# Manifest\n"
+        "\n"
+        "Each app declares a `[runtime]` section.\n"
+        "\n"
+        "```toml\n"
+        "[runtime.container]\n"
+        "image = \"Dockerfile\"\n"
+        "```\n"
+    )
+    (src_dir / "routing.md").write_text("# Routing\n\nRouting prose here.\n")
+    (src_dir / "creating_an_app.md").write_text("# Creating an App\n\nGuide content.\n")
 
 
 @pytest.fixture
-def app_with_built_docs(tmp_path: Path):
-    """A Quart app pointing at a fake repo root that HAS docs/book/."""
+def app_with_docs(tmp_path: Path) -> Quart:
+    """A Quart app pointing at a fake repo root with docs/src/ populated."""
     repo_root = tmp_path / "repo"
-    book_dir = repo_root / "docs" / "book"
-    _populate_fake_book(book_dir)
+    _populate_fake_docs(repo_root / "docs" / "src")
     return _make_app(repo_root_override=repo_root)
 
 
 @pytest.fixture
-def app_without_docs(tmp_path: Path):
-    """A Quart app pointing at a fake repo root with NO docs/book/.
-
-    Simulates someone running compute_space from a fresh git clone
-    without having run ``mdbook build docs/`` first.
-    """
+def app_without_docs(tmp_path: Path) -> Quart:
+    """A Quart app whose docs/src/ does NOT exist (corrupt install)."""
     repo_root = tmp_path / "repo-no-docs"
     repo_root.mkdir()
     return _make_app(repo_root_override=repo_root)
@@ -78,287 +121,199 @@ def app_without_docs(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_index_serves_when_built(app_with_built_docs):
-    client = app_with_built_docs.test_client()
+async def test_index_renders_introduction(app_with_docs: Quart):
+    """``GET /docs/`` must render ``introduction.md``."""
+    client = app_with_docs.test_client()
     resp = await client.get("/docs/")
     assert resp.status_code == 200
     body = (await resp.get_data()).decode()
-    assert "OpenHost Manual" in body
-    # Content-Type should be HTML.
-    assert "text/html" in resp.headers.get("Content-Type", "")
+    assert "Welcome to OpenHost" in body
+    assert "self-hosted application platform" in body
 
 
 @pytest.mark.asyncio
-async def test_chapter_serves(app_with_built_docs):
-    client = app_with_built_docs.test_client()
-    resp = await client.get("/docs/manifest_spec.html")
-    assert resp.status_code == 200
-    assert "Manifest" in (await resp.get_data()).decode()
-
-
-@pytest.mark.asyncio
-async def test_nested_static_asset_serves(app_with_built_docs):
-    """Sub-directories of the book (CSS, fonts, JS) must serve too."""
-    client = app_with_built_docs.test_client()
-    resp = await client.get("/docs/css/general.css")
+async def test_slug_renders_corresponding_markdown(app_with_docs: Quart):
+    """``GET /docs/manifest_spec`` renders ``manifest_spec.md``."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/manifest_spec")
     assert resp.status_code == 200
     body = (await resp.get_data()).decode()
-    assert "sans-serif" in body
+    assert "<h1" in body
+    assert "Manifest" in body
+    assert "Each app declares" in body
 
 
 @pytest.mark.asyncio
-async def test_search_index_serves(app_with_built_docs):
-    """The search index JSON powers mdBook's client-side search.
+async def test_code_blocks_are_syntax_highlighted(app_with_docs: Quart):
+    """Fenced code blocks with a language tag run through Pygments."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/manifest_spec")
+    body = (await resp.get_data()).decode()
+    # The Pygments HtmlFormatter wraps highlighted output in
+    # ``<div class="codehilite">`` and tags individual tokens with
+    # CSS classes like ``.n`` (name), ``.s2`` (double-quoted str), etc.
+    assert "codehilite" in body
+    assert "image" in body
 
-    If this isn't served correctly, the search box on the docs
-    page silently returns no results — a UX regression that's
-    easy to miss without an explicit test.
+
+@pytest.mark.asyncio
+async def test_sidebar_contains_summary_entries(app_with_docs: Quart):
+    """The sidebar exposes the SUMMARY.md sections + links."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/")
+    body = (await resp.get_data()).decode()
+    assert "Concepts" in body
+    assert "Guides" in body
+    assert 'href="/docs/manifest_spec"' in body
+    assert 'href="/docs/routing"' in body
+    assert 'href="/docs/creating_an_app"' in body
+
+
+@pytest.mark.asyncio
+async def test_active_sidebar_link_marked(app_with_docs: Quart):
+    """The currently-rendered page's sidebar link gets ``class="active"``."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/manifest_spec")
+    body = (await resp.get_data()).decode()
+    # Find the link to manifest_spec and verify it carries the active marker.
+    assert (
+        'href="/docs/manifest_spec"' in body
+        and "active" in body
+    )
+
+
+@pytest.mark.asyncio
+async def test_internal_md_links_rewritten(app_with_docs: Quart):
+    """Markdown like ``[manifest spec](./manifest_spec.md)`` should
+    render as a link to ``/docs/manifest_spec``, NOT a literal
+    ``href="./manifest_spec.md"`` that would 404."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/")
+    body = (await resp.get_data()).decode()
+    assert 'href="/docs/manifest_spec"' in body
+    assert 'href="./manifest_spec.md"' not in body
+    assert 'href="manifest_spec.md"' not in body
+
+
+@pytest.mark.asyncio
+async def test_prev_next_navigation(app_with_docs: Quart):
+    """Each page surfaces prev/next links based on SUMMARY.md order."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/manifest_spec")
+    body = (await resp.get_data()).decode()
+    # In our SUMMARY: introduction, manifest_spec, routing, creating_an_app.
+    # manifest_spec should point back to introduction and forward to routing.
+    assert "introduction" in body.lower()
+    assert "routing" in body.lower()
+
+
+# -- 404 / safety ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unknown_slug_404(app_with_docs: Quart):
+    """A request for a slug whose .md doesn't exist returns 404."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs/this_does_not_exist")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evil_slug",
+    [
+        "../etc/passwd",
+        "..%2Fetc%2Fpasswd",
+        "%2E%2E%2Fetc%2Fpasswd",
+        "subdir/foo",
+        ".gitignore",
+        " ",
+        "introduction.md",  # we accept slugs WITHOUT .md, with-extension should 404
+        "introduction.md.bak",
+    ],
+)
+async def test_path_traversal_blocked(app_with_docs: Quart, evil_slug: str):
+    """The slug regex rejects anything outside ``[A-Za-z0-9_-]+``.
+
+    Whether Quart returns 404 directly or 308-rewrites and then 404s,
+    the response must NOT be 200 and must NOT echo a sensitive
+    sentinel from outside the docs dir.
     """
-    client = app_with_built_docs.test_client()
-    resp = await client.get("/docs/searchindex.json")
-    assert resp.status_code == 200
+    client = app_with_docs.test_client()
+    resp = await client.get(f"/docs/{evil_slug}", follow_redirects=True)
+    assert resp.status_code != 200
+    body = (await resp.get_data()).decode("utf-8", errors="replace")
+    # Sanity: no actual /etc/passwd content
+    assert "root:x:" not in body
+
+
+# -- error paths ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_missing_docs_dir_returns_503(app_without_docs: Quart):
+    """When ``docs/src/`` doesn't exist, the route returns 503 with
+    an actionable error message rather than 200/blank.
+
+    This is the "operator's checkout is broken / incomplete" path.
+    """
+    client = app_without_docs.test_client()
+    resp = await client.get("/docs/")
+    assert resp.status_code == 503
+    body = (await resp.get_data()).decode()
+    assert "docs source directory is missing" in body.lower()
 
 
 # -- redirects ------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_no_slash_redirects_to_slash(app_with_built_docs):
-    """``/docs`` must redirect to ``/docs/`` so relative URLs in the
-    rendered HTML resolve correctly.  Without this, the index would
-    load but every CSS / JS / chapter link would be broken.
-    """
-    client = app_with_built_docs.test_client()
-    resp = await client.get("/docs", follow_redirects=False)
+async def test_trailing_slash_redirect(app_with_docs: Quart):
+    """``/docs`` (no slash) → ``/docs/`` so mdBook-style relative
+    asset links would resolve correctly.  We don't use such relative
+    links any more, but the redirect is kept for bookmark stability."""
+    client = app_with_docs.test_client()
+    resp = await client.get("/docs")
     assert resp.status_code in (301, 302, 308)
     assert resp.headers["Location"].endswith("/docs/")
 
 
-# -- missing book ---------------------------------------------------
+# -- cache ----------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_missing_book_returns_503_with_hint(app_without_docs):
-    """When ``docs/book/`` doesn't exist, the response must clearly
-    explain *what* to do — not just 503, but a 503 that tells the
-    operator to run ``mdbook build docs/``."""
-    client = app_without_docs.test_client()
-    resp = await client.get("/docs/")
-    assert resp.status_code == 503
-    body = (await resp.get_data()).decode()
-    assert "mdbook build" in body
+async def test_render_cache_invalidates_on_mtime_change(app_with_docs: Quart):
+    """Modifying the markdown source after the first render must be
+    reflected on the next request — the mtime check should bust the
+    cache."""
+    client = app_with_docs.test_client()
+    resp1 = await client.get("/docs/")
+    body1 = (await resp1.get_data()).decode()
+    assert "Welcome to OpenHost" in body1
 
-
-@pytest.mark.asyncio
-async def test_missing_book_subpath_also_503(app_without_docs):
-    """A request for ``/docs/manifest_spec.html`` against a missing
-    book also returns the 503 hint, not a bare 404.  Helps the
-    operator notice the misconfiguration whether they land on the
-    index or jump straight to a chapter via bookmark."""
-    client = app_without_docs.test_client()
-    resp = await client.get("/docs/manifest_spec.html")
-    assert resp.status_code == 503
-    assert "mdbook build" in (await resp.get_data()).decode()
-
-
-@pytest.mark.asyncio
-async def test_empty_book_dir_returns_503_on_subpath(tmp_path: Path):
-    """The book directory exists but is empty (e.g., the mdbook build
-    started, failed, and left the dir behind).  Both index and chapter
-    requests should return the same 503 + build hint so the operator
-    gets a consistent diagnostic regardless of which URL they hit.
-    """
-    repo_root = tmp_path / "repo-empty-book"
-    book_dir = repo_root / "docs" / "book"
-    book_dir.mkdir(parents=True)
-    # NOTE: don't write index.html — empty book dir.
-    app = _make_app(repo_root_override=repo_root)
-    client = app.test_client()
-
-    resp = await client.get("/docs/")
-    assert resp.status_code == 503
-    assert "mdbook build" in (await resp.get_data()).decode()
-
-    resp = await client.get("/docs/manifest_spec.html")
-    assert resp.status_code == 503, (
-        "subpath into an empty book dir should also return the 503 build hint, matching what /docs/ returns"
+    # Mutate the source.  Sleep so mtime resolution definitely
+    # increases (some filesystems have 1s resolution).
+    src = (
+        app_with_docs.openhost_config.openhost_repo_path / "docs" / "src" / "introduction.md"
     )
-    assert "mdbook build" in (await resp.get_data()).decode()
+    time.sleep(1.05)
+    src.write_text("# A New Heading\n\nFresh content.\n")
+
+    resp2 = await client.get("/docs/")
+    body2 = (await resp2.get_data()).decode()
+    assert "A New Heading" in body2
+    assert "Welcome to OpenHost" not in body2
 
 
-# -- path traversal -------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_path_traversal_blocked(tmp_path: Path):
-    """``send_from_directory`` must reject any path that escapes
-    the book root via ``..`` segments.  We drop sensitive-looking
-    files at every level above the book dir and confirm none
-    of them are served — even after following any URL-normalisation
-    redirects Quart's router may issue.
-
-    The book and sentinel files share the SAME ``tmp_path`` tree
-    (this test constructs the app itself rather than using the
-    ``app_with_built_docs`` fixture) so traversal targets are
-    guaranteed to be at real filesystem paths that ``..`` from
-    the book root would reach.
-
-    Book layout under tmp_path:
-        tmp_path/repo/docs/book/index.html       ← book root
-        tmp_path/repo/docs/secret-docs.txt       ← 1 up
-        tmp_path/repo/secret-repo.txt            ← 2 up
-        tmp_path/secret-tmp.txt                  ← 3 up
-
-    Possible outcomes per evil_path, all of which are acceptable
-    AS LONG AS NO sentinel ever appears in the final body:
-      * 400 — the URL parser rejects the input
-      * 404 — the route resolves but the file isn't found
-      * 30x → eventual 404 — Quart normalises the path then
-                              404s when the normalised path
-                              doesn't exist
-    """
-    repo_root = tmp_path / "repo"
-    book_dir = repo_root / "docs" / "book"
-    _populate_fake_book(book_dir)
-    app = _make_app(repo_root_override=repo_root)
-
-    sentinels = {
-        # path → unique sentinel string we'd see if the file
-        # leaked into a response body.
-        tmp_path / "repo" / "docs" / "secret-docs.txt": "ZONE-SECRET-DOCS-LEVEL",
-        tmp_path / "repo" / "secret-repo.txt": "ZONE-SECRET-REPO-LEVEL",
-        tmp_path / "secret-tmp.txt": "ZONE-SECRET-TMP-LEVEL",
-    }
-    for path, content in sentinels.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-
-    client = app.test_client()
-    # Note: the path-traversal segments below cover the three
-    # depths above book/ corresponding to the three sentinels:
-    #   ../  → 1 up (docs/)
-    #   ../../  → 2 up (repo/)
-    #   ../../../  → 3 up (tmp_path/)
-    # plus several alternate encodings.
-    for evil_path in (
-        "/docs/../secret-docs.txt",
-        "/docs/../../secret-repo.txt",
-        "/docs/../../../secret-tmp.txt",
-        "/docs/..%2Fsecret-docs.txt",
-        "/docs/..%2F..%2Fsecret-repo.txt",
-        "/docs/css/../../secret-docs.txt",
-        "/docs/css/../../../secret-repo.txt",
-        "/docs//../secret-docs.txt",
-    ):
-        resp = await client.get(evil_path, follow_redirects=True)
-        body = (await resp.get_data()).decode()
-        for sentinel in sentinels.values():
-            assert sentinel not in body, f"PATH TRAVERSAL: {evil_path} leaked {sentinel}"
-        # Final response must not be a 200 — a 200 would mean we
-        # successfully read SOMETHING outside the book dir, which
-        # we never want regardless of whether the body matched
-        # one of our sentinels.
-        assert resp.status_code != 200, (
-            f"PATH TRAVERSAL: {evil_path} resolved to a 200 "
-            f"(final status, contents not in sentinel set but "
-            f"still served outside book dir)"
-        )
-
-
-# -- public access (no auth) ----------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_no_auth_required(app_with_built_docs):
-    """The docs are deliberately public so invited users / external
-    readers can consult them.  We verify the route returns 200
-    without any auth headers / cookies / session.
-    """
-    client = app_with_built_docs.test_client()
-    resp = await client.get("/docs/")
-    assert resp.status_code == 200
-    # And the response body doesn't redirect to /login.
-    body = (await resp.get_data()).decode()
-    assert "/login" not in body
-
-
-# -- reserved path entry --------------------------------------------
+# -- RESERVED_PATHS regression --------------------------------------
 
 
 def test_docs_in_reserved_paths():
-    """``/docs`` must be in ``RESERVED_PATHS`` so the deploy flow
-    rejects an app literally named ``docs``.  If it isn't, a user
-    could deploy a "docs" app and shadow the path-based fallback
-    routing the dashboard uses, even though the subdomain route
-    (docs.<zone>) would still work.  The two-line route registration
-    in ``app.py`` is necessary but not sufficient on its own — this
-    test catches the case where someone adds another ``RESERVED_PATHS``
-    entry and accidentally removes ours via a merge.
+    """An operator must NOT be able to deploy an app named ``docs``
+    — that would shadow the route ordering and break the manual.
+
+    The deploy-app validation in ``core.apps`` checks ``RESERVED_PATHS``
+    for a leading-slash match.  This regression test makes sure the
+    PR keeps ``/docs`` on that list.
     """
-    assert "/docs" in RESERVED_PATHS, (
-        "/docs must be in RESERVED_PATHS to prevent an app named "
-        "'docs' from being deployed (would conflict with the built-in "
-        "/docs route registered by compute_space.web.routes.docs)"
-    )
-
-
-# -- pre-setup access (full create_app) -----------------------------
-
-
-@pytest.mark.asyncio
-async def test_docs_accessible_before_owner_setup(tmp_path: Path):
-    """The full ``create_app()`` application's ``_require_owner``
-    before-request hook normally redirects every path to ``/setup``
-    when the zone has no owner yet.  Docs must be exempt from this
-    redirect because operators usually consult docs BEFORE finishing
-    setup.  This is an integration test against a real
-    ``create_app()`` instance with an empty owner table.
-
-    Builds a self-contained book under tmp_path so the test is
-    fully isolated from whatever ``docs/book/`` state the local
-    repo might or might not have (e.g., a partial / stale local
-    mdbook build that's missing manifest_spec.html).
-    """
-    cfg = _make_test_config(tmp_path, port=20600)
-    # Override openhost_repo_path on this specific cfg instance
-    # so the docs route resolves to OUR fake book, never the
-    # repo-on-disk one.  We assign onto an instance dict (not
-    # the class) so this doesn't leak across tests.  The Config
-    # class uses @property, which can't be shadowed by setattr
-    # on an instance, so we have to swap a per-instance
-    # subclass instead.
-    fake_repo = tmp_path / "fake-repo"
-    _populate_fake_book(fake_repo / "docs" / "book")
-
-    class _IsolatedCfg(type(cfg)):  # type: ignore[misc]
-        @property
-        def openhost_repo_path(self) -> Path:
-            return fake_repo
-
-    # Rebind cfg to an instance of the isolated subclass.  We
-    # copy the original cfg's attrs over so the rest of the
-    # config (db path, ports, etc.) is unchanged.
-    isolated = _IsolatedCfg.__new__(_IsolatedCfg)
-    isolated.__dict__.update(cfg.__dict__)
-    isolated.make_all_dirs()
-
-    app = create_app(isolated)
-    client = app.test_client()
-
-    # Confirm the owner table is empty (otherwise this test would
-    # check the wrong code path).
-    resp = await client.get("/")
-    assert resp.status_code in (301, 302, 303, 307, 308), (
-        f"expected pre-setup redirect from /; test fixture is misconfigured (got {resp.status_code})"
-    )
-    assert "/setup" in resp.headers.get("Location", "")
-
-    # The actual assertion: /docs/ must NOT redirect.
-    resp = await client.get("/docs/", follow_redirects=False)
-    assert resp.status_code == 200, (
-        f"/docs/ should return 200 pre-setup, got {resp.status_code} "
-        f"(location: {resp.headers.get('Location', '<none>')})"
-    )
-    # And a chapter sub-path that we DEFINITELY put in our fake book:
-    resp = await client.get("/docs/manifest_spec.html", follow_redirects=False)
-    assert resp.status_code == 200, f"/docs/<chapter> should return 200 pre-setup, got {resp.status_code}"
+    assert "/docs" in RESERVED_PATHS

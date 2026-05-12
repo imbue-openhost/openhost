@@ -588,6 +588,18 @@ wheels = [
 ]
 
 [[package]]
+name = "mdit-py-plugins"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown-it-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d8/3d/e0e8d9d1cee04f758120915e2b2a3a07eb41f8cf4654b4734788a522bcd1/mdit_py_plugins-0.6.0.tar.gz", hash = "sha256:2436f14a7295837ac9228a36feeabda867c4abc488c8d019ad5c0bda88eee040", size = 56025, upload-time = "2026-05-07T12:20:42.295Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/d6/48f5b9e44e2e760855d7b489b1317cd7620e82dcb73197961e5cc1391348/mdit_py_plugins-0.6.0-py3-none-any.whl", hash = "sha256:f7e7a25d8b616fee99cb1e330da73451d11a8061baf39bb9663ab9ce0e005b90", size = 66655, upload-time = "2026-05-07T12:20:41.226Z" },
+]
+
+[[package]]
 name = "mdurl"
 version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -624,7 +636,10 @@ dependencies = [
     { name = "hypercorn" },
     { name = "josepy" },
     { name = "loguru" },
+    { name = "markdown-it-py" },
+    { name = "mdit-py-plugins" },
     { name = "packaging" },
+    { name = "pygments" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "quart" },
     { name = "tomli-w" },
@@ -648,7 +663,10 @@ requires-dist = [
     { name = "hypercorn" },
     { name = "josepy" },
     { name = "loguru" },
+    { name = "markdown-it-py" },
+    { name = "mdit-py-plugins" },
     { name = "packaging" },
+    { name = "pygments" },
     { name = "pyjwt", extras = ["crypto"] },
     { name = "quart" },
     { name = "tomli-w" },

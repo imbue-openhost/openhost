@@ -137,11 +137,12 @@ Server deployment prerequisites and test setup are documented in `ansible/readme
 
 ## key docs
 
-The user-facing manual is in `docs/src/`, rendered to HTML via
-[mdBook](https://rust-lang.github.io/mdBook/) on every commit and
-shipped with the OpenHost release.  Every OpenHost zone exposes
-the rendered manual at `https://<zone>/docs/`.
+The user-facing manual is in `docs/src/`, rendered to HTML on the
+fly by compute_space and served at `https://<zone>/docs/`.  No
+build step: editing a markdown file under `docs/src/` and reloading
+the page is enough to see the change.
 
+- `docs/src/introduction.md` - introduction + table of contents
 - `docs/src/creating_an_app.md` - guide to building apps
 - `docs/src/manifest_spec.md` - `openhost.toml` app manifest specification
 - `docs/src/routing.md` - subdomain + path routing model
@@ -150,16 +151,5 @@ the rendered manual at `https://<zone>/docs/`.
 - `docs/src/oauth.md` - OAuth integration with external services
 - `docs/src/cross_app_services.md` - app-to-app service calls
 
-To render the manual locally, install mdBook (CI pins
-v0.4.40; match locally for reproducibility):
-
-```bash
-# One-time install:
-cargo install --version 0.4.40 mdbook
-#   or download a prebuilt binary from
-#   https://github.com/rust-lang/mdBook/releases/
-
-# Build / preview:
-mdbook build docs/    # produces docs/book/
-mdbook serve docs/    # live-reload preview on http://localhost:3000
-```
+`docs/src/SUMMARY.md` is the sidebar table of contents — add new
+pages there to surface them in the manual.
