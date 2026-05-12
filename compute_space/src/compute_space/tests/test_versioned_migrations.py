@@ -1,18 +1,17 @@
 """Tests for the versioned migration framework itself.
 
 Scope: framework plumbing — base class, registry validation, runner
-behaviour, legacy bootstrap, fresh init, concurrency, the PRAGMA
-heuristic. The migrations themselves are covered by the snapshot
-tests in ``test_migration_snapshots.py``.
+behaviour, fresh init, concurrency, the PRAGMA heuristic. The
+migrations themselves are covered by the snapshot tests in
+``test_migration_snapshots.py``.
 
 Covers:
   - schema_version metadata table (REQ-VER-1..5)
-  - legacy v0 -> v1 bootstrap via the existing migrate() (REQ-LEG-*)
+  - Refusal to start on a pre-versioned-migrations (v0) DB
   - Migration base class + SqlFileMigration (REQ-MF-*)
   - Registry validation: contiguous, starts at 2 (REQ-REG-*)
   - Runner behaviour: lock, apply, atomic version bump, rollback (REQ-RUN-*)
   - Fresh-DB init via schema.sql, stamps to highest (REQ-INIT-*)
-  - Legacy bootstrap fixture test (REQ-TEST-5)
   - Concurrency: two concurrent startups (REQ-TEST-6)
   - PRAGMA foreign_keys heuristic warning (REQ-TEST-7)
 """
@@ -38,63 +37,11 @@ from compute_space.db.versioned import SqlFileMigration
 from compute_space.db.versioned import apply_migrations
 from compute_space.db.versioned import highest_registered_version
 from compute_space.db.versioned import read_version
-from compute_space.db.versioned import runner as runner_mod
 from compute_space.db.versioned import validate_registry
-from compute_space.tests.schema_helpers import assert_schemas_equal
-from compute_space.tests.schema_helpers import get_schema_snapshot
 
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
-
-
-_OLDEST_LEGACY_SCHEMA = """\
-CREATE TABLE apps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    base_path TEXT NOT NULL UNIQUE,
-    subdomain TEXT NOT NULL UNIQUE,
-    version TEXT NOT NULL,
-    description TEXT,
-    runtime_type TEXT NOT NULL CHECK(runtime_type IN ('serverless', 'serverfull')),
-    repo_path TEXT NOT NULL,
-    health_check TEXT,
-    local_port INTEGER NOT NULL UNIQUE,
-    container_port INTEGER,
-    docker_container_id TEXT,
-    spin_pid INTEGER,
-    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error')),
-    error_message TEXT,
-    memory_mb INTEGER NOT NULL DEFAULT 128,
-    cpu_millicores INTEGER NOT NULL DEFAULT 1000,
-    gpu INTEGER NOT NULL DEFAULT 0,
-    manifest_raw TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE app_databases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_name TEXT NOT NULL,
-    db_name TEXT NOT NULL,
-    db_path TEXT NOT NULL,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE,
-    UNIQUE(app_name, db_name)
-);
-CREATE INDEX idx_apps_status ON apps(status);
-CREATE TABLE owner (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE refresh_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token TEXT UNIQUE NOT NULL,
-    expires_at TEXT NOT NULL,
-    revoked INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
-"""
 
 
 # --------------------------------------------------------------------------- #
@@ -208,113 +155,26 @@ class TestVersionGating:
 
 
 # --------------------------------------------------------------------------- #
-# Legacy bootstrap (REQ-LEG-1..3, REQ-TEST-5)
+# Legacy v0 refusal
 # --------------------------------------------------------------------------- #
 
 
-class TestLegacyBootstrap:
-    def _make_v0_fixture(self, path: str) -> None:
-        db = sqlite3.connect(path)
-        db.executescript(_OLDEST_LEGACY_SCHEMA)
-        db.execute(
-            "INSERT INTO apps (name, base_path, subdomain, version, runtime_type, "
-            "repo_path, local_port) VALUES (?,?,?,?,?,?,?)",
-            ("legacy_app", "/legacy_app", "legacy_app", "1.0", "serverfull", "/r", 20001),
-        )
-        db.execute("INSERT INTO owner (id, username, password_hash) VALUES (1, 'bob', 'bcrypt-stub')")
-        db.execute("INSERT INTO refresh_tokens (token, expires_at) VALUES ('plaintext', '2099-01-01T00:00:00')")
+class TestLegacyV0Refusal:
+    def test_tables_but_no_stamp_refuses_to_start(self, tmp_path):
+        """A pre-versioned-migrations DB (tables present, no schema_version row)
+        must raise a clear error directing the operator to upgrade through an
+        earlier release first."""
+        db_path = str(tmp_path / "v0.db")
+        db = sqlite3.connect(db_path)
+        # Any table is enough to make _has_any_tables true. We don't need to
+        # reproduce the real v0 shape — the runner only checks "tables exist
+        # AND no schema_version row" to detect this case.
+        db.executescript("CREATE TABLE apps (id INTEGER PRIMARY KEY);")
         db.commit()
         db.close()
 
-    def test_v0_upgrades_to_v1_and_stamps(self, tmp_path):
-        db_path = str(tmp_path / "legacy.db")
-        self._make_v0_fixture(db_path)
-
-        apply_migrations(db_path)
-
-        db = sqlite3.connect(db_path)
-        try:
-            assert read_version(db) == highest_registered_version(REGISTRY)
-            # Data preserved through legacy path.
-            row = db.execute("SELECT name FROM apps WHERE name = 'legacy_app'").fetchone()
-            assert row is not None
-            # Refresh tokens were hashed.
-            tok = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()
-            assert tok is not None and tok[0] != "plaintext"
-        finally:
-            db.close()
-
-    def test_second_startup_does_not_call_legacy_again(self, tmp_path, monkeypatch):
-        db_path = str(tmp_path / "legacy.db")
-        self._make_v0_fixture(db_path)
-
-        # First startup: v0 → v1 (and on up to highest).
-        apply_migrations(db_path)
-
-        # Monkey-patch legacy_migrate to explode if called again.
-        def _boom(_db):
-            raise AssertionError("legacy migrate() should not run on an already-v1 DB")
-
-        monkeypatch.setattr(runner_mod, "legacy_migrate", _boom)
-        apply_migrations(db_path)  # must not raise
-
-    def test_legacy_matches_fresh_schema(self, tmp_path):
-        """REQ-TEST-5: legacy-bootstrapped DB has the same schema as a fresh
-        DB initialized from schema.sql alone."""
-        legacy_path = str(tmp_path / "legacy.db")
-        fresh_path = str(tmp_path / "fresh.db")
-
-        self._make_v0_fixture(legacy_path)
-        apply_migrations(legacy_path)
-        apply_migrations(fresh_path)
-
-        legacy_db = sqlite3.connect(legacy_path)
-        fresh_db = sqlite3.connect(fresh_path)
-        try:
-            assert_schemas_equal(get_schema_snapshot(fresh_db), get_schema_snapshot(legacy_db))
-        finally:
-            legacy_db.close()
-            fresh_db.close()
-
-    def test_crash_mid_bootstrap_leaves_db_unstamped(self, tmp_path, monkeypatch):
-        """Crashing between migrate() and the v1 stamp must leave version == 0.
-
-        Both migrate() and schema.sql are idempotent, so the whole bootstrap
-        replays cleanly on the next startup. The stamp happens AFTER
-        schema.sql so a failure during either step keeps the DB at v0.
-        """
-        db_path = str(tmp_path / "crash.db")
-        self._make_v0_fixture(db_path)
-
-        # Force the schema.sql step of the legacy bootstrap to fail by
-        # pointing the runner at a temp file containing a syntax error.
-        bad_schema = tmp_path / "broken_schema.sql"
-        bad_schema.write_text("THIS IS NOT VALID SQL;\n")
-        monkeypatch.setattr(runner_mod, "_schema_path", lambda: str(bad_schema))
-
-        with pytest.raises(sqlite3.Error):
+        with pytest.raises(RuntimeError, match=r"schema_version"):
             apply_migrations(db_path)
-
-        # migrate() may have created the schema_version table, but the row
-        # must not have been stamped — version must read back as 0.
-        probe = sqlite3.connect(db_path)
-        try:
-            assert read_version(probe) == 0
-        finally:
-            probe.close()
-
-        # Retry under normal conditions: bootstrap replays cleanly.
-        monkeypatch.undo()
-        apply_migrations(db_path)
-
-        final = sqlite3.connect(db_path)
-        try:
-            assert read_version(final) == highest_registered_version(REGISTRY)
-            # Data from the v0 fixture survived the retry.
-            row = final.execute("SELECT name FROM apps WHERE name = 'legacy_app'").fetchone()
-            assert row is not None
-        finally:
-            final.close()
 
 
 # --------------------------------------------------------------------------- #
