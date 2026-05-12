@@ -15,10 +15,10 @@ function refreshApps() {
     .catch(function() {});
 }
 
-function appAction(name, action, formData) {
+function appAction(appId, action, formData) {
   var opts = {method: 'POST', credentials: 'same-origin'};
   if (formData) { opts.body = formData; }
-  return fetch(action + '/' + name, opts)
+  return fetch(action + '/' + appId, opts)
     .then(function(r) {
       return r.json().then(function(d) { return {ok: r.ok, data: d}; },
                           function() { return {ok: r.ok, data: {}}; });
@@ -35,16 +35,19 @@ function appAction(name, action, formData) {
     });
 }
 
-function reloadAndUpdate(name) {
+function reloadAndUpdate(appId) {
   var fd = new FormData();
   fd.append('update', '1');
-  appAction(name, 'reload_app', fd);
+  appAction(appId, 'reload_app', fd);
 }
 
-function updateApps(data) {
-  document.querySelectorAll('tr[data-app]').forEach(function(row) {
-    var name = row.getAttribute('data-app');
-    var info = data[name];
+function updateApps(apps) {
+  // /api/apps now returns a list of {app_id, name, status, error_message}.
+  var byId = {};
+  apps.forEach(function(a) { byId[a.app_id] = a; });
+  document.querySelectorAll('tr[data-app-id]').forEach(function(row) {
+    var appId = row.getAttribute('data-app-id');
+    var info = byId[appId];
     if (!info) {
       row.style.display = 'none';
       return;

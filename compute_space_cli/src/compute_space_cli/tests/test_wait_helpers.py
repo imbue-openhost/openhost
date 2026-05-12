@@ -30,7 +30,7 @@ def test_returns_on_404() -> None:
         patch("compute_space_cli.helpers.time.sleep"),
         patch("compute_space_cli.helpers.make_api_request", return_value=_resp(404)),
     ):
-        wait_for_app_removed("https://x", "tok", "myapp")
+        wait_for_app_removed("https://x", "tok", "test-id", "myapp")
 
 
 def test_returns_after_polling_through_removing() -> None:
@@ -43,7 +43,7 @@ def test_returns_after_polling_through_removing() -> None:
         patch("compute_space_cli.helpers.time.sleep"),
         patch("compute_space_cli.helpers.make_api_request", side_effect=responses),
     ):
-        wait_for_app_removed("https://x", "tok", "myapp")
+        wait_for_app_removed("https://x", "tok", "test-id", "myapp")
 
 
 def test_exits_on_error_status() -> None:
@@ -57,7 +57,7 @@ def test_exits_on_error_status() -> None:
         ),
     ):
         with pytest.raises(SystemExit) as exc:
-            wait_for_app_removed("https://x", "tok", "myapp")
+            wait_for_app_removed("https://x", "tok", "test-id", "myapp")
         assert exc.value.code == 1
 
 
@@ -67,7 +67,7 @@ def test_exits_on_unexpected_http_status() -> None:
         patch("compute_space_cli.helpers.make_api_request", return_value=_resp(500)),
     ):
         with pytest.raises(SystemExit) as exc:
-            wait_for_app_removed("https://x", "tok", "myapp")
+            wait_for_app_removed("https://x", "tok", "test-id", "myapp")
         assert exc.value.code == 1
 
 
@@ -82,7 +82,7 @@ def test_skips_unparseable_body_and_keeps_polling() -> None:
         patch("compute_space_cli.helpers.time.sleep"),
         patch("compute_space_cli.helpers.make_api_request", side_effect=responses),
     ):
-        wait_for_app_removed("https://x", "tok", "myapp")
+        wait_for_app_removed("https://x", "tok", "test-id", "myapp")
 
 
 def test_keeps_polling_through_network_errors() -> None:
@@ -93,7 +93,7 @@ def test_keeps_polling_through_network_errors() -> None:
         patch("compute_space_cli.helpers.time.sleep"),
         patch("compute_space_cli.helpers.make_api_request", side_effect=side_effect),
     ):
-        wait_for_app_removed("https://x", "tok", "myapp")
+        wait_for_app_removed("https://x", "tok", "test-id", "myapp")
 
 
 def test_exits_on_overall_timeout() -> None:
@@ -115,5 +115,5 @@ def test_exits_on_overall_timeout() -> None:
         ),
     ):
         with pytest.raises(SystemExit) as exc:
-            wait_for_app_removed("https://x", "tok", "myapp", timeout=5)
+            wait_for_app_removed("https://x", "tok", "test-id", "myapp", timeout=5)
         assert exc.value.code == 1

@@ -16,6 +16,7 @@ from quart.typing import ResponseReturnValue
 from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.core import archive_backend
+from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import RESERVED_PATHS
 from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
@@ -49,6 +50,19 @@ def _is_removing(app_row: sqlite3.Row | None) -> bool:
     on concurrent removal requests.
     """
     return app_row is not None and app_row["status"] == "removing"
+
+
+def _resolve_app_or_error(app_id: str) -> tuple[sqlite3.Row | None, ResponseReturnValue | None]:
+    """Validate app_id format and load the app row.
+
+    Returns (row, None) on success, (None, error_response) on bad id or unknown app.
+    """
+    if not is_valid_app_id(app_id):
+        return None, (jsonify({"error": "Invalid app_id"}), 400)
+    row = get_db().execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+    if not row:
+        return None, (jsonify({"error": "App not found"}), 404)
+    return row, None
 
 
 api_apps_bp = Blueprint("api_apps", __name__)
@@ -197,7 +211,7 @@ async def api_add_app() -> ResponseReturnValue:
                 return jsonify({"error": f"Invalid port override value for '{label}': {form[key]}"}), 400
 
     try:
-        app_name = insert_and_deploy(
+        app_id = insert_and_deploy(
             manifest,
             final_dir,
             config,
@@ -214,28 +228,34 @@ async def api_add_app() -> ResponseReturnValue:
         # map to a 400 rather than a 500.
         return jsonify({"error": str(e)}), 400
 
-    return jsonify({"ok": True, "app_name": app_name, "status": "building"})
+    return jsonify({"ok": True, "app_id": app_id, "app_name": app_name, "status": "building"})
 
 
 @api_apps_bp.route("/api/apps")
 @login_required
 def api_apps() -> ResponseReturnValue:
     db = get_db()
-    rows = db.execute("SELECT * FROM apps ORDER BY name").fetchall()
-    apps: dict[str, dict[str, str | None]] = {}
-    for row in rows:
-        apps[row["name"]] = {
-            "status": row["status"],
-            "error_message": row["error_message"],
-        }
-    return jsonify(apps)
+    rows = db.execute("SELECT app_id, name, status, error_message FROM apps ORDER BY name").fetchall()
+    return jsonify(
+        [
+            {
+                "app_id": row["app_id"],
+                "name": row["name"],
+                "status": row["status"],
+                "error_message": row["error_message"],
+            }
+            for row in rows
+        ]
+    )
 
 
-@api_apps_bp.route("/api/app_status/<app_name>")
+@api_apps_bp.route("/api/app_status/<app_id>")
 @login_required
-def app_status(app_name: str) -> ResponseReturnValue:
+def app_status(app_id: str) -> ResponseReturnValue:
+    if not is_valid_app_id(app_id):
+        return jsonify({"error": "Invalid app_id"}), 400
     db = get_db()
-    app_row = db.execute("SELECT status, error_message FROM apps WHERE name = ?", (app_name,)).fetchone()
+    app_row = db.execute("SELECT status, error_message FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     if not app_row:
         return jsonify({"error": "not found"}), 404
     error_msg = app_row["error_message"]
@@ -249,48 +269,51 @@ def app_status(app_name: str) -> ResponseReturnValue:
     return jsonify({"status": app_row["status"], "error": error_msg, "error_kind": error_kind})
 
 
-@api_apps_bp.route("/app_logs/<app_name>")
+@api_apps_bp.route("/app_logs/<app_id>")
 @login_required
-def app_logs(app_name: str) -> ResponseReturnValue:
+def app_logs(app_id: str) -> ResponseReturnValue:
     config = get_config()
-    db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
-    if not app_row:
-        return "App not found", 404
-    logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
+    app_row, err = _resolve_app_or_error(app_id)
+    if err is not None:
+        return err
+    assert app_row is not None
+    logs = get_docker_logs(app_row["name"], config.temporary_data_dir, app_row["container_id"])
     return logs, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
-@api_apps_bp.route("/stop_app/<app_name>", methods=["POST"])
+@api_apps_bp.route("/stop_app/<app_id>", methods=["POST"])
 @login_required
-def stop_app(app_name: str) -> ResponseReturnValue:
-    db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
-    if not app_row:
-        return jsonify({"error": "App not found"}), 404
+def stop_app(app_id: str) -> ResponseReturnValue:
+    app_row, err = _resolve_app_or_error(app_id)
+    if err is not None:
+        return err
+    assert app_row is not None
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
 
+    db = get_db()
     stop_app_process(app_row)
-    stop_container(f"openhost-{app_name}")
+    stop_container(f"openhost-{app_row['name']}")
     db.execute(
-        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
-        (app_name,),
+        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE app_id = ?",
+        (app_id,),
     )
     db.commit()
     return jsonify({"ok": True})
 
 
-@api_apps_bp.route("/reload_app/<app_name>", methods=["GET", "POST"])
+@api_apps_bp.route("/reload_app/<app_id>", methods=["GET", "POST"])
 @login_required
-async def reload_app(app_name: str) -> ResponseReturnValue:
+async def reload_app(app_id: str) -> ResponseReturnValue:
     config = get_config()
     db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
-    if not app_row:
-        return jsonify({"error": "App not found"}), 404
+    app_row, err = _resolve_app_or_error(app_id)
+    if err is not None:
+        return err
+    assert app_row is not None
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
+    app_name = app_row["name"]
 
     if not archive_backend.is_archive_dir_healthy(config, db):
         if archive_backend.manifest_requires_archive(app_row["manifest_raw"] or ""):
@@ -321,10 +344,10 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
         if update or continue_oauth:
             if not app_row["repo_path"] or not os.path.isdir(os.path.join(app_row["repo_path"], ".git")):
                 db.execute(
-                    "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
+                    "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
                     (
                         "No git repository found to update. If this is a builtin app, git-based updates are not possible.",
-                        app_name,
+                        app_id,
                     ),
                 )
                 db.commit()
@@ -348,18 +371,20 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
             if not pull_ok and "github.com" in repo_url:
                 lf.write("Attempting git pull with github oauth\n")
                 lf.flush()
-                return_to = f"//{config.zone_domain}{url_for('api_apps.reload_app', app_name=app_name, continue_oauth_update='1')}"
+                return_to = (
+                    f"//{config.zone_domain}{url_for('api_apps.reload_app', app_id=app_id, continue_oauth_update='1')}"
+                )
                 try:
                     token = await get_oauth_token("github", ["repo"], return_to=return_to)
                 except ServiceNotAvailable as e:
                     lf.write(f"Secrets service unavailable: {e.message}\n")
                     db.execute(
-                        "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                        (e.message, app_name),
+                        "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                        (e.message, app_id),
                     )
                     db.commit()
                     if continue_oauth:
-                        return redirect(url_for("apps.app_detail", app_name=app_name))
+                        return redirect(url_for("apps.app_detail", app_id=app_id))
                     return jsonify({"ok": True})
                 except OAuthAuthorizationRequired as e:
                     lf.write("No token available; redirecting to oauth flow\n")
@@ -376,33 +401,33 @@ async def reload_app(app_name: str) -> ResponseReturnValue:
 
             if not pull_ok:
                 db.execute(
-                    "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                    (f"Git pull failed: {pull_err}", app_name),
+                    "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                    (f"Git pull failed: {pull_err}", app_id),
                 )
                 db.commit()
                 if continue_oauth:
-                    return redirect(url_for("apps.app_detail", app_name=app_name))
+                    return redirect(url_for("apps.app_detail", app_id=app_id))
                 return jsonify({"ok": True})
 
     await asyncio.to_thread(stop_app_process, app_row)
     db.execute(
-        "UPDATE apps SET status = 'building', container_id = NULL, error_message = NULL WHERE name = ?",
-        (app_name,),
+        "UPDATE apps SET status = 'building', container_id = NULL, error_message = NULL WHERE app_id = ?",
+        (app_id,),
     )
     db.commit()
 
     threading.Thread(
         target=reload_app_background,
-        args=(app_name, app_row["repo_path"], config),
+        args=(app_id, app_row["repo_path"], config),
         daemon=True,
     ).start()
 
     return jsonify({"ok": True})
 
 
-@api_apps_bp.route("/remove_app/<app_name>", methods=["POST"])
+@api_apps_bp.route("/remove_app/<app_id>", methods=["POST"])
 @login_required
-async def remove_app(app_name: str) -> ResponseReturnValue:
+async def remove_app(app_id: str) -> ResponseReturnValue:
     """Flip the row to ``status='removing'`` and run teardown in a thread.
 
     Returns 202 immediately. The dashboard's /api/apps poll picks up
@@ -411,10 +436,11 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     in-flight state.
     """
     config = get_config()
+    app_row, err = _resolve_app_or_error(app_id)
+    if err is not None:
+        return err
+    assert app_row is not None
     db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
-    if not app_row:
-        return jsonify({"error": "App not found"}), 404
 
     form = await request.form
     keep_data = form.get("keep_data") == "1"
@@ -439,8 +465,8 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     # POSTs safe — only the first one gets rowcount=1 and spawns a
     # worker; later ones short-circuit to the already_removing branch.
     cursor = db.execute(
-        "UPDATE apps SET status = 'removing', error_message = NULL WHERE name = ? AND status != 'removing'",
-        (app_name,),
+        "UPDATE apps SET status = 'removing', error_message = NULL WHERE app_id = ? AND status != 'removing'",
+        (app_id,),
     )
     db.commit()
 
@@ -450,16 +476,16 @@ async def remove_app(app_name: str) -> ResponseReturnValue:
     try:
         threading.Thread(
             target=remove_app_background,
-            args=(app_name, keep_data, config),
+            args=(app_id, keep_data, config),
             daemon=True,
         ).start()
     except Exception as e:
         # Thread spawn failed (resource exhaustion). Roll the row back
         # to 'error' so a retry can re-claim it via the atomic UPDATE.
-        logger.exception("Could not spawn remove worker for %s", app_name)
+        logger.exception("Could not spawn remove worker for %s", app_id)
         db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            (f"Could not start removal worker: {e}", app_name),
+            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+            (f"Could not start removal worker: {e}", app_id),
         )
         db.commit()
         return jsonify({"error": "Could not start removal worker; try again."}), 503
@@ -509,10 +535,10 @@ def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> st
     return None
 
 
-@api_apps_bp.route("/rename_app/<app_name>", methods=["POST"])
+@api_apps_bp.route("/rename_app/<app_id>", methods=["POST"])
 @login_required
-async def rename_app(app_name: str) -> ResponseReturnValue:
-    """Rename an app (changes its unique ID and subdomain)."""
+async def rename_app(app_id: str) -> ResponseReturnValue:
+    """Rename an app's label and subdomain. The app_id (cross-table identity) stays the same."""
     config = get_config()
     form = await request.form
     new_name = form.get("name", "").strip()
@@ -527,11 +553,13 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
         return jsonify({"error": f"Name '{new_name}' conflicts with a reserved path"}), 400
 
     db = get_db()
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
-    if not app_row:
-        return jsonify({"error": "App not found"}), 404
+    app_row, err = _resolve_app_or_error(app_id)
+    if err is not None:
+        return err
+    assert app_row is not None
     if _is_removing(app_row):
         return jsonify({"error": "App is being removed"}), 409
+    old_name = app_row["name"]
 
     # Refuse rename on an unhealthy archive ONLY if this app actually
     # uses the archive — otherwise the archive subdir would be silently
@@ -548,7 +576,7 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
                 }
             ), 503
 
-    if new_name == app_name:
+    if new_name == old_name:
         return jsonify({"ok": True, "name": new_name})
 
     conflict = db.execute("SELECT name FROM apps WHERE name = ?", (new_name,)).fetchone()
@@ -560,8 +588,8 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     was_running = prior_status in ("running", "starting", "building")
     stop_app_process(app_row)
     db.execute(
-        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE name = ?",
-        (app_name,),
+        "UPDATE apps SET status = 'stopped', container_id = NULL WHERE app_id = ?",
+        (app_id,),
     )
     db.commit()
 
@@ -569,15 +597,15 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
     rename_error = await asyncio.to_thread(
         _rename_app_storage_dirs,
         config,
-        app_name,
+        old_name,
         new_name,
     )
     if rename_error is not None:
         rollback_db_error: str | None = None
         try:
             db.execute(
-                "UPDATE apps SET status = ?, container_id = ? WHERE name = ?",
-                (prior_status, prior_container_id, app_name),
+                "UPDATE apps SET status = ?, container_id = ? WHERE app_id = ?",
+                (prior_status, prior_container_id, app_id),
             )
             db.commit()
         except sqlite3.Error as db_exc:
@@ -588,51 +616,36 @@ async def rename_app(app_name: str) -> ResponseReturnValue:
             error_message += (
                 f"; additionally, the DB-status rollback failed: "
                 f"{rollback_db_error}.  Check the apps table; the row "
-                f"for {app_name!r} may be stuck at status='stopped'."
+                f"for app_id={app_id!r} may be stuck at status='stopped'."
             )
         return jsonify({"error": error_message}), 500
 
-    db.execute("PRAGMA foreign_keys=OFF")
+    # Identity (app_id) is unchanged, so no FK rewrites in app_tokens,
+    # app_databases.app_id, app_port_mappings, service_providers,
+    # permissions, etc. — they all point at app_id which is stable.
+    # Only the name label and any name-keyed paths need rewriting.
     db.execute(
-        "UPDATE apps SET name = ?, repo_path = REPLACE(repo_path, ?, ?) WHERE name = ?",
-        (new_name, f"/{app_name}/", f"/{new_name}/", app_name),
-    )
-    db.execute("UPDATE app_databases SET app_name = ? WHERE app_name = ?", (new_name, app_name))
-    db.execute(
-        "UPDATE app_tokens SET app_name = ? WHERE app_name = ?",
-        (new_name, app_name),
+        "UPDATE apps SET name = ?, repo_path = REPLACE(repo_path, ?, ?) WHERE app_id = ?",
+        (new_name, f"/{old_name}/", f"/{new_name}/", app_id),
     )
     db.execute(
-        "UPDATE service_providers SET app_name = ? WHERE app_name = ?",
-        (new_name, app_name),
-    )
-    db.execute(
-        "UPDATE permissions SET consumer_app = ? WHERE consumer_app = ?",
-        (new_name, app_name),
-    )
-    db.execute(
-        "UPDATE app_port_mappings SET app_name = ? WHERE app_name = ?",
-        (new_name, app_name),
-    )
-    db.execute(
-        "UPDATE app_databases SET db_path = REPLACE(db_path, ?, ?) WHERE app_name = ?",
-        (f"/{app_name}/", f"/{new_name}/", new_name),
+        "UPDATE app_databases SET db_path = REPLACE(db_path, ?, ?) WHERE app_id = ?",
+        (f"/{old_name}/", f"/{new_name}/", app_id),
     )
     db.commit()
-    db.execute("PRAGMA foreign_keys=ON")
 
     if was_running:
         # Persist failures instead of letting them 500 out: the rename
         # has already succeeded, and the dashboard needs a visible error
         # on the app rather than a generic server error.
         try:
-            start_app_process(new_name, db, config)
+            start_app_process(app_id, db, config)
         except (RuntimeError, ValueError) as e:
             logger.warning("Failed to restart %s after rename: %s", new_name, e)
             db.execute(
-                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                (str(e), new_name),
+                "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                (str(e), app_id),
             )
             db.commit()
 
-    return jsonify({"ok": True, "name": new_name})
+    return jsonify({"ok": True, "name": new_name, "app_id": app_id})

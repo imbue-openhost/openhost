@@ -127,7 +127,7 @@ async def install_from_repo_url(
     final_dir = move_clone_to_app_temp_dir(clone_dir, effective_name, config)
 
     try:
-        deployed_name = insert_and_deploy(
+        insert_and_deploy(
             manifest,
             final_dir,
             config,
@@ -141,4 +141,4 @@ async def install_from_repo_url(
     except (RuntimeError, ValueError) as exc:
         raise InstallError(f"deploy failed: {exc}", status_code=400) from exc
 
-    return InstallResult(app_name=deployed_name, status="building")
+    return InstallResult(app_name=effective_name, status="building")

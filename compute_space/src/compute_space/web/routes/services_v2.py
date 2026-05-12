@@ -67,7 +67,7 @@ async def service_call_cors(shortname: str, rest: str) -> Response:
 async def _add_grant_url_if_global_grant_needed(
     response: Response,
     service_url: str,
-    consumer_app: str,
+    consumer_app_id: str,
 ) -> Response:
     """Add grant_url to service provider 403 responses that indicate a missing globally-scoped permission grant.
 
@@ -101,7 +101,7 @@ async def _add_grant_url_if_global_grant_needed(
     config = get_config()
     approve_path = url_for(
         "pages_permissions_v2.approve_permissions_v2",
-        app=consumer_app,
+        app=consumer_app_id,
         service=service_url,
         grant=json.dumps(grant, sort_keys=True),
     )
@@ -172,39 +172,54 @@ def _resolve_consumer_from_ws() -> str | None:
     return _app_from_origin(websocket)
 
 
+def _consumer_identity_headers(consumer_app_id: str) -> dict[str, str]:
+    """Build the X-OpenHost-Consumer-{Name,Id} headers for a consumer app.
+
+    Provider apps get both: the human-readable name (good for logs/UI) and the
+    stable app_id (good for keying stored data that should survive renames).
+    """
+    row = get_db().execute("SELECT name FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
+    name = row["name"] if row else consumer_app_id
+    return {
+        "X-OpenHost-Consumer-Name": name,
+        "X-OpenHost-Consumer-Id": consumer_app_id,
+    }
+
+
 @services_v2_bp.route(
     "/api/services/v2/call/<shortname>/<path:rest>",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
 )
 @app_auth_required
-async def service_call(shortname: str, rest: str, app_name: str) -> Response:
+async def service_call(shortname: str, rest: str, app_id: str) -> Response:
     """Proxy a request to the provider declared under <shortname> in the consumer's manifest.
 
     Resolution flow:
       1. Identify consumer from Bearer token or Origin subdomain (handled by @app_auth_required).
       2. Load consumer's manifest and find the [[services.v2.consumes]] entry where shortname matches.
       3. Resolve the provider for that service URL + version specifier.
-      4. Proxy to <provider_endpoint>/<rest>, injecting X-OpenHost-Permissions and X-OpenHost-Consumer.
+      4. Proxy to <provider_endpoint>/<rest>, injecting X-OpenHost-Permissions and
+         X-OpenHost-Consumer-{Name,Id}.
     """
-    consumer_app = app_name
+    consumer_app_id = app_id
     db = get_db()
 
     try:
-        service_url, version_spec = lookup_shortname(consumer_app, shortname, db)
+        service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
     except ShortnameNotDeclared as e:
         return _json_error("shortname_not_declared", e.message, 404)
 
     # Installer is a router-internal pseudo-service: it has no provider
     # app and its handlers run in-process to share the router's DB.
     if service_url == INSTALLER_SERVICE_URL:
-        return await _handle_installer_request(consumer_app, version_spec, rest, db)
+        return await _handle_installer_request(consumer_app_id, version_spec, rest, db)
 
     try:
         _, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 
-    grants = get_granted_permissions_v2(consumer_app, service_url)
+    grants = get_granted_permissions_v2(consumer_app_id, service_url)
     grants_json = json.dumps([attr.asdict(g) for g in grants])
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
@@ -216,26 +231,26 @@ async def service_call(shortname: str, rest: str, app_name: str) -> Response:
         extra_headers={
             "Authorization": None,
             "X-OpenHost-Permissions": grants_json,
-            "X-OpenHost-Consumer": consumer_app,
+            **_consumer_identity_headers(consumer_app_id),
         },
     )
 
     if response.status_code == 403:
-        return await _add_grant_url_if_global_grant_needed(response, service_url, consumer_app)
+        return await _add_grant_url_if_global_grant_needed(response, service_url, consumer_app_id)
     return response
 
 
 @services_v2_bp.websocket("/api/services/v2/call/<shortname>/<path:rest>")
 async def service_call_ws(shortname: str, rest: str) -> None:
     """WebSocket variant of service_call. Same auth + resolution; lifts the request/response proxy to ws_proxy."""
-    consumer_app = _resolve_consumer_from_ws()
-    if not consumer_app:
+    consumer_app_id = _resolve_consumer_from_ws()
+    if not consumer_app_id:
         await websocket.close(code=4401, reason="Missing or invalid authorization")
         return
 
     db = get_db()
     try:
-        service_url, version_spec = lookup_shortname(consumer_app, shortname, db)
+        service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
     except ShortnameNotDeclared as e:
         await websocket.close(code=4404, reason=e.message)
         return
@@ -246,7 +261,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         await websocket.close(code=4503, reason=e.message)
         return
 
-    grants = get_granted_permissions_v2(consumer_app, service_url)
+    grants = get_granted_permissions_v2(consumer_app_id, service_url)
     grants_json = json.dumps([attr.asdict(g) for g in grants])
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
@@ -255,7 +270,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         client_ws=websocket,
         identity_headers={
             "X-OpenHost-Permissions": grants_json,
-            "X-OpenHost-Consumer": consumer_app,
+            **_consumer_identity_headers(consumer_app_id),
         },
         override_path=target_path,
     )
@@ -277,7 +292,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
 
 
 async def _handle_installer_request(
-    consumer_app: str, version_spec: str, rest: str, db: sqlite3.Connection
+    consumer_app_id: str, version_spec: str, rest: str, db: sqlite3.Connection
 ) -> Response:
     """Dispatch ``installer`` v2 service requests in-process.
 
@@ -309,13 +324,13 @@ async def _handle_installer_request(
             return _json_error("bad_request", "repo_url is required", 400)
         app_name = (body.get("app_name") or "").strip() or None
 
-        grants = [g.grant for g in get_granted_permissions_v2(consumer_app, INSTALLER_SERVICE_URL)]
+        grants = [g.grant for g in get_granted_permissions_v2(consumer_app_id, INSTALLER_SERVICE_URL)]
         if (reason := check_install_allowed(repo_url, grants)) is not None:
-            return _installer_permission_denied(consumer_app, repo_url, reason, db)
+            return _installer_permission_denied(consumer_app_id, repo_url, reason, db)
 
         try:
             result = await install_from_repo_url(
-                repo_url, get_config(), db, app_name=app_name, installed_by=consumer_app
+                repo_url, get_config(), db, app_name=app_name, installed_by=consumer_app_id
             )
         except InstallError as exc:
             return _json_error("install_failed", exc.message, exc.status_code)
@@ -324,7 +339,7 @@ async def _handle_installer_request(
     # GET /status/<app_name> and GET /logs/<app_name>
     if request.method == "GET" and len(parts) == 2 and parts[0] in ("status", "logs"):
         sub, app_name = parts
-        row, denied = _lookup_consumer_install(consumer_app, app_name, db)
+        row, denied = _lookup_consumer_install(consumer_app_id, app_name, db)
         if denied is not None:
             return denied
         assert row is not None
@@ -344,9 +359,9 @@ async def _read_json_body() -> Any:
 
 
 def _lookup_consumer_install(
-    consumer_app: str, app_name: str, db: sqlite3.Connection
+    consumer_app_id: str, app_name: str, db: sqlite3.Connection
 ) -> tuple[sqlite3.Row | None, Response | None]:
-    """Fetch the apps row only if ``consumer_app`` installed it.
+    """Fetch the apps row only if ``consumer_app_id`` installed it.
 
     Returns ``(row, None)`` on success or ``(None, error_response)`` on
     not_found / forbidden.  The row carries every column callers need so
@@ -358,8 +373,8 @@ def _lookup_consumer_install(
     ).fetchone()
     if not row:
         return None, _json_error("not_found", f"app {app_name!r} not found", 404)
-    if row["installed_by"] != consumer_app:
-        return None, _json_error("forbidden", f"{consumer_app} did not install {app_name!r}", 403)
+    if row["installed_by"] != consumer_app_id:
+        return None, _json_error("forbidden", f"{consumer_app_id} did not install {app_name!r}", 403)
     return row, None
 
 
@@ -367,7 +382,9 @@ def _json_ok(body: dict[str, Any]) -> Response:
     return Response(json.dumps(body), status=200, content_type="application/json")
 
 
-def _proposed_install_grant_from_manifest(consumer_app: str, repo_url: str, db: sqlite3.Connection) -> dict[str, str]:
+def _proposed_install_grant_from_manifest(
+    consumer_app_id: str, repo_url: str, db: sqlite3.Connection
+) -> dict[str, str]:
     """Pick the install grant payload to offer the owner on a 403.
 
     Prefers a grant the consumer **already declared** in its
@@ -383,7 +400,7 @@ def _proposed_install_grant_from_manifest(consumer_app: str, repo_url: str, db: 
     been updated to declare a broader prefix yet.
     """
     fallback = {GRANT_KEY_CAPABILITY: INSTALL_CAPABILITY, GRANT_KEY_REPO_URL_PREFIX: repo_url}
-    row = db.execute("SELECT manifest_raw FROM apps WHERE name = ?", (consumer_app,)).fetchone()
+    row = db.execute("SELECT manifest_raw FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
     if not row or not row["manifest_raw"]:
         return fallback
     try:
@@ -410,7 +427,7 @@ def _proposed_install_grant_from_manifest(consumer_app: str, repo_url: str, db: 
     return fallback
 
 
-def _installer_permission_denied(consumer_app: str, repo_url: str, reason: str, db: sqlite3.Connection) -> Response:
+def _installer_permission_denied(consumer_app_id: str, repo_url: str, reason: str, db: sqlite3.Connection) -> Response:
     """Return the v2 standard permission_required shape with a grant URL.
 
     The proposed grant comes from the consumer's manifest-declared
@@ -419,11 +436,11 @@ def _installer_permission_denied(consumer_app: str, repo_url: str, reason: str, 
     for.  Falls back to a per-URL grant only if the manifest declares
     no matching prefix.
     """
-    grant = _proposed_install_grant_from_manifest(consumer_app, repo_url, db)
+    grant = _proposed_install_grant_from_manifest(consumer_app_id, repo_url, db)
     try:
         approve_path = url_for(
             "pages_permissions_v2.approve_permissions_v2",
-            app=consumer_app,
+            app=consumer_app_id,
             service=INSTALLER_SERVICE_URL,
             grant=json.dumps(grant, sort_keys=True),
         )

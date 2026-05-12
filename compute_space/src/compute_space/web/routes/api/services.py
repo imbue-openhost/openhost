@@ -14,7 +14,7 @@ async def api_services() -> Response:
     """List all registered services and their providers."""
     db = get_db()
     providers = db.execute(
-        """SELECT sp.service_name, sp.app_name, a.status
-           FROM service_providers sp JOIN apps a ON a.name = sp.app_name"""
+        """SELECT sp.service_name, sp.app_id, a.name AS app_name, a.status
+           FROM service_providers sp JOIN apps a ON a.app_id = sp.app_id"""
     ).fetchall()
     return jsonify([dict(r) for r in providers])

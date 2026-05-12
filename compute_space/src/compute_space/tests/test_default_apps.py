@@ -14,6 +14,7 @@ import pytest
 
 from compute_space.config import DefaultConfig
 from compute_space.core import default_apps as da
+from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import parse_manifest
 from compute_space.db.schema import schema_path
 
@@ -70,8 +71,9 @@ def _patch_insert_and_deploy(monkeypatch, *, fail_for: set[str] | None = None):
             raise RuntimeError(f"simulated failure for {manifest.name}")
         next_port = db.execute("SELECT COALESCE(MAX(local_port), 18999) + 1 FROM apps").fetchone()[0]
         db.execute(
-            "INSERT INTO apps (name, version, repo_path, local_port, status) VALUES (?, ?, ?, ?, 'building')",
-            (manifest.name, manifest.version or "0.1", repo_path, next_port),
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status) "
+            "VALUES (?, ?, ?, ?, ?, 'building')",
+            (new_app_id(), manifest.name, manifest.version or "0.1", repo_path, next_port),
         )
         db.commit()
         return manifest.name

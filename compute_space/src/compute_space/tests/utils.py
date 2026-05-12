@@ -59,11 +59,29 @@ def poll(fn: Any, timeout: float, interval: float = 5, fail_msg: str = "Polling 
     pytest.fail(f"{fail_msg}{extra}")
 
 
+def app_id_for(session: requests.Session, router_url: str, app_name: str) -> str | None:
+    """Look up an app's app_id by name via ``GET /api/apps``. None if not deployed."""
+    r = session.get(f"{router_url}/api/apps", timeout=10)
+    if r.status_code != 200:
+        return None
+    for entry in r.json():
+        if entry.get("name") == app_name:
+            return str(entry["app_id"])
+    return None
+
+
 def wait_app_running(session: requests.Session, router_url: str, app_name: str, timeout: float = 300) -> None:
-    """Poll ``/api/app_status/<app>`` until the app reports *running*."""
+    """Poll ``/api/app_status/<app_id>`` until the app reports *running*.
+
+    Resolves ``app_name`` -> app_id on each poll so we can wait through the
+    initial deploy window when the row may not exist yet.
+    """
 
     def _check() -> bool:
-        r = session.get(f"{router_url}/api/app_status/{app_name}", timeout=10)
+        app_id = app_id_for(session, router_url, app_name)
+        if app_id is None:
+            return False
+        r = session.get(f"{router_url}/api/app_status/{app_id}", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if data["status"] == "error":
@@ -75,7 +93,7 @@ def wait_app_running(session: requests.Session, router_url: str, app_name: str, 
 
 
 def wait_app_removed(session: requests.Session, router_url: str, app_name: str, timeout: float = 120) -> None:
-    """Poll ``/api/app_status/<app>`` until the row is gone (404).
+    """Poll ``/api/apps`` until ``app_name`` is gone.
 
     /remove_app returns 202 and runs teardown in a background thread;
     tests asserting on filesystem / container state after a remove
@@ -83,9 +101,12 @@ def wait_app_removed(session: requests.Session, router_url: str, app_name: str, 
     """
 
     def _check() -> bool:
-        r = session.get(f"{router_url}/api/app_status/{app_name}", timeout=10)
-        if r.status_code == 404:
+        app_id = app_id_for(session, router_url, app_name)
+        if app_id is None:
             return True
+        # Surface persistent error states immediately so the poll doesn't
+        # silently spin until timeout when remove_app_background gave up.
+        r = session.get(f"{router_url}/api/app_status/{app_id}", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if data.get("status") == "error":

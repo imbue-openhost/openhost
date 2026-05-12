@@ -197,7 +197,11 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
     # the System page can show which app reserved a port.
     app_by_port: dict[int, str] = {}
     if db is not None:
-        rows = db.execute("SELECT host_port, app_name FROM app_port_mappings").fetchall()
+        rows = db.execute(
+            """SELECT m.host_port, a.name AS app_name
+               FROM app_port_mappings m
+               JOIN apps a ON a.app_id = m.app_id"""
+        ).fetchall()
         app_by_port = {row["host_port"]: row["app_name"] for row in rows}
 
     secure_ports = _secure_ports()

@@ -23,7 +23,8 @@ function saveName() {
     .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
       if (!res.ok) { errEl.textContent = res.data.error; return; }
-      window.location.href = config.appDetailUrlTemplate.replace('__NAME__', res.data.name);
+      // app_id is unchanged on rename; the URL stays the same. Reload to pick up the new name in headings.
+      window.location.href = config.appDetailUrl;
     });
 }
 
@@ -81,13 +82,13 @@ function appAction(url, data, opts) {
 
 // ─── Permissions ───
 
-function permAction(app, key, action, btn) {
+function permAction(appId, key, action, btn) {
   btn.disabled = true;
   fetch('/api/permissions/' + action, {
     method: 'POST',
     credentials: 'same-origin',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({app: app, permissions: [key]})
+    body: JSON.stringify({app_id: appId, permissions: [key]})
   })
     .then(function(r) { return r.json(); })
     .then(function() { location.reload(); })
