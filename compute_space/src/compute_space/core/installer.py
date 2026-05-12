@@ -127,8 +127,6 @@ async def install_from_repo_url(
     final_dir = move_clone_to_app_temp_dir(clone_dir, effective_name, config)
 
     try:
-        # insert_and_deploy returns the app_id; we report the name to callers
-        # since that's what they passed in. The id is on the apps row already.
         insert_and_deploy(
             manifest,
             final_dir,

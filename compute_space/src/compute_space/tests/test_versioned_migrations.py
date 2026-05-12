@@ -279,18 +279,19 @@ class TestLegacyBootstrap:
     def test_crash_mid_bootstrap_leaves_db_unstamped(self, tmp_path, monkeypatch):
         """Crashing between migrate() and the v1 stamp must leave version == 0.
 
-        Both migrate() and schema.sql are idempotent, so the whole bootstrap
-        replays cleanly on the next startup. The stamp happens AFTER
-        schema.sql so a failure during either step keeps the DB at v0.
+        Both migrate() and schema_legacy.sql are idempotent, so the whole
+        bootstrap replays cleanly on the next startup. The stamp happens
+        AFTER schema_legacy.sql so a failure during either step keeps the
+        DB at v0.
         """
         db_path = str(tmp_path / "crash.db")
         self._make_v0_fixture(db_path)
 
-        # Force the schema.sql step of the legacy bootstrap to fail by
-        # pointing the runner at a temp file containing a syntax error.
+        # Force the schema_legacy.sql step of the legacy bootstrap to fail
+        # by pointing the runner at a temp file containing a syntax error.
         bad_schema = tmp_path / "broken_schema.sql"
         bad_schema.write_text("THIS IS NOT VALID SQL;\n")
-        monkeypatch.setattr(runner_mod, "_schema_path", lambda: str(bad_schema))
+        monkeypatch.setattr(runner_mod, "_legacy_schema_path", lambda: str(bad_schema))
 
         with pytest.raises(sqlite3.Error):
             apply_migrations(db_path)

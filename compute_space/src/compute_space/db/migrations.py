@@ -3,7 +3,6 @@ import os
 import re
 import sqlite3
 
-from compute_space.core.app_id import new_app_id
 from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
 
 
@@ -11,25 +10,31 @@ def _schema_path() -> str:
     return os.path.join(os.path.dirname(__file__), "schema.sql")
 
 
+def _legacy_schema_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "schema_legacy.sql")
+
+
 def _recreate_table(db: sqlite3.Connection, table_name: str, keep_cols: list[str]) -> None:
-    """Recreate a table using the definition from schema.sql, preserving data.
+    """Recreate a table using the v1 definition from ``schema_legacy.sql``, preserving data.
 
-    This handles cases where SQLite cannot ALTER TABLE (e.g. dropping columns
-    with UNIQUE constraints, or changing NOT NULL on existing columns).
-    ``keep_cols`` is the list of column names to copy from the old table;
-    only columns that also exist in the new schema are actually copied.
+    Used by the legacy ``migrate()`` (v0 -> v1) path where SQLite cannot
+    ALTER TABLE in place (e.g. dropping columns with UNIQUE constraints,
+    or changing NOT NULL on existing columns). ``keep_cols`` is the list
+    of column names to copy from the old table; only columns that also
+    exist in the v1 schema are actually copied.
 
-    Special case: when recreating ``apps``, the new schema requires a
-    ``app_id`` value (NOT NULL UNIQUE). If the old shape lacks the column,
-    rows are mid-copied through Python so we can mint a fresh id per row.
+    Reads from the **frozen** ``schema_legacy.sql`` rather than the live
+    ``schema.sql`` so that the v0 -> v1 bootstrap is deterministic — the
+    output shape never drifts as later schema changes are added to
+    ``schema.sql``.
     """
-    with open(_schema_path()) as f:
+    with open(_legacy_schema_path()) as f:
         schema_sql = f.read()
 
     pattern = rf"CREATE TABLE IF NOT EXISTS {re.escape(table_name)} \([^;]+\);"
     m = re.search(pattern, schema_sql, re.DOTALL)
     if m is None:
-        raise RuntimeError(f"Could not find CREATE TABLE {table_name} statement in schema.sql")
+        raise RuntimeError(f"Could not find CREATE TABLE {table_name} statement in schema_legacy.sql")
 
     tmp_name = f"{table_name}_new"
     create_sql = m.group().replace(f"CREATE TABLE IF NOT EXISTS {table_name}", f"CREATE TABLE {tmp_name}")
@@ -38,83 +43,25 @@ def _recreate_table(db: sqlite3.Connection, table_name: str, keep_cols: list[str
     # below doesn't fail if init_db() crashed mid-recreation previously.
     db.execute(f"DROP TABLE IF EXISTS {tmp_name}")
 
-    # Determine which columns exist in both old and new tables
     db.execute(create_sql)
     new_col_info = {row[1]: row for row in db.execute(f"PRAGMA table_info({tmp_name})").fetchall()}
     common_cols = [c for c in keep_cols if c in new_col_info]
 
-    # Apps gained a NOT NULL UNIQUE app_id column in v0006. When legacy
-    # migrate() recreates apps before v0006 runs, mint an app_id per row
-    # via Python so the new shape's constraint is satisfied. v0006 itself
-    # uses the same logic — this just keeps the legacy path working.
-    needs_app_id_backfill = table_name == "apps" and "app_id" in new_col_info and "app_id" not in common_cols
-
-    # FK-bearing tables (e.g. app_tokens) likewise gained an app_id column
-    # in v0006 in place of app_name. When the legacy migrate recreates one
-    # of these against the new schema.sql shape, look up the app_id by
-    # joining apps.name -> app_id so the FK column is populated correctly.
-    needs_app_id_fk_backfill = (
-        table_name != "apps" and "app_id" in new_col_info and "app_id" not in common_cols and "app_name" in keep_cols
-    )
-
-    if needs_app_id_fk_backfill:
-        # Copy every shared column EXCEPT app_name, and translate app_name -> app_id via JOIN.
-        shared_minus_app_name = [c for c in common_cols if c != "app_name"]
-        select_csv = ", ".join([f"src.{c}" for c in shared_minus_app_name])
-        target_cols = ["app_id", *shared_minus_app_name]
-        target_cols_csv = ", ".join(target_cols)
-        if shared_minus_app_name:
-            db.execute(
-                f"INSERT INTO {tmp_name} ({target_cols_csv}) "
-                f"SELECT a.app_id, {select_csv} FROM {table_name} src "
-                f"JOIN apps a ON a.name = src.app_name"
-            )
+    cols_csv = ", ".join(common_cols)
+    # Build SELECT expressions: wrap NOT NULL columns with COALESCE so that
+    # NULL values in old rows get replaced by the column's default rather
+    # than violating the constraint.  (SQLite only applies DEFAULT on INSERT
+    # when a column is omitted, not when it's explicitly NULL.)
+    select_exprs = []
+    for c in common_cols:
+        info = new_col_info[c]
+        notnull, dflt = info[3], info[4]
+        if notnull and dflt is not None:
+            select_exprs.append(f"COALESCE({c}, {dflt})")
         else:
-            db.execute(
-                f"INSERT INTO {tmp_name} (app_id) "
-                f"SELECT a.app_id FROM {table_name} src JOIN apps a ON a.name = src.app_name"
-            )
-    elif needs_app_id_backfill:
-        # Same COALESCE-on-NOT-NULL logic as the SQL path below, so that
-        # NULL values in old rows get replaced by the column's default
-        # (sqlite only applies DEFAULT on omitted columns, not on NULL).
-        select_exprs = []
-        for c in common_cols:
-            info = new_col_info[c]
-            notnull, dflt = info[3], info[4]
-            if notnull and dflt is not None:
-                select_exprs.append(f"COALESCE({c}, {dflt})")
-            else:
-                select_exprs.append(c)
-        select_csv = ", ".join(select_exprs)
-        rows = db.execute(f"SELECT {select_csv} FROM {table_name}").fetchall()
-        cols_with_id = ["app_id", *common_cols]
-        cols_csv_with_id = ", ".join(cols_with_id)
-        placeholders = ", ".join(["?"] * len(cols_with_id))
-        seen: set[str] = set()
-        for r in rows:
-            while True:
-                candidate = new_app_id()
-                if candidate not in seen:
-                    seen.add(candidate)
-                    break
-            db.execute(f"INSERT INTO {tmp_name} ({cols_csv_with_id}) VALUES ({placeholders})", (candidate, *r))
-    else:
-        cols_csv = ", ".join(common_cols)
-        # Build SELECT expressions: wrap NOT NULL columns with COALESCE so that
-        # NULL values in old rows get replaced by the column's default rather
-        # than violating the constraint.  (SQLite only applies DEFAULT on INSERT
-        # when a column is omitted, not when it's explicitly NULL.)
-        select_exprs = []
-        for c in common_cols:
-            info = new_col_info[c]
-            notnull, dflt = info[3], info[4]
-            if notnull and dflt is not None:
-                select_exprs.append(f"COALESCE({c}, {dflt})")
-            else:
-                select_exprs.append(c)
-        select_csv = ", ".join(select_exprs)
-        db.execute(f"INSERT INTO {tmp_name} ({cols_csv}) SELECT {select_csv} FROM {table_name}")
+            select_exprs.append(c)
+    select_csv = ", ".join(select_exprs)
+    db.execute(f"INSERT INTO {tmp_name} ({cols_csv}) SELECT {select_csv} FROM {table_name}")
 
     db.execute(f"DROP TABLE {table_name}")
     db.execute(f"ALTER TABLE {tmp_name} RENAME TO {table_name}")
@@ -156,11 +103,11 @@ def migrate(db: sqlite3.Connection) -> None:
     if not columns:
         return  # Fresh DB — table doesn't exist yet, schema.sql will create it
 
-    # Bring the container-id column name in line with the current schema
+    # Bring the container-id column name in line with the v1 schema
     # BEFORE any other migration step.  _recreate_table (used by later
-    # steps) rebuilds the table from schema.sql, which only knows about
-    # container_id; a lingering docker_container_id column would be
-    # silently dropped by the common-column filter and its data lost.
+    # steps) rebuilds the table from schema_legacy.sql, which only knows
+    # about container_id; a lingering docker_container_id column would
+    # be silently dropped by the common-column filter and its data lost.
     if "docker_container_id" in columns and "container_id" not in columns:
         db.execute("ALTER TABLE apps RENAME COLUMN docker_container_id TO container_id")
         db.commit()
@@ -291,7 +238,7 @@ def migrate(db: sqlite3.Connection) -> None:
         finally:
             db.execute("PRAGMA foreign_keys=ON")
 
-    # V2 services tables (idempotent — schema.sql also has CREATE IF NOT EXISTS)
+    # V2 services tables (idempotent — schema_legacy.sql also has CREATE IF NOT EXISTS)
     db.execute(
         """CREATE TABLE IF NOT EXISTS service_providers_v2 (
             service_url TEXT NOT NULL,
@@ -322,8 +269,8 @@ def migrate(db: sqlite3.Connection) -> None:
     )
 
     # Versioned-migrations bootstrap: create the schema_version metadata
-    # table. The runner stamps version = 1 AFTER schema.sql has run, so
-    # that a mid-bootstrap crash leaves the DB unstamped and next startup
+    # table. The runner stamps version = 1 AFTER schema_legacy.sql has run,
+    # so that a mid-bootstrap crash leaves the DB unstamped and next startup
     # retries the whole legacy path cleanly (REQ-LEG-2).
     db.execute(SCHEMA_VERSION_DDL)
     db.commit()

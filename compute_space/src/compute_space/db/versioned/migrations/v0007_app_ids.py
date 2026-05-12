@@ -15,7 +15,6 @@ Python migration (not SQL-file) so we can:
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
 
 from compute_space.core.app_id import new_app_id
 from compute_space.db.versioned.base import Migration
@@ -32,14 +31,14 @@ class Migration0007AppIds(Migration):
         db.execute("BEGIN EXCLUSIVE")
         try:
             self._add_app_id_to_apps(db)
-            self._recreate_if_old_shape(db, "app_databases", "app_name", self._recreate_app_databases)
-            self._recreate_if_old_shape(db, "app_port_mappings", "app_name", self._recreate_app_port_mappings)
-            self._recreate_if_old_shape(db, "app_tokens", "app_name", self._recreate_app_tokens)
-            self._recreate_if_old_shape(db, "service_providers", "app_name", self._recreate_service_providers)
-            self._recreate_if_old_shape(db, "service_providers_v2", "app_name", self._recreate_service_providers_v2)
-            self._recreate_if_old_shape(db, "service_defaults", "app_name", self._recreate_service_defaults)
-            self._recreate_if_old_shape(db, "permissions", "consumer_app", self._recreate_permissions)
-            self._recreate_if_old_shape(db, "permissions_v2", "consumer_app", self._recreate_permissions_v2)
+            self._recreate_app_databases(db)
+            self._recreate_app_port_mappings(db)
+            self._recreate_app_tokens(db)
+            self._recreate_service_providers(db)
+            self._recreate_service_providers_v2(db)
+            self._recreate_service_defaults(db)
+            self._recreate_permissions(db)
+            self._recreate_permissions_v2(db)
             db.execute(
                 "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
                 (self.version,),
@@ -54,30 +53,7 @@ class Migration0007AppIds(Migration):
         finally:
             db.execute("PRAGMA foreign_keys = ON")
 
-    def _recreate_if_old_shape(
-        self,
-        db: sqlite3.Connection,
-        table: str,
-        old_col: str,
-        recreate_fn: Callable[[sqlite3.Connection], None],
-    ) -> None:
-        """Run ``recreate_fn`` only if ``table`` still has the pre-v7 column.
-
-        On a legacy DB that was bootstrapped via schema.sql at the v1 baseline,
-        some tables (e.g. app_tokens) get the new app_id-shaped definition
-        directly from schema.sql at bootstrap time. In that case there's
-        nothing for v7 to do.
-        """
-        cols = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
-        if old_col in cols:
-            recreate_fn(db)
-
     def _add_app_id_to_apps(self, db: sqlite3.Connection) -> None:
-        # Skip if the column already exists (legacy bootstrap that picked
-        # up the new schema.sql shape directly).
-        cols = {row[1] for row in db.execute("PRAGMA table_info(apps)").fetchall()}
-        if "app_id" in cols:
-            return
         # Full table recreate so the post-v7 shape matches schema.sql exactly
         # (NOT NULL UNIQUE app_id with no DEFAULT). ALTER TABLE ADD would
         # need a DEFAULT to satisfy NOT NULL, which would then live on the

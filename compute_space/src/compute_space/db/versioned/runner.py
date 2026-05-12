@@ -30,6 +30,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from compute_space.db.migrations import _legacy_schema_path
 from compute_space.db.migrations import _schema_path
 from compute_space.db.migrations import migrate as legacy_migrate
 from compute_space.db.versioned.base import SCHEMA_VERSION_DDL
@@ -148,16 +149,24 @@ def _apply_under_lock(db_path: str, registry: list[Migration], highest: int) -> 
 def _legacy_bootstrap(db: sqlite3.Connection) -> int:
     """Bring a v0 DB to v1.
 
-    Order is critical: migrate() -> schema.sql -> stamp v1. Both migrate()
-    and schema.sql are idempotent (CREATE TABLE IF NOT EXISTS etc.), so a
-    crash at any point before the final stamp leaves version == 0 and the
-    whole sequence replays cleanly on the next startup. Stamping last is
-    what makes the v0 -> v1 transition effectively atomic.
+    Order is critical: migrate() -> schema_legacy.sql -> stamp v1. Both
+    migrate() and schema_legacy.sql are idempotent (CREATE TABLE IF NOT
+    EXISTS etc.), so a crash at any point before the final stamp leaves
+    version == 0 and the whole sequence replays cleanly on the next
+    startup. Stamping last is what makes the v0 -> v1 transition
+    effectively atomic.
+
+    We overlay the **frozen** ``schema_legacy.sql`` (not the live
+    ``schema.sql``) so the v0 -> v1 transition produces a deterministic
+    v1 shape, regardless of what later migrations have added to
+    ``schema.sql``. Each numbered migration v >= 2 then transforms a
+    known input into a known output without having to defend against
+    "what if my input table already has columns from the future."
     """
     t0 = time.perf_counter()
     logger.info("DB is at v0 (legacy); running one-shot migrate() bootstrap to v1")
     legacy_migrate(db)
-    with open(_schema_path()) as f:
+    with open(_legacy_schema_path()) as f:
         db.executescript(f.read())
     _set_version(db, 1)
     current = read_version(db)
