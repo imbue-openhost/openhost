@@ -4,7 +4,7 @@ from quart import jsonify
 from quart import request
 
 from compute_space.db import get_db
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 api_services_v2_bp = Blueprint("api_services_v2", __name__)
 

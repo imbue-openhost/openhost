@@ -18,6 +18,7 @@ from quart import websocket
 from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth import resolve_app_from_token
+from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.installer import GRANT_KEY_CAPABILITY
 from compute_space.core.installer import GRANT_KEY_REPO_URL_PREFIX
@@ -28,14 +29,13 @@ from compute_space.core.installer import InstallError
 from compute_space.core.installer import check_install_allowed
 from compute_space.core.installer import install_from_repo_url
 from compute_space.core.manifest import parse_manifest_from_string
-from compute_space.core.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
 from compute_space.core.services_v2 import lookup_shortname
 from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
-from compute_space.web.middleware import _app_from_origin
-from compute_space.web.middleware import app_auth_required
+from compute_space.web.auth.middleware import _app_from_origin
+from compute_space.web.auth.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
 from compute_space.web.routes.services import _add_cors_headers

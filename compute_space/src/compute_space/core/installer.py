@@ -20,7 +20,7 @@ from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import move_clone_to_app_temp_dir
 from compute_space.core.apps import validate_manifest
-from compute_space.core.permissions_v2 import Grant
+from compute_space.core.auth.permissions_v2 import Grant
 
 # Service URL the v2 service proxy matches against to dispatch to this
 # module instead of resolving a normal provider app.

@@ -38,7 +38,7 @@ from compute_space.core.services import OAuthAuthorizationRequired
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services import get_oauth_token
 from compute_space.db import get_db
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 
 def _is_removing(app_row: sqlite3.Row | None) -> bool:

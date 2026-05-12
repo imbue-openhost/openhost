@@ -13,7 +13,7 @@ from compute_space.core.apps import list_builtin_apps
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.db import get_db
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 apps_bp = Blueprint("apps", __name__)
 

@@ -4,11 +4,11 @@ from quart import Response
 from quart import jsonify
 from quart import request
 
-from compute_space.core.permissions_v2 import get_all_permissions_v2
-from compute_space.core.permissions_v2 import grant_permission_v2
-from compute_space.core.permissions_v2 import revoke_permission_v2
-from compute_space.web.middleware import app_auth_required
-from compute_space.web.middleware import login_required
+from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
+from compute_space.core.auth.permissions_v2 import grant_permission_v2
+from compute_space.core.auth.permissions_v2 import revoke_permission_v2
+from compute_space.web.auth.middleware import app_auth_required
+from compute_space.web.auth.middleware import login_required
 
 api_permissions_v2_bp = Blueprint("api_permissions_v2", __name__)
 

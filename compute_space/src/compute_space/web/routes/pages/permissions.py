@@ -3,9 +3,9 @@ from quart import Response
 from quart import render_template
 from quart import request
 
-from compute_space.core.permissions import get_granted_permissions
+from compute_space.core.auth.permissions import get_granted_permissions
 from compute_space.db import get_db
-from compute_space.web.middleware import login_required
+from compute_space.web.auth.middleware import login_required
 
 pages_permissions_bp = Blueprint("pages_permissions", __name__)
 

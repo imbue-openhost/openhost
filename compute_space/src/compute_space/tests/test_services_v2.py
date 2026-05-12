@@ -5,12 +5,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from compute_space.core.app_id import new_app_id
-from compute_space.core.permissions_v2 import get_all_permissions_v2
-from compute_space.core.permissions_v2 import get_granted_permissions_v2
-from compute_space.core.permissions_v2 import grant_permission_v2
-from compute_space.core.permissions_v2 import revoke_permission_v2
-from compute_space.core.service_access_rules import ServiceAccessDenied
-from compute_space.core.service_access_rules import check_service_access_rules
+from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
+from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
+from compute_space.core.auth.permissions_v2 import grant_permission_v2
+from compute_space.core.auth.permissions_v2 import revoke_permission_v2
+from compute_space.core.auth.service_access_rules import ServiceAccessDenied
+from compute_space.core.auth.service_access_rules import check_service_access_rules
 from compute_space.core.services import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
 from compute_space.core.services_v2 import lookup_shortname
@@ -106,7 +106,7 @@ class TestVersionResolution:
 
 class TestPermissionsV2:
     def test_grant_and_query(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "DB_URL"})
 
         grants = get_granted_permissions_v2("test-app", SVC_SECRETS)
@@ -114,7 +114,7 @@ class TestPermissionsV2:
         assert grants[0].grant == {"key": "DB_URL"}
 
     def test_grant_is_idempotent(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "X"})
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "X"})
 
@@ -122,7 +122,7 @@ class TestPermissionsV2:
         assert len(grants) == 1
 
     def test_revoke(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "X"})
         assert revoke_permission_v2("test-app", SVC_SECRETS, {"key": "X"}) is True
 
@@ -130,11 +130,11 @@ class TestPermissionsV2:
         assert len(grants) == 0
 
     def test_revoke_nonexistent_returns_false(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         assert revoke_permission_v2("test-app", SVC_SECRETS, {"key": "NOPE"}) is False
 
     def test_revoke_requires_matching_scope_and_provider(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2(
             "test-app",
             SVC_OAUTH,
@@ -176,7 +176,7 @@ class TestPermissionsV2:
         assert len(get_granted_permissions_v2("test-app", SVC_OAUTH)) == 0
 
     def test_permissions_scoped_per_service(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "DB_URL"})
         grant_permission_v2("test-app", SVC_OAUTH, {"provider": "google", "scope": "email"})
 
@@ -188,7 +188,7 @@ class TestPermissionsV2:
         assert oauth_grants[0].grant == {"provider": "google", "scope": "email"}
 
     def test_get_all_permissions(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2("app-a", SVC_SECRETS, {"key": "X"})
         grant_permission_v2("app-a", SVC_OAUTH, {"provider": "google", "scope": "email"})
         grant_permission_v2("app-b", SVC_SECRETS, {"key": "Y"})
@@ -201,7 +201,7 @@ class TestPermissionsV2:
         assert {p.service_url for p in app_a_perms} == {SVC_SECRETS, SVC_OAUTH}
 
     def test_multiple_grants_same_service(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.permissions_v2.get_db", lambda: db)
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "SECRET_A"})
         grant_permission_v2("test-app", SVC_SECRETS, {"key": "SECRET_B"})
 

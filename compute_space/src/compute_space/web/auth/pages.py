@@ -21,8 +21,8 @@ from compute_space.core import auth
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db
-from compute_space.web.middleware import _try_refresh  # noqa: F401 — re-exported
-from compute_space.web.middleware import login_required  # noqa: F401 — re-exported
+from compute_space.web.auth.middleware import _try_refresh  # noqa: F401 — re-exported
+from compute_space.web.auth.middleware import login_required  # noqa: F401 — re-exported
 
 auth_bp = Blueprint("auth", __name__)
 
