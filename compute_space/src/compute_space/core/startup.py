@@ -71,22 +71,22 @@ def _check_app_status(config: Config) -> None:
                     repo_path = row["repo_path"]
                     if not repo_path or not os.path.isdir(repo_path):
                         db.execute(
-                            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
+                            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
                             (
                                 f"Cannot restart: repo path missing ({repo_path})",
-                                row["name"],
+                                row["app_id"],
                             ),
                         )
                         continue
                     db.execute(
-                        "UPDATE apps SET status = 'starting' WHERE name = ?",
-                        (row["name"],),
+                        "UPDATE apps SET status = 'starting' WHERE app_id = ?",
+                        (row["app_id"],),
                     )
-                    apps_to_restart.append(row["name"])
+                    apps_to_restart.append(row["app_id"])
                 else:
                     db.execute(
-                        "UPDATE apps SET status = 'stopped' WHERE name = ?",
-                        (row["name"],),
+                        "UPDATE apps SET status = 'stopped' WHERE app_id = ?",
+                        (row["app_id"],),
                     )
         db.commit()
     finally:
@@ -100,21 +100,21 @@ def _check_app_status(config: Config) -> None:
         ).start()
 
 
-def _restart_apps_sequential(app_names: list[str], config: Config) -> None:
+def _restart_apps_sequential(app_ids: list[str], config: Config) -> None:
     """Rebuild and restart apps one at a time in a background thread."""
     db = sqlite3.connect(config.db_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     try:
-        for app_name in app_names:
+        for app_id in app_ids:
             try:
-                start_app_process(app_name, db, config)
-                logger.info("Rebuilt and restarted app %s", app_name)
+                start_app_process(app_id, db, config)
+                logger.info("Rebuilt and restarted app %s", app_id)
             except Exception as e:
-                logger.exception("Failed to rebuild app %s", app_name)
+                logger.exception("Failed to rebuild app %s", app_id)
                 db.execute(
-                    "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                    (str(e), app_name),
+                    "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                    (str(e), app_id),
                 )
                 db.commit()
     finally:

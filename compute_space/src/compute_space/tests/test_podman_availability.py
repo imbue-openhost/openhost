@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from compute_space.core import startup as startup_mod
+from compute_space.core.app_id import new_app_id
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
@@ -153,8 +154,9 @@ def _insert_app(db_path: str, name: str, status: str, container_id: str | None, 
     db = sqlite3.connect(db_path)
     try:
         db.execute(
-            "INSERT INTO apps (name, version, repo_path, local_port, status, container_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, "1.0", f"/repo/{name}", local_port, status, container_id),
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, container_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (new_app_id(), name, "1.0", f"/repo/{name}", local_port, status, container_id),
         )
         db.commit()
     finally:

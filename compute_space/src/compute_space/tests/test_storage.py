@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 
 import compute_space.core.storage as storage
+from compute_space.core.app_id import new_app_id
 from compute_space.tests.conftest import _make_test_config
 
 
@@ -159,6 +160,7 @@ def _init_apps_db(db_path: str) -> None:
             """
             CREATE TABLE apps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL UNIQUE,
                 version TEXT NOT NULL,
                 repo_path TEXT NOT NULL,
@@ -187,9 +189,9 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
 
     db = sqlite3.connect(config.db_path)
     db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, container_id, status, error_message) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("notes", "1", "/tmp/notes", 9100, "cid-1", "running", None),
+        "INSERT INTO apps (app_id, name, version, repo_path, local_port, container_id, status, error_message) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_app_id(), "notes", "1", "/tmp/notes", 9100, "cid-1", "running", None),
     )
     db.commit()
     db.close()
@@ -217,9 +219,9 @@ def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
 
     db = sqlite3.connect(config.db_path)
     db.execute(
-        "INSERT INTO apps (name, version, repo_path, local_port, container_id, status, error_message) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("notes", "1", "/tmp/notes", 9100, "cid-1", "running", None),
+        "INSERT INTO apps (app_id, name, version, repo_path, local_port, container_id, status, error_message) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_app_id(), "notes", "1", "/tmp/notes", 9100, "cid-1", "running", None),
     )
     db.commit()
     db.close()

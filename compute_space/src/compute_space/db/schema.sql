@@ -1,5 +1,8 @@
 CREATE TABLE IF NOT EXISTS apps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- app_id: opaque 12-char base58 identity, the cross-table FK target.
+    -- Stable across renames. ``name`` (below) is a label / subdomain only.
+    app_id TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL UNIQUE,
     manifest_name TEXT NOT NULL DEFAULT '',
     version TEXT NOT NULL,
@@ -25,25 +28,26 @@ CREATE TABLE IF NOT EXISTS apps (
 
 CREATE TABLE IF NOT EXISTS app_databases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_name TEXT NOT NULL,
+    app_id TEXT NOT NULL,
     db_name TEXT NOT NULL,
     db_path TEXT NOT NULL,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE,
-    UNIQUE(app_name, db_name)
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE,
+    UNIQUE(app_id, db_name)
 );
 
 CREATE TABLE IF NOT EXISTS app_port_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_name TEXT NOT NULL,
+    app_id TEXT NOT NULL,
     label TEXT NOT NULL,
     container_port INTEGER NOT NULL,
     host_port INTEGER NOT NULL,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE,
-    UNIQUE(app_name, label)
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE,
+    UNIQUE(app_id, label)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_app_id ON apps(app_id);
 
 -- Auth: single owner (set via setup page or claim flow)
 CREATE TABLE IF NOT EXISTS owner (
@@ -74,53 +78,54 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 
 -- Cross-app services: app authentication tokens
 CREATE TABLE IF NOT EXISTS app_tokens (
-    app_name TEXT PRIMARY KEY,
+    app_id TEXT PRIMARY KEY,
     token_hash TEXT NOT NULL UNIQUE,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
 -- Cross-app services: which apps provide which services
 CREATE TABLE IF NOT EXISTS service_providers (
     service_name TEXT NOT NULL,
-    app_name TEXT NOT NULL,
-    PRIMARY KEY (service_name, app_name),
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+    app_id TEXT NOT NULL,
+    PRIMARY KEY (service_name, app_id),
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
 -- Permissions: which apps have which permissions (row exists = granted)
 CREATE TABLE IF NOT EXISTS permissions (
-    consumer_app TEXT NOT NULL,
+    consumer_app_id TEXT NOT NULL,
     permission_key TEXT NOT NULL,
-    PRIMARY KEY (consumer_app, permission_key),
-    FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
+    PRIMARY KEY (consumer_app_id, permission_key),
+    FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
 -- V2: service providers with git URL identity and versioning
 CREATE TABLE IF NOT EXISTS service_providers_v2 (
     service_url TEXT NOT NULL,
-    app_name TEXT NOT NULL,
+    app_id TEXT NOT NULL,
     service_version TEXT NOT NULL,
     endpoint TEXT NOT NULL,
-    PRIMARY KEY (service_url, app_name, service_version),
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+    PRIMARY KEY (service_url, app_id, service_version),
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
--- V2: permissions with JSON grants and scope
+-- V2: permissions with JSON grants and scope.
+-- provider_app_id should be '' (which will be mapped to None in python) if scope==global
 CREATE TABLE IF NOT EXISTS permissions_v2 (
-    consumer_app TEXT NOT NULL,
+    consumer_app_id TEXT NOT NULL,
     service_url TEXT NOT NULL,
     grant_payload TEXT NOT NULL,
     scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
-    provider_app TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (consumer_app, service_url, grant_payload, scope, provider_app),
-    FOREIGN KEY (consumer_app) REFERENCES apps(name) ON DELETE CASCADE
+    provider_app_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (consumer_app_id, service_url, grant_payload, scope, provider_app_id),
+    FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
 -- V2: owner-configured default providers
 CREATE TABLE IF NOT EXISTS service_defaults (
     service_url TEXT PRIMARY KEY,
-    app_name TEXT NOT NULL,
-    FOREIGN KEY (app_name) REFERENCES apps(name) ON DELETE CASCADE
+    app_id TEXT NOT NULL,
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
 -- Versioned-migrations metadata: single-row table recording the current

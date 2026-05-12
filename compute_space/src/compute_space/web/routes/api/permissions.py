@@ -14,10 +14,10 @@ api_permissions_bp = Blueprint("api_permissions", __name__)
 @api_permissions_bp.route("/api/permissions", methods=["GET"])
 @login_required
 async def list_permissions() -> Response:
-    """List all granted permissions, optionally filtered by app."""
-    app_name = request.args.get("app")
-    if app_name:
-        return jsonify(sorted(get_granted_permissions(app_name)))
+    """List all granted permissions, optionally filtered by app_id."""
+    app_id = request.args.get("app_id")
+    if app_id:
+        return jsonify(sorted(get_granted_permissions(app_id)))
     return jsonify({app: sorted(keys) for app, keys in get_granted_permissions().items()})
 
 
@@ -26,9 +26,9 @@ async def list_permissions() -> Response:
 async def grant() -> Response | tuple[Response, int]:
     """Grant permissions to an app."""
     data = await request.get_json()
-    if not data or not data.get("app") or not data.get("permissions"):
-        return jsonify({"error": "app and permissions are required"}), 400
-    grant_permissions(data["app"], data["permissions"])
+    if not data or not data.get("app_id") or not data.get("permissions"):
+        return jsonify({"error": "app_id and permissions are required"}), 400
+    grant_permissions(data["app_id"], data["permissions"])
     return jsonify({"ok": True})
 
 
@@ -37,7 +37,7 @@ async def grant() -> Response | tuple[Response, int]:
 async def revoke() -> Response | tuple[Response, int]:
     """Revoke permissions from an app."""
     data = await request.get_json()
-    if not data or not data.get("app") or not data.get("permissions"):
-        return jsonify({"error": "app and permissions are required"}), 400
-    revoke_permissions(data["app"], data["permissions"])
+    if not data or not data.get("app_id") or not data.get("permissions"):
+        return jsonify({"error": "app_id and permissions are required"}), 400
+    revoke_permissions(data["app_id"], data["permissions"])
     return jsonify({"ok": True})

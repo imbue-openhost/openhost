@@ -6,6 +6,22 @@ import time
 import httpx
 
 
+def resolve_app_id_by_name(url: str, token: str, app_name: str) -> str:
+    """Look up an app's app_id by its current name. Exits if not found."""
+    resp = make_api_request(url, token, "GET", "/api/apps")
+    apps = resp.json()
+    matches = [a for a in apps if a.get("name") == app_name]
+    if not matches:
+        print(f"No app named {app_name!r}.", file=sys.stderr)
+        raise SystemExit(1)
+    if len(matches) > 1:
+        print(f"Multiple apps named {app_name!r} — refusing to guess.", file=sys.stderr)
+        raise SystemExit(1)
+    app_id = matches[0]["app_id"]
+    assert isinstance(app_id, str)
+    return app_id
+
+
 def make_api_request(
     domain: str,
     token: str,
@@ -38,10 +54,10 @@ def make_api_request(
     return resp
 
 
-def wait_for_app_running(url: str, token: str, app_name: str) -> None:
+def wait_for_app_running(url: str, token: str, app_id: str, app_name: str) -> None:
     while True:
         time.sleep(3)
-        result = make_api_request(url, token, "GET", f"/api/app_status/{app_name}").json()
+        result = make_api_request(url, token, "GET", f"/api/app_status/{app_id}").json()
         s = result.get("status", "unknown")
         if s == "running":
             print(f"{app_name} is running.")
@@ -52,8 +68,8 @@ def wait_for_app_running(url: str, token: str, app_name: str) -> None:
         print(f"  status: {s}...")
 
 
-def wait_for_app_removed(url: str, token: str, app_name: str, timeout: float = 600) -> None:
-    """Poll ``/api/app_status/<name>`` until it returns 404.
+def wait_for_app_removed(url: str, token: str, app_id: str, app_name: str, timeout: float = 600) -> None:
+    """Poll ``/api/app_status/<app_id>`` until it returns 404.
 
     /remove_app returns 202 immediately and runs the teardown in a
     background thread; the CLI has to wait for the row to disappear
@@ -71,7 +87,7 @@ def wait_for_app_removed(url: str, token: str, app_name: str, timeout: float = 6
             raise SystemExit(1)
         time.sleep(2)
         try:
-            resp = make_api_request(url, token, "GET", f"/api/app_status/{app_name}", raw=True)
+            resp = make_api_request(url, token, "GET", f"/api/app_status/{app_id}", raw=True)
         except httpx.HTTPError as e:
             # Transient network failure during a restart; keep polling.
             print(f"  (network error polling status: {type(e).__name__}; retrying)")

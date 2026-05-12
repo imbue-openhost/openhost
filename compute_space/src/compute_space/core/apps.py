@@ -17,6 +17,7 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
+from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.permissions import grant_permissions as grant_permissions_fn
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
@@ -226,6 +227,17 @@ def validate_manifest(manifest: AppManifest, db: sqlite3.Connection, app_name: s
     return None
 
 
+def _mint_unique_app_id(db: sqlite3.Connection) -> str:
+    """Mint an app_id that doesn't already exist in the apps table.
+
+    Collisions are vanishingly rare (~70 bits) but the loop is cheap insurance.
+    """
+    while True:
+        candidate = new_app_id()
+        if not db.execute("SELECT 1 FROM apps WHERE app_id = ?", (candidate,)).fetchone():
+            return candidate
+
+
 def insert_and_deploy(
     manifest: AppManifest,
     repo_path: str,
@@ -240,7 +252,7 @@ def insert_and_deploy(
 ) -> str:
     """Insert app into DB and start background deploy.
 
-    Returns app_name. Raises RuntimeError if no port available or
+    Returns app_id. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
     grant_permissions_v2: if True, grant all [[services.v2.consumes]] entries
@@ -257,6 +269,7 @@ def insert_and_deploy(
 
     storage.check_before_deploy(config)
     local_port = allocate_port(config.port_range_start, config.port_range_end)
+    app_id = _mint_unique_app_id(db)
 
     # Apply port overrides from caller (CLI --port flags, etc.)
     mappings = [
@@ -280,11 +293,12 @@ def insert_and_deploy(
 
     db.execute(
         """INSERT INTO apps
-           (name, manifest_name, version, description, runtime_type, repo_path, repo_url,
+           (app_id, name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
             gpu, public_paths, manifest_raw, status, installed_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
+            app_id,
             app_name,
             manifest.name,
             manifest.version,
@@ -308,31 +322,31 @@ def insert_and_deploy(
     # Store resolved port mappings
     for pm in resolved_mappings:
         db.execute(
-            "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?, ?, ?, ?)",
-            (app_name, pm.label, pm.container_port, pm.host_port),
+            "INSERT INTO app_port_mappings (app_id, label, container_port, host_port) VALUES (?, ?, ?, ?)",
+            (app_id, pm.label, pm.container_port, pm.host_port),
         )
 
     for db_name in manifest.sqlite_dbs:
         db_path = env_vars.get(f"OPENHOST_SQLITE_{db_name.upper()}", "")
         db.execute(
-            "INSERT INTO app_databases (app_name, db_name, db_path) VALUES (?, ?, ?)",
-            (app_name, db_name, db_path),
+            "INSERT INTO app_databases (app_id, db_name, db_path) VALUES (?, ?, ?)",
+            (app_id, db_name, db_path),
         )
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
     if app_token:
         app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
-            (app_name, app_token_hash),
+            "INSERT OR REPLACE INTO app_tokens (app_id, token_hash) VALUES (?, ?)",
+            (app_id, app_token_hash),
         )
 
     for svc_name in manifest.provides_services:
         db.execute(
-            "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
-            (svc_name, app_name),
+            "INSERT OR REPLACE INTO service_providers (service_name, app_id) VALUES (?, ?)",
+            (svc_name, app_id),
         )
 
-    register_v2_service_providers(app_name, manifest, db)
+    register_v2_service_providers(app_id, manifest, db)
 
     db.commit()
 
@@ -347,7 +361,7 @@ def insert_and_deploy(
                 logger.warning("App %s deployed without required permission %s", app_name, perm_key)
         permission_keys = [k for k in (f"{svc_name}/{key_spec['key']}" for key_spec in keys) if k in grant_permissions]
         if permission_keys:
-            grant_permissions_fn(app_name, permission_keys)
+            grant_permissions_fn(app_id, permission_keys)
 
     unknown = grant_permissions - all_manifest_keys
     if unknown:
@@ -357,7 +371,7 @@ def insert_and_deploy(
         for perm in manifest.consumes_services_v2:
             for grant_payload in perm.grants:
                 grant_permission_v2(
-                    consumer_app=app_name,
+                    consumer_app_id=app_id,
                     service_url=perm.service,
                     grant_payload=grant_payload,
                 )
@@ -365,11 +379,11 @@ def insert_and_deploy(
     threading.Thread(
         target=deploy_app_background,
         args=(manifest, repo_path, local_port, env_vars, config),
-        kwargs={"app_name": app_name, "port_mappings": resolved_mappings},
+        kwargs={"app_id": app_id, "app_name": app_name, "port_mappings": resolved_mappings},
         daemon=True,
     ).start()
 
-    return app_name
+    return app_id
 
 
 def deploy_app_background(
@@ -378,6 +392,7 @@ def deploy_app_background(
     local_port: int,
     env_vars: dict[str, str],
     config: Config,
+    app_id: str,
     app_name: str | None = None,
     port_mappings: list[PortMapping] | None = None,
 ) -> None:
@@ -419,8 +434,8 @@ def deploy_app_background(
                 )
                 time.sleep(attempt * 5)
         db.execute(
-            "UPDATE apps SET status = 'starting' WHERE name = ?",
-            (app_name,),
+            "UPDATE apps SET status = 'starting' WHERE app_id = ?",
+            (app_id,),
         )
         db.commit()
         container_id = run_container(
@@ -435,27 +450,27 @@ def deploy_app_background(
             port_mappings=port_mappings,
         )
         db.execute(
-            "UPDATE apps SET container_id = ? WHERE name = ?",
-            (container_id, app_name),
+            "UPDATE apps SET container_id = ? WHERE app_id = ?",
+            (container_id, app_id),
         )
         db.commit()
 
         if wait_for_ready(local_port):
             db.execute(
-                "UPDATE apps SET status = 'running' WHERE name = ?",
-                (app_name,),
+                "UPDATE apps SET status = 'running' WHERE app_id = ?",
+                (app_id,),
             )
         else:
             db.execute(
-                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                ("App started but not responding to HTTP", app_name),
+                "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                ("App started but not responding to HTTP", app_id),
             )
         db.commit()
     except Exception as e:
         logger.exception("Failed to deploy %s", app_name)
         db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            (str(e), app_name),
+            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+            (str(e), app_id),
         )
         db.commit()
     finally:
@@ -482,17 +497,17 @@ def wait_for_ready(local_port: int, timeout: int = 60) -> bool:
     return False
 
 
-def _load_port_mappings_from_db(app_name: str, db: sqlite3.Connection) -> list[PortMapping]:
+def _load_port_mappings_from_db(app_id: str, db: sqlite3.Connection) -> list[PortMapping]:
     """Load resolved port mappings from the database."""
     rows = db.execute(
-        "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_name = ?",
-        (app_name,),
+        "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_id = ?",
+        (app_id,),
     ).fetchall()
     return [PortMapping(label=r["label"], container_port=r["container_port"], host_port=r["host_port"]) for r in rows]
 
 
 def _sync_port_mappings(
-    app_name: str,
+    app_id: str,
     new_mappings: list[PortMapping],
     db: sqlite3.Connection,
     config: Config,
@@ -501,8 +516,8 @@ def _sync_port_mappings(
     existing = {
         r["label"]: r
         for r in db.execute(
-            "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_name = ?",
-            (app_name,),
+            "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_id = ?",
+            (app_id,),
         ).fetchall()
     }
 
@@ -512,8 +527,8 @@ def _sync_port_mappings(
     # Remove labels no longer in manifest
     for removed in old_labels - new_labels:
         db.execute(
-            "DELETE FROM app_port_mappings WHERE app_name = ? AND label = ?",
-            (app_name, removed),
+            "DELETE FROM app_port_mappings WHERE app_id = ? AND label = ?",
+            (app_id, removed),
         )
 
     # Build list for resolve: preserve existing host_port, new ones get 0 (auto)
@@ -525,31 +540,32 @@ def _sync_port_mappings(
             to_resolve.append(pm)
 
     resolved = resolve_port_mappings(
-        to_resolve, db, config.port_range_start, config.port_range_end, exclude_app=app_name
+        to_resolve, db, config.port_range_start, config.port_range_end, exclude_app_id=app_id
     )
 
     # Upsert resolved mappings
     for pm in resolved:
         if pm.label in existing:
             db.execute(
-                "UPDATE app_port_mappings SET container_port = ?, host_port = ? WHERE app_name = ? AND label = ?",
-                (pm.container_port, pm.host_port, app_name, pm.label),
+                "UPDATE app_port_mappings SET container_port = ?, host_port = ? WHERE app_id = ? AND label = ?",
+                (pm.container_port, pm.host_port, app_id, pm.label),
             )
         else:
             db.execute(
-                "INSERT INTO app_port_mappings (app_name, label, container_port, host_port) VALUES (?, ?, ?, ?)",
-                (app_name, pm.label, pm.container_port, pm.host_port),
+                "INSERT INTO app_port_mappings (app_id, label, container_port, host_port) VALUES (?, ?, ?, ?)",
+                (app_id, pm.label, pm.container_port, pm.host_port),
             )
 
 
-def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> None:
+def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> None:
     """Start the process for an app. Updates DB with status and container id."""
-    app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+    app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     storage.check_before_deploy(config)
+    app_name = app_row["name"]
 
     manifest = parse_manifest(app_row["repo_path"])
     env_vars = provision_data(
-        app_row["name"],
+        app_name,
         manifest,
         config.persistent_data_dir,
         config.temporary_data_dir,
@@ -563,36 +579,36 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
     if app_token:
         app_token_hash = hashlib.sha256(app_token.encode()).hexdigest()
         db.execute(
-            "INSERT OR REPLACE INTO app_tokens (app_name, token_hash) VALUES (?, ?)",
-            (app_name, app_token_hash),
+            "INSERT OR REPLACE INTO app_tokens (app_id, token_hash) VALUES (?, ?)",
+            (app_id, app_token_hash),
         )
 
-    db.execute("DELETE FROM service_providers WHERE app_name = ?", (app_name,))
+    db.execute("DELETE FROM service_providers WHERE app_id = ?", (app_id,))
     for svc_name in manifest.provides_services:
         db.execute(
-            "INSERT OR REPLACE INTO service_providers (service_name, app_name) VALUES (?, ?)",
-            (svc_name, app_name),
+            "INSERT OR REPLACE INTO service_providers (service_name, app_id) VALUES (?, ?)",
+            (svc_name, app_id),
         )
 
-    register_v2_service_providers(app_name, manifest, db)
+    register_v2_service_providers(app_id, manifest, db)
 
     # Load resolved port mappings from DB (preserves host_port assignments)
-    port_mappings = _load_port_mappings_from_db(app_name, db)
+    port_mappings = _load_port_mappings_from_db(app_id, db)
 
     db.execute(
-        "UPDATE apps SET status = 'starting', error_message = NULL WHERE name = ?",
-        (app_name,),
+        "UPDATE apps SET status = 'starting', error_message = NULL WHERE app_id = ?",
+        (app_id,),
     )
     db.commit()
 
     image_tag = build_image(
-        app_row["name"],
+        app_name,
         app_row["repo_path"],
         manifest.container_image,
         temp_data_dir=config.temporary_data_dir,
     )
     container_id = run_container(
-        app_row["name"],
+        app_name,
         image_tag,
         manifest,
         app_row["local_port"],
@@ -603,20 +619,20 @@ def start_app_process(app_name: str, db: sqlite3.Connection, config: Config) -> 
         port_mappings=port_mappings,
     )
     db.execute(
-        "UPDATE apps SET container_id = ? WHERE name = ?",
-        (container_id, app_name),
+        "UPDATE apps SET container_id = ? WHERE app_id = ?",
+        (container_id, app_id),
     )
     db.commit()
 
     if wait_for_ready(app_row["local_port"]):
         db.execute(
-            "UPDATE apps SET status = 'running' WHERE name = ?",
-            (app_name,),
+            "UPDATE apps SET status = 'running' WHERE app_id = ?",
+            (app_id,),
         )
     else:
         db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            ("App started but not responding to HTTP", app_name),
+            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+            ("App started but not responding to HTTP", app_id),
         )
     db.commit()
 
@@ -706,12 +722,18 @@ def git_pull(
             )
 
 
-def reload_app_background(app_name: str, repo_path: str, config: Config) -> None:
+def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
     """Reload an app in a background thread: re-read manifest, rebuild, start."""
     db = sqlite3.connect(config.db_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     try:
+        app_row = db.execute("SELECT name FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+        if app_row is None:
+            logger.error("reload_app_background: no app with id %s", app_id)
+            return
+        app_name = app_row["name"]
+
         if repo_path and os.path.isdir(os.path.join(repo_path, ".git")):
             pass  # git pull already done before background thread
         else:
@@ -740,35 +762,35 @@ def reload_app_background(app_name: str, repo_path: str, config: Config) -> None
             try:
                 manifest = parse_manifest(repo_path)
                 db.execute(
-                    "UPDATE apps SET public_paths = ?, manifest_raw = ?, manifest_name = ? WHERE name = ?",
+                    "UPDATE apps SET public_paths = ?, manifest_raw = ?, manifest_name = ? WHERE app_id = ?",
                     (
                         json.dumps(manifest.public_paths),
                         manifest.raw_toml,
                         manifest.name,
-                        app_name,
+                        app_id,
                     ),
                 )
 
                 # Diff port mappings: preserve existing host_port for unchanged labels
-                _sync_port_mappings(app_name, manifest.port_mappings, db, config)
+                _sync_port_mappings(app_id, manifest.port_mappings, db, config)
 
                 db.commit()
             except ValueError:
                 pass
 
-        start_app_process(app_name, db, config)
+        start_app_process(app_id, db, config)
     except Exception as e:
-        logger.exception("Failed to reload %s", app_name)
+        logger.exception("Failed to reload %s", app_id)
         db.execute(
-            "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-            (str(e), app_name),
+            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+            (str(e), app_id),
         )
         db.commit()
     finally:
         db.close()
 
 
-def remove_app_background(app_name: str, keep_data: bool, config: Config) -> None:
+def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
     """Tear an app down in a background thread.
 
     Caller flips the row to ``status='removing'`` before spawning this.
@@ -785,16 +807,17 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
     # permissions, etc. would be orphaned.
     db.execute("PRAGMA foreign_keys = ON")
     try:
-        app_row = db.execute("SELECT * FROM apps WHERE name = ?", (app_name,)).fetchone()
+        app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
         if app_row is None:
             return
+        app_name = app_row["name"]
 
         try:
             stop_app_process(app_row)
         except Exception:
             logger.exception("stop_app_process failed during remove of %s", app_name)
         try:
-            remove_image(app_row["name"])
+            remove_image(app_name)
         except Exception:
             logger.exception("remove_image failed during remove of %s", app_name)
         try:
@@ -810,19 +833,19 @@ def remove_app_background(app_name: str, keep_data: bool, config: Config) -> Non
         except Exception:
             logger.exception("Failed to deprovision data for %s", app_name)
 
-        db.execute("DELETE FROM apps WHERE name = ?", (app_name,))
+        db.execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
         db.commit()
         logger.info("Removed app %s (keep_data=%s)", app_name, keep_data)
     except Exception:
-        logger.exception("remove_app_background failed for %s", app_name)
+        logger.exception("remove_app_background failed for %s", app_id)
         try:
             db.execute(
-                "UPDATE apps SET status = 'error', error_message = ? WHERE name = ?",
-                ("Removal failed; retry from the dashboard. See server logs for details.", app_name),
+                "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                ("Removal failed; retry from the dashboard. See server logs for details.", app_id),
             )
             db.commit()
         except sqlite3.Error:
-            logger.exception("Could not record removal failure for %s", app_name)
+            logger.exception("Could not record removal failure for %s", app_id)
     finally:
         db.close()
 

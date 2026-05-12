@@ -82,7 +82,8 @@ Permissions are **opaque grant payloads** (strings or JSON objects), scoped per 
 - `app`: applies only to a **specific provider** app. These are often data-dependent permissions, eg "access email for me@example.com", where that data only lives in a specific provider app, so a global scoped permission wouldn't make sense.
 
 **On every proxied call, the router injects:**
-- `X-OpenHost-Consumer: <consumer_app>`
+- `X-OpenHost-Consumer-Name: <consumer_app_name>`
+- `X-OpenHost-Consumer-Id: <consumer_app_id>`
 - `X-OpenHost-Permissions: <json array of granted payloads>`
 
 Each entry in the permissions array is `{"grant": <payload>, "scope": "global"|"app", "provider_app": <name or null>}`.

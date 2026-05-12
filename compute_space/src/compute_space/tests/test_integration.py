@@ -28,6 +28,7 @@ from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
+from compute_space.tests.utils import app_id_for
 from compute_space.tests.utils import wait_app_removed
 from compute_space.tests.utils import wait_app_running
 
@@ -394,7 +395,8 @@ class TestRouterCore:
             headers={"Authorization": f"Bearer {raw_token}"},
         )
         assert r.status_code == 200
-        assert isinstance(r.json(), dict)
+        # /api/apps returns a list of {app_id, name, status, error_message}.
+        assert isinstance(r.json(), list)
 
         # Verify the token appears in the list
         r = admin_session.get(f"{base}/api/tokens")
@@ -753,10 +755,12 @@ class TestContainerGone:
                         f"{self.BASE_URL}/login",
                         data={"username": "admin", "password": "testpass123"},
                     )
-                    s.post(
-                        f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
-                        timeout=10,
-                    )
+                    app_id = app_id_for(s, self.BASE_URL, self.APP_NAME)
+                    if app_id:
+                        s.post(
+                            f"{self.BASE_URL}/remove_app/{app_id}",
+                            timeout=10,
+                        )
                     # Wait for the bg worker before stopping the router
                     # or it gets killed mid-teardown. container_cleanup()
                     # below force-removes anything left over.
@@ -963,7 +967,9 @@ class TestContainerRestart:
                 data={"username": "admin", "password": "testpass123"},
             )
 
-            r = session.get(f"{self.BASE_URL}/app_detail/{self.APP_NAME}")
+            app_id = app_id_for(session, self.BASE_URL, self.APP_NAME)
+            assert app_id is not None, "App row should exist after rebuild"
+            r = session.get(f"{self.BASE_URL}/app_detail/{app_id}")
             assert r.status_code == 200
 
             # Poll the DB for status='running' (background thread may
@@ -1007,10 +1013,12 @@ class TestContainerRestart:
                             "password": "testpass123",
                         },
                     )
-                    s.post(
-                        f"{self.BASE_URL}/remove_app/{self.APP_NAME}",
-                        timeout=10,
-                    )
+                    app_id = app_id_for(s, self.BASE_URL, self.APP_NAME)
+                    if app_id:
+                        s.post(
+                            f"{self.BASE_URL}/remove_app/{app_id}",
+                            timeout=10,
+                        )
                     # Wait for the bg worker before stopping the router.
                     wait_app_removed(s, self.BASE_URL, self.APP_NAME, timeout=30)
                 except Exception:
@@ -1043,12 +1051,15 @@ class TestContainerE2E:
         base_url = _zone_url(config)
         # Wait for background deploy to finish
         deadline = time.time() + 120
+        r = None
         while time.time() < deadline:
-            r = admin_session.get(f"{base_url}/app_detail/test-app")
-            if r.status_code == 200 and "running" in r.text:
-                break
+            app_id = app_id_for(admin_session, base_url, "test-app")
+            if app_id:
+                r = admin_session.get(f"{base_url}/app_detail/{app_id}")
+                if r.status_code == 200 and "running" in r.text:
+                    break
             time.sleep(2)
-        assert r.status_code == 200
+        assert r is not None and r.status_code == 200
         assert "running" in r.text
         assert "/test-app" in r.text
 
@@ -1133,8 +1144,9 @@ class TestContainerE2E:
     def test_stop(self, admin_session, config):
         """Stop the app — container is killed, proxied requests fail."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, "test-app")
         r = admin_session.post(
-            f"{base_url}/stop_app/test-app",
+            f"{base_url}/stop_app/{app_id}",
         )
         assert r.status_code == 200
 
@@ -1148,8 +1160,9 @@ class TestContainerE2E:
     def test_reload(self, admin_session, config):
         """Reload the app — rebuilds image, restarts container."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, "test-app")
         r = admin_session.post(
-            f"{base_url}/reload_app/test-app",
+            f"{base_url}/reload_app/{app_id}",
             timeout=120,
         )
         assert r.status_code == 200
@@ -1157,7 +1170,7 @@ class TestContainerE2E:
         # Wait for it to come back (the rebuild may take a while under load)
         # Also poll the API for status to detect errors early.
         url = f"{_app_url(config, 'test-app')}/health"
-        status_url = f"{base_url}/api/app_status/test-app"
+        status_url = f"{base_url}/api/app_status/{app_id}"
         deadline = time.time() + 120
         while time.time() < deadline:
             try:
@@ -1189,8 +1202,9 @@ class TestContainerE2E:
     def test_remove(self, admin_session, config):
         """Remove the app — stops container, cleans data."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, "test-app")
         r = admin_session.post(
-            f"{base_url}/remove_app/test-app",
+            f"{base_url}/remove_app/{app_id}",
         )
         assert r.status_code == 202
         wait_app_removed(admin_session, base_url, "test-app")
@@ -1264,8 +1278,9 @@ class TestRemoveKeepData:
     def test_remove_keep_data(self, admin_session, config):
         """Remove app with keep_data=1, persistent data survives."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, "test-app")
         r = admin_session.post(
-            f"{base_url}/remove_app/test-app",
+            f"{base_url}/remove_app/{app_id}",
             data={"keep_data": "1"},
         )
         assert r.status_code == 202
@@ -1304,8 +1319,9 @@ class TestRemoveKeepData:
     def test_cleanup(self, admin_session, config):
         """Final cleanup: remove app fully (with data)."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, "test-app")
         r = admin_session.post(
-            f"{base_url}/remove_app/test-app",
+            f"{base_url}/remove_app/{app_id}",
         )
         assert r.status_code == 202
         wait_app_removed(admin_session, base_url, "test-app")
@@ -1447,14 +1463,17 @@ class TestGitUrlDeployE2E:
         """Wait for the Git-cloned app to finish building and reach running status."""
         base_url = _zone_url(config)
         deadline = time.time() + 120
+        r = None
         while time.time() < deadline:
-            r = admin_session.get(
-                f"{base_url}/app_detail/{self.APP_NAME}",
-            )
-            if r.status_code == 200 and "running" in r.text:
-                break
+            app_id = app_id_for(admin_session, base_url, self.APP_NAME)
+            if app_id:
+                r = admin_session.get(
+                    f"{base_url}/app_detail/{app_id}",
+                )
+                if r.status_code == 200 and "running" in r.text:
+                    break
             time.sleep(2)
-        assert r.status_code == 200
+        assert r is not None and r.status_code == 200
         assert "running" in r.text
 
     # -- proxy: verify the cloned app works --
@@ -1498,8 +1517,9 @@ class TestGitUrlDeployE2E:
     def test_reload_does_git_pull(self, admin_session, config):
         """Reload the Git-deployed app — should do 'git pull' instead of copytree."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, self.APP_NAME)
         r = admin_session.post(
-            f"{base_url}/reload_app/{self.APP_NAME}",
+            f"{base_url}/reload_app/{app_id}",
             timeout=120,
         )
         assert r.status_code == 200
@@ -1522,8 +1542,9 @@ class TestGitUrlDeployE2E:
     def test_remove(self, admin_session, config):
         """Remove the Git-deployed app."""
         base_url = _zone_url(config)
+        app_id = app_id_for(admin_session, base_url, self.APP_NAME)
         r = admin_session.post(
-            f"{base_url}/remove_app/{self.APP_NAME}",
+            f"{base_url}/remove_app/{app_id}",
         )
         assert r.status_code == 202
         wait_app_removed(admin_session, base_url, self.APP_NAME)

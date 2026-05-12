@@ -23,30 +23,36 @@ def allocate_port(range_start: int = 9000, range_end: int = 9999) -> int:
 
 
 def check_port_available(
-    port: int, db: sqlite3.Connection, exclude_app: str | None = None
+    port: int, db: sqlite3.Connection, exclude_app_id: str | None = None
 ) -> tuple[bool, dict[str, str] | None]:
     """Check if a host port is available for use.
 
     Tests both TCP and UDP bind on 0.0.0.0, and checks DB for existing allocations.
     Returns (available, used_by) where used_by is a dict with structured fields.
 
-    exclude_app: skip DB rows belonging to this app (used during reload/sync to
+    exclude_app_id: skip DB rows belonging to this app (used during reload/sync to
     avoid conflicting with the app's own existing mappings).
     """
     # Check DB: main app ports
-    row = db.execute("SELECT name FROM apps WHERE local_port = ?", (port,)).fetchone()
-    if row and row["name"] != exclude_app:
+    row = db.execute("SELECT name, app_id FROM apps WHERE local_port = ?", (port,)).fetchone()
+    if row and row["app_id"] != exclude_app_id:
         return False, {"app_name": row["name"], "type": "main_port"}
 
     # Check DB: port mappings
-    if exclude_app:
+    if exclude_app_id:
         row = db.execute(
-            "SELECT app_name, label FROM app_port_mappings WHERE host_port = ? AND app_name != ?",
-            (port, exclude_app),
+            """SELECT a.name AS app_name, m.label
+               FROM app_port_mappings m
+               JOIN apps a ON a.app_id = m.app_id
+               WHERE m.host_port = ? AND m.app_id != ?""",
+            (port, exclude_app_id),
         ).fetchone()
     else:
         row = db.execute(
-            "SELECT app_name, label FROM app_port_mappings WHERE host_port = ?",
+            """SELECT a.name AS app_name, m.label
+               FROM app_port_mappings m
+               JOIN apps a ON a.app_id = m.app_id
+               WHERE m.host_port = ?""",
             (port,),
         ).fetchone()
     if row:
@@ -74,14 +80,14 @@ def resolve_port_mappings(
     db: sqlite3.Connection,
     range_start: int = 9000,
     range_end: int = 9999,
-    exclude_app: str | None = None,
+    exclude_app_id: str | None = None,
 ) -> list[PortMapping]:
     """Resolve port mappings: auto-assign host_port=0 entries, validate fixed ones.
 
     Returns new list of PortMapping with all host_ports resolved to actual values.
     Raises RuntimeError on conflicts or exhaustion.
 
-    exclude_app: passed to check_port_available to ignore this app's own DB rows
+    exclude_app_id: passed to check_port_available to ignore this app's own DB rows
     (used during reload/sync).
     """
     # Collect ports already claimed within this batch
@@ -91,7 +97,7 @@ def resolve_port_mappings(
     # First pass: validate explicitly set ports
     for pm in mappings:
         if pm.host_port != 0:
-            available, used_by = check_port_available(pm.host_port, db, exclude_app=exclude_app)
+            available, used_by = check_port_available(pm.host_port, db, exclude_app_id=exclude_app_id)
             if not available:
                 owner = _format_used_by(used_by)
                 raise RuntimeError(f"Port {pm.host_port} for '{pm.label}' is already in use by {owner}")
@@ -103,7 +109,7 @@ def resolve_port_mappings(
     # Second pass: auto-assign for host_port=0
     for pm in mappings:
         if pm.host_port == 0:
-            assigned = _find_free_host_port(range_start, range_end, db, claimed, exclude_app=exclude_app)
+            assigned = _find_free_host_port(range_start, range_end, db, claimed, exclude_app_id=exclude_app_id)
             claimed.add(assigned)
             resolved.append(attr.evolve(pm, host_port=assigned))
 
@@ -111,15 +117,15 @@ def resolve_port_mappings(
 
 
 def _find_free_host_port(
-    range_start: int, range_end: int, db: sqlite3.Connection, exclude: set[int], exclude_app: str | None = None
+    range_start: int, range_end: int, db: sqlite3.Connection, exclude: set[int], exclude_app_id: str | None = None
 ) -> int:
     """Find a free host port in the given range, excluding already-claimed ports."""
     used_ports: set[int] = {row["local_port"] for row in db.execute("SELECT local_port FROM apps").fetchall()}
-    if exclude_app:
+    if exclude_app_id:
         used_ports |= {
             row["host_port"]
             for row in db.execute(
-                "SELECT host_port FROM app_port_mappings WHERE app_name != ?", (exclude_app,)
+                "SELECT host_port FROM app_port_mappings WHERE app_id != ?", (exclude_app_id,)
             ).fetchall()
         }
     else:

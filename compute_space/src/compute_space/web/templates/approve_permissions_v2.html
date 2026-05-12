@@ -21,7 +21,7 @@ document.getElementById("grant-btn").addEventListener("click", async () => {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        app: {{ app_name | tojson }},
+        app_id: {{ app_id | tojson }},
         service_url: {{ service_url | tojson }},
         grant: {{ grant | tojson }},
       }),

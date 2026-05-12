@@ -64,7 +64,7 @@ def permission_denied_response(
     The grant_url is a page in this app that the user will get redirected to in a browser.
     It should walk the user through approving this permission grant.
     """
-    consumer_app = request.headers.get("x-openhost-consumer", "")
+    consumer_app = request.headers.get("x-openhost-consumer-id", "")
     params = urlencode(
         {
             "provider": provider,

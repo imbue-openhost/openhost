@@ -87,15 +87,15 @@ async def service_proxy_cors(service_name: str, service_endpoint: str) -> Respon
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
 @app_auth_required
-async def service_proxy(service_name: str, service_endpoint: str, app_name: str) -> Response:
+async def service_proxy(service_name: str, service_endpoint: str, app_id: str) -> Response:
     """Proxy a cross-app service request from a consumer app to the provider app.
 
     The request goes to the provider app at `/_service/<service_endpoint>`
     """
-    consumer_app = app_name
+    consumer_app_id = app_id
 
     try:
-        provider_app, provider_port = get_service_provider(service_name)
+        _provider_app_id, provider_port = get_service_provider(service_name)
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 
@@ -105,7 +105,7 @@ async def service_proxy(service_name: str, service_endpoint: str, app_name: str)
         return _json_error("forbidden", e.message, 403)
 
     if required_permissions:
-        permissions_granted = get_granted_permissions(consumer_app)
+        permissions_granted = get_granted_permissions(consumer_app_id)
         permissions_needed = [k for k in required_permissions if k not in permissions_granted]
         if permissions_needed:
             # Read return_to from request body if present, for redirect after approval
@@ -117,7 +117,7 @@ async def service_proxy(service_name: str, service_endpoint: str, app_name: str)
             config = get_config()
             approve_path = url_for(
                 "pages_permissions.approve_permissions",
-                app=consumer_app,
+                app=consumer_app_id,
                 permissions=",".join(permissions_needed),
                 return_to=return_to,
             )
@@ -156,7 +156,7 @@ def _json_error(error: str, message: str, status: int) -> Response:
 @services_bp.route("/secrets/oauth/callback")
 async def oauth_callback_proxy() -> Response:
     try:
-        provider_app, provider_port = get_service_provider("secrets")
+        _provider_app_id, provider_port = get_service_provider("secrets")
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
     return await proxy_request(request, provider_port, override_path="/oauth/callback")
