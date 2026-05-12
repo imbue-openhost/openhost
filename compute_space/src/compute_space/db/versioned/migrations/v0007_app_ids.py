@@ -58,7 +58,6 @@ class Migration0007AppIds(Migration):
         # (NOT NULL UNIQUE app_id with no DEFAULT). ALTER TABLE ADD would
         # need a DEFAULT to satisfy NOT NULL, which would then live on the
         # column forever and diverge from a fresh-init shape.
-        # ``installed_by`` was added by v0006 and is carried through here.
         db.execute(
             """
             CREATE TABLE apps_new (
@@ -95,13 +94,7 @@ class Migration0007AppIds(Migration):
                       gpu, public_paths, manifest_raw, installed_by, created_at, updated_at
                FROM apps"""
         ).fetchall()
-        seen: set[str] = set()
         for r in rows:
-            while True:
-                candidate = new_app_id()
-                if candidate not in seen:
-                    seen.add(candidate)
-                    break
             db.execute(
                 """INSERT INTO apps_new
                    (id, app_id, name, manifest_name, version, description, runtime_type,
@@ -109,7 +102,7 @@ class Migration0007AppIds(Migration):
                     container_id, status, error_message, memory_mb, cpu_millicores,
                     gpu, public_paths, manifest_raw, installed_by, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (r[0], candidate, *r[1:]),
+                (r[0], new_app_id(), *r[1:]),
             )
         db.execute("DROP TABLE apps")
         db.execute("ALTER TABLE apps_new RENAME TO apps")
@@ -278,8 +271,12 @@ class Migration0007AppIds(Migration):
 
     def _recreate_permissions_v2(self, db: sqlite3.Connection) -> None:
         # provider_app_id is '' when the grant is global (any provider).
-        # The LEFT JOIN preserves the empty marker without trying to look
-        # it up in apps; the IFNULL handles the empty-string case explicitly.
+        # LEFT JOIN preserves the empty-marker case without trying to look
+        # it up in apps. The WHERE filter drops orphan provider rows
+        # (provider_app non-empty but no matching app) — same silent-drop
+        # behaviour as the INNER JOIN recreates above. Without the filter
+        # an orphan would map to NULL and trip the NOT NULL on
+        # provider_app_id, aborting the whole migration.
         db.execute(
             """
             CREATE TABLE permissions_v2_new (
@@ -306,6 +303,7 @@ class Migration0007AppIds(Migration):
             FROM permissions_v2 p
             JOIN apps consumer ON consumer.name = p.consumer_app
             LEFT JOIN apps provider ON provider.name = p.provider_app AND p.provider_app != ''
+            WHERE p.provider_app = '' OR provider.app_id IS NOT NULL
             """
         )
         db.execute("DROP TABLE permissions_v2")
