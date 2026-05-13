@@ -1,32 +1,38 @@
 #!/usr/bin/env python3
-"""Generate an ACME account key in certbot JWK format.
+"""Generate and register an ACME account key in certbot JWK format.
 
-Usage: python3 generate_acme_key.py <output-path>
+Usage: python3 generate_acme_key.py <output-path> [--email <email>]
+
+Generates an RSA-2048 key, registers it with Let's Encrypt, and saves
+the JWK to the output path. The key can then be used by OpenHost for
+TLS certificate acquisition via DNS-01 challenges.
 """
 
+import argparse
 import base64
 import json
 import sys
 
+from acme import client as acme_client
+from acme import messages
 from cryptography.hazmat.primitives.asymmetric import rsa
+from josepy import JWKRSA
+
+
+LETS_ENCRYPT_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
 
 
 def _b64(n: int, length: int) -> str:
     return base64.urlsafe_b64encode(n.to_bytes(length, byteorder="big")).rstrip(b"=").decode()
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <output-path>", file=sys.stderr)
-        sys.exit(1)
-
-    output_path = sys.argv[1]
-
+def _generate_jwk() -> tuple[dict, JWKRSA]:
+    """Generate an RSA-2048 key and return (jwk_dict, JWKRSA)."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     nums = key.private_numbers()
     pub = nums.public_numbers
 
-    jwk = {
+    jwk_dict = {
         "kty": "RSA",
         "n": _b64(pub.n, 256),
         "e": _b64(pub.e, 3),
@@ -38,10 +44,50 @@ def main() -> None:
         "qi": _b64(nums.iqmp, 128),
     }
 
-    with open(output_path, "w") as f:
-        json.dump(jwk, f, indent=2)
+    jwk_rsa = JWKRSA.from_json(jwk_dict)
+    return jwk_dict, jwk_rsa
 
-    print(f"Generated ACME account key: {output_path}")
+
+def _register_account(jwk_rsa: JWKRSA, email: str | None = None) -> str:
+    """Register the key with Let's Encrypt. Returns the account URI."""
+    net = acme_client.ClientNetwork(
+        jwk_rsa,
+        user_agent="openhost-provision/0.1",
+        timeout=30,
+    )
+    directory = messages.Directory.from_json(net.get(LETS_ENCRYPT_DIRECTORY).json())
+    client = acme_client.ClientV2(directory, net)
+
+    reg_kwargs: dict = {"terms_of_service_agreed": True}
+    if email:
+        reg_kwargs["contact"] = (f"mailto:{email}",)
+
+    reg = messages.NewRegistration(**reg_kwargs)
+    account = client.new_account(reg)
+    return account.uri
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate and register an ACME account key")
+    parser.add_argument("output", help="Output path for the JWK JSON file")
+    parser.add_argument("--email", default="", help="Contact email for Let's Encrypt account")
+    args = parser.parse_args()
+
+    print("Generating RSA-2048 key...")
+    jwk_dict, jwk_rsa = _generate_jwk()
+
+    print(f"Registering with Let's Encrypt ({LETS_ENCRYPT_DIRECTORY})...")
+    try:
+        account_uri = _register_account(jwk_rsa, args.email or None)
+        print(f"Registered account: {account_uri}")
+    except Exception as e:
+        print(f"Warning: account registration failed: {e}", file=sys.stderr)
+        print("The key will be saved but may need manual registration.", file=sys.stderr)
+
+    with open(args.output, "w") as f:
+        json.dump(jwk_dict, f, indent=2)
+
+    print(f"Saved ACME account key to {args.output}")
 
 
 if __name__ == "__main__":
