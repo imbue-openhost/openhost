@@ -72,7 +72,7 @@ def _acquire_cert_dns01(
     except messages.Error as e:
         # Account doesn't exist for this key -- register a new one.
         if "accountDoesNotExist" in str(e):
-            logger.info("DNS-01: no existing account, registering new one")
+            logger.info("DNS-01: no existing account for this key, registering new one")
             reg = messages.NewRegistration(terms_of_service_agreed=True)
             try:
                 account = acme_client.new_account(reg)

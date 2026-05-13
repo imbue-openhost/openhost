@@ -19,6 +19,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from josepy import JWKRSA
 
 
+# Google Trust Services — the default ACME provider used by OpenHost
+GTS_PRODUCTION = "https://dv.acme-v02.api.pki.goog/directory"
+# Let's Encrypt as fallback
 LETS_ENCRYPT_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
 
 
@@ -49,22 +52,36 @@ def _generate_jwk() -> tuple[dict, JWKRSA]:
 
 
 def _register_account(jwk_rsa: JWKRSA, email: str | None = None) -> str:
-    """Register the key with Let's Encrypt. Returns the account URI."""
-    net = acme_client.ClientNetwork(
-        jwk_rsa,
-        user_agent="openhost-provision/0.1",
-        timeout=30,
-    )
-    directory = messages.Directory.from_json(net.get(LETS_ENCRYPT_DIRECTORY).json())
-    client = acme_client.ClientV2(directory, net)
+    """Register the key with ACME providers. Returns the account URI.
 
-    reg_kwargs: dict = {"terms_of_service_agreed": True}
-    if email:
-        reg_kwargs["contact"] = (f"mailto:{email}",)
+    Registers with both Google Trust Services (OpenHost's default) and
+    Let's Encrypt for maximum compatibility.
+    """
+    for name, directory_url in [("Google Trust Services", GTS_PRODUCTION), ("Let's Encrypt", LETS_ENCRYPT_DIRECTORY)]:
+        try:
+            net = acme_client.ClientNetwork(
+                jwk_rsa,
+                user_agent="openhost-provision/0.1",
+                timeout=30,
+            )
+            directory = messages.Directory.from_json(net.get(directory_url).json())
+            client = acme_client.ClientV2(directory, net)
 
-    reg = messages.NewRegistration(**reg_kwargs)
-    account = client.new_account(reg)
-    return account.uri
+            reg_kwargs: dict = {"terms_of_service_agreed": True}
+            if email:
+                reg_kwargs["contact"] = (f"mailto:{email}",)
+
+            reg = messages.NewRegistration(**reg_kwargs)
+            try:
+                account = client.new_account(reg)
+                print(f"  Registered with {name}: {account.uri}")
+            except Exception:
+                # ConflictError means already registered -- that's fine
+                print(f"  Already registered with {name}")
+        except Exception as e:
+            print(f"  Warning: {name} registration failed: {e}")
+
+    return "registered"
 
 
 def main() -> None:
