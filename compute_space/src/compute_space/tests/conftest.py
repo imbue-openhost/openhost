@@ -82,6 +82,11 @@ def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
 def _make_test_env(config_path: str) -> dict[str, str]:
     """Build an env dict for launching a router subprocess."""
     env = os.environ.copy()
+    # Strip any OPENHOST_* vars from the host environment so they don't
+    # override the test config (e.g. OPENHOST_ZONE_DOMAIN from a container).
+    for key in list(env):
+        if key.startswith("OPENHOST_"):
+            del env[key]
     env["OPENHOST_CONFIG"] = config_path
     env["SECRET_KEY"] = "test-secret-key"
     return env
