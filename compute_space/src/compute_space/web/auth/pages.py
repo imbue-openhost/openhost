@@ -4,43 +4,45 @@ import secrets
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from typing import Annotated
+from typing import Any
 
+import attr
 import bcrypt
-from quart import Blueprint
-from quart import Response
-from quart import current_app
-from quart import g
-from quart import redirect
-from quart import render_template
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from litestar import Request
+from litestar import Response
+from litestar import get
+from litestar import post
+from litestar.enums import RequestEncodingType
+from litestar.params import Body
+from litestar.response import Redirect
+from litestar.response import Template
 
 from compute_space.config import get_config
 from compute_space.core import auth
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db
-from compute_space.web.auth.cookies import clear_auth_cookies
-from compute_space.web.auth.cookies import set_auth_cookies
-from compute_space.web.auth.inputs import auth_inputs_from_request
-from compute_space.web.auth.middleware import _try_refresh  # noqa: F401 — re-exported
-from compute_space.web.auth.middleware import login_required  # noqa: F401 — re-exported
-
-auth_bp = Blueprint("auth", __name__)
+from compute_space.web.auth.cookies import auth_cookies
+from compute_space.web.auth.cookies import cleared_auth_cookies
+from compute_space.web.auth.inputs import auth_inputs_from_connection
 
 
-# ─── Auth helpers ───
+@attr.s(auto_attribs=True, frozen=True)
+class SetupForm:
+    password: str = ""
+    confirm_password: str = ""
+    claim: str = ""
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class LoginForm:
+    password: str = ""
 
 
 def _verify_claim_token(claim_token: str) -> bool | None:
-    """Verify a claim token against the on-disk claim file.
-
-    Returns True if valid, None if invalid.
-    """
     if not claim_token:
         return None
-
     config = get_config()
     token_path = config.claim_token_path
     try:
@@ -48,70 +50,59 @@ def _verify_claim_token(claim_token: str) -> bool | None:
             content = f.read().strip()
     except FileNotFoundError:
         return None
-
-    # Claim file format is "token:username" (username is legacy, ignored)
     stored_token = content.split(":", 1)[0]
-
     if not secrets.compare_digest(claim_token, stored_token):
         return None
-
     return True
 
 
-@auth_bp.after_app_request
-async def attach_refreshed_token(response: Response) -> Response:
-    """If a token was refreshed or created during this request, set the new cookie."""
-    new_token = getattr(g, "new_access_token", None)
-    if new_token:
-        refresh_tok = getattr(g, "refresh_token", None)
-        set_auth_cookies(response, new_token, refresh_tok, request=request)
-    return response
+def _request_host(request: Request[Any, Any, Any]) -> str:
+    return request.headers.get("host", "")
 
 
-# ─── Auth routes ───
-
-
-@auth_bp.route("/setup", methods=["GET", "POST"])
-async def setup() -> ResponseReturnValue:
-    """First-time owner setup. Only accessible when no owner exists.
-
-    If a claim token file exists on disk (provider mode), the claim token
-    must be provided as ?claim=<token> to access this page.
-    """
+@get("/setup", sync_to_thread=False)
+def setup_get(request: Request[Any, Any, Any], claim: str = "") -> Response[Any] | Template:
     config = get_config()
-
-    # If owner already exists, setup is complete
     db = get_db()
     owner = db.execute("SELECT * FROM owner").fetchone()
     if owner is not None:
-        return "This instance has already been set up.", 403
-
-    # If a claim token file exists, validate the claim token from the URL
-    claim_token = request.args.get("claim", "")
+        return Response(content="This instance has already been set up.", status_code=403, media_type="text/plain")
     if os.path.isfile(config.claim_token_path):
-        if _verify_claim_token(claim_token) is None:
-            return "Invalid or missing claim token.", 403
+        if _verify_claim_token(claim) is None:
+            return Response(content="Invalid or missing claim token.", status_code=403, media_type="text/plain")
+    return Template(template_name="setup.html", context={"claim": claim})
 
-    if request.method == "GET":
-        return await render_template("setup.html", claim=claim_token)
 
-    form = await request.form
-    # Re-validate claim token on POST
-    form_claim = form.get("claim", "")
+@post("/setup", status_code=200)
+async def setup_post(
+    request: Request[Any, Any, Any],
+    data: Annotated[SetupForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
+) -> Response[Any] | Template | Redirect:
+    config = get_config()
+    db = get_db()
+    owner = db.execute("SELECT * FROM owner").fetchone()
+    if owner is not None:
+        return Response(content="This instance has already been set up.", status_code=403, media_type="text/plain")
+
+    form_claim = data.claim or ""
     if os.path.isfile(config.claim_token_path):
         if _verify_claim_token(form_claim) is None:
-            return "Invalid or missing claim token.", 403
+            return Response(content="Invalid or missing claim token.", status_code=403, media_type="text/plain")
 
-    password = form.get("password", "")
-    confirm = form.get("confirm_password", "")
-
+    password = data.password or ""
+    confirm = data.confirm_password or ""
     if not password:
-        return await render_template("setup.html", error="Password is required", claim=form_claim)
+        return Template(
+            template_name="setup.html",
+            context={"error": "Password is required", "claim": form_claim},
+        )
     if password != confirm:
-        return await render_template("setup.html", error="Passwords do not match", claim=form_claim)
+        return Template(
+            template_name="setup.html",
+            context={"error": "Passwords do not match", "claim": form_claim},
+        )
 
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
     db.execute(
         "INSERT INTO owner (id, username, password_hash) VALUES (1, 'owner', ?)",
         (password_hash,),
@@ -120,81 +111,82 @@ async def setup() -> ResponseReturnValue:
     access_token = auth.create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(
-        seconds=auth.REFRESH_TOKEN_EXPIRY,
-    )
+    expires_at = datetime.now(UTC) + timedelta(seconds=auth.REFRESH_TOKEN_EXPIRY)
     db.execute(
         "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
         (refresh_token_hash, expires_at.isoformat()),
     )
     db.commit()
 
-    # Delete the claim token file so it can't be reused
     try:
         os.remove(config.claim_token_path)
     except OSError:
         pass
 
-    # Mark owner as verified so subdomain routing activates
-    current_app._owner_verified = True  # type: ignore[attr-defined]
+    request.app.state.owner_verified = True
 
     try:
         deploy_default_apps(config, db)
     except Exception as exc:
         logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
-    response = redirect(url_for("apps.dashboard"))
-    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    response: Response[Any] = Response(content=b"", status_code=200, media_type="text/plain")
+    for cookie in auth_cookies(access_token, refresh_token, request_host=_request_host(request)):
+        response.set_cookie(cookie)
     return response
 
 
-@auth_bp.route("/login", methods=["GET", "POST"])
-async def login() -> ResponseReturnValue:
-    if auth.get_current_user(auth_inputs_from_request(request)):
-        return redirect(url_for("apps.dashboard"))
+@get("/login", sync_to_thread=False)
+def login_get(request: Request[Any, Any, Any]) -> Response[Any] | Template | Redirect:
+    if auth.get_current_user(auth_inputs_from_connection(request)):
+        return Redirect(path="/dashboard")
 
-    # If stale auth cookies are present (invalid JWT, e.g. after key rotation on
-    # reboot or TLS mode change), clear them now so they don't conflict with the
-    # fresh cookies we'll set after successful login.
     has_stale_cookies = request.cookies.get(auth.COOKIE_ACCESS) is not None
-
     db = get_db()
     owner = db.execute("SELECT * FROM owner").fetchone()
     if owner is None:
-        return redirect(url_for("auth.setup"))
+        return Redirect(path="/setup")
 
-    if request.method == "GET":
-        if has_stale_cookies:
-            response = redirect(url_for("auth.login"))
-            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
-            return response
-        return await render_template("login.html")
+    if has_stale_cookies:
+        response: Redirect = Redirect(path="/login")
+        for cookie in cleared_auth_cookies(_request_host(request)):
+            response.set_cookie(cookie)
+        return response
+    return Template(template_name="login.html")
 
-    form = await request.form
-    password = form.get("password", "")
 
+@post("/login", status_code=200)
+async def login_post(
+    request: Request[Any, Any, Any],
+    data: Annotated[LoginForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
+) -> Response[Any] | Template | Redirect:
+    db = get_db()
+    owner = db.execute("SELECT * FROM owner").fetchone()
+    if owner is None:
+        return Redirect(path="/setup")
+
+    password = data.password or ""
     if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
-        return await render_template("login.html", error="Invalid password")
+        return Template(template_name="login.html", context={"error": "Invalid password"})
 
     access_token = auth.create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(
-        seconds=auth.REFRESH_TOKEN_EXPIRY,
-    )
+    expires_at = datetime.now(UTC) + timedelta(seconds=auth.REFRESH_TOKEN_EXPIRY)
     db.execute(
         "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
         (refresh_token_hash, expires_at.isoformat()),
     )
     db.commit()
 
-    response = redirect(url_for("apps.dashboard"))
-    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    response: Redirect = Redirect(path="/dashboard")
+    for cookie in auth_cookies(access_token, refresh_token, request_host=_request_host(request)):
+        response.set_cookie(cookie)
     return response
 
 
-@auth_bp.route("/logout", methods=["POST"])
-def logout() -> ResponseReturnValue:
+@post("/logout", sync_to_thread=False, status_code=200)
+def logout(request: Request[Any, Any, Any]) -> Redirect:
     refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
     if refresh_tok:
         refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
@@ -204,7 +196,10 @@ def logout() -> ResponseReturnValue:
             (refresh_tok_hash,),
         )
         db.commit()
-
-    response = redirect(url_for("auth.login"))
-    clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+    response: Redirect = Redirect(path="/login")
+    for cookie in cleared_auth_cookies(_request_host(request)):
+        response.set_cookie(cookie)
     return response
+
+
+auth_pages_routes = [setup_get, setup_post, login_get, login_post, logout]

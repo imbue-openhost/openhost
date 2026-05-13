@@ -1,30 +1,31 @@
 import base64
 import urllib.parse
+from typing import Annotated
+from typing import Any
 
+import attr
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_module
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
-from quart import Blueprint
-from quart import Response
-from quart import jsonify
-from quart import redirect
-from quart import render_template
-from quart import request
-from quart.typing import ResponseReturnValue
+from litestar import Response
+from litestar import get
+from litestar import post
+from litestar.enums import RequestEncodingType
+from litestar.params import Body
+from litestar.response import Redirect
+from litestar.response import Template
 
 from compute_space.core import auth
 from compute_space.core.auth import identity
 from compute_space.core.logging import logger
-from compute_space.web.auth.middleware import login_required
-
-identity_bp = Blueprint("identity", __name__)
 
 
-# ─── JWKS endpoint ───
+@attr.s(auto_attribs=True, frozen=True)
+class IdentityApproveForm:
+    callback: str = ""
 
 
-@identity_bp.route("/.well-known/jwks.json")
-def jwks() -> Response:
-    """Expose the public key in JWKS format for app JWT verification."""
+@get("/.well-known/jwks.json", sync_to_thread=False)
+def jwks() -> dict[str, Any]:
     public_key_pem = auth.get_public_key_pem()
     public_key = load_pem_public_key(public_key_pem.encode())
     assert isinstance(public_key, rsa_module.RSAPublicKey)
@@ -43,63 +44,64 @@ def jwks() -> Response:
         "n": _b64url(numbers.n, n_bytes),
         "e": _b64url(numbers.e, 3),
     }
-    return jsonify({"keys": [jwk]})
+    return {"keys": [jwk]}
 
 
-# ─── Federated Identity ───
-
-
-@identity_bp.route("/.well-known/openhost-identity")
-def openhost_identity() -> Response:
-    """Public endpoint: expose this zone's identity (domain + public key)."""
+@get("/.well-known/openhost-identity", sync_to_thread=False)
+def openhost_identity() -> Response[Any]:
     try:
-        return jsonify(identity.get_zone_identity())
+        return Response(content=identity.get_zone_identity())
     except RuntimeError:
-        return Response("Identity not yet available", status=503)
+        return Response(content=b"Identity not yet available", status_code=503, media_type="text/plain")
 
 
-@identity_bp.route("/identity/approve")
-@login_required
-async def identity_approve() -> ResponseReturnValue:
-    """Show the owner an approval page for a federated login request."""
-    callback = request.args.get("callback", "").strip()
-    app_name = request.args.get("app_name", "an app")
-    requesting_domain = request.args.get("requesting_domain", "unknown")
-
+@get("/identity/approve", sync_to_thread=False)
+def identity_approve(
+    user: dict[str, Any],
+    callback: str = "",
+    app_name: str = "an app",
+    requesting_domain: str = "unknown",
+) -> Response[Any] | Template:
+    callback = callback.strip()
     if not callback:
-        return Response("Missing callback parameter", status=400)
+        return Response(content=b"Missing callback parameter", status_code=400, media_type="text/plain")
 
     parsed = urllib.parse.urlparse(callback)
     if parsed.scheme not in ("https", "http") or not parsed.netloc:
-        return Response("Invalid callback URL", status=400)
+        return Response(content=b"Invalid callback URL", status_code=400, media_type="text/plain")
 
-    return await render_template(
-        "identity_approve.html",
-        callback=callback,
-        app_name=app_name,
-        requesting_domain=requesting_domain,
+    return Template(
+        template_name="identity_approve.html",
+        context={
+            "callback": callback,
+            "app_name": app_name,
+            "requesting_domain": requesting_domain,
+        },
     )
 
 
-@identity_bp.route("/identity/approve", methods=["POST"])
-@login_required
-async def identity_approve_submit() -> ResponseReturnValue:
-    """Owner approved the login — sign an identity token and redirect back."""
-    form = await request.form
-    callback = form.get("callback", "").strip()
+@post("/identity/approve", status_code=200)
+async def identity_approve_submit(
+    data: Annotated[IdentityApproveForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
+    user: dict[str, Any],
+) -> Response[Any] | Redirect:
+    callback = (data.callback or "").strip()
     if not callback:
-        return Response("Missing callback parameter", status=400)
+        return Response(content=b"Missing callback parameter", status_code=400, media_type="text/plain")
 
     parsed = urllib.parse.urlparse(callback)
     if parsed.scheme not in ("https", "http") or not parsed.netloc:
-        return Response("Invalid callback URL", status=400)
+        return Response(content=b"Invalid callback URL", status_code=400, media_type="text/plain")
 
     try:
         token = identity.sign_identity_token(callback)
     except RuntimeError as e:
         logger.error("Failed to sign identity token: %s", e)
-        return Response("Identity service unavailable", status=503)
+        return Response(content=b"Identity service unavailable", status_code=503, media_type="text/plain")
 
     separator = "&" if "?" in callback else "?"
     encoded_token = urllib.parse.quote(token, safe="")
-    return redirect(f"{callback}{separator}identity_token={encoded_token}")
+    return Redirect(path=f"{callback}{separator}identity_token={encoded_token}")
+
+
+identity_routes = [jwks, openhost_identity, identity_approve, identity_approve_submit]

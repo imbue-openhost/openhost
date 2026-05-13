@@ -1,11 +1,11 @@
 import urllib.parse
+from typing import Any
 
-from quart import Blueprint
-from quart import redirect
-from quart import render_template
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from litestar import Request
+from litestar import Response
+from litestar import get
+from litestar.response import Redirect
+from litestar.response import Template
 
 from compute_space.config import get_config
 from compute_space.core.app_id import is_valid_app_id
@@ -13,33 +13,31 @@ from compute_space.core.apps import list_builtin_apps
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
-
-apps_bp = Blueprint("apps", __name__)
 
 
-# ─── Dashboard ───
-
-
-@apps_bp.route("/")
-@apps_bp.route("/dashboard")
-@login_required
-async def dashboard() -> str:
+@get("/", sync_to_thread=False)
+def dashboard_root(user: dict[str, Any]) -> Template:
     db = get_db()
     apps_list = db.execute("SELECT * FROM apps ORDER BY name").fetchall()
-    return await render_template("dashboard.html", apps=apps_list)
+    return Template(template_name="dashboard.html", context={"apps": apps_list})
 
 
-@apps_bp.route("/app_detail/<app_id>")
-@login_required
-async def app_detail(app_id: str) -> str | tuple[str, int]:
+@get("/dashboard", sync_to_thread=False)
+def dashboard(user: dict[str, Any]) -> Template:
+    db = get_db()
+    apps_list = db.execute("SELECT * FROM apps ORDER BY name").fetchall()
+    return Template(template_name="dashboard.html", context={"apps": apps_list})
+
+
+@get("/app_detail/{app_id:str}", sync_to_thread=False)
+def app_detail(app_id: str, user: dict[str, Any], next: str = "") -> Response[Any] | Template:
     if not is_valid_app_id(app_id):
-        return "Invalid app_id", 400
+        return Response(content="Invalid app_id", status_code=400, media_type="text/plain")
     config = get_config()
     db = get_db()
     app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     if not app_row:
-        return "App not found", 404
+        return Response(content="App not found", status_code=404, media_type="text/plain")
     app_name = app_row["name"]
     databases = db.execute("SELECT * FROM app_databases WHERE app_id = ?", (app_id,)).fetchall()
     port_mappings = db.execute(
@@ -51,12 +49,9 @@ async def app_detail(app_id: str) -> str | tuple[str, int]:
         (app_id,),
     ).fetchall()
     logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
-    next_url = request.args.get("next", "")
 
-    # Compute permissions the manifest declares but that haven't been granted yet,
-    # so the owner can grant them retroactively (e.g. after installing the secrets app).
     granted_keys = {row["permission_key"] for row in permissions}
-    missing_permissions: list[dict[str, str]] = []
+    missing_permissions: list[dict[str, Any]] = []
     if app_row["manifest_raw"]:
         try:
             manifest = parse_manifest_from_string(app_row["manifest_raw"])
@@ -72,31 +67,28 @@ async def app_detail(app_id: str) -> str | tuple[str, int]:
                             }
                         )
         except Exception:
-            pass  # Don't break the page if the manifest is malformed
+            pass
 
-    return await render_template(
-        "app_detail.html",
-        app=app_row,
-        databases=databases,
-        port_mappings=port_mappings,
-        permissions=permissions,
-        missing_permissions=missing_permissions,
-        logs=logs,
-        next_url=next_url,
+    return Template(
+        template_name="app_detail.html",
+        context={
+            "app": app_row,
+            "databases": databases,
+            "port_mappings": port_mappings,
+            "permissions": permissions,
+            "missing_permissions": missing_permissions,
+            "logs": logs,
+            "next_url": next,
+        },
     )
 
 
-# ─── Add App ───
+@get("/handle_invite", sync_to_thread=False)
+def handle_invite(request: Request[Any, Any, Any], user: dict[str, Any]) -> Redirect:
+    app_name = request.query_params.get("app", "")
+    repo_url = request.query_params.get("repo", "")
 
-
-@apps_bp.route("/handle_invite")
-@login_required
-def handle_invite() -> ResponseReturnValue:
-    """Route invite links: if the app is installed, redirect to it; otherwise install first."""
-    app_name = request.args.get("app", "")
-    repo_url = request.args.get("repo", "")
-
-    invite_params = {k: v for k, v in request.args.items() if k not in ("app", "repo")}
+    invite_params = {k: v for k, v in request.query_params.items() if k not in ("app", "repo")}
     invite_qs = urllib.parse.urlencode(invite_params)
 
     db = get_db()
@@ -104,30 +96,29 @@ def handle_invite() -> ResponseReturnValue:
 
     if app_row:
         if app_row["status"] == "running":
-            ext_host = request.headers.get("X-Forwarded-Host", request.host)
-            proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-            return redirect(f"{proto}://{app_name}.{ext_host}/handle_invite?{invite_qs}")
-        return redirect(
-            url_for(
-                "apps.app_detail",
-                app_id=app_row["app_id"],
-                next="/handle_invite?" + urllib.parse.urlencode(request.args),
-            )
+            ext_host = request.headers.get("X-Forwarded-Host", request.headers.get("host", ""))
+            proto = request.headers.get("X-Forwarded-Proto", request.scope.get("scheme", "http"))
+            return Redirect(path=f"{proto}://{app_name}.{ext_host}/handle_invite?{invite_qs}")
+        return Redirect(
+            path=f"/app_detail/{app_row['app_id']}?next=/handle_invite?"
+            + urllib.parse.urlencode(dict(request.query_params))
         )
 
-    next_url = "/handle_invite?" + urllib.parse.urlencode(request.args)
-    return redirect(url_for("apps.add_app", repo=repo_url, next=next_url))
+    next_url = "/handle_invite?" + urllib.parse.urlencode(dict(request.query_params))
+    return Redirect(path=f"/add_app?repo={repo_url}&next={urllib.parse.quote(next_url)}")
 
 
-@apps_bp.route("/add_app")
-@login_required
-async def add_app() -> ResponseReturnValue:
+@get("/add_app", sync_to_thread=False)
+def add_app(user: dict[str, Any], repo: str = "", next: str = "") -> Template:
     config = get_config()
-    # initial_repo/next_url: passed from query params so JS can auto-start
-    # cloning when landing here via invite link (/add_app?repo=...&next=...)
-    return await render_template(
-        "add_app.html",
-        builtin_apps=list_builtin_apps(config),
-        initial_repo=request.args.get("repo", ""),
-        next_url=request.args.get("next", ""),
+    return Template(
+        template_name="add_app.html",
+        context={
+            "builtin_apps": list_builtin_apps(config),
+            "initial_repo": repo,
+            "next_url": next,
+        },
     )
+
+
+pages_apps_routes = [dashboard_root, dashboard, app_detail, handle_invite, add_app]

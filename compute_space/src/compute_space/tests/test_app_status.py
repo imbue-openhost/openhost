@@ -1,10 +1,4 @@
-"""Tests for the ``/api/app_status/<app_name>`` endpoint's error-kind logic.
-
-In particular the legacy ``[CACHE_CORRUPT]`` marker still needs to map to
-``error_kind = "build_cache_corrupt"`` so the dashboard's 'drop cache
-and rebuild' toast keeps firing against rows whose ``error_message``
-column was written before the marker rename.
-"""
+"""Tests for the ``/api/app_status/<app_id>`` endpoint's error-kind logic."""
 
 from __future__ import annotations
 
@@ -12,10 +6,13 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from quart import Quart
+from litestar import Litestar
+from litestar.di import Provide
+from litestar.testing import AsyncTestClient
 
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.config import get_config
+from compute_space.config import set_active_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
@@ -23,13 +20,15 @@ from compute_space.db.connection import init_db
 from .conftest import _make_test_config
 
 
+async def _user_stub() -> dict[str, str]:
+    return {"sub": "owner", "username": "owner"}
+
+
 async def _app_status_response(tmp_path: Path, *, error_message: str, port: int) -> tuple[int, dict]:
-    """Drive /api/app_status/<name> end-to-end against a real Quart app
-    with a real on-disk sqlite schema.  Returns (status_code, payload)."""
     cfg = _make_test_config(tmp_path, port=port)
     init_db(cfg.db_path)
+    set_active_config(cfg)
 
-    # Insert one app row with the error_message of interest.
     app_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
     try:
@@ -42,16 +41,14 @@ async def _app_status_response(tmp_path: Path, *, error_message: str, port: int)
     finally:
         db.close()
 
-    app = Quart(__name__)
-    app.config["DB_PATH"] = cfg.db_path
-    app.openhost_config = cfg  # type: ignore[attr-defined]
-    # apps_routes uses a login_required middleware; bypass it here by
-    # calling the unwrapped view function directly.
-    async with app.app_context(), app.test_request_context(f"/api/app_status/{app_id}"):
-        response = apps_routes.app_status.__wrapped__(app_id)  # type: ignore[attr-defined]
-        payload = await response.get_json()
-        status = response.status_code
-    return status, payload
+    app = Litestar(
+        route_handlers=[apps_routes.app_status],
+        dependencies={"user": Provide(_user_stub)},
+        openapi_config=None,
+    )
+    async with AsyncTestClient(app=app) as client:
+        resp = await client.get(f"/api/app_status/{app_id}")
+    return resp.status_code, resp.json()
 
 
 @pytest.mark.asyncio
@@ -68,8 +65,6 @@ async def test_current_marker_maps_to_build_cache_corrupt_error_kind(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_legacy_marker_still_maps_to_build_cache_corrupt_error_kind(tmp_path: Path) -> None:
-    """Rows whose error_message was written before the marker rename
-    must still trigger the 'drop cache' remediation toast in the UI."""
     status, payload = await _app_status_response(
         tmp_path,
         error_message="[CACHE_CORRUPT] Docker build cache is corrupted.",
@@ -92,12 +87,8 @@ async def test_unrelated_error_message_has_no_error_kind(tmp_path: Path) -> None
 
 
 def test_import_wiring() -> None:
-    """Make sure the module under test is still importing BUILD_CACHE_CORRUPT_MARKER
-    the way app_status expects; a rename in core/containers.py that
-    forgot the route handler would otherwise pass all other checks."""
     assert apps_routes.BUILD_CACHE_CORRUPT_MARKER == BUILD_CACHE_CORRUPT_MARKER
 
 
 def test_get_config_is_present_for_router_tests() -> None:
-    """Sanity: get_config() shouldn't raise at import time."""
     assert callable(get_config)

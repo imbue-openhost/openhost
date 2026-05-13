@@ -1,43 +1,42 @@
-from quart import Blueprint
-from quart import Response
-from quart import jsonify
-from quart import request
+from typing import Any
+
+import attr
+from litestar import Response
+from litestar import get
+from litestar import post
 
 from compute_space.core.auth.permissions import get_granted_permissions
 from compute_space.core.auth.permissions import grant_permissions
 from compute_space.core.auth.permissions import revoke_permissions
-from compute_space.web.auth.middleware import login_required
-
-api_permissions_bp = Blueprint("api_permissions", __name__)
 
 
-@api_permissions_bp.route("/api/permissions", methods=["GET"])
-@login_required
-async def list_permissions() -> Response:
-    """List all granted permissions, optionally filtered by app_id."""
-    app_id = request.args.get("app_id")
+@attr.s(auto_attribs=True, frozen=True)
+class PermissionsRequest:
+    app_id: str = ""
+    permissions: list[str] = attr.Factory(list)
+
+
+@get("/api/permissions")
+async def list_permissions(user: dict[str, Any], app_id: str | None = None) -> Any:
     if app_id:
-        return jsonify(sorted(get_granted_permissions(app_id)))
-    return jsonify({app: sorted(keys) for app, keys in get_granted_permissions().items()})
+        return sorted(get_granted_permissions(app_id))
+    return {app: sorted(keys) for app, keys in get_granted_permissions().items()}
 
 
-@api_permissions_bp.route("/api/permissions/grant", methods=["POST"])
-@login_required
-async def grant() -> Response | tuple[Response, int]:
-    """Grant permissions to an app."""
-    data = await request.get_json()
-    if not data or not data.get("app_id") or not data.get("permissions"):
-        return jsonify({"error": "app_id and permissions are required"}), 400
-    grant_permissions(data["app_id"], data["permissions"])
-    return jsonify({"ok": True})
+@post("/api/permissions/grant", status_code=200)
+async def grant(data: PermissionsRequest, user: dict[str, Any]) -> Response[dict[str, Any]]:
+    if not data.app_id or not data.permissions:
+        return Response(content={"error": "app_id and permissions are required"}, status_code=400)
+    grant_permissions(data.app_id, list(data.permissions))
+    return Response(content={"ok": True})
 
 
-@api_permissions_bp.route("/api/permissions/revoke", methods=["POST"])
-@login_required
-async def revoke() -> Response | tuple[Response, int]:
-    """Revoke permissions from an app."""
-    data = await request.get_json()
-    if not data or not data.get("app_id") or not data.get("permissions"):
-        return jsonify({"error": "app_id and permissions are required"}), 400
-    revoke_permissions(data["app_id"], data["permissions"])
-    return jsonify({"ok": True})
+@post("/api/permissions/revoke", status_code=200)
+async def revoke(data: PermissionsRequest, user: dict[str, Any]) -> Response[dict[str, Any]]:
+    if not data.app_id or not data.permissions:
+        return Response(content={"error": "app_id and permissions are required"}, status_code=400)
+    revoke_permissions(data.app_id, list(data.permissions))
+    return Response(content={"ok": True})
+
+
+api_permissions_routes = [list_permissions, grant, revoke]

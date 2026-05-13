@@ -8,7 +8,14 @@ import attr
 import cattrs
 import tomli_w
 import typed_settings
-from quart import current_app
+
+_active_config: "Config | None" = None
+
+
+def set_active_config(config: "Config") -> None:
+    """Register the running app's Config so ``get_config()`` can return it framework-neutrally."""
+    global _active_config
+    _active_config = config
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -209,9 +216,11 @@ def load_config() -> Config:
 
 
 def get_config() -> Config:
-    """Get the Config object from the current Quart app context.
+    """Return the Config registered via ``set_active_config`` at app startup.
 
-    This is just a helper to make type checking work,
-    vs accessing app.openhost_config directly which would be unytped.
+    Tests that exercise route handlers in isolation must call ``set_active_config(cfg)`` first; the
+    web app does it automatically inside ``create_app``.
     """
-    return current_app.openhost_config  # type: ignore[attr-defined, no-any-return]
+    if _active_config is None:
+        raise RuntimeError("Config not registered; call set_active_config() (the web app does this in create_app).")
+    return _active_config

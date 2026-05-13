@@ -1,12 +1,12 @@
-from quart import Blueprint
-from quart import render_template
+from typing import Any
 
-from compute_space.web.auth.middleware import login_required
-
-pages_settings_bp = Blueprint("pages_settings", __name__)
+from litestar import get
+from litestar.response import Template
 
 
-@pages_settings_bp.route("/settings")
-@login_required
-async def settings_page() -> str:
-    return await render_template("settings.html")
+@get("/settings", sync_to_thread=False)
+def settings_page(user: dict[str, Any]) -> Template:
+    return Template(template_name="settings.html")
+
+
+pages_settings_routes = [settings_page]
