@@ -1,3 +1,6 @@
+# You have to codeowners the codeowners or someone could just remove them.
+.github/CODEOWNERS    @zplizzi
+
 # Authentication, identity, and authorization.
 # Changes here require review from @zplizzi.
 /compute_space/src/compute_space/core/auth/    @zplizzi
