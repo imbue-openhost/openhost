@@ -1,0 +1,41 @@
+---
+# Local setup playbook — runs ON the target server (not remotely via SSH).
+#
+# Used by scripts/provision.sh to bootstrap a fresh server.
+# Reuses the same task files as setup.yml to avoid duplication.
+#
+# Usage (normally called by provision.sh, not directly):
+#   ansible-playbook ansible/local_setup.yml -e domain=<domain> -e public_ip=<ip> --connection=local -i localhost,
+
+- name: Install system dependencies
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/apt_packages.yml
+    - import_tasks: tasks/containers.yml
+
+- name: Dev environment
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/dev_machine.yml
+
+- name: Setup OpenHost
+  hosts: localhost
+  connection: local
+  become: yes
+  become_user: host
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/pixi.yml
+    - import_tasks: tasks/setup_openhost_service.yml
+    - import_tasks: tasks/restart_openhost_service.yml
