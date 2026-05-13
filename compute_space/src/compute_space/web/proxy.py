@@ -8,6 +8,7 @@ from quart.wrappers import Request
 from quart.wrappers import Websocket
 from werkzeug.datastructures import Headers
 
+from compute_space.core.auth import COOKIE_ACCESS
 from compute_space.core.auth import COOKIE_REFRESH
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
@@ -54,7 +55,14 @@ async def proxy_request(
         "x-forwarded-host",
         "cookie",
     }
-    headers = {key: value for key, value in quart_request.headers if key.lower() not in excluded_headers}
+    # Strip any inbound X-OpenHost-* headers — the router is the sole authority
+    # for these, and forwarding a client-supplied value would let any caller
+    # spoof identity to the backend app.
+    headers = {
+        key: value
+        for key, value in quart_request.headers
+        if key.lower() not in excluded_headers and not key.lower().startswith("x-openhost-")
+    }
     headers["X-Forwarded-For"] = quart_request.remote_addr or ""
     headers["X-Forwarded-Proto"] = quart_request.scheme
     headers["X-Forwarded-Host"] = quart_request.host
@@ -68,7 +76,9 @@ async def proxy_request(
 
     try:
         body = await quart_request.get_data()
-        cookies = {k: v for k, v in quart_request.cookies.items() if k not in (COOKIE_REFRESH,)}
+        # Strip the zone auth cookies before forwarding — the backend app must
+        # not see (and therefore cannot replay) the owner's session credentials.
+        cookies = {k: v for k, v in quart_request.cookies.items() if k not in (COOKIE_ACCESS, COOKIE_REFRESH)}
         # Use granular timeouts: the default 30s is for connect/pool,
         # but read/write get a longer window to handle large uploads
         # (e.g. migration data transfers can be hundreds of MB).
@@ -152,12 +162,18 @@ async def ws_proxy(
         if lower == "sec-websocket-protocol":
             subprotocols = [s.strip() for s in value.split(",")]
         elif lower == "cookie":
-            # Strip auth cookies, forward the rest
+            # Strip the zone auth cookies before forwarding — the backend must
+            # not see (and therefore cannot replay) the owner's session.
             filtered = "; ".join(
-                part.strip() for part in value.split(";") if not part.strip().startswith((f"{COOKIE_REFRESH}=",))
+                part.strip()
+                for part in value.split(";")
+                if not part.strip().startswith((f"{COOKIE_ACCESS}=", f"{COOKIE_REFRESH}="))
             )
             if filtered:
                 extra_headers[key] = filtered
+        elif lower.startswith("x-openhost-"):
+            # The router is the sole authority for X-OpenHost-* headers — drop any inbound value.
+            continue
         elif lower not in {
             "host",
             "connection",
