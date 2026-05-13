@@ -24,6 +24,7 @@ async def acquire_tls_cert(
     coredns_zonefile_path: Path,
     directory_url: str | None = None,
     verify_ssl: bool = True,
+    acme_email: str | None = None,
 ) -> None:
 
     logger.info(f"Acquiring TLS certificate for {domain}...")
@@ -42,6 +43,7 @@ async def acquire_tls_cert(
         coredns_zonefile_path=coredns_zonefile_path,
         account_key=account_key,
         verify_ssl=verify_ssl,
+        acme_email=acme_email,
     )
 
     logger.info(f"TLS cert acquired for {domain}, writing to {cert_path} and {key_path}")

@@ -23,6 +23,7 @@ class Config:
     acquire_tls_cert_if_missing: bool
     acme_email: str | None
     acme_account_key_path: str | None
+    acme_directory_url: str | None
 
     # coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
@@ -167,6 +168,7 @@ class DefaultConfig(Config):
     acquire_tls_cert_if_missing: bool = False
     acme_email: str | None = None
     acme_account_key_path: str | None = None
+    acme_directory_url: str | None = None
 
     start_caddy: bool = True
 
