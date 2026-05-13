@@ -142,7 +142,7 @@ def _retry_pending_default_apps(config: Config) -> None:
 def init_app(app: Quart) -> None:
     """Initialize DB and app state. Call after data directories are ready."""
     config = app.openhost_config  # type: ignore[attr-defined]
-    init_db(app)
+    init_db(config.db_path)
     db = sqlite3.connect(config.db_path)
     try:
         archive_backend.attach_on_startup(config, db)

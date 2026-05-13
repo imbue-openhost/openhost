@@ -26,7 +26,6 @@ from compute_space.core.installer import InstallResult
 from compute_space.db.connection import init_db
 from compute_space.web.routes.services_v2 import services_v2_bp
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 CALLER_APP = "openhost-catalog"
@@ -114,7 +113,7 @@ def cfg(tmp_path: Path):
 
 @pytest.fixture
 def app(cfg):
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     _seed_caller(cfg.db_path)
     yield _make_app(cfg)
 
@@ -190,7 +189,7 @@ async def test_proposed_grant_uses_manifest_declared_prefix(cfg):
     """When the consumer's manifest declares a broad prefix, a denial for an
     URL that matches that prefix must propose the broad grant — not a fresh
     per-URL grant — so a single approval covers every install."""
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     _seed_caller(
         cfg.db_path,
         app_name=NARROW_CALLER_APP,
@@ -218,7 +217,7 @@ async def test_proposed_grant_falls_back_when_manifest_prefix_doesnt_match(cfg):
     """If the consumer's manifest only declares a narrow prefix that does NOT
     cover the requested URL, fall back to a per-URL grant rather than
     suggesting a grant that wouldn't help."""
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     _seed_caller(
         cfg.db_path,
         app_name=NARROW_CALLER_APP,
