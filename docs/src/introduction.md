@@ -33,15 +33,16 @@ to know which knob in `openhost.toml` controls what, jump to the
 
 The Markdown source for this manual lives in `docs/src/` in the
 [imbue-openhost/openhost](https://github.com/imbue-openhost/openhost)
-repository.  Every commit that lands on `main` triggers a CI job
-that builds the static HTML with [mdBook](https://rust-lang.github.io/mdBook/),
-and the rendered output gets shipped as part of the OpenHost
-release.  When you're reading the manual on your own zone at
+repository.  The pages are rendered server-side on every request
+(with an mtime-keyed cache), so a `git pull` on the zone is enough
+to ship doc changes — no build step required.  When you're reading
+the manual on your own zone at
 `https://your-zone.example.com/docs/`, you're reading the docs
 that match the OpenHost version you have running — never out of
 sync.
 
 ## Improving the docs
 
-Each page on this site has an "Edit this page on GitHub" link in
-the top-right corner.  PRs against `docs/src/*.md` are welcome.
+PRs against `docs/src/*.md` in the
+[openhost repo](https://github.com/imbue-openhost/openhost)
+are welcome.
