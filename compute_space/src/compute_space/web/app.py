@@ -18,6 +18,7 @@ from compute_space.core.startup import init_app
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import get_db
+from compute_space.db import init_db
 
 # ─── App Factory ───
 
@@ -81,7 +82,8 @@ def create_app(config: Config | None = None) -> Quart:
     app.register_blueprint(proxy_bp)  # registers before_app_request / before_app_websocket subdomain hooks
 
     # Initialize DB and app state
-    init_app(app)
+    init_db(app)
+    init_app(config)
 
     # ─── Before-request hooks ───
 

@@ -2,8 +2,6 @@ import os
 import sqlite3
 import threading
 
-from quart import Quart
-
 from compute_space.config import Config
 from compute_space.core import archive_backend
 from compute_space.core.apps import start_app_process
@@ -14,7 +12,6 @@ from compute_space.core.containers import is_container_running
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.core.storage import start_storage_guard
-from compute_space.db import init_db
 
 
 def _mark_running_apps_container_runtime_missing(config: Config) -> int:
@@ -139,10 +136,8 @@ def _retry_pending_default_apps(config: Config) -> None:
         db.close()
 
 
-def init_app(app: Quart) -> None:
-    """Initialize DB and app state. Call after data directories are ready."""
-    config = app.openhost_config  # type: ignore[attr-defined]
-    init_db(app)
+def init_app(config: Config) -> None:
+    """Initialize app state from config. Call after data directories and DB are ready."""
     db = sqlite3.connect(config.db_path)
     try:
         archive_backend.attach_on_startup(config, db)

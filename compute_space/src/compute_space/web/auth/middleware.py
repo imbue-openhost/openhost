@@ -21,6 +21,8 @@ from compute_space.config import get_config
 from compute_space.core import auth
 from compute_space.core.auth import resolve_app_from_token
 from compute_space.db import get_db
+from compute_space.web.auth.cookies import clear_auth_cookies
+from compute_space.web.auth.inputs import auth_inputs_from_request
 
 
 def _wants_json() -> bool:
@@ -80,10 +82,9 @@ def _try_refresh() -> dict[str, Any] | None:
 def _app_from_origin(req_or_ws: Request | Websocket) -> str | None:
     """Resolve app_id from Origin/Referer subdomain + valid JWT cookie.
 
-    Accepts either a quart Request or Websocket — both expose .headers and are accepted
-    by auth.get_current_user_from_request.
+    Accepts either a quart Request or Websocket — both expose .headers.
     """
-    if not auth.get_current_user_from_request(req_or_ws):
+    if not auth.get_current_user(auth_inputs_from_request(req_or_ws)):
         return None
 
     origin = req_or_ws.headers.get("Origin", "") or req_or_ws.headers.get("Referer", "")
@@ -142,7 +143,7 @@ def login_required(
 ) -> Callable[..., Awaitable[ResponseReturnValue]]:
     @wraps(f)
     async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
-        claims = auth.get_current_user_from_request(request)
+        claims = auth.get_current_user(auth_inputs_from_request(request))
         if claims is not None:
             return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
@@ -166,7 +167,7 @@ def login_required(
             response = redirect(url_for("auth.login"))
 
         if has_stale_cookies:
-            auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
         return response
 
     return decorated

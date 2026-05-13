@@ -15,23 +15,45 @@ from typing import Any
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from quart import Request
-from quart import Response
-from quart.wrappers import Websocket
 
 from compute_space.config import get_config
+from compute_space.core.auth.cookies import ACCESS_TOKEN_EXPIRY
+from compute_space.core.auth.cookies import COOKIE_ACCESS
+from compute_space.core.auth.cookies import COOKIE_REFRESH
+from compute_space.core.auth.cookies import REFRESH_GRACE_PERIOD
+from compute_space.core.auth.cookies import REFRESH_TOKEN_EXPIRY
+from compute_space.core.auth.cookies import _cookie_domain
+from compute_space.core.auth.cookies import build_auth_cookies
+from compute_space.core.auth.cookies import clear_auth_cookies_spec
+from compute_space.core.auth.inputs import AuthInputs
 from compute_space.core.logging import logger
 from compute_space.core.util import write_restricted
 from compute_space.db import get_db
 
+# Re-exported for backward compatibility — external callers do
+# ``from compute_space.core.auth import COOKIE_ACCESS`` etc.
+__all__ = [
+    "ACCESS_TOKEN_EXPIRY",
+    "AuthInputs",
+    "COOKIE_ACCESS",
+    "COOKIE_REFRESH",
+    "REFRESH_GRACE_PERIOD",
+    "REFRESH_TOKEN_EXPIRY",
+    "_cookie_domain",
+    "build_auth_cookies",
+    "clear_auth_cookies_spec",
+    "create_access_token",
+    "create_refresh_token",
+    "decode_access_token",
+    "decode_access_token_allow_expired",
+    "get_current_user",
+    "get_public_key_pem",
+    "load_keys",
+    "resolve_app_from_token",
+]
+
 _private_key: str | None = None
 _public_key: str | None = None
-
-ACCESS_TOKEN_EXPIRY = 3600  # 60 minutes
-REFRESH_TOKEN_EXPIRY = 2592000  # 30 days
-
-COOKIE_ACCESS = "zone_auth"
-COOKIE_REFRESH = "zone_refresh"
 
 
 def _generate_keypair(keys_dir: str) -> tuple[str, str]:
@@ -123,9 +145,6 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return None
 
 
-REFRESH_GRACE_PERIOD = timedelta(hours=2)
-
-
 def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
     """Decode a JWT allowing up to REFRESH_GRACE_PERIOD past expiry -- used during token refresh."""
     try:
@@ -142,80 +161,6 @@ def decode_access_token_allow_expired(token: str) -> dict[str, Any] | None:
         )
     except jwt.InvalidTokenError:
         return None
-
-
-def _cookie_domain(request_host: str | None = None) -> str | None:
-    """Return the cookie domain, or None to use the default (request host).
-
-    When zone_domain is set (e.g. "user.dev-host.imbue.com") and the request
-    is coming from that domain (or a subdomain of it), the cookie domain is
-    set explicitly so cookies are shared with app subdomains like
-    "dau-tracker.user.dev-host.imbue.com".
-
-    When the request comes from a different host (e.g. 127.0.0.1 or localhost),
-    returns None so the cookie is scoped to the request host — otherwise the
-    browser would reject the Set-Cookie (domain mismatch).
-    """
-    zone = get_config().zone_domain
-    if not zone:
-        return None
-    zone_no_port = zone.split(":")[0]
-    if request_host:
-        host_no_port = request_host.split(":")[0]
-        if host_no_port != zone_no_port and not host_no_port.endswith("." + zone_no_port):
-            return None
-    return zone_no_port
-
-
-def set_auth_cookies(
-    response: Response,
-    access_token: str,
-    refresh_token: str | None = None,
-    request: Request | None = None,
-) -> Response:
-    """Set zone_auth (and optionally zone_refresh) cookies."""
-    request_host = request.host if request else None
-    domain = _cookie_domain(request_host)
-    response.set_cookie(
-        COOKIE_ACCESS,
-        access_token,
-        path="/",
-        domain=domain,
-        httponly=True,
-        secure=get_config().tls_enabled,
-        samesite="Lax",
-        max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
-    )
-    if refresh_token:
-        response.set_cookie(
-            COOKIE_REFRESH,
-            refresh_token,
-            path="/",
-            domain=domain,
-            httponly=True,
-            secure=get_config().tls_enabled,
-            samesite="Lax",
-            max_age=REFRESH_TOKEN_EXPIRY,
-        )
-    return response
-
-
-def clear_auth_cookies(response: Response, request: Request | None = None) -> Response:
-    """Delete auth cookies.
-
-    Clears cookies both with the computed domain and without, to handle stale
-    cookies that were set with a different Domain attribute (e.g. after switching
-    TLS mode or changing zone_domain).
-    """
-    request_host = request.host if request else None
-    domain = _cookie_domain(request_host)
-    response.delete_cookie(COOKIE_ACCESS, path="/", domain=domain)
-    response.delete_cookie(COOKIE_REFRESH, path="/", domain=domain)
-    # Also clear without explicit domain, in case cookies were set differently
-    if domain is not None:
-        response.delete_cookie(COOKIE_ACCESS, path="/")
-        response.delete_cookie(COOKIE_REFRESH, path="/")
-    return response
 
 
 def _validate_api_token(token: str) -> dict[str, str] | None:
@@ -248,10 +193,9 @@ def resolve_app_from_token(token: str) -> str | None:
     return row["app_id"] if row else None
 
 
-def get_current_user_from_request(request: Request | Websocket) -> dict[str, Any] | None:
-    """Extract and verify identity from request cookies or Authorization header.
+def get_current_user(inputs: AuthInputs) -> dict[str, Any] | None:
+    """Extract and verify identity from cookies or Authorization header.
 
-    Accepts either an HTTP Request or a Websocket — both expose .headers and .cookies.
     Checks JWT cookie first, then falls back to Authorization: Bearer token.
     Returns claims dict or None.
 
@@ -260,8 +204,7 @@ def get_current_user_from_request(request: Request | Websocket) -> dict[str, Any
     # Warn on duplicate auth cookies — this happens when cookies were set with
     # different Domain attributes (e.g. after a config change). The browser
     # sends both, but only the first is read, which may be stale/invalid.
-    cookie_header = request.headers.get("Cookie", "")
-    dupes = cookie_header.count(f"{COOKIE_ACCESS}=")
+    dupes = inputs.cookie_header.count(f"{COOKIE_ACCESS}=")
     if dupes > 1:
         logger.warning(
             "Duplicate %s cookies detected (%d instances) for %s %s. "
@@ -269,19 +212,18 @@ def get_current_user_from_request(request: Request | Websocket) -> dict[str, Any
             "The user should clear cookies to fix this.",
             COOKIE_ACCESS,
             dupes,
-            getattr(request, "method", "WS"),
-            request.path,
+            inputs.method,
+            inputs.path,
         )
 
-    token = request.cookies.get(COOKIE_ACCESS)
+    token = inputs.cookies.get(COOKIE_ACCESS)
     if token:
         claims = decode_access_token(token)
         if claims:
             return claims
 
     # Fall back to Authorization: Bearer (API tokens)
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return _validate_api_token(auth_header.removeprefix("Bearer "))
+    if inputs.auth_header.startswith("Bearer "):
+        return _validate_api_token(inputs.auth_header.removeprefix("Bearer "))
 
     return None

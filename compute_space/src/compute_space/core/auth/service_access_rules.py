@@ -6,8 +6,15 @@ or raising ServiceAccessDenied to deny the request.
 """
 
 from typing import Any
+from typing import Protocol
 
-from quart import Request
+
+class ServiceRequest(Protocol):
+    """Framework-neutral view of an HTTP request used by service access rules."""
+
+    method: str
+
+    async def get_json(self) -> Any: ...
 
 
 class ServiceAccessDenied(Exception):
@@ -15,7 +22,7 @@ class ServiceAccessDenied(Exception):
         self.message = message
 
 
-async def check_service_access_rules(service_name: str, service_endpoint: str, req: Request) -> list[str]:
+async def check_service_access_rules(service_name: str, service_endpoint: str, req: ServiceRequest) -> list[str]:
     """Determine what permissions are required for a service proxy request.
 
     Returns:
@@ -30,7 +37,7 @@ async def check_service_access_rules(service_name: str, service_endpoint: str, r
     raise ServiceAccessDenied(f"No access rules defined for service '{service_name}'")
 
 
-async def _get_json_body(req: Request) -> dict[Any, Any]:
+async def _get_json_body(req: ServiceRequest) -> dict[Any, Any]:
     """Parse JSON body or raise ServiceAccessDenied on failure."""
     try:
         data = await req.get_json()
@@ -41,7 +48,7 @@ async def _get_json_body(req: Request) -> dict[Any, Any]:
     return data
 
 
-async def _secrets_access_rules(service_endpoint: str, req: Request) -> list[str]:
+async def _secrets_access_rules(service_endpoint: str, req: ServiceRequest) -> list[str]:
     """Access rules for the secrets service. Whitelist of allowed endpoints.
 
     Returns a list of required permissions.

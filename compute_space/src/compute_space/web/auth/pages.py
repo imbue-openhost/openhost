@@ -21,6 +21,9 @@ from compute_space.core import auth
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db
+from compute_space.web.auth.cookies import clear_auth_cookies
+from compute_space.web.auth.cookies import set_auth_cookies
+from compute_space.web.auth.inputs import auth_inputs_from_request
 from compute_space.web.auth.middleware import _try_refresh  # noqa: F401 — re-exported
 from compute_space.web.auth.middleware import login_required  # noqa: F401 — re-exported
 
@@ -61,7 +64,7 @@ async def attach_refreshed_token(response: Response) -> Response:
     new_token = getattr(g, "new_access_token", None)
     if new_token:
         refresh_tok = getattr(g, "refresh_token", None)
-        auth.set_auth_cookies(response, new_token, refresh_tok, request=request)
+        set_auth_cookies(response, new_token, refresh_tok, request=request)
     return response
 
 
@@ -141,13 +144,13 @@ async def setup() -> ResponseReturnValue:
         logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
     response = redirect(url_for("apps.dashboard"))
-    auth.set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
     return response
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 async def login() -> ResponseReturnValue:
-    if auth.get_current_user_from_request(request):
+    if auth.get_current_user(auth_inputs_from_request(request)):
         return redirect(url_for("apps.dashboard"))
 
     # If stale auth cookies are present (invalid JWT, e.g. after key rotation on
@@ -163,7 +166,7 @@ async def login() -> ResponseReturnValue:
     if request.method == "GET":
         if has_stale_cookies:
             response = redirect(url_for("auth.login"))
-            auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
             return response
         return await render_template("login.html")
 
@@ -186,7 +189,7 @@ async def login() -> ResponseReturnValue:
     db.commit()
 
     response = redirect(url_for("apps.dashboard"))
-    auth.set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
     return response
 
 
@@ -203,5 +206,5 @@ def logout() -> ResponseReturnValue:
         db.commit()
 
     response = redirect(url_for("auth.login"))
-    auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+    clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
     return response

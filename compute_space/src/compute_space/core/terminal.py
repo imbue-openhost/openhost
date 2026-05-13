@@ -9,11 +9,19 @@ import signal
 import struct
 import subprocess
 import termios
-
-from quart.wrappers import Websocket
+from typing import Protocol
 
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
+
+
+class TerminalWebsocket(Protocol):
+    """Framework-neutral websocket interface used by the terminal bridge."""
+
+    async def send(self, data: bytes) -> None: ...
+
+    async def receive(self) -> bytes | str: ...
+
 
 # Track active sessions for cleanup on shutdown.
 _active_sessions: dict[int, tuple[subprocess.Popen[bytes], int]] = {}
@@ -24,7 +32,7 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-async def handle_terminal_ws(ws: Websocket) -> None:
+async def handle_terminal_ws(ws: TerminalWebsocket) -> None:
     """Handle a WebSocket connection by bridging it to a PTY running bash.
 
     Wire protocol:
