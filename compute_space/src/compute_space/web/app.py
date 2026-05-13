@@ -82,7 +82,7 @@ def create_app(config: Config | None = None) -> Quart:
     app.register_blueprint(proxy_bp)  # registers before_app_request / before_app_websocket subdomain hooks
 
     # Initialize DB and app state
-    init_db(app)
+    init_db(config.db_path)
     init_app(config)
 
     # ─── Before-request hooks ───

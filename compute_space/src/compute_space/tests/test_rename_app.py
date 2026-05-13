@@ -14,7 +14,6 @@ import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core.app_id import new_app_id
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
@@ -87,7 +86,7 @@ def _make_per_app_dirs(cfg, app_name: str, tiers: list[str]) -> dict[str, Path]:
 async def test_rename_renames_all_three_tiers(tmp_path: Path) -> None:
     """A rename must move app_data, app_temp_data, AND app_archive subdirectories; forgetting the archive tier would orphan its contents under the old name."""
     cfg = _make_test_config(tmp_path, port=20200)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_row(cfg.db_path, "old-name")
     _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
 
@@ -104,7 +103,7 @@ async def test_rename_renames_all_three_tiers(tmp_path: Path) -> None:
 async def test_rename_skips_missing_tier_without_error(tmp_path: Path) -> None:
     """An app that never opted into app_archive has no subdir under the archive tier; rename_app must skip it cleanly rather than fail on a missing source."""
     cfg = _make_test_config(tmp_path, port=20201)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_row(cfg.db_path, "old-name")
     _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data"])
 
@@ -117,7 +116,7 @@ async def test_rename_skips_missing_tier_without_error(tmp_path: Path) -> None:
 async def test_rename_rollback_on_archive_failure(tmp_path: Path) -> None:
     """If the archive-tier rename fails partway through (e.g. JuiceFS mount transiently unhealthy), the previously-renamed app_data and app_temp_data dirs must be rolled back so on-disk state matches the unchanged DB rows."""
     cfg = _make_test_config(tmp_path, port=20202)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_row(cfg.db_path, "old-name", status="running")
     _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
 
@@ -153,7 +152,7 @@ async def test_rename_refuses_archive_using_app_when_archive_unhealthy(tmp_path:
     the old name.  Apps that don't use archive aren't affected (see the
     test below for that)."""
     cfg = _make_test_config(tmp_path, port=20299)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
 
     # Seed an app whose manifest opts into app_archive.
     app_id = new_app_id()
@@ -203,7 +202,7 @@ async def test_rename_rollback_continues_when_a_rollback_rename_itself_fails(
 ) -> None:
     """If a rollback rename also fails, the endpoint must still return 500 surfacing the original forward-rename failure (not the rollback failure), continue rolling back the other renamed tiers, and restore the DB status field."""
     cfg = _make_test_config(tmp_path, port=20203)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_row(cfg.db_path, "old-name", status="running")
     _make_per_app_dirs(cfg, "old-name", ["app_data", "app_temp_data", "app_archive"])
 
@@ -248,7 +247,7 @@ async def test_rename_non_archive_app_works_with_disabled_backend(tmp_path: Path
     archive backend is the default 'disabled'.  Pre-fix, the gate
     blocked all renames whenever the backend was unhealthy."""
     cfg = _make_test_config(tmp_path, port=20305)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
 
     app_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)

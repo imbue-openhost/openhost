@@ -19,7 +19,6 @@ from compute_space.core.archive_backend import juicefs_mount_dir
 from compute_space.core.archive_backend import read_state
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
@@ -31,7 +30,7 @@ def cfg(tmp_path: Path):
 @pytest.fixture
 def db(cfg):
     """Initialised sqlite DB so the archive_backend table exists, seeded disabled."""
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     conn = sqlite3.connect(cfg.db_path)
     yield conn
     conn.close()
