@@ -48,6 +48,7 @@ def _acquire_cert_dns01(
     coredns_zonefile_path: Path,
     account_key: JWKRSA,
     verify_ssl: bool = True,
+    acme_email: str | None = None,
 ) -> tuple[bytes, bytes]:
     """Acquire cert via DNS-01 challenge by writing TXT records to the local zone file."""
     tls_key = _generate_tls_key()
@@ -73,7 +74,10 @@ def _acquire_cert_dns01(
         # Account doesn't exist for this key -- register a new one.
         if "accountDoesNotExist" in str(e):
             logger.info("DNS-01: no existing account for this key, registering new one")
-            reg = messages.NewRegistration(terms_of_service_agreed=True)
+            reg_kwargs: dict = {"terms_of_service_agreed": True}
+            if acme_email:
+                reg_kwargs["contact"] = (f"mailto:{acme_email}",)
+            reg = messages.NewRegistration(**reg_kwargs)
             try:
                 account = acme_client.new_account(reg)
             except errors.ConflictError as ce:
