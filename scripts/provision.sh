@@ -101,12 +101,13 @@ if [ -z "$PUBLIC_IP" ] || echo "$PUBLIC_IP" | grep -qE '^(10\.|172\.(1[6-9]|2[0-
 fi
 echo "  Public IP: ${PUBLIC_IP:-unknown}"
 
-# ---- Run ansible ----
+# ---- Run ansible (but skip the service start — we need ACME key first) ----
 echo "--- Running setup playbook ---"
 cd "$OPENHOST_DIR"
 ansible-playbook ansible/local_setup.yml \
     -e "domain=$DOMAIN" \
     -e "public_ip=${PUBLIC_IP:-127.0.0.1}" \
+    -e "skip_service_start=true" \
     --connection=local \
     -i "localhost,"
 
@@ -115,7 +116,6 @@ ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
 if [ ! -f "$ACME_KEY_PATH" ]; then
     echo "--- Generating ACME account key ---"
     mkdir -p "$(dirname "$ACME_KEY_PATH")"
-    # Use pixi's python which has cryptography installed
     su host -c "/home/host/.pixi/bin/pixi run --manifest-path $OPENHOST_DIR/pixi.toml python3 -c '
 from cryptography.hazmat.primitives.asymmetric import rsa
 import json, base64
@@ -137,10 +137,11 @@ print(\"Generated ACME account key\")
 '"
     chmod 600 "$ACME_KEY_PATH"
     chown host:host "$ACME_KEY_PATH"
-
-    # Restart to pick up the key
-    systemctl restart openhost 2>/dev/null || true
 fi
+
+# ---- Start the service ----
+echo "--- Starting OpenHost ---"
+systemctl start openhost
 
 echo ""
 echo "=== OpenHost provisioning complete ==="

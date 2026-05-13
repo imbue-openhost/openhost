@@ -5,3 +5,4 @@
   systemd:
     name: openhost
     state: restarted
+  when: not (skip_service_start | default(false) | bool)
