@@ -137,7 +137,19 @@ Server deployment prerequisites and test setup are documented in `ansible/readme
 
 ## key docs
 
-- `docs/cloudflare-local-tls-plan.md` - Cloudflare Tunnel setup runbook
-- `docs/cloudflare-local-laack-xyz-setup-log.md` - example real-world setup log and troubleshooting
-- `docs/creating_an_app.md` - guide to building apps
-- `docs/manifest_spec.md` - `openhost.toml` app manifest specification
+The user-facing manual is in `docs/src/`, rendered to HTML on the
+fly by compute_space and served at `https://<zone>/docs/`.  No
+build step: editing a markdown file under `docs/src/` and reloading
+the page is enough to see the change.
+
+- `docs/src/introduction.md` - introduction + table of contents
+- `docs/src/creating_an_app.md` - guide to building apps
+- `docs/src/manifest_spec.md` - `openhost.toml` app manifest specification
+- `docs/src/routing.md` - subdomain + path routing model
+- `docs/src/data.md` - persistent + archive data tiers
+- `docs/src/user_identity.md` - identity / login flow for apps
+- `docs/src/oauth.md` - OAuth integration with external services
+- `docs/src/cross_app_services.md` - app-to-app service calls
+
+`docs/src/SUMMARY.md` is the sidebar table of contents — add new
+pages there to surface them in the manual.

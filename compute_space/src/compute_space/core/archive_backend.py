@@ -1,5 +1,5 @@
 """Operator-controlled archive backend management.  See
-``docs/data.md`` for the operator-facing model."""
+``docs/src/data.md`` for the operator-facing model."""
 
 from __future__ import annotations
 

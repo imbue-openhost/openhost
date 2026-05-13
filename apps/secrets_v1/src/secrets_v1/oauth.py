@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 PROVIDERS = {
     # Web application OAuth client; create at https://console.cloud.google.com/apis/credentials
-    # see docs in docs/oauth.md for full setup instructions.
+    # see docs in docs/src/oauth.md for full setup instructions.
     # client_id and client_secret are fetched from the secrets app env storage, as
     # GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.
     # TODO: we could maybe use PKCE to secure the client secret here

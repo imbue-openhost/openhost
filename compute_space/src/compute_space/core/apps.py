@@ -62,6 +62,7 @@ RESERVED_PATHS = {
     "/identity",
     "/settings",
     "/system",
+    "/docs",
 }
 
 

@@ -52,6 +52,7 @@ def create_app(config: Config | None = None) -> Quart:
     from compute_space.web.routes.api.services import api_services_bp  # noqa: PLC0415
     from compute_space.web.routes.api.services_v2 import api_services_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.api.settings import api_settings_bp  # noqa: PLC0415
+    from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions import pages_permissions_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
@@ -78,7 +79,13 @@ def create_app(config: Config | None = None) -> Quart:
     app.register_blueprint(api_permissions_v2_bp)
     app.register_blueprint(pages_permissions_v2_bp)
     app.register_blueprint(identity_bp)
-    app.register_blueprint(proxy_bp)  # registers before_app_request / before_app_websocket subdomain hooks
+    # Register docs BEFORE the catch-all proxy so /docs/... is
+    # always handled by the docs blueprint regardless of whether
+    # a user happens to have deployed an app named "docs".
+    app.register_blueprint(docs_bp)
+    app.register_blueprint(
+        proxy_bp
+    )  # last — has catch-all; registers before_app_request / before_app_websocket subdomain hooks
 
     # Initialize DB and app state
     init_app(app)
@@ -91,6 +98,15 @@ def create_app(config: Config | None = None) -> Quart:
         if getattr(app, "_owner_verified", False):
             return None
         if request.path in ("/setup", "/health"):
+            return None
+        # Docs ("/docs/" landing + "/docs/<anything>") must be
+        # readable even before the zone owner has been provisioned
+        # — the docs are usually what an operator consults BEFORE
+        # finishing setup.  The docs blueprint itself is public
+        # (no @login_required), but the before-request hook above
+        # would otherwise redirect every pre-setup request to
+        # /setup.  Whitelist /docs explicitly here.
+        if request.path == "/docs" or request.path.startswith("/docs/"):
             return None
         db = get_db()
         owner = db.execute("SELECT 1 FROM owner LIMIT 1").fetchone()
