@@ -30,7 +30,7 @@ def _setup_keys(tmp_path: Path) -> None:
     auth.load_keys(str(tmp_path / "keys"))
     cfg = _make_cfg(tmp_path)
     cfg.make_all_dirs()
-    with patch("compute_space.core.auth.get_config", return_value=cfg):
+    with patch("compute_space.core.auth.tokens.get_config", return_value=cfg):
         yield
 
 
@@ -48,7 +48,7 @@ def test_decode_verifies_aud_and_iss(tmp_path: Path) -> None:
     assert auth.decode_access_token(token) is not None
 
     # Different zone rejects token
-    with patch("compute_space.core.auth.get_config", return_value=_make_cfg(tmp_path, OTHER_ZONE)):
+    with patch("compute_space.core.auth.tokens.get_config", return_value=_make_cfg(tmp_path, OTHER_ZONE)):
         assert auth.decode_access_token(token) is None
 
 
@@ -56,5 +56,5 @@ def test_decode_allow_expired_verifies_aud_and_iss(tmp_path: Path) -> None:
     token = auth.create_access_token("alice")
     assert auth.decode_access_token_allow_expired(token) is not None
 
-    with patch("compute_space.core.auth.get_config", return_value=_make_cfg(tmp_path, OTHER_ZONE)):
+    with patch("compute_space.core.auth.tokens.get_config", return_value=_make_cfg(tmp_path, OTHER_ZONE)):
         assert auth.decode_access_token_allow_expired(token) is None
