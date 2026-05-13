@@ -33,20 +33,24 @@
 
 - name: Set cap_net_bind_service on caddy
   become: yes
+  become_user: root
   shell: setcap 'cap_net_bind_service=+ep' {{ caddy_path.stdout }}
 
 - name: Set cap_net_bind_service on coredns
   become: yes
+  become_user: root
   shell: setcap 'cap_net_bind_service=+ep' {{ coredns_path.stdout }}
 
 - name: Create resolved.conf.d directory
   become: yes
+  become_user: root
   file:
     path: /etc/systemd/resolved.conf.d
     state: directory
 
 - name: Disable systemd-resolved stub listener (frees port 53 for coredns)
   become: yes
+  become_user: root
   copy:
     content: "[Resolve]\nDNSStubListener=no\n"
     dest: /etc/systemd/resolved.conf.d/no-stub.conf
@@ -54,6 +58,7 @@
 
 - name: Restart systemd-resolved
   become: yes
+  become_user: root
   systemd:
     name: systemd-resolved
     state: restarted

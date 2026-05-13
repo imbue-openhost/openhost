@@ -28,6 +28,7 @@
 
 - name: Install openhost systemd service
   become: yes
+  become_user: root
   template:
     src: templates/openhost.service.j2
     dest: /etc/systemd/system/openhost.service
@@ -37,12 +38,14 @@
 
 - name: Reload systemd
   become: yes
+  become_user: root
   systemd:
     daemon_reload: yes
   when: service_file.changed
 
 - name: Enable openhost service
   become: yes
+  become_user: root
   systemd:
     name: openhost
     enabled: yes

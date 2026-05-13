@@ -1,6 +1,8 @@
 ---
 - name: Restart openhost service
   become: yes
+  become_user: root
   systemd:
     name: openhost
     state: restarted
+  when: not (skip_service_start | default(false) | bool)
