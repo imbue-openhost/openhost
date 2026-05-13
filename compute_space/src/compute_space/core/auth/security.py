@@ -11,6 +11,8 @@ import sqlite3
 import subprocess
 from typing import TypedDict
 
+class ThisShouldntGetMerged:
+    pass
 
 class CheckResult(TypedDict):
     ok: bool
