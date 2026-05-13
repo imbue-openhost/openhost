@@ -67,9 +67,19 @@ def _acquire_cert_dns01(
         reg = messages.NewRegistration(only_return_existing=True)
         account = acme_client.query_registration(acme_client.new_account(reg))
     except errors.ConflictError as e:
-        # will always fail and hit this path.
-        # this is an odd pattern but i can't quickly figure out the right way to do it
+        # Account exists but only_return_existing returns a conflict.
         account = messages.RegistrationResource(uri=e.location)
+    except messages.Error as e:
+        # Account doesn't exist for this key -- register a new one.
+        if "accountDoesNotExist" in str(e):
+            logger.info("DNS-01: no existing account, registering new one")
+            reg = messages.NewRegistration(terms_of_service_agreed=True)
+            try:
+                account = acme_client.new_account(reg)
+            except errors.ConflictError as ce:
+                account = messages.RegistrationResource(uri=ce.location)
+        else:
+            raise
     acme_client.net.account = account
     logger.info(f"DNS-01: found account {account.uri}")
 
