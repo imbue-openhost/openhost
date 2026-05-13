@@ -10,8 +10,6 @@ from urllib.parse import urlparse
 
 from quart import g
 from quart import jsonify
-
-from compute_space.core.logging import logger
 from quart import redirect
 from quart import request
 from quart import url_for
@@ -22,6 +20,7 @@ from quart.wrappers import Websocket
 from compute_space.config import get_config
 from compute_space.core import auth
 from compute_space.core.auth import resolve_app_from_token
+from compute_space.core.logging import logger
 from compute_space.db import get_db
 
 

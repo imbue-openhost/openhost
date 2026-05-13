@@ -18,7 +18,6 @@ from acme import messages
 from cryptography.hazmat.primitives.asymmetric import rsa
 from josepy import JWKRSA
 
-
 # Google Trust Services — the default ACME provider used by OpenHost
 GTS_PRODUCTION = "https://dv.acme-v02.api.pki.goog/directory"
 # Let's Encrypt as fallback

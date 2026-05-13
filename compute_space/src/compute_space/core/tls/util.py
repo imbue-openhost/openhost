@@ -74,7 +74,7 @@ def _acquire_cert_dns01(
         # Account doesn't exist for this key -- register a new one.
         if "accountDoesNotExist" in str(e):
             logger.info("DNS-01: no existing account for this key, registering new one")
-            reg_kwargs: dict = {"terms_of_service_agreed": True}
+            reg_kwargs: dict[str, object] = {"terms_of_service_agreed": True}
             if acme_email:
                 reg_kwargs["contact"] = (f"mailto:{acme_email}",)
             reg = messages.NewRegistration(**reg_kwargs)
