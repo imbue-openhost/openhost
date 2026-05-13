@@ -1134,6 +1134,30 @@ class TestContainerE2E:
         assert headers.get("X-Forwarded-Proto") != "evil"
         assert headers.get("X-Forwarded-Host") != "evil.example.com"
 
+    def test_proxy_strips_zone_auth_cookies(self, admin_session, config):
+        """The owner's zone_auth / zone_refresh cookies must not reach the backend app."""
+        r = admin_session.get(f"{_app_url(config, 'test-app')}/echo-headers")
+        assert r.status_code == 200
+        cookie_header = r.json()["headers"].get("Cookie", "")
+        assert "zone_auth=" not in cookie_header
+        assert "zone_refresh=" not in cookie_header
+
+    def test_proxy_strips_spoofed_openhost_headers(self, admin_session, config):
+        """Client-supplied X-OpenHost-* headers must be stripped — only the router may set them."""
+        r = admin_session.get(
+            f"{_app_url(config, 'test-app')}/echo-headers",
+            headers={
+                "X-OpenHost-Is-Owner": "true",
+                "X-OpenHost-Identity": "spoofed",
+            },
+        )
+        assert r.status_code == 200
+        headers = r.json()["headers"]
+        # The router strips inbound X-OpenHost-* and re-injects its own.
+        # X-OpenHost-Is-Owner may be re-set by the router, but the spoofed
+        # X-OpenHost-Identity value must not be passed through.
+        assert headers.get("X-OpenHost-Identity") != "spoofed"
+
     def test_proxy_404(self, admin_session, config):
         """Unknown paths within the app return the app's 404."""
         r = admin_session.get(f"{_app_url(config, 'test-app')}/no-such-path")
