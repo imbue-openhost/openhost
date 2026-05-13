@@ -67,6 +67,7 @@ def main() -> None:
                     acme_account_key_path=Path(config.acme_account_key_path),
                     coredns_zonefile_path=config.coredns_zonefile_path,
                     acme_email=config.acme_email,
+                    directory_url=config.acme_directory_url,
                 )
             )
 

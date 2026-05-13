@@ -107,6 +107,7 @@ cd "$OPENHOST_DIR"
 ansible-playbook ansible/local_setup.yml \
     -e "domain=$DOMAIN" \
     -e "public_ip=${PUBLIC_IP:-127.0.0.1}" \
+    -e "acme_directory_url=https://acme-v02.api.letsencrypt.org/directory" \
     -e "skip_service_start=true" \
     --connection=local \
     -i "localhost,"
