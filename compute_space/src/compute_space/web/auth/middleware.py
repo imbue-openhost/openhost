@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 from quart import g
 from quart import jsonify
+
+from compute_space.core.logging import logger
 from quart import redirect
 from quart import request
 from quart import url_for
@@ -48,14 +50,17 @@ def _try_refresh() -> dict[str, Any] | None:
     Stores new access token on flask.g for after_request."""
     refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
     if not refresh_tok:
+        logger.debug("token refresh: no refresh cookie")
         return None
 
     expired_jwt = request.cookies.get(auth.COOKIE_ACCESS)
     if not expired_jwt:
+        logger.debug("token refresh: no access cookie")
         return None
 
     expired_claims = auth.decode_access_token_allow_expired(expired_jwt)
     if expired_claims is None:
+        logger.debug("token refresh: expired token failed decode (bad signature, audience, or past grace period)")
         return None
 
     refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
@@ -65,10 +70,12 @@ def _try_refresh() -> dict[str, Any] | None:
         (refresh_tok_hash,),
     ).fetchone()
     if rt is None:
+        logger.debug("token refresh: refresh token not found in database or revoked")
         return None
 
     expires_at = datetime.fromisoformat(rt["expires_at"])
     if expires_at < datetime.now(UTC):
+        logger.debug("token refresh: refresh token expired")
         return None
 
     new_access_token = auth.create_access_token(expired_claims["sub"])
