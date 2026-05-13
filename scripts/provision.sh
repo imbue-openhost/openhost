@@ -116,7 +116,7 @@ ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
 if [ ! -f "$ACME_KEY_PATH" ]; then
     echo "--- Generating ACME account key ---"
     mkdir -p "$(dirname "$ACME_KEY_PATH")"
-    su host -c "/home/host/.pixi/bin/pixi run --manifest-path $OPENHOST_DIR/pixi.toml python3 -c '
+    su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 -c '
 from cryptography.hazmat.primitives.asymmetric import rsa
 import json, base64
 
