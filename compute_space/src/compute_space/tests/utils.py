@@ -159,6 +159,11 @@ def managed_router(config: Config, startup_timeout: int = 30) -> Generator[subpr
     config_path = os.path.join(config.temporary_data_dir, "config.toml")
     config.to_toml(config_path)
     env = os.environ.copy()
+    # Strip OPENHOST_* vars from the host environment so they don't
+    # override test config (e.g. OPENHOST_ZONE_DOMAIN from a container).
+    for key in list(env):
+        if key.startswith("OPENHOST_"):
+            del env[key]
     env["OPENHOST_CONFIG"] = config_path
     env["SECRET_KEY"] = "test-secret-key"
 
