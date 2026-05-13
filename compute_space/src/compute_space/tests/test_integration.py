@@ -1158,6 +1158,24 @@ class TestContainerE2E:
         # X-OpenHost-Identity value must not be passed through.
         assert headers.get("X-OpenHost-Identity") != "spoofed"
 
+    def test_proxy_injects_app_scoped_identity_jwt(self, admin_session, config):
+        """Router mints a JWT with aud == app name on each proxied owner request."""
+        r = admin_session.get(f"{_app_url(config, 'test-app')}/echo-headers")
+        assert r.status_code == 200
+        token = r.json()["headers"].get("X-OpenHost-Identity")
+        assert token, "router must inject X-OpenHost-Identity for authenticated callers"
+
+        # Fetch the public key from JWKS and verify the token's audience binding.
+        jwks_resp = admin_session.get(f"{_zone_url(config)}/.well-known/jwks.json")
+        assert jwks_resp.status_code == 200
+        public_key = pyjwt.PyJWK(jwks_resp.json()["keys"][0]).key
+        claims = pyjwt.decode(token, public_key, algorithms=["RS256"], audience="test-app")
+        assert claims["sub"] == "owner"
+
+        # A token minted for one app must not validate against another app's audience.
+        with pytest.raises(pyjwt.InvalidAudienceError):
+            pyjwt.decode(token, public_key, algorithms=["RS256"], audience="some-other-app")
+
     def test_proxy_404(self, admin_session, config):
         """Unknown paths within the app return the app's 404."""
         r = admin_session.get(f"{_app_url(config, 'test-app')}/no-such-path")

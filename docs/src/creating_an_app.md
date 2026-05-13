@@ -100,6 +100,7 @@ if __name__ == "__main__":
 - Data directories are mounted into the container at `/data/`. See [Environment variables](#environment-variables) below.
 - The router handles authentication. By default, all routes require the compute space owner to be logged in. To make specific routes public, list them in `public_paths` in the manifest.
 - For apps that implement their own auth, routes can be set as public, and requests that have been authenticated by the router will bear a `X-OpenHost-Is-Owner=true` header.
+- The router also injects `X-OpenHost-Identity`: a short-lived (~60s) RS256 JWT bound to *this* app via the `aud` claim. Apps that want cryptographic proof of the caller's identity (rather than trusting the `X-OpenHost-Is-Owner` header on faith) should verify this JWT using the router's public key from `/.well-known/jwks.json`, and assert that `aud == OPENHOST_APP_NAME`. Tokens minted for a different app are rejected on the audience check.
 
 The router injects these environment variables into your app:
 

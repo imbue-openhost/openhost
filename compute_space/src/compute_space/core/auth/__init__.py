@@ -29,6 +29,7 @@ _public_key: str | None = None
 
 ACCESS_TOKEN_EXPIRY = 3600  # 60 minutes
 REFRESH_TOKEN_EXPIRY = 2592000  # 30 days
+APP_IDENTITY_TOKEN_EXPIRY = 60  # 1 minute — minted per proxied request
 
 COOKIE_ACCESS = "zone_auth"
 COOKIE_REFRESH = "zone_refresh"
@@ -110,6 +111,28 @@ def create_access_token(username: str) -> str:
 def create_refresh_token() -> str:
     """Generate an opaque refresh token string."""
     return secrets.token_urlsafe(48)
+
+
+def create_app_identity_token(username: str, app_name: str) -> str:
+    """Mint a short-lived RS256 JWT scoped to a single app.
+
+    Injected as ``X-OpenHost-Identity`` on proxied requests so apps can
+    cryptographically verify the caller's identity without the router having to
+    forward the owner's long-lived ``zone_auth`` cookie. The audience is bound
+    to the destination app, so a token minted for app A is rejected by app B.
+    """
+    if _private_key is None:
+        raise RuntimeError("Keys not loaded. Call load_keys() first.")
+    now = datetime.now(UTC)
+    payload = {
+        "sub": username,
+        "username": username,
+        "iss": _zone_audience(),
+        "aud": app_name,
+        "iat": now,
+        "exp": now + timedelta(seconds=APP_IDENTITY_TOKEN_EXPIRY),
+    }
+    return jwt.encode(payload, _private_key, algorithm="RS256")
 
 
 def decode_access_token(token: str) -> dict[str, Any] | None:

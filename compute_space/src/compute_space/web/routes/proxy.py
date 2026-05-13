@@ -19,10 +19,24 @@ from compute_space.web.proxy import ws_proxy
 proxy_bp = Blueprint("proxy", __name__)
 
 
-def _identity_headers(claims: dict[str, str] | None) -> dict[str, str]:
-    if claims and claims.get("sub") == "owner":
-        return {"X-OpenHost-Is-Owner": "true"}
-    return {}
+def _identity_headers(claims: dict[str, str] | None, app_name: str) -> dict[str, str]:
+    """Build the X-OpenHost-* identity headers the router injects on proxied requests.
+
+    ``X-OpenHost-Is-Owner`` is a legacy boolean signal (apps that haven't
+    upgraded still rely on it). ``X-OpenHost-Identity`` is a short-lived
+    RS256 JWT bound to this app's name, so the app can verify the caller's
+    identity using the router's public key (``/.well-known/jwks.json``) and
+    reject tokens minted for a different app.
+    """
+    if not claims:
+        return {}
+    headers: dict[str, str] = {}
+    sub = claims.get("sub")
+    if sub == "owner":
+        headers["X-OpenHost-Is-Owner"] = "true"
+    if sub:
+        headers["X-OpenHost-Identity"] = auth.create_app_identity_token(sub, app_name)
+    return headers
 
 
 # ─── Subdomain Reverse Proxy ───
@@ -66,7 +80,7 @@ async def _app_subdomain_routing() -> ResponseReturnValue | None:
     response = await proxy_request(
         request,
         app_row["local_port"],
-        extra_headers=_identity_headers(claims),  # type: ignore[arg-type]
+        extra_headers=_identity_headers(claims, app_subdomain),  # type: ignore[arg-type]
         timeout=timeout,
     )
 
@@ -93,5 +107,9 @@ async def _app_subdomain_routing_ws() -> str | None:
     if app_row and app_row["status"] in ("running", "starting"):
         claims = auth.get_current_user_from_request(websocket)
         if claims is not None or is_public_path(app_row, websocket.path):
-            await ws_proxy(app_row["local_port"], websocket, identity_headers=_identity_headers(claims))
+            await ws_proxy(
+                app_row["local_port"],
+                websocket,
+                identity_headers=_identity_headers(claims, app_subdomain),
+            )
     return ""  # non-None to skip dispatch
