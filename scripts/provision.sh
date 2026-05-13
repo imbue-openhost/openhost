@@ -116,25 +116,7 @@ ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
 if [ ! -f "$ACME_KEY_PATH" ]; then
     echo "--- Generating ACME account key ---"
     mkdir -p "$(dirname "$ACME_KEY_PATH")"
-    su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 -c '
-from cryptography.hazmat.primitives.asymmetric import rsa
-import json, base64
-
-key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-nums = key.private_numbers()
-pub = nums.public_numbers
-
-def b64(n, length):
-    return base64.urlsafe_b64encode(n.to_bytes(length, byteorder=\"big\")).rstrip(b\"=\").decode()
-
-jwk = {\"kty\": \"RSA\", \"n\": b64(pub.n, 256), \"e\": b64(pub.e, 3),
-       \"d\": b64(nums.d, 256), \"p\": b64(nums.p, 128), \"q\": b64(nums.q, 128),
-       \"dp\": b64(nums.dmp1, 128), \"dq\": b64(nums.dmq1, 128), \"qi\": b64(nums.iqmp, 128)}
-
-with open(\"$ACME_KEY_PATH\", \"w\") as f:
-    json.dump(jwk, f, indent=2)
-print(\"Generated ACME account key\")
-'"
+    su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 scripts/generate_acme_key.py $ACME_KEY_PATH"
     chmod 600 "$ACME_KEY_PATH"
     chown host:host "$ACME_KEY_PATH"
 fi
