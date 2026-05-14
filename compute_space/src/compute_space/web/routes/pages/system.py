@@ -2,7 +2,7 @@ from quart import Blueprint
 from quart import render_template
 from quart import websocket
 
-from compute_space.core.auth.identity import get_current_user_from_request
+from compute_space.core.auth.auth import get_current_user_from_request
 from compute_space.core.terminal import handle_terminal_ws
 from compute_space.web.auth.middleware import login_required
 

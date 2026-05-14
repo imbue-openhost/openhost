@@ -8,9 +8,9 @@ from quart.wrappers import Request
 from quart.wrappers import Websocket
 from werkzeug.datastructures import Headers
 
-from compute_space.core.auth.cookies import COOKIE_REFRESH
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
+from compute_space.web.auth.cookies import COOKIE_REFRESH
 
 
 async def proxy_request(

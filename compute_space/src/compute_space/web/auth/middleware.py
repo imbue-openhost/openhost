@@ -18,15 +18,15 @@ from quart.wrappers import Request
 from quart.wrappers import Websocket
 
 from compute_space.config import get_config
-from compute_space.core.auth.cookies import COOKIE_ACCESS
-from compute_space.core.auth.cookies import COOKIE_REFRESH
-from compute_space.core.auth.cookies import clear_auth_cookies
-from compute_space.core.auth.identity import get_current_user_from_request
-from compute_space.core.auth.identity import resolve_app_from_token
+from compute_space.core.auth.auth import get_current_user_from_request
+from compute_space.core.auth.auth import resolve_app_from_token
 from compute_space.core.auth.tokens import create_access_token
 from compute_space.core.auth.tokens import decode_access_token
 from compute_space.core.auth.tokens import decode_access_token_allow_expired
 from compute_space.db import get_db
+from compute_space.web.auth.cookies import COOKIE_ACCESS
+from compute_space.web.auth.cookies import COOKIE_REFRESH
+from compute_space.web.auth.cookies import clear_auth_cookies
 
 
 def _wants_json() -> bool:

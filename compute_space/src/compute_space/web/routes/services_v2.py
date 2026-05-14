@@ -17,7 +17,7 @@ from quart import websocket
 
 from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
-from compute_space.core.auth.identity import resolve_app_from_token
+from compute_space.core.auth.auth import resolve_app_from_token
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.installer import GRANT_KEY_CAPABILITY

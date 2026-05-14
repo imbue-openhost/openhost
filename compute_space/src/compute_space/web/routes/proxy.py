@@ -11,9 +11,9 @@ from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
-from compute_space.core.auth.cookies import COOKIE_REFRESH
-from compute_space.core.auth.cookies import set_auth_cookies
-from compute_space.core.auth.identity import get_current_user_from_request
+from compute_space.core.auth.auth import get_current_user_from_request
+from compute_space.web.auth.cookies import COOKIE_REFRESH
+from compute_space.web.auth.cookies import set_auth_cookies
 from compute_space.web.auth.middleware import _try_refresh
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
