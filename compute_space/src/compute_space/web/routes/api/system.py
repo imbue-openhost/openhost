@@ -24,7 +24,7 @@ from compute_space.core.updates import is_shutdown_pending
 from compute_space.db import get_db
 from compute_space.web.auth.middleware import login_required
 
-api_system_bp: Blueprint = Blueprint("api_system", __name__)
+system_bp: Blueprint = Blueprint("system", __name__)
 
 DEFAULT_TOKEN_EXPIRY_HOURS: int = 8
 
@@ -32,7 +32,7 @@ DEFAULT_TOKEN_EXPIRY_HOURS: int = 8
 # ─── API Tokens ───
 
 
-@api_system_bp.route("/api/tokens", methods=["GET"])
+@system_bp.route("/api/tokens", methods=["GET"])
 @login_required
 async def api_tokens_list() -> Response:
     db = get_db()
@@ -54,7 +54,7 @@ async def api_tokens_list() -> Response:
     return jsonify(tokens)
 
 
-@api_system_bp.route("/api/tokens", methods=["POST"])
+@system_bp.route("/api/tokens", methods=["POST"])
 @login_required
 async def api_tokens_create() -> Response | tuple[Response, int]:
     form = await request.form
@@ -90,7 +90,7 @@ async def api_tokens_create() -> Response | tuple[Response, int]:
     )
 
 
-@api_system_bp.route("/api/tokens/<int:token_id>", methods=["DELETE"])
+@system_bp.route("/api/tokens/<int:token_id>", methods=["DELETE"])
 @login_required
 async def api_tokens_delete(token_id: int) -> Response:
     db = get_db()
@@ -102,7 +102,7 @@ async def api_tokens_delete(token_id: int) -> Response:
 # ─── Compute Space Logs ───
 
 
-@api_system_bp.route("/api/compute_space_logs")
+@system_bp.route("/api/compute_space_logs")
 @login_required
 def compute_space_logs() -> Response:
     """Return the compute space log file contents."""
@@ -116,7 +116,7 @@ def compute_space_logs() -> Response:
 # ─── Health & Security ───
 
 
-@api_system_bp.route("/health")
+@system_bp.route("/health")
 def health() -> ResponseReturnValue:
     if is_shutdown_pending():
         return jsonify({"status": "restarting"}), 503
@@ -124,26 +124,26 @@ def health() -> ResponseReturnValue:
     return jsonify({"status": "ok", "security": audit})
 
 
-@api_system_bp.route("/api/security-audit")
+@system_bp.route("/api/security-audit")
 @login_required
 def security_audit() -> Response:
     return jsonify(run_audit(db=get_db()))
 
 
-@api_system_bp.route("/api/listening-ports")
+@system_bp.route("/api/listening-ports")
 @login_required
 def listening_ports() -> Response:
     """Return every TCP port the VM is listening on, with classification."""
     return jsonify({"ports": list_listening_ports(db=get_db())})
 
 
-@api_system_bp.route("/api/storage-status")
+@system_bp.route("/api/storage-status")
 @login_required
 def api_storage_status() -> Response:
     return jsonify(storage_status(get_config()))
 
 
-@api_system_bp.route("/api/storage-guard", methods=["POST"])
+@system_bp.route("/api/storage-guard", methods=["POST"])
 @login_required
 async def toggle_storage_guard() -> Response:
     """Pause or resume the storage guard."""
@@ -156,13 +156,13 @@ async def toggle_storage_guard() -> Response:
 # ─── SSH Toggle ───
 
 
-@api_system_bp.route("/api/ssh-status")
+@system_bp.route("/api/ssh-status")
 @login_required
 def ssh_status() -> Response:
     return jsonify({"ssh_enabled": is_sshd_active()})
 
 
-@api_system_bp.route("/toggle-ssh", methods=["POST"])
+@system_bp.route("/toggle-ssh", methods=["POST"])
 @login_required
 async def toggle_ssh() -> Response:
     if is_sshd_active():
@@ -211,7 +211,7 @@ async def toggle_ssh() -> Response:
 # ─── Router restart ───
 
 
-@api_system_bp.route("/api/drop-docker-cache", methods=["POST"])
+@system_bp.route("/api/drop-docker-cache", methods=["POST"])
 @login_required
 def drop_docker_cache() -> Response | tuple[Response, int]:
     """Drop the container build cache to free disk space."""
@@ -222,7 +222,7 @@ def drop_docker_cache() -> Response | tuple[Response, int]:
     return jsonify({"ok": True, "output": output})
 
 
-@api_system_bp.route("/restart_router", methods=["POST"])
+@system_bp.route("/restart_router", methods=["POST"])
 @login_required
 def restart_router() -> Response:
     """Restart the router systemd service to pick up code changes."""
