@@ -6,7 +6,6 @@ import sqlite3
 from typing import Any
 from urllib.parse import urlparse
 
-import attr
 from packaging.specifiers import InvalidSpecifier
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -204,6 +203,23 @@ def _resolve_consumer_from_ws() -> str | None:
     return _app_from_origin(websocket)
 
 
+def _build_permissions_header(consumer_app_id: str, service_url: str, provider_app_id: str) -> str:
+    """JSON for the X-OpenHost-Permissions header forwarded to ``provider_app_id``.
+
+    Filters the consumer's stored grants down to those applicable to this provider — global-scoped, or
+    app-scoped where ``provider_app_id`` matches — and strips the ``provider_app_id`` field from each entry
+    before forwarding (the provider already knows it's the addressee). Providers can then trust every entry
+    in the array without re-checking who it was issued for.
+    """
+    grants = get_granted_permissions_v2(consumer_app_id, service_url)
+    forwarded = [
+        {"grant": g.grant, "scope": g.scope}
+        for g in grants
+        if g.scope == "global" or g.provider_app_id == provider_app_id
+    ]
+    return json.dumps(forwarded)
+
+
 def _consumer_identity_headers(consumer_app_id: str) -> dict[str, str]:
     """Build the X-OpenHost-Consumer-{Name,Id} headers for a consumer app.
 
@@ -247,12 +263,11 @@ async def service_call(shortname: str, rest: str, app_id: str) -> Response:
         return await _handle_installer_request(consumer_app_id, version_spec, rest, db)
 
     try:
-        _, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
+        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 
-    grants = get_granted_permissions_v2(consumer_app_id, service_url)
-    grants_json = json.dumps([attr.asdict(g) for g in grants])
+    grants_json = _build_permissions_header(consumer_app_id, service_url, provider_app_id)
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
 
@@ -288,13 +303,12 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         return
 
     try:
-        _, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
+        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         await websocket.close(code=4503, reason=e.message)
         return
 
-    grants = get_granted_permissions_v2(consumer_app_id, service_url)
-    grants_json = json.dumps([attr.asdict(g) for g in grants])
+    grants_json = _build_permissions_header(consumer_app_id, service_url, provider_app_id)
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
     await ws_proxy(

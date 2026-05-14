@@ -43,13 +43,14 @@ async def get_oauth_token(
     """
     if db is None:
         db = get_db()
-    provider_app_id, port, _, endpoint = resolve_provider(OAUTH_SERVICE_URL, ">=0", db)
+    _, port, _, endpoint = resolve_provider(OAUTH_SERVICE_URL, ">=0", db)
 
-    # Forge an app-scoped grant against the resolved provider's own app_id. The oauth service only honours
-    # app-scoped grants (see services/oauth/openapi.yaml), and only the provider whose id matches the grant's
-    # provider_app_id can accept it — so the forgery is bounded to the loopback call we're about to make.
+    # Forge an app-scoped grant. We bypass the v2 service proxy (which would normally do the per-provider
+    # filter + provider_app_id strip) by going straight to the loopback port, so we hand-build the same
+    # post-filter shape the proxy would produce. The oauth service only honours app-scoped grants
+    # (see services/oauth/openapi.yaml).
     grant_payload = {"provider": provider, "scopes": list(scopes)}
-    permissions_header = json.dumps([{"grant": grant_payload, "scope": "app", "provider_app_id": provider_app_id}])
+    permissions_header = json.dumps([{"grant": grant_payload, "scope": "app"}])
     url = f"http://127.0.0.1:{port}{endpoint.rstrip('/')}/token"
     try:
         async with httpx.AsyncClient(timeout=5) as client:

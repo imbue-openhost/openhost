@@ -23,11 +23,12 @@ info:
     matching grants. If the union covers every requested scope, the request
     is approved.
 
-    **Only app-scoped grants are honoured.** A grant must carry
-    `scope: "app"` and a `provider_app_id` matching this oauth provider's
-    own app id. Global-scoped grants are rejected — every approval flows
-    through this service's own consent UI (`/grant`), so there is no path
-    by which a global grant should ever exist for the oauth service URL.
+    **Only app-scoped grants are honoured.** This service rejects entries
+    where `scope != "app"` — every legitimate grant flows through its own
+    consent UI (`/grant`), which always produces app-scoped grants. The
+    router has already filtered the `X-OpenHost-Permissions` array down
+    to grants addressed to this provider, so there's no need to verify
+    the addressee.
 
     **Grant format:**
     ```json

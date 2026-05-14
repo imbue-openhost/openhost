@@ -86,9 +86,7 @@ Permissions are **opaque grant payloads** (strings or JSON objects), scoped per 
 - `X-OpenHost-Consumer-Id: <consumer_app_id>`
 - `X-OpenHost-Permissions: <json array of granted payloads>`
 
-Each entry in the permissions array is `{"grant": <payload>, "scope": "global"|"app", "provider_app_id": <app_id or null>}`.
-
-For `scope: "app"` entries, the provider **must** verify that `provider_app_id` matches its own `OPENHOST_APP_ID` env var before honouring the grant. This is what binds an app-scoped grant to a specific provider — the router will forward every grant for the requested service URL, including app-scoped grants issued by *other* providers of the same service, and the provider is responsible for ignoring grants that aren't addressed to it. Strict providers may further want to reject any `scope: "global"` entries (the oauth service does this, since every legitimate grant flows through its own consent UI).
+Each entry in the permissions array is `{"grant": <payload>, "scope": "global"|"app"}`. The router pre-filters the array: every `scope: "app"` entry the provider sees is one the router resolved as addressed to *this* provider. The internal `provider_app_id` field is stripped before forwarding, since the provider is the addressee by construction. Strict providers may still want to reject `scope: "global"` entries entirely if every legitimate grant for them flows through their own consent UI (the oauth service does this).
 
 #### Global-scoped grants
 

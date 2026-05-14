@@ -5,7 +5,6 @@ from urllib.parse import urlencode
 import httpx
 from litestar import Request
 
-from oauth_provider.core.config import APP_ID
 from oauth_provider.core.config import APP_NAME
 from oauth_provider.core.config import APP_TOKEN
 from oauth_provider.core.config import ROUTER_URL
@@ -19,10 +18,9 @@ from oauth_provider.core.models import RequiredGrant
 def parse_oauth_v2_grants(request: Request[Any, Any, Any]) -> list[OAuthGrant]:
     """Extract OAuth grant payloads from the X-OpenHost-Permissions header injected by the router.
 
-    Only honours app-scoped grants whose ``provider_app_id`` matches our own ``APP_ID``. Global-scoped grants
-    (or app-scoped grants issued by a different provider) are ignored — every approval flows through this
-    service's own ``/grant`` consent UI, so there is no legitimate path by which any other grant shape would exist
-    for the oauth service URL. This rule is mirrored in services/oauth/openapi.yaml.
+    The router pre-filters the array so every entry is addressed to this provider (the ``provider_app_id``
+    field has already been stripped). This service additionally rejects ``scope: "global"`` entries — every
+    legitimate grant flows through our own ``/grant`` consent UI, which always produces app-scoped grants.
     """
     perms_header = request.headers.get("x-openhost-permissions", "[]")
     try:
@@ -32,7 +30,7 @@ def parse_oauth_v2_grants(request: Request[Any, Any, Any]) -> list[OAuthGrant]:
 
     result = []
     for g in grants:
-        if g.get("scope") != "app" or g.get("provider_app_id") != APP_ID:
+        if g.get("scope") != "app":
             continue
         payload = g.get("grant", {})
         if isinstance(payload, dict) and "provider" in payload:
