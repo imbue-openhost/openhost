@@ -289,7 +289,7 @@ class TestRouterCore:
         # test_app has hidden = true — it must not show up
         assert "test_app" not in r.text
         # Non-hidden apps should still be listed (pick one that definitely exists)
-        assert "backup" in r.text or "secrets" in r.text, (
+        assert "file_browser" in r.text or "oauth" in r.text, (
             "Expected at least one non-hidden builtin app on the Deploy page"
         )
 
