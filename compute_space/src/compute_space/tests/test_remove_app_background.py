@@ -10,7 +10,6 @@ from compute_space.core.app_id import new_app_id
 from compute_space.core.apps import remove_app_background
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
@@ -68,7 +67,7 @@ def test_remove_cascades_to_all_child_tables(tmp_path: Path) -> None:
     orphan rows accumulate in app_tokens / permissions / etc.
     """
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
@@ -96,7 +95,7 @@ def test_remove_cascades_to_all_child_tables(tmp_path: Path) -> None:
 def test_remove_keep_data_calls_temp_only(tmp_path: Path) -> None:
     """``keep_data=True`` must hit the temp-only deprovision path."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
@@ -114,7 +113,7 @@ def test_remove_keep_data_calls_temp_only(tmp_path: Path) -> None:
 def test_remove_full_calls_full_deprovision(tmp_path: Path) -> None:
     """``keep_data=False`` must hit the full deprovision."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
@@ -139,7 +138,7 @@ def test_remove_proceeds_when_deprovision_raises(tmp_path: Path) -> None:
     would otherwise be stuck in 'removing' forever and the user could
     never re-deploy."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     with (
@@ -156,7 +155,7 @@ def test_remove_proceeds_when_deprovision_raises(tmp_path: Path) -> None:
 def test_remove_returns_quietly_when_app_already_gone(tmp_path: Path) -> None:
     """Calling the worker for a non-existent app must be a clean no-op."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
 
     with (
         patch("compute_space.core.apps.stop_app_process") as stop,
@@ -177,7 +176,7 @@ def test_remove_records_error_when_db_delete_path_explodes(tmp_path: Path) -> No
     the operator isn't left staring at a permanent 'removing' indicator.
     """
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app_with_children(cfg.db_path, "myapp")
 
     real_connect = sqlite3.connect

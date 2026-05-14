@@ -7,14 +7,9 @@ from compute_space.core.app_id import new_app_id
 from compute_space.db.connection import init_db
 
 
-class _FakeApp:
-    def __init__(self, db_path: str):
-        self.config = {"DB_PATH": db_path}
-
-
 def _init_test_db(tmp_path) -> str:
     db_path = str(tmp_path / "test.db")
-    init_db(_FakeApp(db_path))
+    init_db(db_path)
     return db_path
 
 

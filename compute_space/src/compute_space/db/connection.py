@@ -1,13 +1,13 @@
 import contextlib
+import contextvars
 import sqlite3
 import uuid
 from collections.abc import Iterator
 
-from quart import Quart
-from quart import current_app
-from quart import g
-
 from compute_space.db.versioned import apply_migrations
+
+_db_path: str | None = None
+_db_var: contextvars.ContextVar[sqlite3.Connection | None] = contextvars.ContextVar("db", default=None)
 
 
 @contextlib.contextmanager
@@ -29,20 +29,28 @@ def make_atomic_with_savepoint(db: sqlite3.Connection) -> Iterator[None]:
         raise
 
 
+def init_db(db_path: str) -> None:
+    """Configure the SQLite path used by ``get_db()`` and run migrations."""
+    global _db_path
+    _db_path = db_path
+    apply_migrations(db_path)
+
+
 def get_db() -> sqlite3.Connection:
-    if "db" not in g:
-        g.db = sqlite3.connect(current_app.config["DB_PATH"], check_same_thread=False)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
-        g.db.execute("PRAGMA foreign_keys=ON")
-    return g.db  # type: ignore[no-any-return]
+    db = _db_var.get()
+    if db is None:
+        if _db_path is None:
+            raise RuntimeError("init_db() must be called before get_db()")
+        db = sqlite3.connect(_db_path, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA foreign_keys=ON")
+        _db_var.set(db)
+    return db
 
 
 def close_db(exception: BaseException | None = None) -> None:
-    db = g.pop("db", None)
+    db = _db_var.get()
     if db is not None:
         db.close()
-
-
-def init_db(app: Quart) -> None:
-    apply_migrations(app.config["DB_PATH"])
+        _db_var.set(None)
