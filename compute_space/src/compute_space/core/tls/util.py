@@ -48,6 +48,7 @@ def _acquire_cert_dns01(
     coredns_zonefile_path: Path,
     account_key: JWKRSA,
     verify_ssl: bool = True,
+    acme_email: str | None = None,
 ) -> tuple[bytes, bytes]:
     """Acquire cert via DNS-01 challenge by writing TXT records to the local zone file."""
     tls_key = _generate_tls_key()
@@ -67,9 +68,22 @@ def _acquire_cert_dns01(
         reg = messages.NewRegistration(only_return_existing=True)
         account = acme_client.query_registration(acme_client.new_account(reg))
     except errors.ConflictError as e:
-        # will always fail and hit this path.
-        # this is an odd pattern but i can't quickly figure out the right way to do it
+        # Account exists but only_return_existing returns a conflict.
         account = messages.RegistrationResource(uri=e.location)
+    except messages.Error as e:
+        # Account doesn't exist for this key -- register a new one.
+        if "accountDoesNotExist" in str(e):
+            logger.info("DNS-01: no existing account for this key, registering new one")
+            reg_kwargs: dict[str, object] = {"terms_of_service_agreed": True}
+            if acme_email:
+                reg_kwargs["contact"] = (f"mailto:{acme_email}",)
+            reg = messages.NewRegistration(**reg_kwargs)
+            try:
+                account = acme_client.new_account(reg)
+            except errors.ConflictError as ce:
+                account = messages.RegistrationResource(uri=ce.location)
+        else:
+            raise
     acme_client.net.account = account
     logger.info(f"DNS-01: found account {account.uri}")
 
