@@ -23,6 +23,12 @@ info:
     matching grants. If the union covers every requested scope, the request
     is approved.
 
+    **Only app-scoped grants are honoured.** A grant must carry
+    `scope: "app"` and a `provider_app_id` matching this oauth provider's
+    own app id. Global-scoped grants are rejected — every approval flows
+    through this service's own consent UI (`/grant`), so there is no path
+    by which a global grant should ever exist for the oauth service URL.
+
     **Grant format:**
     ```json
     {
@@ -333,8 +339,8 @@ components:
               description: The grant the caller needs to be approved for.
             scope:
               type: string
-              enum: [app, global]
-              description: Whether this is an app-scoped or global grant.
+              enum: [app]
+              description: Always `"app"` — the oauth service rejects global-scoped grants.
             grant_url:
               type: string
               format: uri

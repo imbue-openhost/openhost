@@ -1,6 +1,7 @@
 import os
 
 APP_NAME = os.environ["OPENHOST_APP_NAME"]
+APP_ID = os.environ["OPENHOST_APP_ID"]
 ZONE_DOMAIN = os.environ["OPENHOST_ZONE_DOMAIN"]
 MY_REDIRECT_DOMAIN = os.environ["OPENHOST_MY_REDIRECT_DOMAIN"]
 APP_TOKEN = os.environ["OPENHOST_APP_TOKEN"]

@@ -1,11 +1,9 @@
 """Router-internal OAuth token helper.
 
-The router occasionally needs to act as an OAuth client itself — most
-notably to clone or pull private GitHub repos on behalf of the operator.
-It does this by calling the v2 oauth service (provider app
-``github.com/imbue-openhost/openhost/services/oauth``) over HTTP loopback,
-authenticating as a synthetic ``OPENHOST`` consumer with a hard-coded
-grant for the requested provider+scopes.
+The router occasionally needs to act as an OAuth client itself — most notably to clone or pull private GitHub repos
+on behalf of the operator. It does this by calling the v2 oauth service (provider app
+``github.com/imbue-openhost/openhost/services/oauth``) over HTTP loopback, authenticating as a synthetic ``OPENHOST``
+consumer with a hard-coded grant for the requested provider+scopes.
 """
 
 import json
@@ -20,8 +18,8 @@ from compute_space.db import get_db
 
 OAUTH_SERVICE_URL = "github.com/imbue-openhost/openhost/services/oauth"
 
-# Synthetic identity used in the X-OpenHost-Consumer-* headers when the
-# router itself is the consumer. Real apps have non-zero base58 ids.
+# Synthetic identity used in the X-OpenHost-Consumer-* headers when the router itself is the consumer.
+# Real apps have non-zero base58 ids.
 ROUTER_CONSUMER_ID = "0"
 ROUTER_CONSUMER_NAME = "OPENHOST"
 
@@ -45,10 +43,13 @@ async def get_oauth_token(
     """
     if db is None:
         db = get_db()
-    _, port, _, endpoint = resolve_provider(OAUTH_SERVICE_URL, ">=0", db)
+    provider_app_id, port, _, endpoint = resolve_provider(OAUTH_SERVICE_URL, ">=0", db)
 
+    # Forge an app-scoped grant against the resolved provider's own app_id. The oauth service only honours
+    # app-scoped grants (see services/oauth/openapi.yaml), and only the provider whose id matches the grant's
+    # provider_app_id can accept it — so the forgery is bounded to the loopback call we're about to make.
     grant_payload = {"provider": provider, "scopes": list(scopes)}
-    permissions_header = json.dumps([{"grant": grant_payload, "scope": "global", "provider_app_id": None}])
+    permissions_header = json.dumps([{"grant": grant_payload, "scope": "app", "provider_app_id": provider_app_id}])
     url = f"http://127.0.0.1:{port}{endpoint.rstrip('/')}/token"
     try:
         async with httpx.AsyncClient(timeout=5) as client:

@@ -287,6 +287,7 @@ def insert_and_deploy(
         port=config.port,
         zone_domain=config.zone_domain,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        app_id=app_id,
     )
 
     db.execute(
@@ -548,6 +549,7 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         port=config.port,
         zone_domain=config.zone_domain,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        app_id=app_id,
     )
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")

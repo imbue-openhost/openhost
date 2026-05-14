@@ -53,6 +53,7 @@ def oauth_app_url() -> Iterator[str]:
     env = {
         **os.environ,
         "OPENHOST_APP_NAME": "oauth-test",
+        "OPENHOST_APP_ID": "oauth-test-id",
         "OPENHOST_ZONE_DOMAIN": "test.local",
         "OPENHOST_MY_REDIRECT_DOMAIN": "test.local",
         "OPENHOST_APP_TOKEN": "test-token",
