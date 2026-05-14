@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
@@ -10,7 +11,41 @@ from werkzeug.datastructures import Headers
 
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
+from compute_space.web.auth.cookies import COOKIE_ACCESS
 from compute_space.web.auth.cookies import COOKIE_REFRESH
+
+# Zone auth cookies must never reach a backend app — apps share the zone
+# domain, so forwarding these would let any app replay the owner's session
+# against compute_space admin APIs or other apps.
+_STRIPPED_COOKIES = frozenset({COOKIE_ACCESS, COOKIE_REFRESH})
+
+# The router is the sole authority for X-OpenHost-* identity headers.
+# Any inbound value would let a client spoof identity to the backend app.
+_OPENHOST_HEADER_PREFIX = "x-openhost-"
+
+
+def _sanitize_forwarded_headers(headers: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Filter inbound headers before forwarding to a backend app.
+
+    Drops X-OpenHost-* headers (the router is their sole authority) and strips
+    zone auth cookies from the Cookie header (apps must not see or replay the
+    owner's session). Protocol-level filtering (Host, Connection, etc.) is
+    left to each caller.
+    """
+    cookie_prefixes = tuple(f"{name}=" for name in _STRIPPED_COOKIES)
+    sanitized: dict[str, str] = {}
+    for key, value in headers:
+        lower = key.lower()
+        if lower.startswith(_OPENHOST_HEADER_PREFIX):
+            continue
+        if lower == "cookie":
+            value = "; ".join(
+                part.strip() for part in value.split(";") if not part.strip().startswith(cookie_prefixes)
+            )
+            if not value:
+                continue
+        sanitized[key] = value
+    return sanitized
 
 
 async def proxy_request(
@@ -52,9 +87,10 @@ async def proxy_request(
         "x-forwarded-for",
         "x-forwarded-proto",
         "x-forwarded-host",
-        "cookie",
     }
-    headers = {key: value for key, value in quart_request.headers if key.lower() not in excluded_headers}
+    headers = _sanitize_forwarded_headers(
+        (k, v) for k, v in quart_request.headers if k.lower() not in excluded_headers
+    )
     headers["X-Forwarded-For"] = quart_request.remote_addr or ""
     headers["X-Forwarded-Proto"] = quart_request.scheme
     headers["X-Forwarded-Host"] = quart_request.host
@@ -68,7 +104,6 @@ async def proxy_request(
 
     try:
         body = await quart_request.get_data()
-        cookies = {k: v for k, v in quart_request.cookies.items() if k not in (COOKIE_REFRESH,)}
         # Use granular timeouts: the default 30s is for connect/pool,
         # but read/write get a longer window to handle large uploads
         # (e.g. migration data transfers can be hundreds of MB).
@@ -87,7 +122,6 @@ async def proxy_request(
                 url=target_url,
                 headers=headers,
                 content=body,
-                cookies=cookies,
                 follow_redirects=False,
                 timeout=request_timeout,
             )
@@ -145,31 +179,29 @@ async def ws_proxy(
         target_url += f"?{query_string}"
 
     # Forward relevant headers to the backend
-    extra_headers = {}
-    subprotocols = []
+    excluded_headers = {
+        "host",
+        "connection",
+        "upgrade",
+        "sec-websocket-key",
+        "sec-websocket-version",
+        "sec-websocket-extensions",
+        "sec-websocket-protocol",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-forwarded-host",
+    }
+    subprotocols: list[str] = []
+    forwardable: list[tuple[str, str]] = []
     for key, value in client_ws.headers:
         lower = key.lower()
         if lower == "sec-websocket-protocol":
             subprotocols = [s.strip() for s in value.split(",")]
-        elif lower == "cookie":
-            # Strip auth cookies, forward the rest
-            filtered = "; ".join(
-                part.strip() for part in value.split(";") if not part.strip().startswith((f"{COOKIE_REFRESH}=",))
-            )
-            if filtered:
-                extra_headers[key] = filtered
-        elif lower not in {
-            "host",
-            "connection",
-            "upgrade",
-            "sec-websocket-key",
-            "sec-websocket-version",
-            "sec-websocket-extensions",
-            "x-forwarded-for",
-            "x-forwarded-proto",
-            "x-forwarded-host",
-        }:
-            extra_headers[key] = value
+            continue
+        if lower in excluded_headers:
+            continue
+        forwardable.append((key, value))
+    extra_headers = _sanitize_forwarded_headers(forwardable)
     extra_headers["X-Forwarded-For"] = client_ws.remote_addr or ""
     extra_headers["X-Forwarded-Proto"] = client_ws.scheme
     extra_headers["X-Forwarded-Host"] = client_ws.host
