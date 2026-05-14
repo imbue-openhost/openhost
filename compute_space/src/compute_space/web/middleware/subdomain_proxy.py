@@ -24,6 +24,7 @@ from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
 from compute_space.core.auth.inputs import AuthInputs
+from compute_space.db import close_db
 from compute_space.db import get_db
 from compute_space.web.proxy import ProxiedResponse
 from compute_space.web.proxy import _scope_host
@@ -177,10 +178,16 @@ class SubdomainProxyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if scope_type == ScopeType.HTTP:
-            await self._handle_http(scope, receive, send, app_subdomain)
-        else:
-            await self._handle_websocket(scope, receive, send, app_subdomain)
+        # The short-circuit branches below opens a connection via ``get_db()`` (contextvar-backed)
+        # for the auth lookup but bypasses the Litestar router, so the routed-path ``after_request``
+        # hook that normally closes per-request connections never fires.  Close it here.
+        try:
+            if scope_type == ScopeType.HTTP:
+                await self._handle_http(scope, receive, send, app_subdomain)
+            else:
+                await self._handle_websocket(scope, receive, send, app_subdomain)
+        finally:
+            close_db()
 
     async def _handle_http(self, scope: Scope, receive: Receive, send: Send, app_subdomain: str) -> None:
         if _is_websocket_upgrade(scope):

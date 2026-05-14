@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import sqlite3
 from collections.abc import Awaitable
 from collections.abc import Callable
 from datetime import UTC
@@ -216,7 +217,7 @@ def login_required(
 _AnyConnection = ASGIConnection[Any, Any, Any, Any]
 
 
-def _try_refresh_for_connection(connection: _AnyConnection) -> dict[str, Any] | None:
+def _try_refresh_for_connection(connection: _AnyConnection, db: sqlite3.Connection) -> dict[str, Any] | None:
     """Attempt to refresh an expired access token using the refresh cookie.
 
     On success, stashes the new access/refresh tokens in ``scope['state']`` so
@@ -235,14 +236,10 @@ def _try_refresh_for_connection(connection: _AnyConnection) -> dict[str, Any] | 
         return None
 
     refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
-    rt = (
-        get_db()
-        .execute(
-            "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
-            (refresh_tok_hash,),
-        )
-        .fetchone()
-    )
+    rt = db.execute(
+        "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
+        (refresh_tok_hash,),
+    ).fetchone()
     if rt is None:
         return None
 
@@ -257,7 +254,7 @@ def _try_refresh_for_connection(connection: _AnyConnection) -> dict[str, Any] | 
     return decode_access_token(new_access_token)
 
 
-def _app_from_origin_for_connection(connection: _AnyConnection) -> str | None:
+def _app_from_origin_for_connection(connection: _AnyConnection, db: sqlite3.Connection) -> str | None:
     """Resolve app_id from Origin/Referer subdomain + valid JWT cookie."""
     if not auth.get_current_user(auth_inputs_from_connection(connection)):
         return None
@@ -276,28 +273,28 @@ def _app_from_origin_for_connection(connection: _AnyConnection) -> str | None:
     if "." in app_name:
         return None
 
-    row = get_db().execute("SELECT app_id FROM apps WHERE name = ?", (app_name,)).fetchone()
+    row = db.execute("SELECT app_id FROM apps WHERE name = ?", (app_name,)).fetchone()
     return row["app_id"] if row else None
 
 
-async def provide_user(request: Request[Any, Any, Any]) -> dict[str, Any]:
+async def provide_user(request: Request[Any, Any, Any], db: sqlite3.Connection) -> dict[str, Any]:
     """Litestar dependency that returns the current user's claims, refreshing tokens if needed."""
     claims = auth.get_current_user(auth_inputs_from_connection(request))
     if claims is not None:
         return claims
-    refreshed = _try_refresh_for_connection(request)
+    refreshed = _try_refresh_for_connection(request, db)
     if refreshed is not None:
         return refreshed
     raise NotAuthorizedException(detail="Authentication required")
 
 
-async def provide_app_id(request: Request[Any, Any, Any]) -> str:
+async def provide_app_id(request: Request[Any, Any, Any], db: sqlite3.Connection) -> str:
     """Litestar dependency that resolves the calling app's id (Bearer token or Origin subdomain)."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         app_id = resolve_app_from_token(auth_header.removeprefix("Bearer ").strip())
     else:
-        app_id = _app_from_origin_for_connection(request)
+        app_id = _app_from_origin_for_connection(request, db)
 
     if not app_id:
         raise NotAuthorizedException(detail="Missing or invalid authorization")

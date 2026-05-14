@@ -30,6 +30,7 @@ from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import get_db
 from compute_space.db import init_db
+from compute_space.db import provide_db
 from compute_space.web.auth.middleware import login_required_redirect
 from compute_space.web.auth.middleware import provide_app_id
 from compute_space.web.auth.middleware import provide_user
@@ -207,6 +208,7 @@ def create_app(config: Config | None = None) -> Litestar:
         before_request=_require_owner,
         after_request=_close_db_after,
         dependencies={
+            "db": Provide(provide_db, sync_to_thread=False),
             "user": Provide(provide_user),
             "app_id": Provide(provide_app_id),
         },

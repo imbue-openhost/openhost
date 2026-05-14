@@ -54,3 +54,20 @@ def close_db(exception: BaseException | None = None) -> None:
     if db is not None:
         db.close()
         _db_var.set(None)
+
+
+def provide_db() -> sqlite3.Connection:
+    """Litestar dependency: hand the per-request SQLite connection to a route.
+
+    Returns the same connection that ``get_db()`` returns (contextvar-backed),
+    so transitive ``get_db()`` calls from helpers in ``core/`` see the same
+    connection within a request.  The connection is opened lazily on first
+    access and closed once at the end of the request — by Litestar's
+    ``after_request`` hook for routed paths, or by ``SubdomainProxyMiddleware``
+    for the proxy short-circuit path.
+
+    Per-request (not pooled) is the right shape for SQLite: connections are
+    cheap, single-writer means pooling buys nothing, and request-scoping keeps
+    transactions and any future savepoint usage cleanly contained.
+    """
+    return get_db()
