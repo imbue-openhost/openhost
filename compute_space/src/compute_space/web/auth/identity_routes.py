@@ -11,8 +11,8 @@ from quart import render_template
 from quart import request
 from quart.typing import ResponseReturnValue
 
-from compute_space.core import auth
 from compute_space.core.auth import identity
+from compute_space.core.auth.keys import get_public_key_pem
 from compute_space.core.logging import logger
 from compute_space.web.auth.middleware import login_required
 
@@ -25,7 +25,7 @@ identity_bp = Blueprint("identity", __name__)
 @identity_bp.route("/.well-known/jwks.json")
 def jwks() -> Response:
     """Expose the public key in JWKS format for app JWT verification."""
-    public_key_pem = auth.get_public_key_pem()
+    public_key_pem = get_public_key_pem()
     public_key = load_pem_public_key(public_key_pem.encode())
     assert isinstance(public_key, rsa_module.RSAPublicKey)
     numbers = public_key.public_numbers()

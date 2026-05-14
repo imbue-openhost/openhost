@@ -17,10 +17,16 @@ from quart import url_for
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-from compute_space.core import auth
+from compute_space.core.auth.auth import get_current_user_from_request
+from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
+from compute_space.core.auth.tokens import create_access_token
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db
+from compute_space.web.auth.cookies import COOKIE_ACCESS
+from compute_space.web.auth.cookies import COOKIE_REFRESH
+from compute_space.web.auth.cookies import clear_auth_cookies
+from compute_space.web.auth.cookies import set_auth_cookies
 from compute_space.web.auth.middleware import _try_refresh  # noqa: F401 — re-exported
 from compute_space.web.auth.middleware import login_required  # noqa: F401 — re-exported
 
@@ -61,7 +67,7 @@ async def attach_refreshed_token(response: Response) -> Response:
     new_token = getattr(g, "new_access_token", None)
     if new_token:
         refresh_tok = getattr(g, "refresh_token", None)
-        auth.set_auth_cookies(response, new_token, refresh_tok, request=request)
+        set_auth_cookies(response, new_token, refresh_tok, request=request)
     return response
 
 
@@ -114,11 +120,11 @@ async def setup() -> ResponseReturnValue:
         (password_hash,),
     )
 
-    access_token = auth.create_access_token("owner")
+    access_token = create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(
-        seconds=auth.REFRESH_TOKEN_EXPIRY,
+        seconds=REFRESH_TOKEN_EXPIRY,
     )
     db.execute(
         "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
@@ -141,19 +147,19 @@ async def setup() -> ResponseReturnValue:
         logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
     response = redirect(url_for("apps.dashboard"))
-    auth.set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
     return response
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 async def login() -> ResponseReturnValue:
-    if auth.get_current_user_from_request(request):
+    if get_current_user_from_request(request):
         return redirect(url_for("apps.dashboard"))
 
     # If stale auth cookies are present (invalid JWT, e.g. after key rotation on
     # reboot or TLS mode change), clear them now so they don't conflict with the
     # fresh cookies we'll set after successful login.
-    has_stale_cookies = request.cookies.get(auth.COOKIE_ACCESS) is not None
+    has_stale_cookies = request.cookies.get(COOKIE_ACCESS) is not None
 
     db = get_db()
     owner = db.execute("SELECT * FROM owner").fetchone()
@@ -163,7 +169,7 @@ async def login() -> ResponseReturnValue:
     if request.method == "GET":
         if has_stale_cookies:
             response = redirect(url_for("auth.login"))
-            auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
             return response
         return await render_template("login.html")
 
@@ -173,11 +179,11 @@ async def login() -> ResponseReturnValue:
     if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
         return await render_template("login.html", error="Invalid password")
 
-    access_token = auth.create_access_token("owner")
+    access_token = create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(
-        seconds=auth.REFRESH_TOKEN_EXPIRY,
+        seconds=REFRESH_TOKEN_EXPIRY,
     )
     db.execute(
         "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
@@ -186,13 +192,13 @@ async def login() -> ResponseReturnValue:
     db.commit()
 
     response = redirect(url_for("apps.dashboard"))
-    auth.set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
     return response
 
 
 @auth_bp.route("/logout", methods=["POST"])
 def logout() -> ResponseReturnValue:
-    refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
+    refresh_tok = request.cookies.get(COOKIE_REFRESH)
     if refresh_tok:
         refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
         db = get_db()
@@ -203,5 +209,5 @@ def logout() -> ResponseReturnValue:
         db.commit()
 
     response = redirect(url_for("auth.login"))
-    auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+    clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
     return response

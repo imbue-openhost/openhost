@@ -12,7 +12,7 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import Config
 from compute_space.config import load_config
-from compute_space.core import auth
+from compute_space.core.auth.keys import load_keys
 from compute_space.core.logging import setup_file_logging
 from compute_space.core.startup import init_app
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
@@ -36,7 +36,7 @@ def create_app(config: Config | None = None) -> Quart:
     setup_file_logging(Path(os.path.dirname(config.db_path)) / "compute_space.log")
 
     # Load auth keys
-    auth.load_keys(config.keys_dir)
+    load_keys(config.keys_dir)
 
     # Register teardown
     app.teardown_appcontext(close_db)
