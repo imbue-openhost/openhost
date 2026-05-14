@@ -14,6 +14,7 @@ from compute_space.db.versioned.migrations.v0004_apps_removing_status import Mig
 from compute_space.db.versioned.migrations.v0005_archive_backend import Migration0005ArchiveBackend
 from compute_space.db.versioned.migrations.v0006_apps_installed_by import Migration0006AppsInstalledBy
 from compute_space.db.versioned.migrations.v0007_app_ids import Migration0007AppIds
+from compute_space.db.versioned.migrations.v0008_drop_v1_service_tables import Migration0008DropV1ServiceTables
 
 # Numbered migrations in apply order. Versions MUST start at 2 and be
 # contiguous. v0 (legacy) and v1 (baseline produced by the existing
@@ -25,4 +26,5 @@ REGISTRY: list[Migration] = [
     Migration0005ArchiveBackend(),
     Migration0006AppsInstalledBy(),
     Migration0007AppIds(),
+    Migration0008DropV1ServiceTables(),
 ]

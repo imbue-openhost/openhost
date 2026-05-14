@@ -67,17 +67,6 @@
     </table>
   </div>
 
-  <div id="service-permissions" style="display:none; margin-top:1em;">
-    <h3>Service Permissions</h3>
-    <p>This app requests access to the following service keys. Uncheck any you don't want to grant now (you can grant them later from the app detail page).</p>
-    <table>
-      <thead>
-        <tr><th>Service</th><th>Key</th><th>Reason</th><th>Required</th><th>Action</th></tr>
-      </thead>
-      <tbody id="perm-body"></tbody>
-    </table>
-  </div>
-
   <br>
   <label>App name: </label>
   <input type="text" id="app-name" style="font-family:monospace; width:12em; display:inline-block;">
@@ -208,32 +197,6 @@ function renderManifest(m, url) {
 
   // Render port mappings section
   renderPortMappings(m.port_mappings || []);
-
-  // Render service permissions (secrets, etc.) with grant checkboxes
-  const permsEl = document.getElementById('service-permissions');
-  const entries = Object.entries(m.requires_services || {});
-  if (entries.length === 0) {
-    permsEl.style.display = 'none';
-    return;
-  }
-  permsEl.style.display = '';
-  let permRows = '';
-  for (const [svcName, keys] of entries) {
-    for (const spec of keys) {
-      const isRequired = spec.required !== false;
-      const disabled = isRequired ? 'disabled' : '';
-      const style = isRequired ? 'opacity:0.6' : '';
-      const label = isRequired ? 'Grant (required)' : 'Grant';
-      permRows += `<tr>
-        <td>${esc(svcName)}</td>
-        <td><code>${esc(spec.key)}</code></td>
-        <td>${esc(spec.reason || '—')}</td>
-        <td>${isRequired ? 'Yes' : 'No'}</td>
-        <td style="${style}"><label><input type="checkbox" class="perm-grant" data-service="${esc(svcName)}" data-key="${esc(spec.key)}" checked ${disabled}> ${label}</label></td>
-      </tr>`;
-    }
-  }
-  document.getElementById('perm-body').innerHTML = permRows;
 }
 
 let portConflicts = new Set();
@@ -359,13 +322,6 @@ async function deployApp() {
   form.append('repo_url', repoUrl);
   form.append('app_name', appName);
   if (cloneDir) form.append('clone_dir', cloneDir);
-
-  // Collect approved permissions (checked checkboxes, including disabled required ones)
-  const approved = [];
-  document.querySelectorAll('.perm-grant').forEach(cb => {
-    if (cb.checked) approved.push(cb.dataset.service + '/' + cb.dataset.key);
-  });
-  form.append('grant_permissions', approved.join(','));
 
   // Collect port overrides as individual form fields
   document.querySelectorAll('.port-host-input').forEach(input => {

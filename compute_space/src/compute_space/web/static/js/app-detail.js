@@ -80,21 +80,6 @@ function appAction(url, data, opts) {
     });
 }
 
-// ─── Permissions ───
-
-function permAction(appId, key, action, btn) {
-  btn.disabled = true;
-  fetch('/api/permissions/' + action, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({app_id: appId, permissions: [key]})
-  })
-    .then(function(r) { return r.json(); })
-    .then(function() { location.reload(); })
-    .catch(function() { alert('Request failed'); btn.disabled = false; });
-}
-
 // ─── Toast ───
 
 function showToast(message, actions) {

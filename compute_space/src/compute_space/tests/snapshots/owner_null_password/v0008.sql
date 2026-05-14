@@ -73,12 +73,6 @@ CREATE TABLE "owner" (
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE "permissions" (
-                consumer_app_id TEXT NOT NULL,
-                permission_key TEXT NOT NULL,
-                PRIMARY KEY (consumer_app_id, permission_key),
-                FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-            );
 CREATE TABLE "permissions_v2" (
                 consumer_app_id TEXT NOT NULL,
                 service_url TEXT NOT NULL,
@@ -98,16 +92,10 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,7);
+INSERT INTO "schema_version" VALUES(1,8);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
-                FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-            );
-CREATE TABLE "service_providers" (
-                service_name TEXT NOT NULL,
-                app_id TEXT NOT NULL,
-                PRIMARY KEY (service_name, app_id),
                 FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
             );
 CREATE TABLE "service_providers_v2" (

@@ -18,7 +18,6 @@ import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
-from compute_space.core.auth.permissions import grant_permissions as grant_permissions_fn
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
@@ -34,11 +33,11 @@ from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
+from compute_space.core.oauth import OAuthAuthorizationRequired
+from compute_space.core.oauth import get_oauth_token
 from compute_space.core.ports import allocate_port
 from compute_space.core.ports import resolve_port_mappings
-from compute_space.core.services import OAuthAuthorizationRequired
-from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services import get_oauth_token
+from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import register_v2_service_providers
 from compute_space.db import get_db
 
@@ -243,7 +242,6 @@ def insert_and_deploy(
     repo_path: str,
     config: Config,
     db: sqlite3.Connection,
-    grant_permissions: set[str],
     grant_permissions_v2: bool = False,
     app_name: str | None = None,
     repo_url: str | None = None,
@@ -281,14 +279,15 @@ def insert_and_deploy(
     resolved_mappings = resolve_port_mappings(mappings, db, config.port_range_start, config.port_range_end)
 
     env_vars = provision_data(
-        app_name,
-        manifest,
-        config.persistent_data_dir,
-        config.temporary_data_dir,
-        config.app_archive_dir,
-        port=config.port,
-        zone_domain=config.zone_domain,
+        app_id=app_id,
+        app_name=app_name,
+        manifest=manifest,
+        data_dir=config.persistent_data_dir,
+        temp_data_dir=config.temporary_data_dir,
+        archive_dir=config.app_archive_dir,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        zone_domain=config.zone_domain,
+        port=config.port,
     )
 
     db.execute(
@@ -340,32 +339,9 @@ def insert_and_deploy(
             (app_id, app_token_hash),
         )
 
-    for svc_name in manifest.provides_services:
-        db.execute(
-            "INSERT OR REPLACE INTO service_providers (service_name, app_id) VALUES (?, ?)",
-            (svc_name, app_id),
-        )
-
     register_v2_service_providers(app_id, manifest, db)
 
     db.commit()
-
-    # Grant only the service permissions the caller explicitly approved.
-    # Done after commit so the app row exists for the FK constraint.
-    all_manifest_keys: set[str] = set()
-    for svc_name, keys in manifest.requires_services.items():
-        for key_spec in keys:
-            perm_key = f"{svc_name}/{key_spec['key']}"
-            all_manifest_keys.add(perm_key)
-            if perm_key not in grant_permissions and key_spec.get("required", True):
-                logger.warning("App %s deployed without required permission %s", app_name, perm_key)
-        permission_keys = [k for k in (f"{svc_name}/{key_spec['key']}" for key_spec in keys) if k in grant_permissions]
-        if permission_keys:
-            grant_permissions_fn(app_id, permission_keys)
-
-    unknown = grant_permissions - all_manifest_keys
-    if unknown:
-        logger.warning("App %s granted unknown permissions not in manifest: %s", app_name, unknown)
 
     if grant_permissions_v2 and manifest.consumes_services_v2:
         for perm in manifest.consumes_services_v2:
@@ -565,14 +541,15 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
 
     manifest = parse_manifest(app_row["repo_path"])
     env_vars = provision_data(
-        app_name,
-        manifest,
-        config.persistent_data_dir,
-        config.temporary_data_dir,
-        config.app_archive_dir,
-        port=config.port,
-        zone_domain=config.zone_domain,
+        app_id=app_id,
+        app_name=app_name,
+        manifest=manifest,
+        data_dir=config.persistent_data_dir,
+        temp_data_dir=config.temporary_data_dir,
+        archive_dir=config.app_archive_dir,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        zone_domain=config.zone_domain,
+        port=config.port,
     )
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
@@ -581,13 +558,6 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         db.execute(
             "INSERT OR REPLACE INTO app_tokens (app_id, token_hash) VALUES (?, ?)",
             (app_id, app_token_hash),
-        )
-
-    db.execute("DELETE FROM service_providers WHERE app_id = ?", (app_id,))
-    for svc_name in manifest.provides_services:
-        db.execute(
-            "INSERT OR REPLACE INTO service_providers (service_name, app_id) VALUES (?, ?)",
-            (svc_name, app_id),
         )
 
     register_v2_service_providers(app_id, manifest, db)

@@ -83,22 +83,6 @@ CREATE TABLE IF NOT EXISTS app_tokens (
     FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
--- Cross-app services: which apps provide which services
-CREATE TABLE IF NOT EXISTS service_providers (
-    service_name TEXT NOT NULL,
-    app_id TEXT NOT NULL,
-    PRIMARY KEY (service_name, app_id),
-    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-);
-
--- Permissions: which apps have which permissions (row exists = granted)
-CREATE TABLE IF NOT EXISTS permissions (
-    consumer_app_id TEXT NOT NULL,
-    permission_key TEXT NOT NULL,
-    PRIMARY KEY (consumer_app_id, permission_key),
-    FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-);
-
 -- V2: service providers with git URL identity and versioning
 CREATE TABLE IF NOT EXISTS service_providers_v2 (
     service_url TEXT NOT NULL,

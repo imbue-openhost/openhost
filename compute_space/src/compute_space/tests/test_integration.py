@@ -58,11 +58,12 @@ def test_sqlite_provisioning():
         )
 
         env_vars = provision_data(
-            "testapp",
-            manifest,
-            data_dir,
-            temp_dir,
-            archive_dir,
+            app_id="testapp-id",
+            app_name="testapp",
+            manifest=manifest,
+            data_dir=data_dir,
+            temp_data_dir=temp_dir,
+            archive_dir=archive_dir,
             my_openhost_redirect_domain="my.test.example.com",
             zone_domain="test.example.com",
             port=manifest.container_port,
@@ -288,7 +289,7 @@ class TestRouterCore:
         # test_app has hidden = true — it must not show up
         assert "test_app" not in r.text
         # Non-hidden apps should still be listed (pick one that definitely exists)
-        assert "backup" in r.text or "secrets" in r.text, (
+        assert "file_browser" in r.text or "oauth" in r.text, (
             "Expected at least one non-hidden builtin app on the Deploy page"
         )
 
