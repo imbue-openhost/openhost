@@ -58,11 +58,12 @@ def test_sqlite_provisioning():
         )
 
         env_vars = provision_data(
-            "testapp",
-            manifest,
-            data_dir,
-            temp_dir,
-            archive_dir,
+            app_id="testapp-id",
+            app_name="testapp",
+            manifest=manifest,
+            data_dir=data_dir,
+            temp_data_dir=temp_dir,
+            archive_dir=archive_dir,
             my_openhost_redirect_domain="my.test.example.com",
             zone_domain="test.example.com",
             port=manifest.container_port,

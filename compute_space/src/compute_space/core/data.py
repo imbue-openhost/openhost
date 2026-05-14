@@ -73,6 +73,7 @@ def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> N
 
 
 def provision_data(
+    app_id: str,
     app_name: str,
     manifest: AppManifest,
     data_dir: str,
@@ -81,7 +82,6 @@ def provision_data(
     my_openhost_redirect_domain: str,
     zone_domain: str,
     port: int,
-    app_id: str = "",
 ) -> dict[str, str]:
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
@@ -145,8 +145,7 @@ def provision_data(
     os.makedirs(app_temp_dir, exist_ok=True)
 
     env_vars["OPENHOST_APP_NAME"] = app_name
-    if app_id:
-        env_vars["OPENHOST_APP_ID"] = app_id
+    env_vars["OPENHOST_APP_ID"] = app_id
 
     # Generate app token for cross-app service calls
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)

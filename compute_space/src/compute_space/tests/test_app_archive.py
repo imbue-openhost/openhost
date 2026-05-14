@@ -48,11 +48,12 @@ def test_provision_data_creates_archive_subdir_when_opted_in(tmp_path) -> None:
 
     manifest = _manifest(app_data=True, app_archive=True)
     env = provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
@@ -75,11 +76,12 @@ def test_provision_data_skips_archive_when_not_opted_in(tmp_path) -> None:
 
     manifest = _manifest(app_data=True)
     env = provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
@@ -99,11 +101,12 @@ def test_provision_data_archive_subdir_under_access_all_data(tmp_path) -> None:
 
     manifest = _manifest(access_all_data=True)
     env = provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
@@ -124,11 +127,12 @@ def test_provision_data_refuses_when_archive_dir_missing(tmp_path) -> None:
     manifest = _manifest(app_data=True, app_archive=True)
     with pytest.raises(RuntimeError, match="archive_dir"):
         provision_data(
-            manifest.name,
-            manifest,
-            str(data_dir),
-            str(temp_dir),
-            str(archive_dir),
+            app_id="archiveapp-id",
+            app_name=manifest.name,
+            manifest=manifest,
+            data_dir=str(data_dir),
+            temp_data_dir=str(temp_dir),
+            archive_dir=str(archive_dir),
             my_openhost_redirect_domain="my.example.com",
             zone_domain="example.com",
             port=8080,
@@ -145,11 +149,12 @@ def test_provision_data_skips_archive_for_access_all_data_when_archive_dir_missi
 
     manifest = _manifest(access_all_data=True)
     env = provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
@@ -176,11 +181,12 @@ def test_provision_data_does_not_fail_when_archive_dir_missing_and_no_archive_op
 
     manifest = _manifest(app_data=True)
     provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
@@ -197,11 +203,12 @@ def test_provision_data_archive_idempotent_on_redeploy(tmp_path) -> None:
 
     manifest = _manifest(app_data=True, app_archive=True)
     provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
@@ -210,11 +217,12 @@ def test_provision_data_archive_idempotent_on_redeploy(tmp_path) -> None:
     marker.write_text("hello")
 
     provision_data(
-        manifest.name,
-        manifest,
-        str(data_dir),
-        str(temp_dir),
-        str(archive_dir),
+        app_id="archiveapp-id",
+        app_name=manifest.name,
+        manifest=manifest,
+        data_dir=str(data_dir),
+        temp_data_dir=str(temp_dir),
+        archive_dir=str(archive_dir),
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,

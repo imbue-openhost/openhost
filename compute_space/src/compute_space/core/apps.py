@@ -279,15 +279,15 @@ def insert_and_deploy(
     resolved_mappings = resolve_port_mappings(mappings, db, config.port_range_start, config.port_range_end)
 
     env_vars = provision_data(
-        app_name,
-        manifest,
-        config.persistent_data_dir,
-        config.temporary_data_dir,
-        config.app_archive_dir,
-        port=config.port,
-        zone_domain=config.zone_domain,
-        my_openhost_redirect_domain=config.my_openhost_redirect_domain,
         app_id=app_id,
+        app_name=app_name,
+        manifest=manifest,
+        data_dir=config.persistent_data_dir,
+        temp_data_dir=config.temporary_data_dir,
+        archive_dir=config.app_archive_dir,
+        my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        zone_domain=config.zone_domain,
+        port=config.port,
     )
 
     db.execute(
@@ -541,15 +541,15 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
 
     manifest = parse_manifest(app_row["repo_path"])
     env_vars = provision_data(
-        app_name,
-        manifest,
-        config.persistent_data_dir,
-        config.temporary_data_dir,
-        config.app_archive_dir,
-        port=config.port,
-        zone_domain=config.zone_domain,
-        my_openhost_redirect_domain=config.my_openhost_redirect_domain,
         app_id=app_id,
+        app_name=app_name,
+        manifest=manifest,
+        data_dir=config.persistent_data_dir,
+        temp_data_dir=config.temporary_data_dir,
+        archive_dir=config.app_archive_dir,
+        my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        zone_domain=config.zone_domain,
+        port=config.port,
     )
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
