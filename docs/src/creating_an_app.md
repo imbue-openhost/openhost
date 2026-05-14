@@ -106,6 +106,7 @@ The router injects these environment variables into your app:
 | Variable | Example | Description                                                                                                     |
 |----------|---------|-----------------------------------------------------------------------------------------------------------------|
 | `OPENHOST_APP_NAME` | `my-app` | Your app's name, as registered with OpenHost. This will be the subdomain the app is routeable at.               |
+| `OPENHOST_APP_ID` | `4Hm9pX2Qk7Lt` (12-char base58) | Opaque, immutable per-app identity. Stable across renames; safe to key persistent state on. |
 | `OPENHOST_APP_TOKEN` | `kF3xP_2qA-bN4...` (43-char url-safe token) | Random per-app token used to authenticate cross-app service calls                                               |
 | `OPENHOST_ROUTER_URL` | `http://host.containers.internal:8080` | internal URL of the router, used for constructing service requests. |
 | `OPENHOST_ZONE_DOMAIN` | `user.host.imbue.com` | The compute space's domain                                                                                      |
