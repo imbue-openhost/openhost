@@ -18,8 +18,14 @@ from quart.wrappers import Request
 from quart.wrappers import Websocket
 
 from compute_space.config import get_config
-from compute_space.core import auth
-from compute_space.core.auth import resolve_app_from_token
+from compute_space.core.auth.cookies import COOKIE_ACCESS
+from compute_space.core.auth.cookies import COOKIE_REFRESH
+from compute_space.core.auth.cookies import clear_auth_cookies
+from compute_space.core.auth.identity import get_current_user_from_request
+from compute_space.core.auth.identity import resolve_app_from_token
+from compute_space.core.auth.tokens import create_access_token
+from compute_space.core.auth.tokens import decode_access_token
+from compute_space.core.auth.tokens import decode_access_token_allow_expired
 from compute_space.db import get_db
 
 
@@ -46,15 +52,15 @@ async def _ensure_async(f: Callable[..., Any], *args: Any, **kwargs: Any) -> Any
 def _try_refresh() -> dict[str, Any] | None:
     """Attempt to refresh an expired access token using the refresh cookie.
     Stores new access token on flask.g for after_request."""
-    refresh_tok = request.cookies.get(auth.COOKIE_REFRESH)
+    refresh_tok = request.cookies.get(COOKIE_REFRESH)
     if not refresh_tok:
         return None
 
-    expired_jwt = request.cookies.get(auth.COOKIE_ACCESS)
+    expired_jwt = request.cookies.get(COOKIE_ACCESS)
     if not expired_jwt:
         return None
 
-    expired_claims = auth.decode_access_token_allow_expired(expired_jwt)
+    expired_claims = decode_access_token_allow_expired(expired_jwt)
     if expired_claims is None:
         return None
 
@@ -71,19 +77,19 @@ def _try_refresh() -> dict[str, Any] | None:
     if expires_at < datetime.now(UTC):
         return None
 
-    new_access_token = auth.create_access_token(expired_claims["sub"])
+    new_access_token = create_access_token(expired_claims["sub"])
     g.new_access_token = new_access_token
     g.refresh_token = refresh_tok
-    return auth.decode_access_token(new_access_token)
+    return decode_access_token(new_access_token)
 
 
 def _app_from_origin(req_or_ws: Request | Websocket) -> str | None:
     """Resolve app_id from Origin/Referer subdomain + valid JWT cookie.
 
     Accepts either a quart Request or Websocket — both expose .headers and are accepted
-    by auth.get_current_user_from_request.
+    by get_current_user_from_request.
     """
-    if not auth.get_current_user_from_request(req_or_ws):
+    if not get_current_user_from_request(req_or_ws):
         return None
 
     origin = req_or_ws.headers.get("Origin", "") or req_or_ws.headers.get("Referer", "")
@@ -142,7 +148,7 @@ def login_required(
 ) -> Callable[..., Awaitable[ResponseReturnValue]]:
     @wraps(f)
     async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
-        claims = auth.get_current_user_from_request(request)
+        claims = get_current_user_from_request(request)
         if claims is not None:
             return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
@@ -154,7 +160,7 @@ def login_required(
         # Not authenticated — redirect to setup or login.
         # If stale auth cookies are present (e.g. after key rotation on reboot),
         # clear them so they don't conflict with freshly issued cookies after login.
-        has_stale_cookies = request.cookies.get(auth.COOKIE_ACCESS) is not None
+        has_stale_cookies = request.cookies.get(COOKIE_ACCESS) is not None
 
         db = get_db()
         owner = db.execute("SELECT * FROM owner").fetchone()
@@ -166,7 +172,7 @@ def login_required(
             response = redirect(url_for("auth.login"))
 
         if has_stale_cookies:
-            auth.clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
         return response
 
     return decorated

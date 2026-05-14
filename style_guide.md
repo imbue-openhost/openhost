@@ -6,3 +6,4 @@
 - prefer many small code files, well organized in folders, than fewer long files.
 - docstrings should line-wrap at the same width as the code, ie 119 chars.
 - don't use an Any type or similar lazy typing unless there's truly no better way.
+- `__init__.py` files should be empty, except in exceptional situations. laziness is not an exceptional situation.

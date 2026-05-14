@@ -8,10 +8,12 @@ from quart import websocket
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-from compute_space.core import auth
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
+from compute_space.core.auth.cookies import COOKIE_REFRESH
+from compute_space.core.auth.cookies import set_auth_cookies
+from compute_space.core.auth.identity import get_current_user_from_request
 from compute_space.web.auth.middleware import _try_refresh
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
@@ -49,7 +51,7 @@ async def _app_subdomain_routing() -> ResponseReturnValue | None:
         return Response(f"App '{app_subdomain}' not found", status=404)
 
     new_access_token = None
-    claims = auth.get_current_user_from_request(request)
+    claims = get_current_user_from_request(request)
     if claims is None:
         claims = _try_refresh()
         if claims:
@@ -71,10 +73,10 @@ async def _app_subdomain_routing() -> ResponseReturnValue | None:
     )
 
     if new_access_token:
-        auth.set_auth_cookies(
+        set_auth_cookies(
             response,
             new_access_token,
-            request.cookies.get(auth.COOKIE_REFRESH),
+            request.cookies.get(COOKIE_REFRESH),
             request=request,
         )
 
@@ -91,7 +93,7 @@ async def _app_subdomain_routing_ws() -> str | None:
         return None
     app_row = find_app_by_name(app_subdomain)
     if app_row and app_row["status"] in ("running", "starting"):
-        claims = auth.get_current_user_from_request(websocket)
+        claims = get_current_user_from_request(websocket)
         if claims is not None or is_public_path(app_row, websocket.path):
             await ws_proxy(app_row["local_port"], websocket, identity_headers=_identity_headers(claims))
     return ""  # non-None to skip dispatch
