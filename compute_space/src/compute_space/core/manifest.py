@@ -140,11 +140,6 @@ class AppManifest:
     access_vm_data: bool = False
     access_all_data: bool = False
 
-    # [services]
-    provides_services: list[str] = attr.Factory(list)
-    requires_services: dict[str, list[dict[str, Any]]] = attr.Factory(dict)
-    # requires_services example: {"secrets": [{"key": "DB_URL", "reason": "...", "required": True}]}
-
     # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
@@ -297,16 +292,6 @@ def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
     return perms
 
 
-def _parse_requires_services(services: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    result: dict[str, list[dict[str, Any]]] = {}
-    for svc_name, svc_config in services.items():
-        if svc_name == "provides":
-            continue
-        if isinstance(svc_config, dict) and "keys" in svc_config:
-            result[svc_name] = svc_config["keys"]
-    return result
-
-
 def parse_manifest_from_string(raw_text: str) -> AppManifest:
     """Parse an openhost.toml manifest from its string content."""
     data = tomllib.loads(raw_text)
@@ -335,7 +320,6 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
     routing = data.get("routing", {})
     resources = data.get("resources", {})
     data_section = data.get("data", {})
-    services = data.get("services", {})
 
     app_name = app_section["name"]
 
@@ -371,8 +355,6 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_archive=data_section.get("app_archive", False),
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_data=data_section.get("access_all_data", False),
-        provides_services=services.get("provides", []),
-        requires_services=_parse_requires_services(services),
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,

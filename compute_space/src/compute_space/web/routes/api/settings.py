@@ -14,10 +14,10 @@ from compute_space.core.git_ops import get_remote_url
 from compute_space.core.git_ops import init_repo_if_nonexistent
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.git_ops import set_remote_url
+from compute_space.core.oauth import OAuthAuthorizationRequired
+from compute_space.core.oauth import get_oauth_token
 from compute_space.core.runtime_sentinel import host_prep_status
-from compute_space.core.services import OAuthAuthorizationRequired
-from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services import get_oauth_token
+from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart

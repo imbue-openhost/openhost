@@ -198,7 +198,6 @@ def _finalize_install(
             final_dir,
             config,
             db,
-            grant_permissions=set(),
             grant_permissions_v2=True,
             repo_url=repo_url,
         )

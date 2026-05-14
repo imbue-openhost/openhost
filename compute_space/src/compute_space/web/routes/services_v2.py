@@ -4,6 +4,7 @@ provider-side permission validation."""
 import json
 import sqlite3
 from typing import Any
+from urllib.parse import urlparse
 
 import attr
 from packaging.specifiers import InvalidSpecifier
@@ -29,7 +30,7 @@ from compute_space.core.installer import InstallError
 from compute_space.core.installer import check_install_allowed
 from compute_space.core.installer import install_from_repo_url
 from compute_space.core.manifest import parse_manifest_from_string
-from compute_space.core.services import ServiceNotAvailable
+from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
 from compute_space.core.services_v2 import lookup_shortname
 from compute_space.core.services_v2 import resolve_provider
@@ -38,10 +39,41 @@ from compute_space.web.auth.middleware import _app_from_origin
 from compute_space.web.auth.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
-from compute_space.web.routes.services import _add_cors_headers
-from compute_space.web.routes.services import _cors_origin
 
 services_v2_bp = Blueprint("services_v2", __name__)
+
+
+def _cors_origin() -> str | None:
+    """Return the Origin header iff it points at a valid app subdomain of this zone."""
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        referer = request.headers.get("Referer", "")
+        if not referer:
+            return None
+        origin = referer
+
+    parsed = urlparse(origin)
+    host = parsed.netloc or ""
+    raw_origin = f"{parsed.scheme}://{host}" if parsed.scheme else None
+
+    config = get_config()
+    if not config.zone_domain or not host.endswith("." + config.zone_domain):
+        return None
+
+    app_name = host[: -(len(config.zone_domain) + 1)]
+    if "." in app_name:
+        return None
+
+    return raw_origin
+
+
+def _add_cors_headers(response: Response, origin: str) -> Response:
+    """Add CORS headers for cross-origin requests from app subdomains."""
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 
 # ─── CORS ───

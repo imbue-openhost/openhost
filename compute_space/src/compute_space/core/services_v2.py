@@ -7,8 +7,12 @@ from packaging.version import Version
 
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import parse_manifest_from_string
-from compute_space.core.services import ServiceNotAvailable
 from compute_space.db.connection import make_atomic_with_savepoint
+
+
+class ServiceNotAvailable(Exception):
+    def __init__(self, message: str):
+        self.message = message
 
 
 class ShortnameNotDeclared(Exception):

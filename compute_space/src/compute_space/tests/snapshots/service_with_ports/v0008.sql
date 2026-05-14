@@ -85,14 +85,6 @@ CREATE TABLE "owner" (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 INSERT INTO "owner" VALUES(1,'admin','argon2-stub-owner-hash','2024-01-01T00:00:00');
-CREATE TABLE "permissions" (
-                consumer_app_id TEXT NOT NULL,
-                permission_key TEXT NOT NULL,
-                PRIMARY KEY (consumer_app_id, permission_key),
-                FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-            );
-INSERT INTO "permissions" VALUES('111111111112','net.egress');
-INSERT INTO "permissions" VALUES('111111111113','net.egress');
 CREATE TABLE "permissions_v2" (
                 consumer_app_id TEXT NOT NULL,
                 service_url TEXT NOT NULL,
@@ -114,20 +106,12 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,7);
+INSERT INTO "schema_version" VALUES(1,8);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
                 FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
             );
-CREATE TABLE "service_providers" (
-                service_name TEXT NOT NULL,
-                app_id TEXT NOT NULL,
-                PRIMARY KEY (service_name, app_id),
-                FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-            );
-INSERT INTO "service_providers" VALUES('payments','111111111112');
-INSERT INTO "service_providers" VALUES('invoices','111111111113');
 CREATE TABLE "service_providers_v2" (
                 service_url TEXT NOT NULL,
                 app_id TEXT NOT NULL,

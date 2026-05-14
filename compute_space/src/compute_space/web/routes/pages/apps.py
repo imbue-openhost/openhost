@@ -11,7 +11,6 @@ from compute_space.config import get_config
 from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.containers import get_docker_logs
-from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.db import get_db
 from compute_space.web.auth.middleware import login_required
 
@@ -46,41 +45,14 @@ async def app_detail(app_id: str) -> str | tuple[str, int]:
         "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_id = ? ORDER BY label",
         (app_id,),
     ).fetchall()
-    permissions = db.execute(
-        "SELECT consumer_app_id, permission_key FROM permissions WHERE consumer_app_id = ? ORDER BY permission_key",
-        (app_id,),
-    ).fetchall()
     logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
     next_url = request.args.get("next", "")
-
-    # Compute permissions the manifest declares but that haven't been granted yet,
-    # so the owner can grant them retroactively (e.g. after installing the secrets app).
-    granted_keys = {row["permission_key"] for row in permissions}
-    missing_permissions: list[dict[str, str]] = []
-    if app_row["manifest_raw"]:
-        try:
-            manifest = parse_manifest_from_string(app_row["manifest_raw"])
-            for svc_name, keys in manifest.requires_services.items():
-                for key_spec in keys:
-                    perm_key = f"{svc_name}/{key_spec['key']}"
-                    if perm_key not in granted_keys:
-                        missing_permissions.append(
-                            {
-                                "permission_key": perm_key,
-                                "reason": key_spec.get("reason", ""),
-                                "required": key_spec.get("required", True),
-                            }
-                        )
-        except Exception:
-            pass  # Don't break the page if the manifest is malformed
 
     return await render_template(
         "app_detail.html",
         app=app_row,
         databases=databases,
         port_mappings=port_mappings,
-        permissions=permissions,
-        missing_permissions=missing_permissions,
         logs=logs,
         next_url=next_url,
     )
