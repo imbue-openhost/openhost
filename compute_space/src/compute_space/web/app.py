@@ -1,5 +1,6 @@
 import atexit
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -12,15 +13,35 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import Config
 from compute_space.config import load_config
+from compute_space.core import archive_backend
+from compute_space.core.auth.identity import load_identity_keys
 from compute_space.core.auth.keys import load_keys
 from compute_space.core.logging import setup_file_logging
-from compute_space.core.startup import init_app
+from compute_space.core.startup import check_app_status
+from compute_space.core.startup import retry_pending_default_apps
+from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import get_db
+from compute_space.db import init_db
 from compute_space.web.routes.pages.setup import setup_bp
 
 # ─── App Factory ───
+
+
+def init_app(app: Quart) -> None:
+    """Initialize DB and app state. Call after data directories are ready."""
+    config = app.openhost_config  # type: ignore[attr-defined]
+    init_db(app)
+    db = sqlite3.connect(config.db_path)
+    try:
+        archive_backend.attach_on_startup(config, db)
+    finally:
+        db.close()
+    check_app_status(config)
+    load_identity_keys(config.persistent_data_dir)
+    start_storage_guard(config)
+    retry_pending_default_apps(config)
 
 
 def create_app(config: Config | None = None) -> Quart:

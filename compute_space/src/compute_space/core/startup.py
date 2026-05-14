@@ -2,19 +2,13 @@ import os
 import sqlite3
 import threading
 
-from quart import Quart
-
 from compute_space.config import Config
-from compute_space.core import archive_backend
 from compute_space.core.apps import start_app_process
-from compute_space.core.auth import identity
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
-from compute_space.core.storage import start_storage_guard
-from compute_space.db import init_db
 
 
 def _mark_running_apps_container_runtime_missing(config: Config) -> int:
@@ -34,7 +28,7 @@ def _mark_running_apps_container_runtime_missing(config: Config) -> int:
         db.close()
 
 
-def _check_app_status(config: Config) -> None:
+def check_app_status(config: Config) -> None:
     """On startup, verify apps marked 'running' are still alive.
 
     Apps that need rebuilding are restarted sequentially in a single
@@ -121,7 +115,7 @@ def _restart_apps_sequential(app_ids: list[str], config: Config) -> None:
         db.close()
 
 
-def _retry_pending_default_apps(config: Config) -> None:
+def retry_pending_default_apps(config: Config) -> None:
     """Retry failed default-app installs on each boot (no-op if no
     owner row or no sentinel)."""
     db = sqlite3.connect(config.db_path)
@@ -137,18 +131,3 @@ def _retry_pending_default_apps(config: Config) -> None:
             logger.error("default_apps retry on startup raised: %s", exc)
     finally:
         db.close()
-
-
-def init_app(app: Quart) -> None:
-    """Initialize DB and app state. Call after data directories are ready."""
-    config = app.openhost_config  # type: ignore[attr-defined]
-    init_db(app)
-    db = sqlite3.connect(config.db_path)
-    try:
-        archive_backend.attach_on_startup(config, db)
-    finally:
-        db.close()
-    _check_app_status(config)
-    identity.load_identity_keys(config.persistent_data_dir)
-    start_storage_guard(config)
-    _retry_pending_default_apps(config)
