@@ -15,6 +15,7 @@ from quart.typing import ResponseReturnValue
 from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
 from compute_space.core.auth.tokens import create_access_token
 from compute_space.db import get_db
+from compute_space.web.auth.auth import attach_refreshed_token
 from compute_space.web.auth.cookies import COOKIE_ACCESS
 from compute_space.web.auth.cookies import COOKIE_REFRESH
 from compute_space.web.auth.cookies import clear_auth_cookies
@@ -22,6 +23,7 @@ from compute_space.web.auth.cookies import set_auth_cookies
 from compute_space.web.auth.middleware import get_current_user_from_request
 
 auth_bp = Blueprint("auth", __name__)
+auth_bp.after_app_request(attach_refreshed_token)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])

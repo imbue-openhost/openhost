@@ -20,12 +20,14 @@ from compute_space.core.auth.tokens import create_access_token
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db
+from compute_space.web.auth.auth import attach_refreshed_token
 from compute_space.web.auth.cookies import set_auth_cookies
 
 setup_bp = Blueprint("setup", __name__)
+setup_bp.after_app_request(attach_refreshed_token)
 
 
-def _verify_claim_token(claim_token: str) -> bool | None:
+def verify_claim_token(claim_token: str) -> bool | None:
     """Verify a claim token against the on-disk claim file.
 
     Returns True if valid, None if invalid.
@@ -68,7 +70,7 @@ async def setup() -> ResponseReturnValue:
     # If a claim token file exists, validate the claim token from the URL
     claim_token = request.args.get("claim", "")
     if os.path.isfile(config.claim_token_path):
-        if _verify_claim_token(claim_token) is None:
+        if verify_claim_token(claim_token) is None:
             return "Invalid or missing claim token.", 403
 
     if request.method == "GET":
@@ -78,7 +80,7 @@ async def setup() -> ResponseReturnValue:
     # Re-validate claim token on POST
     form_claim = form.get("claim", "")
     if os.path.isfile(config.claim_token_path):
-        if _verify_claim_token(form_claim) is None:
+        if verify_claim_token(form_claim) is None:
             return "Invalid or missing claim token.", 403
 
     password = form.get("password", "")
