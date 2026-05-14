@@ -21,8 +21,6 @@ from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import set_auth_cookies
-from compute_space.web.auth.middleware import _try_refresh  # noqa: F401 — re-exported
-from compute_space.web.auth.middleware import login_required  # noqa: F401 — re-exported
 
 setup_bp = Blueprint("setup", __name__)
 
