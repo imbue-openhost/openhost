@@ -190,7 +190,7 @@ class DefaultConfig(Config):
     #   - a remote git URL cloned on demand (see core/default_apps).
     default_apps: list[str] = attr.Factory(
         lambda: [
-            "secrets_v2",
+            "https://github.com/imbue-openhost/secrets",
             "file_browser",
             "https://github.com/imbue-openhost/openhost-catalog",
         ]
