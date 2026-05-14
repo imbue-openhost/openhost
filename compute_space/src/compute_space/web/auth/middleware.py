@@ -18,6 +18,7 @@ from quart.typing import ResponseReturnValue
 from quart.wrappers import Websocket
 
 from compute_space.config import get_config
+from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.auth import resolve_app_from_token
 from compute_space.core.auth.auth import validate_api_token
 from compute_space.core.auth.tokens import create_access_token
@@ -117,7 +118,24 @@ def _try_refresh() -> dict[str, Any] | None:
     if expires_at < datetime.now(UTC):
         return None
 
-    new_access_token = create_access_token(expired_claims["sub"])
+    # Refreshed access tokens must carry the *current* owner.username,
+    # not the stale value captured in the now-expired token.  If the
+    # operator changed their username via /api/settings/owner_username
+    # while their session was alive, the next refresh would otherwise
+    # ship a JWT whose ``sub`` no longer matches the persisted name —
+    # and the proxy's owner-identity check (which compares ``sub`` to
+    # ``owner.username``) would silently start dropping the
+    # ``X-OpenHost-Is-Owner`` header for the rest of the session.
+    #
+    # Refusing to refresh when the owner row has gone away (post-wipe
+    # / pre-setup) matches ``_validate_api_token``'s gate against the
+    # same condition: a stale refresh-token cookie from before the
+    # wipe shouldn't be enough to mint a fresh JWT against the new
+    # zone.
+    current_username = read_owner_username(db)
+    if current_username is None:
+        return None
+    new_access_token = create_access_token(current_username)
     g.new_access_token = new_access_token
     g.refresh_token = refresh_tok
     return decode_access_token(new_access_token)

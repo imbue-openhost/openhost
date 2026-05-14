@@ -18,6 +18,7 @@ import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
+from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.permissions import grant_permissions as grant_permissions_fn
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
@@ -289,6 +290,7 @@ def insert_and_deploy(
         port=config.port,
         zone_domain=config.zone_domain,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        owner_username=read_owner_username(db),
     )
 
     db.execute(
@@ -573,6 +575,7 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         port=config.port,
         zone_domain=config.zone_domain,
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
+        owner_username=read_owner_username(db),
     )
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")

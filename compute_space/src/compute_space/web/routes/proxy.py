@@ -11,6 +11,8 @@ from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
+from compute_space.core.auth.auth import read_owner_username
+from compute_space.db import get_db
 from compute_space.web.auth.cookies import COOKIE_REFRESH
 from compute_space.web.auth.cookies import set_auth_cookies
 from compute_space.web.auth.middleware import _try_refresh
@@ -22,7 +24,26 @@ proxy_bp = Blueprint("proxy", __name__)
 
 
 def _identity_headers(claims: dict[str, str] | None) -> dict[str, str]:
-    if claims and claims.get("sub") == "owner":
+    """Build the per-request identity headers forwarded to apps.
+
+    Emits exactly ``X-OpenHost-Is-Owner: true`` when the bearer's
+    ``sub`` claim matches the persisted ``owner.username``; omits
+    the header otherwise.
+
+    Every successfully-validated JWT in this codebase today belongs
+    to the owner (login + /setup are the only token issuers, and
+    the api_tokens fallback in ``core.auth`` also stamps
+    ``sub = owner.username``).  The DB comparison is therefore
+    strictly redundant on the happy path; we keep it explicit so
+    a future multi-tenant feature that issues non-owner tokens
+    can't silently inherit owner privilege.
+    """
+    if not claims:
+        return {}
+    sub = claims.get("sub")
+    if not sub:
+        return {}
+    if sub == read_owner_username(get_db()):
         return {"X-OpenHost-Is-Owner": "true"}
     return {}
 

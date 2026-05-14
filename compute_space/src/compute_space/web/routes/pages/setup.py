@@ -15,6 +15,8 @@ from quart import url_for
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
+from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
+from compute_space.core.auth.auth import validate_owner_username
 from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
 from compute_space.core.auth.tokens import create_access_token
 from compute_space.core.default_apps import deploy_default_apps
@@ -85,20 +87,52 @@ async def setup() -> ResponseReturnValue:
 
     password = form.get("password", "")
     confirm = form.get("confirm_password", "")
+    # Username is optional; blank submissions fall back to
+    # ``DEFAULT_OWNER_USERNAME`` so a hurried operator can complete
+    # setup without thinking about names, and zones with no
+    # configured username still produce a working SSO claim.  The
+    # operator can change it later from the settings page.
+    username_raw = form.get("username", "").strip()
 
     if not password:
-        return await render_template("setup.html", error="Password is required", claim=form_claim)
+        return await render_template(
+            "setup.html",
+            error="Password is required",
+            claim=form_claim,
+            username=username_raw,
+        )
     if password != confirm:
-        return await render_template("setup.html", error="Passwords do not match", claim=form_claim)
+        return await render_template(
+            "setup.html",
+            error="Passwords do not match",
+            claim=form_claim,
+            username=username_raw,
+        )
+    if username_raw:
+        username_error = validate_owner_username(username_raw)
+        if username_error is not None:
+            return await render_template(
+                "setup.html",
+                error=username_error,
+                claim=form_claim,
+                username=username_raw,
+            )
+        username = username_raw
+    else:
+        username = DEFAULT_OWNER_USERNAME
 
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     db.execute(
-        "INSERT INTO owner (id, username, password_hash) VALUES (1, 'owner', ?)",
-        (password_hash,),
+        "INSERT INTO owner (id, username, password_hash) VALUES (1, ?, ?)",
+        (username, password_hash),
     )
 
-    access_token = create_access_token("owner")
+    # Invariant: the JWT's ``sub``/``username`` claim matches the
+    # persisted ``owner.username``.  Apps that consume the access
+    # token via the OAuth-provider service read this claim, and the
+    # proxy's owner-identity check uses the same comparison.
+    access_token = create_access_token(username)
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(

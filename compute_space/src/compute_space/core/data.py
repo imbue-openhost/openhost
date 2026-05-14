@@ -81,6 +81,7 @@ def provision_data(
     my_openhost_redirect_domain: str,
     zone_domain: str,
     port: int,
+    owner_username: str | None = None,
 ) -> dict[str, str]:
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
@@ -88,6 +89,14 @@ def provision_data(
     Apps only get filesystem access to directories they explicitly request
     via app_data, app_temp_data, and app_archive flags in [data].  SQLite
     entries implicitly enable app_data.
+
+    ``owner_username``, when set, is forwarded as
+    ``OPENHOST_OWNER_USERNAME``.  Apps with SSO integrations (PeerTube,
+    Mastodon, etc.) read this to seed the operator's account name on
+    first login instead of inventing a default that some apps then
+    refuse to rename.  We pass ``None`` (and omit the env var) for
+    pre-setup zones and tests rather than stamp a placeholder, so apps
+    can distinguish "no name configured" from "name = literal 'None'".
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -158,6 +167,9 @@ def provision_data(
     env_vars["OPENHOST_ZONE_DOMAIN"] = zone_domain
 
     env_vars["OPENHOST_MY_REDIRECT_DOMAIN"] = my_openhost_redirect_domain
+
+    if owner_username:
+        env_vars["OPENHOST_OWNER_USERNAME"] = owner_username
 
     return env_vars
 

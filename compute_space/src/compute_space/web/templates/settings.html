@@ -5,6 +5,24 @@
 
 <p id="error" class="error" style="display:none;"></p>
 
+<h3>Owner username</h3>
+<p style="font-size:0.85em; color:#666; margin:0 0 0.5em;">
+  The name apps you install (PeerTube, Mastodon, etc.) use as your
+  account name when they receive your identity from OpenHost. Sign-in
+  only requires the password; this name is for downstream apps.
+  Already-running apps will pick up changes on their next reload.
+</p>
+<div id="username-status">
+  <div style="display:flex; gap:0.5em; align-items:center;">
+    <input type="text" id="username-input"
+           pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,49}" maxlength="50"
+           placeholder="Loading…" disabled style="flex:1;">
+    <button onclick="setOwnerUsername()" class="btn btn-primary"
+            id="set-username-btn" disabled>Save</button>
+  </div>
+  <p id="username-msg" style="margin-top:0.3em; display:none;"></p>
+</div>
+
 <h3>Git Remote</h3>
 <div id="remote-status">
   <div style="display:flex; gap:0.5em; align-items:center;">
@@ -212,6 +230,77 @@ async function restartComputeSpace() {
   showRestartOverlay();
 }
 
+let savedUsername = '';
+
+async function loadOwnerUsername() {
+  const input = document.getElementById('username-input');
+  const btn = document.getElementById('set-username-btn');
+  const msg = document.getElementById('username-msg');
+  try {
+    const resp = await fetch('/api/settings/owner_username');
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'failed to load');
+    savedUsername = data.username || '';
+    input.value = savedUsername;
+    input.placeholder = 'e.g. yourname';
+    input.disabled = false;
+    btn.disabled = true;
+    input.addEventListener('input', () => {
+      const v = input.value.trim();
+      // Save stays disabled when the value matches what's stored
+      // OR is empty.  Server-side rejects empty; this is the
+      // friendlier client-side guard so the operator doesn't
+      // round-trip a bound-to-fail request.
+      btn.disabled = v === savedUsername || v === '';
+    });
+  } catch (e) {
+    // Surface the failure to the operator rather than leaving the
+    // section silently inert.  Both the global error banner and the
+    // section-local message catch this so the user sees a problem
+    // even if they've scrolled past the top of the page.
+    showError('Failed to load owner username: ' + e.message);
+    msg.textContent = 'Failed to load. Reload the page to retry.';
+    msg.className = 'error';
+    msg.style.display = '';
+    input.placeholder = 'Failed to load — reload to retry';
+  }
+}
+
+async function setOwnerUsername() {
+  clearError();
+  const input = document.getElementById('username-input');
+  const btn = document.getElementById('set-username-btn');
+  const msg = document.getElementById('username-msg');
+  const username = input.value.trim();
+  if (!username) return;
+
+  btn.disabled = true;
+  msg.style.display = 'none';
+
+  try {
+    const resp = await fetch('/api/settings/owner_username', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username}),
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'failed to save');
+    savedUsername = data.username;
+    msg.textContent = 'Saved.';
+    msg.className = '';
+    msg.style.color = '#080';
+    msg.style.display = '';
+    setTimeout(() => { msg.style.display = 'none'; }, 4000);
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = 'error';
+    msg.style.color = '';
+    msg.style.display = '';
+    btn.disabled = false;
+  }
+}
+
+loadOwnerUsername();
 loadRemote();
 checkForUpdates();
 </script>

@@ -54,7 +54,10 @@ async def login() -> ResponseReturnValue:
     if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
         return await render_template("login.html", error="Invalid password")
 
-    access_token = create_access_token("owner")
+    # Invariant: the JWT's ``sub``/``username`` claim matches the
+    # persisted ``owner.username``.  Same rule as the /setup path
+    # above; the proxy's owner-identity check relies on it.
+    access_token = create_access_token(owner["username"])
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(
