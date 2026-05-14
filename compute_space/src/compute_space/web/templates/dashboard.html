@@ -61,8 +61,8 @@
 <script id="page-config" type="application/json">
 {
   "apiAppsUrl": {% if apps %}"{{ url_for('api_apps.api_apps') }}"{% else %}null{% endif %},
-  "tokensListUrl": "{{ url_for('api_system.api_tokens_list') }}",
-  "tokensCreateUrl": "{{ url_for('api_system.api_tokens_create') }}"
+  "tokensListUrl": "{{ url_for('system.api_tokens_list') }}",
+  "tokensCreateUrl": "{{ url_for('system.api_tokens_create') }}"
 }
 </script>
 <script src="{{ static_url('js/dashboard.js') }}"></script>

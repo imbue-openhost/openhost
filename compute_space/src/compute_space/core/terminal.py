@@ -9,8 +9,8 @@ import signal
 import struct
 import subprocess
 import termios
-
-from quart.wrappers import Websocket
+from typing import AnyStr
+from typing import Protocol
 
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
@@ -19,12 +19,20 @@ from compute_space.core.updates import wait_for_shutdown
 _active_sessions: dict[int, tuple[subprocess.Popen[bytes], int]] = {}
 
 
+class TerminalWebsocket(Protocol):
+    """Framework-neutral websocket interface used by the terminal bridge."""
+
+    async def send(self, data: bytes) -> None: ...
+
+    async def receive(self) -> AnyStr: ...
+
+
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     """Set the terminal window size on a PTY file descriptor."""
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-async def handle_terminal_ws(ws: Websocket) -> None:
+async def handle_terminal_ws(ws: TerminalWebsocket) -> None:
     """Handle a WebSocket connection by bridging it to a PTY running bash.
 
     Wire protocol:

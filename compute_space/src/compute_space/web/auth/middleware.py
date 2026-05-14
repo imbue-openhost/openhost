@@ -8,25 +8,65 @@ from functools import wraps
 from typing import Any
 from urllib.parse import urlparse
 
+from quart import Request
 from quart import g
 from quart import jsonify
 from quart import redirect
 from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
-from quart.wrappers import Request
 from quart.wrappers import Websocket
 
 from compute_space.config import get_config
-from compute_space.core.auth.auth import get_current_user_from_request
 from compute_space.core.auth.auth import resolve_app_from_token
+from compute_space.core.auth.auth import validate_api_token
 from compute_space.core.auth.tokens import create_access_token
 from compute_space.core.auth.tokens import decode_access_token
 from compute_space.core.auth.tokens import decode_access_token_allow_expired
+from compute_space.core.logging import logger
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import COOKIE_ACCESS
 from compute_space.web.auth.cookies import COOKIE_REFRESH
 from compute_space.web.auth.cookies import clear_auth_cookies
+
+
+def get_current_user_from_request(request: Request | Websocket) -> dict[str, Any] | None:
+    """Extract and verify identity from request cookies or Authorization header.
+
+    Accepts either an HTTP Request or a Websocket — both expose .headers and .cookies.
+    Checks JWT cookie first, then falls back to Authorization: Bearer token.
+    Returns claims dict or None.
+
+    TODO: return something with proper typing!
+    """
+    # Warn on duplicate auth cookies — this happens when cookies were set with
+    # different Domain attributes (e.g. after a config change). The browser
+    # sends both, but only the first is read, which may be stale/invalid.
+    cookie_header = request.headers.get("Cookie", "")
+    dupes = cookie_header.count(f"{COOKIE_ACCESS}=")
+    if dupes > 1:
+        logger.warning(
+            "Duplicate %s cookies detected (%d instances) for %s %s. "
+            "This usually means cookies were set with different Domain attributes. "
+            "The user should clear cookies to fix this.",
+            COOKIE_ACCESS,
+            dupes,
+            getattr(request, "method", "WS"),
+            request.path,
+        )
+
+    token = request.cookies.get(COOKIE_ACCESS)
+    if token:
+        claims = decode_access_token(token)
+        if claims:
+            return claims
+
+    # Fall back to Authorization: Bearer (API tokens)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return validate_api_token(auth_header.removeprefix("Bearer "))
+
+    return None
 
 
 def _wants_json() -> bool:

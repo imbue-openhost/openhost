@@ -10,7 +10,7 @@ import pytest
 from quart import Quart
 
 from compute_space.core.containers import drop_docker_build_cache
-from compute_space.web.auth import api_system as system_routes
+from compute_space.web.routes.api import system as system_routes
 
 
 def test_drop_docker_build_cache_runs_podman_image_prune(

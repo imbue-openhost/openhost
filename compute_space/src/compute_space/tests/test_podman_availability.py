@@ -195,7 +195,7 @@ def test_check_app_status_marks_running_apps_error_when_podman_missing(
 
     monkeypatch.setattr(startup_mod, "start_app_process", boom)
 
-    startup_mod._check_app_status(config)
+    startup_mod.check_app_status(config)
 
     db = sqlite3.connect(config.db_path)
     try:
@@ -230,4 +230,4 @@ def test_check_app_status_podman_missing_no_running_apps_is_fine(
     monkeypatch.setattr(startup_mod, "container_runtime_available", lambda: False)
 
     # Does not raise.  No apps to update so rowcount=0, but that's fine.
-    startup_mod._check_app_status(config)
+    startup_mod.check_app_status(config)

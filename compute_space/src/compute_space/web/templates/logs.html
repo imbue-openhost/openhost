@@ -19,7 +19,7 @@
   }
 
   function fetchLogs() {
-    fetch('{{ url_for("api_system.compute_space_logs") }}', {credentials: 'same-origin'})
+    fetch('{{ url_for("system.compute_space_logs") }}', {credentials: 'same-origin'})
       .then(function(r) { return r.text(); })
       .then(function(text) {
         var sel = window.getSelection();
