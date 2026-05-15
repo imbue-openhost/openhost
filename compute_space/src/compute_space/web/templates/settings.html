@@ -37,6 +37,15 @@
   <p>Checking for updates&hellip;</p>
 </div>
 
+<h3>Change Password</h3>
+<div>
+  <input type="password" id="current-pw" placeholder="Current password" style="margin-bottom:0.3em;">
+  <input type="password" id="new-pw" placeholder="New password" style="margin-bottom:0.3em;">
+  <input type="password" id="confirm-pw" placeholder="Confirm new password" style="margin-bottom:0.3em;">
+  <button onclick="changePassword()" class="btn btn-primary">Change Password</button>
+  <p id="pw-msg" style="display:none; margin-top:0.3em;"></p>
+</div>
+
 <h3>Restart</h3>
 <button onclick="restartComputeSpace()" class="btn btn-danger">Restart compute space</button>
 
@@ -228,6 +237,37 @@ async function restartComputeSpace() {
     // Expected — server may die before responding
   }
   showRestartOverlay();
+}
+
+async function changePassword() {
+  clearError();
+  const msg = document.getElementById('pw-msg');
+  const data = {
+    current_password: document.getElementById('current-pw').value,
+    new_password: document.getElementById('new-pw').value,
+    confirm_password: document.getElementById('confirm-pw').value,
+  };
+  try {
+    const resp = await fetch('/api/settings/change_password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    const result = await resp.json();
+    if (!result.ok) throw new Error(result.error);
+    msg.textContent = 'Password changed successfully';
+    msg.className = '';
+    msg.style.display = '';
+    msg.style.color = '#080';
+    document.getElementById('current-pw').value = '';
+    document.getElementById('new-pw').value = '';
+    document.getElementById('confirm-pw').value = '';
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = 'error';
+    msg.style.display = '';
+    msg.style.color = '';
+  }
 }
 
 let savedUsername = '';

@@ -1,5 +1,6 @@
 import sqlite3
 
+import bcrypt
 import git
 from quart import Blueprint
 from quart import jsonify
@@ -147,6 +148,36 @@ async def restart_compute_space() -> ResponseReturnValue:
     return jsonify({"ok": True})
 
 
+@api_settings_bp.route("/api/settings/change_password", methods=["POST"])
+@login_required
+async def change_password() -> ResponseReturnValue:
+    data = await request.get_json()
+    current = data.get("current_password", "")
+    new_pw = data.get("new_password", "")
+    confirm = data.get("confirm_password", "")
+
+    if not current or not new_pw:
+        return jsonify({"ok": False, "error": "All fields required"}), 400
+    if new_pw != confirm:
+        return jsonify({"ok": False, "error": "Passwords do not match"}), 400
+    if len(new_pw) < 8:
+        return jsonify({"ok": False, "error": "Password must be at least 8 characters"}), 400
+
+    db = get_db()
+    owner = db.execute("SELECT * FROM owner").fetchone()
+    if not owner:
+        return jsonify({"ok": False, "error": "No owner found"}), 404
+
+    if not bcrypt.checkpw(current.encode(), owner["password_hash"].encode()):
+        return jsonify({"ok": False, "error": "Current password is incorrect"}), 403
+
+    new_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
+    db.execute("UPDATE owner SET password_hash = ? WHERE id = 1", (new_hash,))
+    db.commit()
+
+    return jsonify({"ok": True})
+
+
 @api_settings_bp.route("/api/settings/owner_username", methods=["GET"])
 @login_required
 async def get_owner_username() -> ResponseReturnValue:
@@ -154,7 +185,7 @@ async def get_owner_username() -> ResponseReturnValue:
 
     Always returns 200 with the current value (or null if no owner
     row exists, which only happens during the brief window before
-    /setup completes — login_required would normally already reject
+    /setup completes -- login_required would normally already reject
     in that state).
     """
     db = get_db()
@@ -167,7 +198,7 @@ async def set_owner_username() -> ResponseReturnValue:
     """Update the owner's display username.
 
     The new value is forwarded to per-app containers via
-    ``OPENHOST_OWNER_USERNAME`` on their next reload — already-running
+    ``OPENHOST_OWNER_USERNAME`` on their next reload -- already-running
     containers keep the old value until they restart, which mirrors
     how every other ``OPENHOST_*`` env var is plumbed.  We don't
     bounce apps automatically here because that would surprise the
@@ -178,7 +209,7 @@ async def set_owner_username() -> ResponseReturnValue:
         - 400 with an operator-readable error on validation failure
           or pre-setup state (no owner row yet).
         - 500 with a structured error on DB failures (disk full,
-          WAL lock timeout, etc.) — matches the style of the other
+          WAL lock timeout, etc.) -- matches the style of the other
           settings routes on the same page so the dashboard's
           generic error handler can render the message.
         - 200 with the new value on success.
@@ -204,7 +235,7 @@ async def set_owner_username() -> ResponseReturnValue:
         db.commit()
     except ValueError as e:
         # ``update_owner_username`` raises ValueError when the owner
-        # row is missing — this is a 400, not a 500: the operator's
+        # row is missing -- this is a 400, not a 500: the operator's
         # next action is "complete /setup", not "retry".
         return jsonify({"ok": False, "error": str(e)}), 400
     except sqlite3.Error as e:
