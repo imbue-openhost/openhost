@@ -1,3 +1,4 @@
+import bcrypt
 import git
 from quart import Blueprint
 from quart import jsonify
@@ -21,6 +22,7 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
+from compute_space.db import get_db
 from compute_space.web.auth.middleware import login_required
 
 api_settings_bp = Blueprint("api_settings", __name__)
@@ -138,4 +140,34 @@ async def update_repo_state() -> ResponseReturnValue:
 async def restart_compute_space() -> ResponseReturnValue:
     trigger_restart()
     # this response may not get sent, don't depend on it
+    return jsonify({"ok": True})
+
+
+@api_settings_bp.route("/api/settings/change_password", methods=["POST"])
+@login_required
+async def change_password() -> ResponseReturnValue:
+    data = await request.get_json()
+    current = data.get("current_password", "")
+    new_pw = data.get("new_password", "")
+    confirm = data.get("confirm_password", "")
+
+    if not current or not new_pw:
+        return jsonify({"ok": False, "error": "All fields required"}), 400
+    if new_pw != confirm:
+        return jsonify({"ok": False, "error": "Passwords do not match"}), 400
+    if len(new_pw) < 8:
+        return jsonify({"ok": False, "error": "Password must be at least 8 characters"}), 400
+
+    db = get_db()
+    owner = db.execute("SELECT * FROM owner").fetchone()
+    if not owner:
+        return jsonify({"ok": False, "error": "No owner found"}), 404
+
+    if not bcrypt.checkpw(current.encode(), owner["password_hash"].encode()):
+        return jsonify({"ok": False, "error": "Current password is incorrect"}), 403
+
+    new_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
+    db.execute("UPDATE owner SET password_hash = ? WHERE id = 1", (new_hash,))
+    db.commit()
+
     return jsonify({"ok": True})
