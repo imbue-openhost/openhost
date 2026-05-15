@@ -33,8 +33,8 @@ from compute_space.db import get_db
 from compute_space.db import init_db
 from compute_space.db import provide_db
 from compute_space.web.auth.middleware import login_required_redirect
-from compute_space.web.auth.middleware import provide_app_id
-from compute_space.web.auth.middleware import provide_user
+from compute_space.web.auth.middleware import provide_accessor
+from compute_space.web.middleware.auth_accessor import AuthAccessorMiddleware
 from compute_space.web.middleware.auth_refresh import AuthRefreshMiddleware
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.settings import api_settings_routes
@@ -171,15 +171,14 @@ def create_app(config: Config | None = None) -> Litestar:
             api_settings_routes,
             pages_settings_routes,
         ],
-        middleware=[SubdomainProxyMiddleware, AuthRefreshMiddleware],
+        middleware=[SubdomainProxyMiddleware, AuthRefreshMiddleware, AuthAccessorMiddleware],
         template_config=template_config,
         before_request=_require_owner,
         after_request=_close_db_after,
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
             "db": Provide(provide_db, sync_to_thread=False),
-            "user": Provide(provide_user),
-            "app_id": Provide(provide_app_id),
+            "accessor": Provide(provide_accessor),
         },
         exception_handlers={NotAuthorizedException: login_required_redirect},
         on_startup=[_install_template_globals],

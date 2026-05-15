@@ -23,17 +23,21 @@ from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
+from compute_space.core.auth.auth import AuthenticatedAPIKey
+from compute_space.core.auth.auth import AuthenticatedAccessor
+from compute_space.core.auth.auth import AuthenticatedUser
 from compute_space.db import close_db
 from compute_space.db import get_db
-from compute_space.web.auth.middleware import get_current_user
-from compute_space.web.auth.middleware import try_refresh_tokens
+from compute_space.web.auth.authenticator import authenticate
 from compute_space.web.proxy import _scope_host
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
 
 
-def _identity_headers(claims: dict[str, str] | None) -> dict[str, str]:
-    if claims and claims.get("sub") == "owner":
+def _identity_headers(accessor: AuthenticatedAccessor | None) -> dict[str, str]:
+    if isinstance(accessor, AuthenticatedAPIKey):
+        return {"X-OpenHost-Is-Owner": "true"}
+    if isinstance(accessor, AuthenticatedUser) and accessor.username == "owner":
         return {"X-OpenHost-Is-Owner": "true"}
     return {}
 
@@ -95,12 +99,10 @@ class SubdomainProxyMiddleware:
             return
 
         request: Request[Any, Any, Any] = Request(scope, receive, send)
-        claims = get_current_user(request)
-        if claims is None:
-            claims = try_refresh_tokens(request, get_db())
+        accessor = authenticate(request, get_db())
 
         path = scope.get("path", "/")
-        if claims is None and not is_public_path(app_row, path):
+        if accessor is None and not is_public_path(app_row, path):
             proto = headers.get("x-forwarded-proto") or scope.get("scheme", "http")
             redirect_url = f"{proto}://{get_config().zone_domain}/login"
             await ASGIResponse(status_code=302, headers=[("location", redirect_url)], media_type="text/plain")(
@@ -118,7 +120,7 @@ class SubdomainProxyMiddleware:
             scope,
             receive,
             app_row["local_port"],
-            extra_headers=cast(dict[str, str | None], _identity_headers(claims)),
+            extra_headers=cast(dict[str, str | None], _identity_headers(accessor)),
             timeout=timeout,
         )
         await proxied(scope, receive, send)
@@ -128,9 +130,9 @@ class SubdomainProxyMiddleware:
         if app_row and app_row["status"] in ("running", "starting"):
             ws = WebSocket[Any, Any, Any](scope, receive, send)
             connection: ASGIConnection[Any, Any, Any, Any] = ws
-            claims = get_current_user(connection)
+            accessor = authenticate(connection, get_db())
             path = scope.get("path", "/")
-            if claims is not None or is_public_path(app_row, path):
-                await ws_proxy(app_row["local_port"], ws, identity_headers=_identity_headers(claims))
+            if accessor is not None or is_public_path(app_row, path):
+                await ws_proxy(app_row["local_port"], ws, identity_headers=_identity_headers(accessor))
                 return
         await send(cast(Message, {"type": "websocket.close", "code": 1008}))

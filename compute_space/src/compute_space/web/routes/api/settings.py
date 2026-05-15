@@ -24,6 +24,7 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
+from compute_space.web.auth.guards import require_user
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -55,8 +56,8 @@ def _host_prep_fields() -> dict[str, Any]:
     return {"host_prep_ok": True, "container_runtime_available": True}
 
 
-@get("/api/settings/get_remote")
-async def get_remote(user: dict[str, Any], config: Config) -> dict[str, Any]:
+@get("/api/settings/get_remote", guards=[require_user])
+async def get_remote(config: Config) -> dict[str, Any]:
     try:
         url = await get_remote_url(config.openhost_repo_path)
         ref = await get_current_ref(config.openhost_repo_path)
@@ -67,8 +68,8 @@ async def get_remote(user: dict[str, Any], config: Config) -> dict[str, Any]:
     return {"ok": True, "url": url, "ref": ref}
 
 
-@post("/api/settings/set_remote", status_code=200)
-async def set_remote(data: SetRemoteRequest, user: dict[str, Any], config: Config) -> Response[dict[str, Any]]:
+@post("/api/settings/set_remote", status_code=200, guards=[require_user])
+async def set_remote(data: SetRemoteRequest, config: Config) -> Response[dict[str, Any]]:
     """Set git remote URL, injecting a GitHub auth token if available.
 
     A checkout is required so we can persist the ``ref`` setting properly,
@@ -98,8 +99,8 @@ async def set_remote(data: SetRemoteRequest, user: dict[str, Any], config: Confi
     return Response(content={"ok": True, "token_applied": token_applied})
 
 
-@post("/api/settings/check_for_updates", status_code=200)
-async def check_for_updates(user: dict[str, Any], config: Config) -> Response[dict[str, Any]]:
+@post("/api/settings/check_for_updates", status_code=200, guards=[require_user])
+async def check_for_updates(config: Config) -> Response[dict[str, Any]]:
     try:
         state = await check_git_state(config.openhost_repo_path)
     except Exception as e:
@@ -107,8 +108,8 @@ async def check_for_updates(user: dict[str, Any], config: Config) -> Response[di
     return Response(content={"ok": True, "state": str(state), **_host_prep_fields()})
 
 
-@post("/api/settings/update_repo_state", status_code=200)
-async def update_repo_state(user: dict[str, Any], config: Config) -> Response[dict[str, Any]]:
+@post("/api/settings/update_repo_state", status_code=200, guards=[require_user])
+async def update_repo_state(config: Config) -> Response[dict[str, Any]]:
     """git reset to local origin/[branch] + pixi install.
 
     Returns HTTP 409 when the host isn't prepared for the installed runtime.
@@ -125,8 +126,8 @@ async def update_repo_state(user: dict[str, Any], config: Config) -> Response[di
     return Response(content={"ok": True})
 
 
-@post("/api/settings/restart_compute_space", status_code=200)
-async def restart_compute_space(user: dict[str, Any]) -> dict[str, Any]:
+@post("/api/settings/restart_compute_space", status_code=200, guards=[require_user])
+async def restart_compute_space() -> dict[str, Any]:
     trigger_restart()
     # this response may not get sent, don't depend on it
     return {"ok": True}
