@@ -8,8 +8,8 @@ import pytest
 
 from compute_space.config import DefaultConfig
 from compute_space.core.auth.jwt_tokens import create_access_token
-from compute_space.core.auth.jwt_tokens import decode_access_token
 from compute_space.core.auth.jwt_tokens import decode_access_token_allow_expired
+from compute_space.core.auth.jwt_tokens import validate_jwt_access_token
 from compute_space.core.auth.keys import load_keys
 
 # Tests use this as the zone_domain; update _setup_keys if changed.
@@ -48,11 +48,11 @@ def test_access_token_contains_iss_and_aud() -> None:
 
 def test_decode_verifies_aud_and_iss(tmp_path: Path) -> None:
     token = create_access_token("alice")
-    assert decode_access_token(token) is not None
+    assert validate_jwt_access_token(token) is not None
 
     # Different zone rejects token
     with patch("compute_space.core.auth.jwt_tokens.get_config", return_value=_make_cfg(tmp_path, OTHER_ZONE)):
-        assert decode_access_token(token) is None
+        assert validate_jwt_access_token(token) is None
 
 
 def test_decode_allow_expired_verifies_aud_and_iss(tmp_path: Path) -> None:
