@@ -1,21 +1,41 @@
 {% extends "layout.html" %}
-{% block title_suffix %} — Approve Permission{% endblock %}
+{% block title_suffix %} - Approve Permission{% endblock %}
 {% block content %}
-<h2>{{ app_name }} is requesting a permission</h2>
+<h2>Permission Request</h2>
 
-<p>Service: <code>{{ service_url }}</code></p>
+<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; padding:1.5rem; margin:1em 0;">
+  <p><strong>{{ app_name }}</strong> is requesting access to:</p>
+  <p style="margin:0.5em 0; padding:0.5em; background:#fff; border-radius:4px; font-family:monospace;">
+    {{ service_url }}
+  </p>
+
+  {% if grant is mapping %}
+  <table style="width:100%; margin:0.5em 0;">
+    {% for key, value in grant.items() %}
+    <tr>
+      <td style="padding:0.3em; font-weight:bold;">{{ key }}</td>
+      <td style="padding:0.3em;">{{ value }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>Permission: <code>{{ grant }}</code></p>
+  {% endif %}
+</div>
 
 {% if already_granted %}
-<p>This permission is already granted.</p>
+<p style="color:#080;">This permission is already granted.</p>
 {% else %}
-<p>Grant: <code>{{ grant | tojson }}</code></p>
+<div style="display:flex; gap:0.5em; margin-top:1em;">
+  <button type="button" class="btn btn-primary" id="grant-btn">Grant</button>
+  <button type="button" class="btn" id="deny-btn" style="background:#dc3545; color:white;">Deny</button>
+</div>
 
-<button type="button" class="btn btn-primary" id="grant-btn">Grant</button>
 <script>
 document.getElementById("grant-btn").addEventListener("click", async () => {
   const btn = document.getElementById("grant-btn");
   btn.disabled = true;
-  btn.textContent = "Granting…";
+  btn.textContent = "Granting...";
   try {
     const resp = await fetch("/api/permissions/v2/grant_global_scoped", {
       method: "POST",
@@ -31,12 +51,23 @@ document.getElementById("grant-btn").addEventListener("click", async () => {
     if (returnTo) {
       window.location.href = returnTo;
     } else {
-      btn.textContent = "Granted ✓";
+      btn.textContent = "Granted";
+      btn.style.background = "#080";
+      document.getElementById("deny-btn").style.display = "none";
     }
   } catch (e) {
     btn.textContent = "Error";
     btn.disabled = false;
-    alert("Failed to grant permission: " + e.message);
+    alert("Failed: " + e.message);
+  }
+});
+
+document.getElementById("deny-btn").addEventListener("click", () => {
+  const returnTo = {{ (redirect_url or '') | tojson }};
+  if (returnTo) {
+    window.location.href = returnTo;
+  } else {
+    window.history.back();
   }
 });
 </script>
