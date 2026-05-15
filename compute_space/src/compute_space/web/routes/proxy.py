@@ -61,7 +61,9 @@ async def _app_subdomain_routing() -> ResponseReturnValue | None:
 
     if claims is None and not is_public_path(app_row, request.path):
         proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-        original_url = f"{proto}://{request.host}{request.full_path}"
+        forwarded_host = request.headers.get("X-Forwarded-Host", request.host)
+        path = request.full_path.rstrip("?")
+        original_url = f"https://{forwarded_host}{path}"
         return redirect(f"{proto}://{get_config().zone_domain}/login?next={quote(original_url, safe='')}")
 
     # Use a longer timeout for large requests (e.g. migration data transfers)

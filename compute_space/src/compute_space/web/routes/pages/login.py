@@ -3,6 +3,7 @@ import secrets
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 import bcrypt
@@ -45,7 +46,11 @@ async def login() -> ResponseReturnValue:
 
     if request.method == "GET":
         if has_stale_cookies:
-            response = redirect(url_for("auth.login"))
+            next_param = request.args.get("next", "")
+            login_url = url_for("auth.login")
+            if next_param:
+                login_url += f"?next={quote(next_param, safe='')}"
+            response = redirect(login_url)
             clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
             return response
         return await render_template("login.html", next=request.args.get("next", ""))
