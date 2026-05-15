@@ -16,8 +16,8 @@ from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
 
-from compute_space.core.auth.cookies import CookieSpec
-from compute_space.core.auth.cookies import build_auth_cookies
+from compute_space.web.auth.cookies import CookieSpec
+from compute_space.web.auth.cookies import build_auth_cookies
 
 
 def _serialize_cookie(spec: CookieSpec) -> bytes:

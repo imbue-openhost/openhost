@@ -14,10 +14,10 @@ from quart.wrappers import Request as QuartRequest
 from quart.wrappers import Websocket as QuartWebsocket
 from werkzeug.datastructures import Headers
 
-from compute_space.core.auth.cookies import COOKIE_ACCESS
-from compute_space.core.auth.cookies import COOKIE_REFRESH
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
+from compute_space.web.auth.cookies import COOKIE_ACCESS
+from compute_space.web.auth.cookies import COOKIE_REFRESH
 
 # Zone auth cookies must never reach a backend app — apps share the zone
 # domain, so forwarding these would let any app replay the owner's session

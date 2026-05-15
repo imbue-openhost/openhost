@@ -18,6 +18,7 @@ from litestar.template.config import TemplateConfig
 
 from compute_space.config import Config
 from compute_space.config import load_config
+from compute_space.config import provide_config
 from compute_space.config import set_active_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.identity import load_identity_keys
@@ -38,38 +39,6 @@ from compute_space.web.middleware.auth_refresh import AuthRefreshMiddleware
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.settings import api_settings_routes
 from compute_space.web.routes.pages.settings import pages_settings_routes
-
-# Endpoint-name → URL-path map used by the templating ``url_for`` shim.
-# Subsequent PRs will add entries as they port more routes; entries here for
-# unmigrated routes ensure templates still render plausible hrefs even though
-# clicking them will 404 until the route is ported.
-_ROUTE_NAME_TO_PATH: dict[str, str] = {
-    "pages_settings.settings_page": "/settings",
-    # Layout nav — paths kept identical to the unmigrated Quart routes so the
-    # nav doesn't visibly break when those pages are migrated later.
-    "apps.dashboard": "/dashboard",
-    "apps.add_app": "/add_app",
-    "apps.app_detail": "/app_detail/{app_id}",
-    "pages_system.system_page": "/system",
-    "pages_system.logs_page": "/logs",
-    "pages_system.terminal_page": "/terminal",
-}
-
-
-def _url_for(endpoint: str, **kwargs: Any) -> str:
-    """Jinja shim for Quart's ``url_for``.
-
-    Returns the path for ``endpoint`` from ``_ROUTE_NAME_TO_PATH`` with any
-    keyword args interpolated.  Unknown endpoints fall back to ``"#"`` so the
-    template renders rather than crashes.
-    """
-    template = _ROUTE_NAME_TO_PATH.get(endpoint, "#")
-    if kwargs:
-        try:
-            return template.format(**kwargs)
-        except (KeyError, IndexError):
-            return template
-    return template
 
 
 def _make_static_url(static_dir: Path) -> Any:
@@ -104,7 +73,6 @@ def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
         "zone_domain": zone_domain,
         "app_url": app_url,
         "static_url": _make_static_url(static_dir),
-        "url_for": _url_for,
     }
 
 
@@ -208,6 +176,7 @@ def create_app(config: Config | None = None) -> Litestar:
         before_request=_require_owner,
         after_request=_close_db_after,
         dependencies={
+            "config": Provide(provide_config, sync_to_thread=False),
             "db": Provide(provide_db, sync_to_thread=False),
             "user": Provide(provide_user),
             "app_id": Provide(provide_app_id),

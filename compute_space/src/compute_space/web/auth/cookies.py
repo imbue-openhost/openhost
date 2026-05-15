@@ -1,44 +1,96 @@
-"""Quart-side cookie wrappers — translate framework-neutral CookieSpec to Response.set_cookie.
+from typing import Literal
 
-Used by the unmigrated Quart route files (setup, login, etc.).  Migrated
-Litestar handlers should construct ``litestar.datastructures.Cookie`` from
-``CookieSpec`` directly instead of going through these wrappers.
-"""
+import attr
 
-from quart import Request
-from quart import Response
+from compute_space.config import get_config
+from compute_space.core.auth.tokens import ACCESS_TOKEN_EXPIRY
+from compute_space.core.auth.tokens import REFRESH_GRACE_PERIOD
+from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
 
-from compute_space.core.auth.cookies import COOKIE_ACCESS as COOKIE_ACCESS
-from compute_space.core.auth.cookies import COOKIE_REFRESH as COOKIE_REFRESH
-from compute_space.core.auth.cookies import build_auth_cookies
-from compute_space.core.auth.cookies import cleared_auth_cookies
+COOKIE_ACCESS = "zone_auth"
+COOKIE_REFRESH = "zone_refresh"
+
+SameSite = Literal["lax", "strict", "none"]
 
 
-def set_auth_cookies(
-    response: Response,
+@attr.s(auto_attribs=True, frozen=True)
+class CookieSpec:
+    name: str
+    value: str
+    path: str = "/"
+    domain: str | None = None
+    max_age: int | None = None
+    secure: bool = False
+    http_only: bool = True
+    same_site: SameSite = "lax"
+
+
+def cookie_domain(request_host: str | None) -> str | None:
+    """Return the cookie domain to set, or None to use the request host.
+
+    When ``zone_domain`` is configured and the request comes from that zone (or
+    a subdomain), set the cookie domain explicitly so the cookie is shared with
+    app subdomains.  When the request comes from an unrelated host (e.g.
+    127.0.0.1) return None so the browser doesn't reject the Set-Cookie.
+    """
+    zone = get_config().zone_domain
+    if not zone:
+        return None
+    zone_no_port = zone.split(":")[0]
+    if request_host:
+        host_no_port = request_host.split(":")[0]
+        if host_no_port != zone_no_port and not host_no_port.endswith("." + zone_no_port):
+            return None
+    return zone_no_port
+
+
+def build_auth_cookies(
     access_token: str,
     refresh_token: str | None = None,
-    request: Request | None = None,
-) -> Response:
-    """Set zone_auth (and optionally zone_refresh) cookies on a Quart Response."""
-    request_host = request.host if request else None
-    for spec in build_auth_cookies(access_token, refresh_token, request_host=request_host):
-        response.set_cookie(
-            spec.name,
-            spec.value,
-            path=spec.path,
-            domain=spec.domain,
-            max_age=spec.max_age,
-            secure=spec.secure,
-            httponly=spec.http_only,
-            samesite=spec.same_site.capitalize(),
+    request_host: str | None = None,
+) -> list[CookieSpec]:
+    """Build the cookies to set after login or token refresh."""
+    domain = cookie_domain(request_host)
+    secure = get_config().tls_enabled
+    cookies = [
+        CookieSpec(
+            name=COOKIE_ACCESS,
+            value=access_token,
+            domain=domain,
+            max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
+            secure=secure,
         )
-    return response
+    ]
+    if refresh_token:
+        cookies.append(
+            CookieSpec(
+                name=COOKIE_REFRESH,
+                value=refresh_token,
+                domain=domain,
+                max_age=REFRESH_TOKEN_EXPIRY,
+                secure=secure,
+            )
+        )
+    return cookies
 
 
-def clear_auth_cookies(response: Response, request: Request | None = None) -> Response:
-    """Delete the auth cookies on a Quart Response."""
-    request_host = request.host if request else None
-    for spec in cleared_auth_cookies(request_host):
-        response.delete_cookie(spec.name, path=spec.path, domain=spec.domain)
-    return response
+def cleared_auth_cookies(request_host: str | None = None) -> list[CookieSpec]:
+    """Build deletion cookies for the auth cookies.
+
+    Emits both with the computed domain and without, so we clear stale cookies
+    that may have been set with a different ``Domain`` attribute (e.g. after
+    switching TLS mode or changing zone_domain).
+    """
+    domain = cookie_domain(request_host)
+    cookies: list[CookieSpec] = [
+        CookieSpec(name=COOKIE_ACCESS, value="", domain=domain, max_age=0),
+        CookieSpec(name=COOKIE_REFRESH, value="", domain=domain, max_age=0),
+    ]
+    if domain is not None:
+        cookies.extend(
+            [
+                CookieSpec(name=COOKIE_ACCESS, value="", max_age=0),
+                CookieSpec(name=COOKIE_REFRESH, value="", max_age=0),
+            ]
+        )
+    return cookies

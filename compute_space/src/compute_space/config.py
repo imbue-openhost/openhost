@@ -227,3 +227,13 @@ def get_config() -> Config:
     if _active_config is None:
         raise RuntimeError("set_active_config() must be called before get_config()")
     return _active_config
+
+
+def provide_config() -> Config:
+    """Litestar dependency: hand the active config to a route or other dep.
+
+    Wraps ``get_config()`` so handlers can take ``config: Config`` instead of
+    calling the module-level accessor.  ``get_config()`` stays available for
+    non-DI callers (middleware, ``core/`` helpers).
+    """
+    return get_config()

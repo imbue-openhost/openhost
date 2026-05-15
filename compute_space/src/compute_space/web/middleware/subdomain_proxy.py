@@ -4,13 +4,12 @@ If the host doesn't parse as an app subdomain, or the owner hasn't been verified
 the regular Litestar router.
 """
 
-import hashlib
-from datetime import UTC
-from datetime import datetime
 from typing import Any
 from typing import cast
 
+from litestar import Request
 from litestar import WebSocket
+from litestar.connection import ASGIConnection
 from litestar.enums import ScopeType
 from litestar.types import ASGIApp
 from litestar.types import Message
@@ -19,13 +18,13 @@ from litestar.types import Scope
 from litestar.types import Send
 
 from compute_space.config import get_config
-from compute_space.core import auth
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.apps import is_public_path
 from compute_space.core.apps import parse_app_from_host
-from compute_space.core.auth.inputs import AuthInputs
 from compute_space.db import close_db
 from compute_space.db import get_db
+from compute_space.web.auth.middleware import get_current_user
+from compute_space.web.auth.middleware import try_refresh_tokens
 from compute_space.web.proxy import ProxiedResponse
 from compute_space.web.proxy import _scope_host
 from compute_space.web.proxy import proxy_request
@@ -36,38 +35,6 @@ def _identity_headers(claims: dict[str, str] | None) -> dict[str, str]:
     if claims and claims.get("sub") == "owner":
         return {"X-OpenHost-Is-Owner": "true"}
     return {}
-
-
-def _scope_cookies(scope: Scope) -> dict[str, str]:
-    cookies: dict[str, str] = {}
-    for key, value in scope.get("headers", []):
-        if key.lower() == b"cookie":
-            for part in value.decode("latin-1").split(";"):
-                part = part.strip()
-                if "=" in part:
-                    name, _, val = part.partition("=")
-                    cookies[name.strip()] = val.strip()
-    return cookies
-
-
-def _auth_inputs_from_scope(scope: Scope) -> AuthInputs:
-    cookies = _scope_cookies(scope)
-    cookie_header = ""
-    auth_header = ""
-    for key, value in scope.get("headers", []):
-        lower = key.lower()
-        if lower == b"cookie":
-            cookie_header = value.decode("latin-1")
-        elif lower == b"authorization":
-            auth_header = value.decode("latin-1")
-    method = str(scope.get("method") or ("WS" if scope["type"] == ScopeType.WEBSOCKET else "GET"))
-    return AuthInputs(
-        cookies=cookies,
-        cookie_header=cookie_header,
-        auth_header=auth_header,
-        method=method,
-        path=scope.get("path", "/"),
-    )
 
 
 def _content_length(scope: Scope) -> int:
@@ -85,38 +52,6 @@ def _is_websocket_upgrade(scope: Scope) -> bool:
         if key.lower() == b"upgrade" and value.lower() == b"websocket":
             return True
     return False
-
-
-def _try_refresh_for_scope(scope: Scope) -> dict[str, Any] | None:
-    cookies = _scope_cookies(scope)
-    refresh_tok = cookies.get(auth.COOKIE_REFRESH)
-    if not refresh_tok:
-        return None
-    expired_jwt = cookies.get(auth.COOKIE_ACCESS)
-    if not expired_jwt:
-        return None
-    expired_claims = auth.decode_access_token_allow_expired(expired_jwt)
-    if expired_claims is None:
-        return None
-    refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
-    rt = (
-        get_db()
-        .execute(
-            "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
-            (refresh_tok_hash,),
-        )
-        .fetchone()
-    )
-    if rt is None:
-        return None
-    expires_at = datetime.fromisoformat(rt["expires_at"])
-    if expires_at < datetime.now(UTC):
-        return None
-    new_access_token = auth.create_access_token(expired_claims["sub"])
-    state = scope.setdefault("state", {})
-    state["new_access_token"] = new_access_token
-    state["refresh_token"] = refresh_tok
-    return auth.decode_access_token(new_access_token)
 
 
 def _owner_verified(scope: Scope) -> bool:
@@ -202,9 +137,10 @@ class SubdomainProxyMiddleware:
             await _send_simple(send, 404, f"App '{app_subdomain}' not found".encode())
             return
 
-        claims = auth.get_current_user(_auth_inputs_from_scope(scope))
+        request: Request[Any, Any, Any] = Request(scope, receive, send)
+        claims = get_current_user(request)
         if claims is None:
-            claims = _try_refresh_for_scope(scope)
+            claims = try_refresh_tokens(request, get_db())
 
         path = scope.get("path", "/")
         if claims is None and not is_public_path(app_row, path):
@@ -226,10 +162,11 @@ class SubdomainProxyMiddleware:
     async def _handle_websocket(self, scope: Scope, receive: Receive, send: Send, app_subdomain: str) -> None:
         app_row = find_app_by_name(app_subdomain)
         if app_row and app_row["status"] in ("running", "starting"):
-            claims = auth.get_current_user(_auth_inputs_from_scope(scope))
+            ws = WebSocket[Any, Any, Any](scope, receive, send)
+            connection: ASGIConnection[Any, Any, Any, Any] = ws
+            claims = get_current_user(connection)
             path = scope.get("path", "/")
             if claims is not None or is_public_path(app_row, path):
-                ws = WebSocket[Any, Any, Any](scope, receive, send)
                 await ws_proxy(app_row["local_port"], ws, identity_headers=_identity_headers(claims))
                 return
         await send(cast(Message, {"type": "websocket.close", "code": 1008}))
