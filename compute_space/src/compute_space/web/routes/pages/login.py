@@ -39,7 +39,7 @@ async def login() -> ResponseReturnValue:
     db = get_db()
     owner = db.execute("SELECT * FROM owner").fetchone()
     if owner is None:
-        return redirect(url_for("auth.setup"))
+        return redirect(url_for("setup.setup"))
 
     if request.method == "GET":
         if has_stale_cookies:
