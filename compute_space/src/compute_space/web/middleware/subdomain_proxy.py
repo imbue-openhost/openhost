@@ -1,7 +1,6 @@
 """ASGI middleware that proxies app-subdomain requests directly to backend ports.
 
-If the host doesn't parse as an app subdomain, or the owner hasn't been verified yet, the request is passed through to
-the regular Litestar router.
+If the host doesn't parse as an app subdomain the request is passed through to the regular Litestar router.
 """
 
 from typing import Any
@@ -42,16 +41,6 @@ def _identity_headers(accessor: AuthenticatedAccessor | None) -> dict[str, str]:
     return {}
 
 
-def _owner_verified(scope: Scope) -> bool:
-    app = scope.get("app")
-    if app is None:
-        return False
-    state = getattr(app, "state", None)
-    if state is None:
-        return False
-    return bool(getattr(state, "owner_verified", False))
-
-
 class SubdomainProxyMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -59,10 +48,6 @@ class SubdomainProxyMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope_type = scope["type"]
         if scope_type not in (ScopeType.HTTP, ScopeType.WEBSOCKET):
-            await self.app(scope, receive, send)
-            return
-
-        if not _owner_verified(scope):
             await self.app(scope, receive, send)
             return
 

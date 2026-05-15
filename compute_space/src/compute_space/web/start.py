@@ -1,6 +1,7 @@
 import asyncio
 import os
 import signal
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -9,16 +10,22 @@ from typing import Any
 import hypercorn.asyncio
 import hypercorn.config
 
+from compute_space.config import Config
 from compute_space.config import load_config
+from compute_space.config import set_active_config
+from compute_space.core.auth.keys import load_keys
 from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
 from compute_space.core.logging import logger
+from compute_space.core.logging import setup_file_logging
 from compute_space.core.terminal import cleanup_all as cleanup_terminal_sessions
 from compute_space.core.tls.acquire_cert import acquire_tls_cert
 from compute_space.core.tls.acquire_cert import check_if_cert_exists
 from compute_space.core.updates import RESTART_EXIT_CODE
 from compute_space.core.updates import initialize_shutdown_event
+from compute_space.db import init_db
 from compute_space.web.app import create_app
+from compute_space.web.setup_app import create_setup_app
 
 
 def _terminate_children(children: list[subprocess.Popen[bytes]]) -> None:
@@ -34,12 +41,29 @@ def _terminate_children(children: list[subprocess.Popen[bytes]]) -> None:
             proc.kill()
 
 
+def _bootstrap(config: Config) -> None:
+    """One-time process-wide initialization shared by the setup and full apps."""
+    set_active_config(config)
+    setup_file_logging(Path(os.path.dirname(config.db_path)) / "compute_space.log")
+    load_keys(config.keys_dir)
+    init_db(config.db_path)
+
+
+def _owner_exists(config: Config) -> bool:
+    db = sqlite3.connect(config.db_path)
+    try:
+        return db.execute("SELECT 1 FROM owner LIMIT 1").fetchone() is not None
+    finally:
+        db.close()
+
+
 def main() -> None:
     # Allow group members to write files/dirs we create (files 664, dirs 775).
     os.umask(0o002)
 
     config = load_config()
     config.make_all_dirs()
+    _bootstrap(config)
     children: list[subprocess.Popen[bytes]] = []
 
     if config.coredns_enabled:
@@ -82,14 +106,24 @@ def main() -> None:
         if config.tls_enabled:
             raise RuntimeError("TLS is enabled but start_caddy is False. Caddy is required for TLS termination.")
 
-    # Main web server
-    app = create_app(config)
-
     hypercorn_config = hypercorn.config.Config()
     hypercorn_config.bind = [f"{config.host}:{config.port}"]
     hypercorn_config.graceful_timeout = 3
     hypercorn_config.shutdown_timeout = 5
 
+    # First-boot setup: serve a minimal app until the owner is provisioned.  The setup
+    # handler triggers shutdown via trigger_restart(); we then proceed to the full app
+    if not _owner_exists(config):
+        logger.info("No owner row found; serving setup-only app")
+        setup_completed = asyncio.run(_serve(create_setup_app(config), hypercorn_config))
+        if not setup_completed:
+            logger.info("Setup interrupted by signal; exiting")
+            _terminate_children(children)
+            time.sleep(0.1)
+            os._exit(0)
+
+    # Main web server
+    app = create_app(config)
     logger.info("running hypercorn serve")
     restart_requested = asyncio.run(_serve(app, hypercorn_config))
     logger.info(f"hypercorn serve returned, restart_requested={restart_requested}")
