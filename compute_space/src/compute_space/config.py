@@ -8,7 +8,6 @@ import attr
 import cattrs
 import tomli_w
 import typed_settings
-from quart import current_app
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -210,10 +209,21 @@ def load_config() -> Config:
         return typed_settings.load(DefaultConfig, appname="openhost")
 
 
-def get_config() -> Config:
-    """Get the Config object from the current Quart app context.
+_active_config: Config | None = None
 
-    This is just a helper to make type checking work,
-    vs accessing app.openhost_config directly which would be unytped.
+
+def set_active_config(config: Config) -> None:
+    """Register the active config for the running web app.
+
+    Called once at app-factory time so ``get_config()`` works framework-neutrally
+    (the previous Quart implementation read it from ``current_app``).
     """
-    return current_app.openhost_config  # type: ignore[attr-defined, no-any-return]
+    global _active_config
+    _active_config = config
+
+
+def get_config() -> Config:
+    """Return the active config registered via ``set_active_config``."""
+    if _active_config is None:
+        raise RuntimeError("set_active_config() must be called before get_config()")
+    return _active_config

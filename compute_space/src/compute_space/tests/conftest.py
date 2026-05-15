@@ -49,19 +49,6 @@ def _resolve_test_zone_to_localhost() -> Iterator[None]:
         socket.getaddrinfo = real_getaddrinfo
 
 
-class _FakeApp:
-    """Minimal Quart-like stand-in exposing just ``.config['DB_PATH']``.
-
-    Used by tests that call ``compute_space.db.connection.init_db``
-    (which reads ``app.config['DB_PATH']``) without setting up a real
-    Quart app.  Lives in conftest so every test module that needs one
-    can import a single shared implementation.
-    """
-
-    def __init__(self, db_path: str) -> None:
-        self.config = {"DB_PATH": db_path}
-
-
 def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
     """Create a DefaultConfig with temp dirs under tmp_path. Returns the Config object."""
     cfg = DefaultConfig(

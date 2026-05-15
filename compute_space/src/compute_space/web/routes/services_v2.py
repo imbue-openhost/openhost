@@ -36,8 +36,8 @@ from compute_space.core.services_v2 import resolve_provider
 from compute_space.db import get_db
 from compute_space.web.auth.middleware import _app_from_origin
 from compute_space.web.auth.middleware import app_auth_required
-from compute_space.web.proxy import proxy_request
-from compute_space.web.proxy import ws_proxy
+from compute_space.web.proxy import proxy_request_quart as proxy_request
+from compute_space.web.proxy import ws_proxy_quart as ws_proxy
 
 services_v2_bp = Blueprint("services_v2", __name__)
 
@@ -313,7 +313,7 @@ async def service_call_ws(shortname: str, rest: str) -> None:
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
     await ws_proxy(
         provider_port,
-        client_ws=websocket,
+        websocket,
         identity_headers={
             "X-OpenHost-Permissions": grants_json,
             **_consumer_identity_headers(consumer_app_id),

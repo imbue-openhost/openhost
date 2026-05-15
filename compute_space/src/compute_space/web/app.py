@@ -4,15 +4,21 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from quart import Quart
-from quart import current_app
-from quart import redirect
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from litestar import Litestar
+from litestar import Request
+from litestar import Response
+from litestar.contrib.jinja import JinjaTemplateEngine
+from litestar.datastructures import State
+from litestar.di import Provide
+from litestar.exceptions import NotAuthorizedException
+from litestar.openapi.config import OpenAPIConfig
+from litestar.response import Redirect
+from litestar.static_files import create_static_files_router
+from litestar.template.config import TemplateConfig
 
 from compute_space.config import Config
 from compute_space.config import load_config
+from compute_space.config import set_active_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.identity import load_identity_keys
 from compute_space.core.auth.keys import load_keys
@@ -24,15 +30,87 @@ from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import get_db
 from compute_space.db import init_db
-from compute_space.web.routes.pages.setup import setup_bp
+from compute_space.db import provide_db
+from compute_space.web.auth.middleware import login_required_redirect
+from compute_space.web.auth.middleware import provide_app_id
+from compute_space.web.auth.middleware import provide_user
+from compute_space.web.middleware.auth_refresh import AuthRefreshMiddleware
+from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
+from compute_space.web.routes.api.settings import api_settings_routes
+from compute_space.web.routes.pages.settings import pages_settings_routes
 
-# ─── App Factory ───
+# Endpoint-name → URL-path map used by the templating ``url_for`` shim.
+# Subsequent PRs will add entries as they port more routes; entries here for
+# unmigrated routes ensure templates still render plausible hrefs even though
+# clicking them will 404 until the route is ported.
+_ROUTE_NAME_TO_PATH: dict[str, str] = {
+    "pages_settings.settings_page": "/settings",
+    # Layout nav — paths kept identical to the unmigrated Quart routes so the
+    # nav doesn't visibly break when those pages are migrated later.
+    "apps.dashboard": "/dashboard",
+    "apps.add_app": "/add_app",
+    "apps.app_detail": "/app_detail/{app_id}",
+    "pages_system.system_page": "/system",
+    "pages_system.logs_page": "/logs",
+    "pages_system.terminal_page": "/terminal",
+}
 
 
-def init_app(app: Quart) -> None:
-    """Initialize DB and app state. Call after data directories are ready."""
-    config = app.openhost_config  # type: ignore[attr-defined]
-    init_db(app)
+def _url_for(endpoint: str, **kwargs: Any) -> str:
+    """Jinja shim for Quart's ``url_for``.
+
+    Returns the path for ``endpoint`` from ``_ROUTE_NAME_TO_PATH`` with any
+    keyword args interpolated.  Unknown endpoints fall back to ``"#"`` so the
+    template renders rather than crashes.
+    """
+    template = _ROUTE_NAME_TO_PATH.get(endpoint, "#")
+    if kwargs:
+        try:
+            return template.format(**kwargs)
+        except (KeyError, IndexError):
+            return template
+    return template
+
+
+def _make_static_url(static_dir: Path) -> Any:
+    """Build a Jinja ``static_url`` global that appends ``?v=<mtime>`` for cache-busting.
+
+    Browsers aggressively cache static JS/CSS, so a deploy that ships a new
+    template + JS would otherwise leave returning visitors running stale JS
+    against new HTML.  Appending the file's mtime forces a fresh fetch.
+    """
+
+    def static_url(filename: str) -> str:
+        base = f"/static/{filename}"
+        try:
+            mtime = int((static_dir / filename).stat().st_mtime)
+        except OSError:
+            return base
+        return f"{base}?v={mtime}"
+
+    return static_url
+
+
+def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
+    zone_domain = config.zone_domain
+    zone_name = zone_domain.split(".")[0] if zone_domain else None
+
+    def app_url(app_name: str) -> str:
+        proto = "https" if config.tls_enabled else "http"
+        return f"{proto}://{app_name}.{zone_domain}/"
+
+    return {
+        "zone_name": zone_name,
+        "zone_domain": zone_domain,
+        "app_url": app_url,
+        "static_url": _make_static_url(static_dir),
+        "url_for": _url_for,
+    }
+
+
+def _bootstrap(config: Config) -> None:
+    """Initialize DB and on-startup app state.  Must be called before the Litestar app handles requests."""
+    init_db(config.db_path)
     db = sqlite3.connect(config.db_path)
     try:
         archive_backend.attach_on_startup(config, db)
@@ -44,149 +122,98 @@ def init_app(app: Quart) -> None:
     retry_pending_default_apps(config)
 
 
-def create_app(config: Config | None = None) -> Quart:
+_PUBLIC_PATHS: frozenset[str] = frozenset(
+    {
+        "/setup",
+        "/health",
+        "/.well-known/jwks.json",
+        "/.well-known/openhost-identity",
+    }
+)
+
+
+async def _require_owner(request: Request[Any, Any, Any]) -> Response[Any] | None:
+    """Redirect to /setup if no owner exists yet, except for public bootstrap paths."""
+    state: State = request.app.state
+    if getattr(state, "owner_verified", False):
+        return None
+
+    path = request.url.path
+    if path in _PUBLIC_PATHS:
+        return None
+    # Docs (``/docs/`` landing + ``/docs/<anything>``) must be readable
+    # before the zone owner is provisioned — operators usually consult them
+    # *before* finishing setup.
+    if path == "/docs" or path.startswith("/docs/"):
+        return None
+    # OpenAPI schema and explorer UIs are public.
+    if path == "/openapi" or path.startswith("/openapi/"):
+        return None
+    # Static assets are public — the dashboard will fetch CSS/JS before login.
+    if path.startswith("/static/"):
+        return None
+
+    db = get_db()
+    owner = db.execute("SELECT 1 FROM owner LIMIT 1").fetchone()
+    if owner is not None:
+        state.owner_verified = True
+        return None
+
+    claim = request.query_params.get("claim", "")
+    target = f"/setup?claim={claim}" if claim else "/setup"
+    return Redirect(path=target)
+
+
+async def _close_db_after(response: Response[Any]) -> Response[Any]:
+    close_db()
+    return response
+
+
+def create_app(config: Config | None = None) -> Litestar:
     if config is None:
         config = load_config()
-
-    app = Quart(__name__)
-    app.openhost_config = config  # type: ignore[attr-defined]
-    app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
-    app.config["DB_PATH"] = config.db_path
-    # Allow large request bodies for migration and data transfers
-    app.config["MAX_CONTENT_LENGTH"] = None
+    set_active_config(config)
 
     setup_file_logging(Path(os.path.dirname(config.db_path)) / "compute_space.log")
-
-    # Load auth keys
     load_keys(config.keys_dir)
 
-    # Register teardown
-    app.teardown_appcontext(close_db)
+    _bootstrap(config)
 
-    # Register blueprints (imported here per Flask/Quart convention - blueprints have globals/side effects)
-    from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.archive_backend import api_archive_backend_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.identity import identity_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.services_v2 import api_services_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.settings import api_settings_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.system import system_bp  # noqa: PLC0415
-    from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.login import auth_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.settings import pages_settings_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.system import pages_system_bp  # noqa: PLC0415
-    from compute_space.web.routes.proxy import proxy_bp  # noqa: PLC0415
-    from compute_space.web.routes.services_v2 import services_v2_bp  # noqa: PLC0415
+    web_dir = Path(__file__).parent
+    static_dir = web_dir / "static"
+    template_dir = web_dir / "templates"
 
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(apps_bp)
-    app.register_blueprint(pages_settings_bp)
-    app.register_blueprint(pages_system_bp)
-    app.register_blueprint(api_apps_bp)
-    app.register_blueprint(api_archive_backend_bp)
-    app.register_blueprint(api_settings_bp)
-    app.register_blueprint(system_bp)
-    app.register_blueprint(services_v2_bp)
-    app.register_blueprint(setup_bp)
-    app.register_blueprint(api_services_v2_bp)
-    app.register_blueprint(api_permissions_v2_bp)
-    app.register_blueprint(pages_permissions_v2_bp)
-    app.register_blueprint(identity_bp)
-    # Register docs BEFORE the catch-all proxy so /docs/... is
-    # always handled by the docs blueprint regardless of whether
-    # a user happens to have deployed an app named "docs".
-    app.register_blueprint(docs_bp)
-    app.register_blueprint(
-        proxy_bp
-    )  # last — has catch-all; registers before_app_request / before_app_websocket subdomain hooks
+    template_config: TemplateConfig[JinjaTemplateEngine] = TemplateConfig(
+        directory=template_dir,
+        engine=JinjaTemplateEngine,
+    )
 
-    # Initialize DB and app state
-    init_app(app)
+    def _install_template_globals(app: Litestar) -> None:
+        engine = app.template_engine
+        if isinstance(engine, JinjaTemplateEngine):
+            engine.engine.globals.update(_template_globals(config, static_dir))
 
-    # ─── Before-request hooks ───
+    static_router = create_static_files_router(path="/static", directories=[static_dir])
 
-    @app.before_request
-    async def _require_owner() -> ResponseReturnValue | None:
-        """Redirect to setup if no owner has been created yet."""
-        if getattr(app, "_owner_verified", False):
-            return None
-        if request.path in ("/setup", "/health"):
-            return None
-        # Docs ("/docs/" landing + "/docs/<anything>") must be
-        # readable even before the zone owner has been provisioned
-        # — the docs are usually what an operator consults BEFORE
-        # finishing setup.  The docs blueprint itself is public
-        # (no @login_required), but the before-request hook above
-        # would otherwise redirect every pre-setup request to
-        # /setup.  Whitelist /docs explicitly here.
-        if request.path == "/docs" or request.path.startswith("/docs/"):
-            return None
-        db = get_db()
-        owner = db.execute("SELECT 1 FROM owner LIMIT 1").fetchone()
-        if owner is not None:
-            app._owner_verified = True  # type: ignore[attr-defined]
-            return None
-        claim = request.args.get("claim", "")
-        return redirect(url_for("auth.setup", claim=claim) if claim else url_for("auth.setup"))
-
-    # ─── Context processor ───
-
-    @app.context_processor
-    async def _inject_zone_name() -> dict[str, Any]:
-        """Make zone_name and app_url helper available in all templates."""
-        zone_domain: str | None = config.zone_domain
-        if zone_domain:
-            zone_name: str | None = zone_domain.split(".")[0]
-        else:
-            ext_host: str = request.headers.get("X-Forwarded-Host", request.host).split(":")[0]
-            parts: list[str] = ext_host.split(".")
-            zone_name = parts[0] if len(parts) > 2 else None
-
-        proto: str = request.headers.get("X-Forwarded-Proto", request.scheme)
-        request_host: str = request.headers.get("X-Forwarded-Host", request.host)
-        base_host: str = zone_domain or request_host
-        if zone_domain and ":" not in zone_domain and ":" in request_host:
-            _, _, port = request_host.partition(":")
-            if port:
-                base_host = f"{zone_domain}:{port}"
-
-        def app_url(app_name: str) -> str:
-            return f"{proto}://{app_name}.{base_host}/"
-
-        def static_url(filename: str) -> str:
-            """Like ``url_for('static', ...)`` but cache-busted by file mtime.
-
-            Browsers aggressively cache static JS/CSS, so a deploy that ships a
-            new template + JS would otherwise leave returning visitors running
-            stale JS against new HTML (silently no-op'ing on missing element
-            ids).  Appending ``?v=<mtime>`` forces a fresh fetch whenever the
-            file changes.
-            """
-            base = url_for("static", filename=filename)
-            try:
-                static_root = Path(current_app.static_folder or "")
-                mtime = int((static_root / filename).stat().st_mtime)
-            except OSError:
-                return base
-            sep = "&" if "?" in base else "?"
-            return f"{base}{sep}v={mtime}"
-
-        return {
-            "zone_name": zone_name,
-            "zone_domain": base_host,
-            "app_url": app_url,
-            "static_url": static_url,
-        }
-
-    # Terminal cleanup
     atexit.register(cleanup_terminal)
 
-    return app
-
-
-if __name__ == "__main__":
-    app = create_app()
-    cfg = app.openhost_config  # type: ignore[attr-defined]
-    app.run(host=cfg.host, port=cfg.port)
+    return Litestar(
+        route_handlers=[
+            static_router,
+            api_settings_routes,
+            pages_settings_routes,
+        ],
+        middleware=[SubdomainProxyMiddleware, AuthRefreshMiddleware],
+        template_config=template_config,
+        before_request=_require_owner,
+        after_request=_close_db_after,
+        dependencies={
+            "db": Provide(provide_db, sync_to_thread=False),
+            "user": Provide(provide_user),
+            "app_id": Provide(provide_app_id),
+        },
+        exception_handlers={NotAuthorizedException: login_required_redirect},
+        on_startup=[_install_template_globals],
+        state=State({"owner_verified": False}),
+        openapi_config=OpenAPIConfig(title="compute_space", version="0.1.0", path="/openapi"),
+    )
