@@ -6,6 +6,7 @@
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 400px; margin: 4em auto; padding: 0 1em; }
     input { display: block; margin: 0.5em 0; padding: 0.4em; width: 100%; box-sizing: border-box; }
     .error { color: #c00; }
+    .hint { font-size: 0.85em; color: #666; margin: 0.25em 0 0.5em; }
   </style>
 </head>
 <body>
@@ -14,6 +15,16 @@
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   <form method="post" id="setup-form">
     {% if claim %}<input type="hidden" name="claim" value="{{ claim }}">{% endif %}
+    <label>Username (optional)</label>
+    <input type="text" name="username" id="username" autocomplete="username"
+           value="{{ username or '' }}"
+           pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,49}" maxlength="50">
+    <p class="hint">
+      Used by apps you install (PeerTube, Mastodon, etc.) as your
+      account name. Leave blank to use the default
+      <code>owner</code>; you can change this later from the
+      Settings page. Sign-in only requires the password.
+    </p>
     <label>Password</label>
     <input type="password" name="password" required>
     <label>Confirm Password</label>

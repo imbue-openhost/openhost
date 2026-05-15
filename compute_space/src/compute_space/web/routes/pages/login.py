@@ -54,7 +54,7 @@ async def login() -> ResponseReturnValue:
     if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
         return await render_template("login.html", error="Invalid password")
 
-    access_token = create_access_token("owner")
+    access_token = create_access_token(owner["username"])
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
     expires_at = datetime.now(UTC) + timedelta(

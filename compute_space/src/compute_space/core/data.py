@@ -82,6 +82,7 @@ def provision_data(
     my_openhost_redirect_domain: str,
     zone_domain: str,
     port: int,
+    owner_username: str = "owner",
 ) -> dict[str, str]:
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
@@ -160,6 +161,8 @@ def provision_data(
     env_vars["OPENHOST_ZONE_DOMAIN"] = zone_domain
 
     env_vars["OPENHOST_MY_REDIRECT_DOMAIN"] = my_openhost_redirect_domain
+
+    env_vars["OPENHOST_OWNER_USERNAME"] = owner_username
 
     return env_vars
 

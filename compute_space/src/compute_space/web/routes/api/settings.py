@@ -1,3 +1,5 @@
+import sqlite3
+
 import bcrypt
 import git
 from quart import Blueprint
@@ -7,6 +9,9 @@ from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
 from compute_space.core.apps import inject_github_token_in_url
+from compute_space.core.auth.auth import read_owner_username
+from compute_space.core.auth.auth import update_owner_username
+from compute_space.core.auth.auth import validate_owner_username
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.git_ops import RemoteNotSetError
@@ -171,3 +176,69 @@ async def change_password() -> ResponseReturnValue:
     db.commit()
 
     return jsonify({"ok": True})
+
+
+@api_settings_bp.route("/api/settings/owner_username", methods=["GET"])
+@login_required
+async def get_owner_username() -> ResponseReturnValue:
+    """Return the configured owner username for the dashboard form.
+
+    Always returns 200 with the current value (or null if no owner
+    row exists, which only happens during the brief window before
+    /setup completes -- login_required would normally already reject
+    in that state).
+    """
+    db = get_db()
+    return jsonify({"ok": True, "username": read_owner_username(db)})
+
+
+@api_settings_bp.route("/api/settings/owner_username", methods=["POST"])
+@login_required
+async def set_owner_username() -> ResponseReturnValue:
+    """Update the owner's display username.
+
+    The new value is forwarded to per-app containers via
+    ``OPENHOST_OWNER_USERNAME`` on their next reload -- already-running
+    containers keep the old value until they restart, which mirrors
+    how every other ``OPENHOST_*`` env var is plumbed.  We don't
+    bounce apps automatically here because that would surprise the
+    operator; apps that haven't picked up the new value yet are
+    surfaced as "stale" via the usual reload UI.
+
+    Returns:
+        - 400 with an operator-readable error on validation failure
+          or pre-setup state (no owner row yet).
+        - 500 with a structured error on DB failures (disk full,
+          WAL lock timeout, etc.) -- matches the style of the other
+          settings routes on the same page so the dashboard's
+          generic error handler can render the message.
+        - 200 with the new value on success.
+    """
+    data = await request.get_json()
+    # ``data`` may be any JSON value (dict, list, scalar, ``None``);
+    # only a JSON object can carry a ``username`` field.  Reject the
+    # other shapes loudly with 400 rather than letting a non-mapping
+    # ``data`` raise AttributeError on ``.get`` and surface as 500.
+    if data is not None and not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "request body must be a JSON object"}), 400
+    raw = (data or {}).get("username", "")
+    if not isinstance(raw, str):
+        return jsonify({"ok": False, "error": "username must be a string"}), 400
+    candidate = raw.strip()
+    error = validate_owner_username(candidate)
+    if error is not None:
+        return jsonify({"ok": False, "error": error}), 400
+
+    db = get_db()
+    try:
+        update_owner_username(db, candidate)
+        db.commit()
+    except ValueError as e:
+        # ``update_owner_username`` raises ValueError when the owner
+        # row is missing -- this is a 400, not a 500: the operator's
+        # next action is "complete /setup", not "retry".
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except sqlite3.Error as e:
+        return jsonify({"ok": False, "error": f"database error: {e}"}), 500
+
+    return jsonify({"ok": True, "username": candidate})
