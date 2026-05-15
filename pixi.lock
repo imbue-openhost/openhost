@@ -2136,7 +2136,7 @@ packages:
 - pypi: ./
   name: openhost
   version: 0.1.0
-  sha256: 6ca28b780959b43f83b1303d52bd784325da978e6bfb25a02345b8a4417d6d56
+  sha256: 81bf32b15f45bdd770f7392049b05b702b8ee4f0bc86fafe0d58af152b90309b
   requires_dist:
   - pyjwt[crypto]
   - acme>=5.4.0
