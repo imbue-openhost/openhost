@@ -129,7 +129,7 @@ def create_app(config: Config | None = None) -> Quart:
             app._owner_verified = True  # type: ignore[attr-defined]
             return None
         claim = request.args.get("claim", "")
-        return redirect(url_for("auth.setup", claim=claim) if claim else url_for("auth.setup"))
+        return redirect(url_for("setup.setup", claim=claim) if claim else url_for("setup.setup"))
 
     # ─── Context processor ───
 
