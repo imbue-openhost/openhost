@@ -28,6 +28,16 @@ def cookie_domain(request_host: str | None) -> str | None:
     return zone_no_port
 
 
+def clear_auth_cookies(request_host: str | None = None) -> list[Cookie]:
+    """Build cookies that overwrite the existing auth cookies with a zero max-age."""
+    domain = cookie_domain(request_host)
+    secure = get_config().tls_enabled
+    return [
+        Cookie(key=key, value="", domain=domain, max_age=0, secure=secure, httponly=True, samesite="lax")
+        for key in (COOKIE_ACCESS, COOKIE_REFRESH)
+    ]
+
+
 def build_auth_cookies(
     access_token: str,
     refresh_token: str | None = None,

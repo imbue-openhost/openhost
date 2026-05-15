@@ -1,88 +1,89 @@
 import hashlib
-import secrets
+import sqlite3
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from typing import Any
 
 import bcrypt
-from quart import Blueprint
-from quart import redirect
-from quart import render_template
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from litestar import Request
+from litestar import Response
+from litestar import Router
+from litestar import get
+from litestar import post
+from litestar.response import Redirect
+from litestar.response import Template
 
+from compute_space.core.auth.auth import AuthenticatedAccessor
 from compute_space.core.auth.jwt_tokens import REFRESH_TOKEN_EXPIRY
 from compute_space.core.auth.jwt_tokens import create_access_token
-from compute_space.db import get_db
-from compute_space.web.auth.auth import attach_refreshed_token
+from compute_space.core.auth.jwt_tokens import create_refresh_token
 from compute_space.web.auth.cookies import COOKIE_ACCESS
 from compute_space.web.auth.cookies import COOKIE_REFRESH
+from compute_space.web.auth.cookies import build_auth_cookies
 from compute_space.web.auth.cookies import clear_auth_cookies
-from compute_space.web.auth.cookies import set_auth_cookies
-from compute_space.web.auth.middleware import get_current_user_from_request
-
-auth_bp = Blueprint("auth", __name__)
-auth_bp.after_app_request(attach_refreshed_token)
 
 
-@auth_bp.route("/login", methods=["GET", "POST"])
-async def login() -> ResponseReturnValue:
-    if get_current_user_from_request(request):
-        return redirect(url_for("apps.dashboard"))
+def _accessor(request: Request[Any, Any, Any]) -> AuthenticatedAccessor | None:
+    state = request.scope.get("state") or {}
+    return state.get("accessor")
 
-    # If stale auth cookies are present (invalid JWT, e.g. after key rotation on
-    # reboot or TLS mode change), clear them now so they don't conflict with the
-    # fresh cookies we'll set after successful login.
-    has_stale_cookies = request.cookies.get(COOKIE_ACCESS) is not None
 
-    db = get_db()
+def _attach_cookies(response: Response[Any], cookies: list[Any]) -> Response[Any]:
+    for cookie in cookies:
+        response.set_cookie(cookie)
+    return response
+
+
+@get("/login")
+async def login_get(request: Request[Any, Any, Any]) -> Response[Any]:
+    if _accessor(request) is not None:
+        return Redirect(path="/")
+
+    # Clear stale cookies (e.g. JWT signed by a now-rotated key) so they don't conflict
+    # with the fresh ones set after a successful login.
+    if request.cookies.get(COOKIE_ACCESS) is not None:
+        host = request.headers.get("host", "")
+        return _attach_cookies(Redirect(path="/login"), clear_auth_cookies(request_host=host))
+
+    return Template(template_name="login.html")
+
+
+@post("/login", status_code=200)
+async def login_post(request: Request[Any, Any, Any], db: sqlite3.Connection) -> Response[Any]:
     owner = db.execute("SELECT * FROM owner").fetchone()
     if owner is None:
-        return redirect(url_for("auth.setup"))
+        return Redirect(path="/setup")
 
-    if request.method == "GET":
-        if has_stale_cookies:
-            response = redirect(url_for("auth.login"))
-            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
-            return response
-        return await render_template("login.html")
-
-    form = await request.form
+    form = await request.form()
     password = form.get("password", "")
-
     if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
-        return await render_template("login.html", error="Invalid password")
+        return Template(template_name="login.html", context={"error": "Invalid password"})
 
-    access_token = create_access_token("owner")
-    refresh_token = secrets.token_urlsafe(48)
+    refresh_token = create_refresh_token()
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(
-        seconds=REFRESH_TOKEN_EXPIRY,
-    )
+    expires_at = datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_EXPIRY)
     db.execute(
         "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
         (refresh_token_hash, expires_at.isoformat()),
     )
     db.commit()
 
-    response = redirect(url_for("apps.dashboard"))
-    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
-    return response
+    access_token = create_access_token(owner["username"])
+    cookies = build_auth_cookies(access_token, refresh_token, request_host=request.headers.get("host", ""))
+    return _attach_cookies(Redirect(path="/"), cookies)
 
 
-@auth_bp.route("/logout", methods=["POST"])
-def logout() -> ResponseReturnValue:
+@post("/logout", status_code=200)
+async def logout(request: Request[Any, Any, Any], db: sqlite3.Connection) -> Response[Any]:
     refresh_tok = request.cookies.get(COOKIE_REFRESH)
     if refresh_tok:
         refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
-        db = get_db()
-        db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?",
-            (refresh_tok_hash,),
-        )
+        db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?", (refresh_tok_hash,))
         db.commit()
 
-    response = redirect(url_for("auth.login"))
-    clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
-    return response
+    host = request.headers.get("host", "")
+    return _attach_cookies(Redirect(path="/login"), clear_auth_cookies(request_host=host))
+
+
+pages_login_routes = Router(path="/", route_handlers=[login_get, login_post, logout])

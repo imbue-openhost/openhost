@@ -28,6 +28,7 @@ from compute_space.web.middleware.auth_accessor import AuthAccessorMiddleware
 from compute_space.web.middleware.auth_refresh import AuthRefreshMiddleware
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.settings import api_settings_routes
+from compute_space.web.routes.pages.login import pages_login_routes
 from compute_space.web.routes.pages.settings import pages_settings_routes
 
 
@@ -114,6 +115,7 @@ def create_app(config: Config) -> Litestar:
         route_handlers=[
             static_router,
             api_settings_routes,
+            pages_login_routes,
             pages_settings_routes,
         ],
         middleware=[SubdomainProxyMiddleware, AuthRefreshMiddleware, AuthAccessorMiddleware],

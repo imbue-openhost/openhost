@@ -12,7 +12,6 @@ from compute_space.core.auth.auth import AuthenticatedAPIKey
 from compute_space.core.auth.auth import AuthenticatedAccessor
 from compute_space.core.auth.auth import AuthenticatedApp
 from compute_space.core.auth.auth import AuthenticatedUser
-from compute_space.core.auth.jwt_tokens import create_access_token
 from compute_space.core.auth.jwt_tokens import decode_access_token
 from compute_space.core.auth.jwt_tokens import decode_access_token_allow_expired
 from compute_space.web.auth.cookies import COOKIE_ACCESS
@@ -28,84 +27,61 @@ def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> Authenti
     ``scope["state"]`` so ``AuthRefreshMiddleware`` can attach a Set-Cookie header
     to the outgoing response.
     """
-    user = _try_jwt_cookie(connection)
-    if user is not None:
-        return user
-
-    refreshed = _try_refresh(connection, db)
-    if refreshed is not None:
-        return refreshed
-
-    bearer = _try_bearer(connection, db)
-    if bearer is not None:
-        return bearer
-
-    return _try_origin_subdomain(connection, db)
+    return (
+        _try_jwt_cookie(connection)
+        or _try_refresh(connection, db)
+        or _try_bearer(connection, db)
+        or _try_origin_subdomain(connection, db)
+    )
 
 
 def _try_jwt_cookie(connection: _AnyConnection) -> AuthenticatedUser | None:
-    token = connection.cookies.get(COOKIE_ACCESS)
-    if not token:
+    if not (token := connection.cookies.get(COOKIE_ACCESS)):
         return None
-    claims = decode_access_token(token)
-    if claims is None:
+    if (claims := decode_access_token(token)) is None:
         return None
     return AuthenticatedUser(username=claims["sub"])
 
 
 def _try_refresh(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedUser | None:
-    refresh_tok = connection.cookies.get(COOKIE_REFRESH)
-    if not refresh_tok:
+    """Authenticate by validating the refresh-token cookie + the (allowed-expired) JWT cookie.
+
+    Pure check: no side effects. ``AuthRefreshMiddleware`` separately decides whether to mint a
+    fresh access cookie based on the same conditions.
+    """
+    if not (refresh_tok := connection.cookies.get(COOKIE_REFRESH)):
         return None
-    expired_jwt = connection.cookies.get(COOKIE_ACCESS)
-    if not expired_jwt:
+    if not (expired_jwt := connection.cookies.get(COOKIE_ACCESS)):
         return None
-    expired_claims = decode_access_token_allow_expired(expired_jwt)
-    if expired_claims is None:
+    if (expired_claims := decode_access_token_allow_expired(expired_jwt)) is None:
         return None
 
     refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
     rt = db.execute(
-        "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
+        "SELECT expires_at FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
         (refresh_tok_hash,),
     ).fetchone()
-    if rt is None:
-        return None
-    if datetime.fromisoformat(rt["expires_at"]) < datetime.now(UTC):
+    if rt is None or datetime.fromisoformat(rt["expires_at"]) < datetime.now(UTC):
         return None
 
-    username = expired_claims["sub"]
-    new_access_token = create_access_token(username)
-    state = connection.scope.setdefault("state", {})
-    state["new_access_token"] = new_access_token
-    state["refresh_token"] = refresh_tok
-    return AuthenticatedUser(username=username)
+    return AuthenticatedUser(username=expired_claims["sub"])
 
 
 def _try_bearer(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
     auth_header = connection.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None
-    token = auth_header.removeprefix("Bearer ").strip()
-    if not token:
+    if not (token := auth_header.removeprefix("Bearer ").strip()):
         return None
     token_hash = hashlib.sha256(token.encode()).hexdigest()
 
-    api_row = db.execute(
-        "SELECT expires_at FROM api_tokens WHERE token_hash = ?",
-        (token_hash,),
-    ).fetchone()
-    if api_row is not None:
+    if api_row := db.execute("SELECT expires_at FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone():
         expires_at = api_row["expires_at"]
         if expires_at and datetime.fromisoformat(expires_at) < datetime.now(UTC):
             return None
         return AuthenticatedAPIKey()
 
-    app_row = db.execute(
-        "SELECT app_id FROM app_tokens WHERE token_hash = ?",
-        (token_hash,),
-    ).fetchone()
-    if app_row is not None:
+    if app_row := db.execute("SELECT app_id FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone():
         return AuthenticatedApp(app_id=app_row["app_id"])
 
     return None
@@ -120,12 +96,10 @@ def _try_origin_subdomain(connection: _AnyConnection, db: sqlite3.Connection) ->
     if _try_jwt_cookie(connection) is None:
         return None
 
-    origin = connection.headers.get("Origin", "") or connection.headers.get("Referer", "")
-    if not origin:
+    if not (origin := connection.headers.get("Origin", "") or connection.headers.get("Referer", "")):
         return None
 
-    parsed = urlparse(origin)
-    host = parsed.netloc or ""
+    host = urlparse(origin).netloc
     zone = get_config().zone_domain
     if not zone or not host.endswith("." + zone):
         return None
@@ -135,6 +109,4 @@ def _try_origin_subdomain(connection: _AnyConnection, db: sqlite3.Connection) ->
         return None
 
     row = db.execute("SELECT app_id FROM apps WHERE name = ?", (app_name,)).fetchone()
-    if row is None:
-        return None
-    return AuthenticatedApp(app_id=row["app_id"])
+    return AuthenticatedApp(app_id=row["app_id"]) if row else None
