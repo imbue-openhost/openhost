@@ -58,11 +58,12 @@ def test_sqlite_provisioning():
         )
 
         env_vars = provision_data(
-            "testapp",
-            manifest,
-            data_dir,
-            temp_dir,
-            archive_dir,
+            app_id="testapp-id",
+            app_name="testapp",
+            manifest=manifest,
+            data_dir=data_dir,
+            temp_data_dir=temp_dir,
+            archive_dir=archive_dir,
             my_openhost_redirect_domain="my.test.example.com",
             zone_domain="test.example.com",
             port=manifest.container_port,
@@ -288,7 +289,7 @@ class TestRouterCore:
         # test_app has hidden = true — it must not show up
         assert "test_app" not in r.text
         # Non-hidden apps should still be listed (pick one that definitely exists)
-        assert "backup" in r.text or "secrets" in r.text, (
+        assert "file_browser" in r.text or "oauth" in r.text, (
             "Expected at least one non-hidden builtin app on the Deploy page"
         )
 
@@ -1133,6 +1134,30 @@ class TestContainerE2E:
         assert "attacker-ip" not in headers.get("X-Forwarded-For", "")
         assert headers.get("X-Forwarded-Proto") != "evil"
         assert headers.get("X-Forwarded-Host") != "evil.example.com"
+
+    def test_proxy_strips_zone_auth_cookies(self, admin_session, config):
+        """The owner's zone_auth / zone_refresh cookies must not reach the backend app."""
+        r = admin_session.get(f"{_app_url(config, 'test-app')}/echo-headers")
+        assert r.status_code == 200
+        cookie_header = r.json()["headers"].get("Cookie", "")
+        assert "zone_auth=" not in cookie_header
+        assert "zone_refresh=" not in cookie_header
+
+    def test_proxy_strips_spoofed_openhost_headers(self, admin_session, config):
+        """Client-supplied X-OpenHost-* headers must be stripped — only the router may set them."""
+        r = admin_session.get(
+            f"{_app_url(config, 'test-app')}/echo-headers",
+            headers={
+                "X-OpenHost-Is-Owner": "true",
+                "X-OpenHost-Identity": "spoofed",
+            },
+        )
+        assert r.status_code == 200
+        headers = r.json()["headers"]
+        # The router strips inbound X-OpenHost-* and re-injects its own.
+        # X-OpenHost-Is-Owner may be re-set by the router, but the spoofed
+        # X-OpenHost-Identity value must not be passed through.
+        assert headers.get("X-OpenHost-Identity") != "spoofed"
 
     def test_proxy_404(self, admin_session, config):
         """Unknown paths within the app return the app's 404."""

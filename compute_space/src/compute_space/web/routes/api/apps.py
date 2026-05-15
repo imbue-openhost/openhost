@@ -33,10 +33,10 @@ from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
+from compute_space.core.oauth import OAuthAuthorizationRequired
+from compute_space.core.oauth import get_oauth_token
 from compute_space.core.ports import check_port_available
-from compute_space.core.services import OAuthAuthorizationRequired
-from compute_space.core.services import ServiceNotAvailable
-from compute_space.core.services import get_oauth_token
+from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.db import get_db
 from compute_space.web.auth.middleware import login_required
 
@@ -130,7 +130,6 @@ async def api_add_app() -> ResponseReturnValue:
     repo_url = form.get("repo_url", "").strip()
     app_name = form.get("app_name", "").strip() or None
     clone_dir = form.get("clone_dir", "").strip() or None
-    grant_permissions_raw = form.get("grant_permissions")
     grant_permissions_v2 = form.get("grant_permissions_v2", "").lower() in ("1", "true", "yes")
 
     if not repo_url:
@@ -193,12 +192,6 @@ async def api_add_app() -> ResponseReturnValue:
 
     final_dir = move_clone_to_app_temp_dir(clone_dir, app_name, config)
 
-    if grant_permissions_raw is None:
-        logger.warning("add_app called without grant_permissions field")
-        grant_permissions: set[str] = set()
-    else:
-        grant_permissions = {k.strip() for k in grant_permissions_raw.split(",") if k.strip()}
-
     # Parse port overrides from individual form fields: port_override.<label>=<host_port>
     port_overrides: dict[str, int] | None = None
     for key in form:
@@ -216,7 +209,6 @@ async def api_add_app() -> ResponseReturnValue:
             final_dir,
             config,
             db,
-            grant_permissions=grant_permissions,
             grant_permissions_v2=grant_permissions_v2,
             app_name=app_name,
             repo_url=repo_url,
@@ -621,8 +613,8 @@ async def rename_app(app_id: str) -> ResponseReturnValue:
         return jsonify({"error": error_message}), 500
 
     # Identity (app_id) is unchanged, so no FK rewrites in app_tokens,
-    # app_databases.app_id, app_port_mappings, service_providers,
-    # permissions, etc. — they all point at app_id which is stable.
+    # app_databases.app_id, app_port_mappings, service_providers_v2,
+    # permissions_v2, etc. — they all point at app_id which is stable.
     # Only the name label and any name-keyed paths need rewriting.
     db.execute(
         "UPDATE apps SET name = ?, repo_path = REPLACE(repo_path, ?, ?) WHERE app_id = ?",

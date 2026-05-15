@@ -225,7 +225,7 @@ def login_required(
         if owner is None:
             # Preserve claim token in redirect so /setup can validate it
             claim = request.args.get("claim", "")
-            response = redirect(url_for("auth.setup", claim=claim) if claim else url_for("auth.setup"))
+            response = redirect(url_for("setup.setup", claim=claim) if claim else url_for("setup.setup"))
         else:
             response = redirect(url_for("auth.login"))
 

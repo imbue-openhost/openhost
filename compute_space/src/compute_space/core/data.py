@@ -73,6 +73,7 @@ def rmtree_with_sudo_fallback(path: str, *, raise_on_failure: bool = False) -> N
 
 
 def provision_data(
+    app_id: str,
     app_name: str,
     manifest: AppManifest,
     data_dir: str,
@@ -153,6 +154,7 @@ def provision_data(
     os.makedirs(app_temp_dir, exist_ok=True)
 
     env_vars["OPENHOST_APP_NAME"] = app_name
+    env_vars["OPENHOST_APP_ID"] = app_id
 
     # Generate app token for cross-app service calls
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)

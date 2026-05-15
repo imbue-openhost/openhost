@@ -16,7 +16,12 @@ from oauth_provider.core.models import RequiredGrant
 
 
 def parse_oauth_v2_grants(request: Request[Any, Any, Any]) -> list[OAuthGrant]:
-    """Extract OAuth grant payloads from the X-OpenHost-Permissions header injected by the router."""
+    """Extract OAuth grant payloads from the X-OpenHost-Permissions header injected by the router.
+
+    The router pre-filters the array so every entry is addressed to this provider (the ``provider_app_id``
+    field has already been stripped). This service additionally rejects ``scope: "global"`` entries — every
+    legitimate grant flows through our own ``/grant`` consent UI, which always produces app-scoped grants.
+    """
     perms_header = request.headers.get("x-openhost-permissions", "[]")
     try:
         grants = json.loads(perms_header)
@@ -25,6 +30,8 @@ def parse_oauth_v2_grants(request: Request[Any, Any, Any]) -> list[OAuthGrant]:
 
     result = []
     for g in grants:
+        if g.get("scope") != "app":
+            continue
         payload = g.get("grant", {})
         if isinstance(payload, dict) and "provider" in payload:
             result.append(

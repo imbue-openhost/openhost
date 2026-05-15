@@ -65,38 +65,6 @@
 </table>
 {% endif %}
 
-<h3>Permissions</h3>
-{% if permissions %}
-<table>
-  <tr><th>Key</th><th>Actions</th></tr>
-  {% for perm in permissions %}
-  <tr>
-    <td><code>{{ perm.permission_key }}</code></td>
-    <td>
-      <button class="btn" onclick="permAction('{{ app.app_id }}', '{{ perm.permission_key }}', 'revoke', this)">Revoke</button>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% endif %}
-{% if missing_permissions %}
-<p style="color: #666; font-size: 0.9em;">The following permissions are declared in the app manifest but not yet granted:</p>
-<table>
-  <tr><th>Key</th><th>Reason</th><th>Actions</th></tr>
-  {% for mp in missing_permissions %}
-  <tr>
-    <td><code>{{ mp.permission_key }}</code>{% if mp.required %} <span style="color: #c80; font-size: 0.85em;">(required)</span>{% endif %}</td>
-    <td style="color: #666; font-size: 0.9em;">{{ mp.reason or "---" }}</td>
-    <td>
-      <button class="btn btn-primary" onclick="permAction('{{ app.app_id }}', '{{ mp.permission_key }}', 'grant', this)">Grant</button>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% elif not permissions %}
-<p>No permissions granted.</p>
-{% endif %}
-
 <h3>Logs</h3>
 <pre class="log-output" id="app-logs">{{ logs or "No log output available." }}</pre>
 

@@ -1,7 +1,3 @@
-import asyncio
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
-
 import pytest
 
 from compute_space.core.app_id import new_app_id
@@ -9,9 +5,7 @@ from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
-from compute_space.core.auth.service_access_rules import ServiceAccessDenied
-from compute_space.core.auth.service_access_rules import check_service_access_rules
-from compute_space.core.services import ServiceNotAvailable
+from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
 from compute_space.core.services_v2 import lookup_shortname
 from compute_space.core.services_v2 import resolve_provider
@@ -302,52 +296,3 @@ class TestShortnameLookup:
         multi_id = _install_consumer(db, "multi", perms)
         assert lookup_shortname(multi_id, "secrets", db) == (SVC_SECRETS, ">=0.1.0")
         assert lookup_shortname(multi_id, "oauth", db) == (SVC_OAUTH, "==1.0.0")
-
-
-# ---------------------------------------------------------------------------
-# Service access rules
-# ---------------------------------------------------------------------------
-
-
-def _mock_request(method: str, body: dict | None = None) -> MagicMock:
-    req = MagicMock()
-    req.method = method
-    if body is not None:
-        req.get_json = AsyncMock(return_value=body)
-    else:
-        req.get_json = AsyncMock(side_effect=Exception("no body"))
-    return req
-
-
-class TestSecretsAccessRules:
-    def test_oauth_token_produces_scoped_permissions(self):
-        req = _mock_request(
-            "POST",
-            {
-                "provider": "google",
-                "scopes": [
-                    "https://www.googleapis.com/auth/gmail.readonly",
-                    "https://www.googleapis.com/auth/calendar",
-                ],
-            },
-        )
-        perms = asyncio.run(check_service_access_rules("secrets", "oauth/token", req))
-        assert perms == [
-            "secrets/oauth:google:https://www.googleapis.com/auth/gmail.readonly",
-            "secrets/oauth:google:https://www.googleapis.com/auth/calendar",
-        ]
-
-    def test_get_endpoint_produces_key_permissions(self):
-        req = _mock_request("POST", {"keys": ["DB_URL", "API_KEY"]})
-        perms = asyncio.run(check_service_access_rules("secrets", "get", req))
-        assert perms == ["secrets/key:DB_URL", "secrets/key:API_KEY"]
-
-    def test_unknown_endpoint_denied(self):
-        req = _mock_request("POST", {})
-        with pytest.raises(ServiceAccessDenied, match="not available"):
-            asyncio.run(check_service_access_rules("secrets", "delete_all", req))
-
-    def test_unknown_service_denied(self):
-        req = _mock_request("GET")
-        with pytest.raises(ServiceAccessDenied, match="No access rules"):
-            asyncio.run(check_service_access_rules("unknown_svc", "anything", req))

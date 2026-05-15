@@ -34,13 +34,11 @@ def _seed_app_with_children(db_path: str, app_name: str = "myapp") -> str:
             (app_id,),
         )
         db.execute("INSERT INTO app_tokens (app_id, token_hash) VALUES (?, 'fakehash')", (app_id,))
-        db.execute("INSERT INTO service_providers (service_name, app_id) VALUES ('s1', ?)", (app_id,))
         db.execute(
             "INSERT INTO service_providers_v2 (service_url, app_id, service_version, endpoint) "
             "VALUES ('https://e.x/s', ?, '1.0', '/svc')",
             (app_id,),
         )
-        db.execute("INSERT INTO permissions (consumer_app_id, permission_key) VALUES (?, 'k')", (app_id,))
         db.execute(
             "INSERT INTO permissions_v2 (consumer_app_id, service_url, grant_payload) VALUES (?, 'u', '{}')",
             (app_id,),
@@ -86,9 +84,7 @@ def test_remove_cascades_to_all_child_tables(tmp_path: Path) -> None:
         ("app_databases", "app_id"),
         ("app_port_mappings", "app_id"),
         ("app_tokens", "app_id"),
-        ("service_providers", "app_id"),
         ("service_providers_v2", "app_id"),
-        ("permissions", "consumer_app_id"),
         ("permissions_v2", "consumer_app_id"),
         ("service_defaults", "app_id"),
     ]:

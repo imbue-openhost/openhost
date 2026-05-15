@@ -67,35 +67,27 @@ def create_app(config: Config | None = None) -> Quart:
     from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
     from compute_space.web.routes.api.archive_backend import api_archive_backend_bp  # noqa: PLC0415
     from compute_space.web.routes.api.identity import identity_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.permissions import api_permissions_bp  # noqa: PLC0415
     from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.services import api_services_bp  # noqa: PLC0415
     from compute_space.web.routes.api.services_v2 import api_services_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.api.settings import api_settings_bp  # noqa: PLC0415
     from compute_space.web.routes.api.system import system_bp  # noqa: PLC0415
     from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.login import auth_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.permissions import pages_permissions_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.settings import pages_settings_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.system import pages_system_bp  # noqa: PLC0415
     from compute_space.web.routes.proxy import proxy_bp  # noqa: PLC0415
-    from compute_space.web.routes.services import services_bp  # noqa: PLC0415
     from compute_space.web.routes.services_v2 import services_v2_bp  # noqa: PLC0415
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(apps_bp)
     app.register_blueprint(pages_settings_bp)
     app.register_blueprint(pages_system_bp)
-    app.register_blueprint(pages_permissions_bp)
     app.register_blueprint(api_apps_bp)
     app.register_blueprint(api_archive_backend_bp)
     app.register_blueprint(api_settings_bp)
     app.register_blueprint(system_bp)
-    app.register_blueprint(api_services_bp)
-    app.register_blueprint(api_permissions_bp)
-    app.register_blueprint(services_bp)
     app.register_blueprint(services_v2_bp)
     app.register_blueprint(setup_bp)
     app.register_blueprint(api_services_v2_bp)
@@ -137,7 +129,7 @@ def create_app(config: Config | None = None) -> Quart:
             app._owner_verified = True  # type: ignore[attr-defined]
             return None
         claim = request.args.get("claim", "")
-        return redirect(url_for("auth.setup", claim=claim) if claim else url_for("auth.setup"))
+        return redirect(url_for("setup.setup", claim=claim) if claim else url_for("setup.setup"))
 
     # ─── Context processor ───
 

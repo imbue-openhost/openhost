@@ -4,8 +4,8 @@ provider-side permission validation."""
 import json
 import sqlite3
 from typing import Any
+from urllib.parse import urlparse
 
-import attr
 from packaging.specifiers import InvalidSpecifier
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -29,7 +29,7 @@ from compute_space.core.installer import InstallError
 from compute_space.core.installer import check_install_allowed
 from compute_space.core.installer import install_from_repo_url
 from compute_space.core.manifest import parse_manifest_from_string
-from compute_space.core.services import ServiceNotAvailable
+from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
 from compute_space.core.services_v2 import lookup_shortname
 from compute_space.core.services_v2 import resolve_provider
@@ -38,10 +38,41 @@ from compute_space.web.auth.middleware import _app_from_origin
 from compute_space.web.auth.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
-from compute_space.web.routes.services import _add_cors_headers
-from compute_space.web.routes.services import _cors_origin
 
 services_v2_bp = Blueprint("services_v2", __name__)
+
+
+def _cors_origin() -> str | None:
+    """Return the Origin header iff it points at a valid app subdomain of this zone."""
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        referer = request.headers.get("Referer", "")
+        if not referer:
+            return None
+        origin = referer
+
+    parsed = urlparse(origin)
+    host = parsed.netloc or ""
+    raw_origin = f"{parsed.scheme}://{host}" if parsed.scheme else None
+
+    config = get_config()
+    if not config.zone_domain or not host.endswith("." + config.zone_domain):
+        return None
+
+    app_name = host[: -(len(config.zone_domain) + 1)]
+    if "." in app_name:
+        return None
+
+    return raw_origin
+
+
+def _add_cors_headers(response: Response, origin: str) -> Response:
+    """Add CORS headers for cross-origin requests from app subdomains."""
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 
 # ─── CORS ───
@@ -172,6 +203,23 @@ def _resolve_consumer_from_ws() -> str | None:
     return _app_from_origin(websocket)
 
 
+def _build_permissions_header(consumer_app_id: str, service_url: str, provider_app_id: str) -> str:
+    """JSON for the X-OpenHost-Permissions header forwarded to ``provider_app_id``.
+
+    Filters the consumer's stored grants down to those applicable to this provider — global-scoped, or
+    app-scoped where ``provider_app_id`` matches — and strips the ``provider_app_id`` field from each entry
+    before forwarding (the provider already knows it's the addressee). Providers can then trust every entry
+    in the array without re-checking who it was issued for.
+    """
+    grants = get_granted_permissions_v2(consumer_app_id, service_url)
+    forwarded = [
+        {"grant": g.grant, "scope": g.scope}
+        for g in grants
+        if g.scope == "global" or g.provider_app_id == provider_app_id
+    ]
+    return json.dumps(forwarded)
+
+
 def _consumer_identity_headers(consumer_app_id: str) -> dict[str, str]:
     """Build the X-OpenHost-Consumer-{Name,Id} headers for a consumer app.
 
@@ -215,12 +263,11 @@ async def service_call(shortname: str, rest: str, app_id: str) -> Response:
         return await _handle_installer_request(consumer_app_id, version_spec, rest, db)
 
     try:
-        _, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
+        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         return _json_error("service_not_available", e.message, 503)
 
-    grants = get_granted_permissions_v2(consumer_app_id, service_url)
-    grants_json = json.dumps([attr.asdict(g) for g in grants])
+    grants_json = _build_permissions_header(consumer_app_id, service_url, provider_app_id)
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
 
@@ -256,13 +303,12 @@ async def service_call_ws(shortname: str, rest: str) -> None:
         return
 
     try:
-        _, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
+        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         await websocket.close(code=4503, reason=e.message)
         return
 
-    grants = get_granted_permissions_v2(consumer_app_id, service_url)
-    grants_json = json.dumps([attr.asdict(g) for g in grants])
+    grants_json = _build_permissions_header(consumer_app_id, service_url, provider_app_id)
 
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
     await ws_proxy(

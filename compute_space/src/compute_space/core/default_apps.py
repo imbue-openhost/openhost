@@ -3,7 +3,7 @@
 Each entry in ``config.default_apps`` is either:
 
 - A bare dirname under ``config.apps_dir`` (vendored builtin, e.g.
-  ``"secrets_v2"``) — copied from disk, same as the original
+  ``"file_browser"``) — copied from disk, same as the original
   default-apps behavior.
 - A remote git URL (e.g.
   ``"https://github.com/imbue-openhost/openhost-catalog"``) — cloned
@@ -198,7 +198,6 @@ def _finalize_install(
             final_dir,
             config,
             db,
-            grant_permissions=set(),
             grant_permissions_v2=True,
             repo_url=repo_url,
         )

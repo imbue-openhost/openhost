@@ -132,7 +132,6 @@ async def install_from_repo_url(
             final_dir,
             config,
             db,
-            grant_permissions=set(),
             grant_permissions_v2=True,
             app_name=effective_name,
             repo_url=repo_url,

@@ -358,9 +358,7 @@ def _archive_manifest(name: str, *, app_archive: bool, access_all_data: bool = F
         devices=[],
         consumes_services_v2=[],
         port_mappings=[],
-        provides_services=[],
         provides_services_v2=[],
-        requires_services={},
         sqlite_dbs=[],
         health_check="/",
         hidden=False,
@@ -400,7 +398,6 @@ async def test_add_app_refuses_archive_app_when_backend_disabled(app, cfg, tmp_p
                 "repo_url": "https://example.invalid/repo",
                 "app_name": "probe",
                 "clone_dir": fake_clone_dir,
-                "grant_permissions": "",
             },
         )
     assert resp.status_code == 400
@@ -431,7 +428,6 @@ async def test_add_app_allows_access_all_data_when_backend_disabled(app, cfg, tm
                 "repo_url": "https://example.invalid/repo",
                 "app_name": "seer",
                 "clone_dir": fake_clone_dir,
-                "grant_permissions": "",
             },
         )
     body_text = await resp.get_data(as_text=True)
