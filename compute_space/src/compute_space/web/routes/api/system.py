@@ -12,9 +12,9 @@ from quart import request
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-from compute_space.core.auth.security import is_sshd_active
-from compute_space.core.auth.security import list_listening_ports
-from compute_space.core.auth.security import run_audit
+from compute_space.core.auth.security_audit import is_sshd_active
+from compute_space.core.auth.security_audit import list_listening_ports
+from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.logging import get_log_path
 from compute_space.core.storage import is_guard_paused

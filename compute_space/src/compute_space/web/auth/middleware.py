@@ -12,12 +12,11 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.response import Redirect
 
 from compute_space.config import get_config
-from compute_space.core.auth.auth import resolve_app_from_token
-from compute_space.core.auth.auth import validate_api_token
-from compute_space.core.auth.tokens import create_access_token
-from compute_space.core.auth.tokens import decode_access_token
-from compute_space.core.auth.tokens import decode_access_token_allow_expired
-from compute_space.core.logging import logger
+from compute_space.core.auth.api_tokens import resolve_app_from_token
+from compute_space.core.auth.api_tokens import validate_api_token
+from compute_space.core.auth.jwt_tokens import create_access_token
+from compute_space.core.auth.jwt_tokens import decode_access_token
+from compute_space.core.auth.jwt_tokens import decode_access_token_allow_expired
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import COOKIE_ACCESS
 from compute_space.web.auth.cookies import COOKIE_REFRESH
@@ -30,19 +29,6 @@ def get_current_user(connection: _AnyConnection) -> dict[str, Any] | None:
 
     Checks the JWT cookie first, then falls back to ``Authorization: Bearer`` API tokens.
     """
-    cookie_header = connection.headers.get("Cookie", "")
-    dupes = cookie_header.count(f"{COOKIE_ACCESS}=")
-    if dupes > 1:
-        logger.warning(
-            "Duplicate %s cookies detected (%d instances) for %s %s. "
-            "This usually means cookies were set with different Domain attributes. "
-            "The user should clear cookies to fix this.",
-            COOKIE_ACCESS,
-            dupes,
-            str(connection.scope.get("method") or "WS"),
-            connection.scope.get("path", "/"),
-        )
-
     token = connection.cookies.get(COOKIE_ACCESS)
     if token:
         claims = decode_access_token(token)
@@ -117,7 +103,10 @@ def _app_from_origin_for_connection(connection: _AnyConnection, db: sqlite3.Conn
 
 
 async def provide_user(request: Request[Any, Any, Any], db: sqlite3.Connection) -> dict[str, Any]:
-    """Litestar dependency that returns the current user's claims, refreshing tokens if needed."""
+    """Litestar dependency that returns the current user's claims, refreshing tokens if needed.
+
+    Raises NotAuthorizedException if the user is not authenticated.
+    """
     claims = get_current_user(request)
     if claims is not None:
         return claims

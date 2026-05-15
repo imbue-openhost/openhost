@@ -15,8 +15,8 @@ from quart import url_for
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
-from compute_space.core.auth.tokens import create_access_token
+from compute_space.core.auth.jwt_tokens import REFRESH_TOKEN_EXPIRY
+from compute_space.core.auth.jwt_tokens import create_access_token
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.db import get_db

@@ -1,28 +1,12 @@
-from typing import Literal
-
-import attr
+from litestar.datastructures import Cookie
 
 from compute_space.config import get_config
-from compute_space.core.auth.tokens import ACCESS_TOKEN_EXPIRY
-from compute_space.core.auth.tokens import REFRESH_GRACE_PERIOD
-from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
+from compute_space.core.auth.jwt_tokens import ACCESS_TOKEN_EXPIRY
+from compute_space.core.auth.jwt_tokens import REFRESH_GRACE_PERIOD
+from compute_space.core.auth.jwt_tokens import REFRESH_TOKEN_EXPIRY
 
 COOKIE_ACCESS = "zone_auth"
 COOKIE_REFRESH = "zone_refresh"
-
-SameSite = Literal["lax", "strict", "none"]
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CookieSpec:
-    name: str
-    value: str
-    path: str = "/"
-    domain: str | None = None
-    max_age: int | None = None
-    secure: bool = False
-    http_only: bool = True
-    same_site: SameSite = "lax"
 
 
 def cookie_domain(request_host: str | None) -> str | None:
@@ -48,49 +32,31 @@ def build_auth_cookies(
     access_token: str,
     refresh_token: str | None = None,
     request_host: str | None = None,
-) -> list[CookieSpec]:
+) -> list[Cookie]:
     """Build the cookies to set after login or token refresh."""
     domain = cookie_domain(request_host)
     secure = get_config().tls_enabled
     cookies = [
-        CookieSpec(
-            name=COOKIE_ACCESS,
+        Cookie(
+            key=COOKIE_ACCESS,
             value=access_token,
             domain=domain,
             max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
             secure=secure,
+            httponly=True,
+            samesite="lax",
         )
     ]
     if refresh_token:
         cookies.append(
-            CookieSpec(
-                name=COOKIE_REFRESH,
+            Cookie(
+                key=COOKIE_REFRESH,
                 value=refresh_token,
                 domain=domain,
                 max_age=REFRESH_TOKEN_EXPIRY,
                 secure=secure,
+                httponly=True,
+                samesite="lax",
             )
-        )
-    return cookies
-
-
-def cleared_auth_cookies(request_host: str | None = None) -> list[CookieSpec]:
-    """Build deletion cookies for the auth cookies.
-
-    Emits both with the computed domain and without, so we clear stale cookies
-    that may have been set with a different ``Domain`` attribute (e.g. after
-    switching TLS mode or changing zone_domain).
-    """
-    domain = cookie_domain(request_host)
-    cookies: list[CookieSpec] = [
-        CookieSpec(name=COOKIE_ACCESS, value="", domain=domain, max_age=0),
-        CookieSpec(name=COOKIE_REFRESH, value="", domain=domain, max_age=0),
-    ]
-    if domain is not None:
-        cookies.extend(
-            [
-                CookieSpec(name=COOKIE_ACCESS, value="", max_age=0),
-                CookieSpec(name=COOKIE_REFRESH, value="", max_age=0),
-            ]
         )
     return cookies

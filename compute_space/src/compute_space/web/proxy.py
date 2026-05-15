@@ -3,16 +3,17 @@ from collections.abc import Iterable
 from typing import Any
 from typing import cast
 
-import attr
 import httpx
 import websockets
 from litestar import WebSocket
+from litestar.datastructures import Headers
+from litestar.response.base import ASGIResponse
 from litestar.types import Receive
 from litestar.types import Scope
 from quart import Response as QuartResponse
 from quart.wrappers import Request as QuartRequest
 from quart.wrappers import Websocket as QuartWebsocket
-from werkzeug.datastructures import Headers
+from werkzeug.datastructures import Headers as WerkzeugHeaders
 
 from compute_space.core.logging import logger
 from compute_space.core.updates import wait_for_shutdown
@@ -27,16 +28,6 @@ _STRIPPED_COOKIES = frozenset({COOKIE_ACCESS, COOKIE_REFRESH})
 # The router is the sole authority for X-OpenHost-* identity headers.
 # Any inbound value would let a client spoof identity to the backend app.
 _OPENHOST_HEADER_PREFIX = "x-openhost-"
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class ProxiedResponse:
-    """Bytes-in-memory snapshot of a proxied HTTP response, framework-neutral."""
-
-    status_code: int
-    headers: list[tuple[str, str]]
-    body: bytes
-    media_type: str | None = None
 
 
 def _sanitize_forwarded_headers(headers: Iterable[tuple[str, str]]) -> dict[str, str]:
@@ -63,24 +54,14 @@ def _sanitize_forwarded_headers(headers: Iterable[tuple[str, str]]) -> dict[str,
     return sanitized
 
 
-def _scope_headers(scope: Scope) -> list[tuple[str, str]]:
-    return [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", [])]
-
-
 def _scope_host(scope: Scope) -> str:
-    for key, value in scope.get("headers", []):
-        if key.lower() == b"host":
-            return value.decode("latin-1")
+    """Host header with a fallback to ``scope['server']`` for synthesised scopes."""
+    host = Headers.from_scope(scope).get("host")
+    if host:
+        return host
     server = scope.get("server")
     if server:
         return f"{server[0]}:{server[1]}"
-    return ""
-
-
-def _scope_remote_addr(scope: Scope) -> str:
-    client = scope.get("client")
-    if client:
-        return str(client[0])
     return ""
 
 
@@ -116,7 +97,7 @@ async def proxy_request(
     override_path: str | None = None,
     extra_headers: dict[str, str | None] | None = None,
     timeout: float = 30,
-) -> ProxiedResponse:
+) -> ASGIResponse:
     """Forward an HTTP request to a local port.
 
     If ``override_path`` is set, use it instead of the request path.
@@ -150,9 +131,10 @@ async def proxy_request(
         "x-forwarded-host",
     }
     headers = _sanitize_forwarded_headers(
-        (k, v) for k, v in _scope_headers(scope) if k.lower() not in excluded_headers
+        (k, v) for k, v in Headers.from_scope(scope).items() if k.lower() not in excluded_headers
     )
-    headers["X-Forwarded-For"] = _scope_remote_addr(scope)
+    scope_client = scope.get("client")
+    headers["X-Forwarded-For"] = str(scope_client[0]) if scope_client else ""
     headers["X-Forwarded-Proto"] = scope.get("scheme", "http")
     headers["X-Forwarded-Host"] = _scope_host(scope)
 
@@ -177,13 +159,11 @@ async def proxy_request(
                 timeout=_request_timeout(timeout),
             )
     except httpx.ConnectError:
-        return ProxiedResponse(status_code=502, headers=[], body=b"App is not responding", media_type="text/plain")
+        return ASGIResponse(body=b"App is not responding", status_code=502, media_type="text/plain")
     except httpx.TimeoutException:
-        return ProxiedResponse(status_code=504, headers=[], body=b"App timed out", media_type="text/plain")
+        return ASGIResponse(body=b"App timed out", status_code=504, media_type="text/plain")
     except httpx.TransportError:
-        return ProxiedResponse(
-            status_code=502, headers=[], body=b"App disconnected unexpectedly", media_type="text/plain"
-        )
+        return ASGIResponse(body=b"App disconnected unexpectedly", status_code=502, media_type="text/plain")
 
     response_excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
     response_headers: list[tuple[str, str]] = []
@@ -197,10 +177,10 @@ async def proxy_request(
             continue
         response_headers.append((key, value))
 
-    return ProxiedResponse(
+    return ASGIResponse(
+        body=resp.content,
         status_code=resp.status_code,
         headers=response_headers,
-        body=resp.content,
         media_type=media_type,
     )
 
@@ -244,7 +224,7 @@ async def ws_proxy(
     }
     subprotocols: list[str] = []
     forwardable: list[tuple[str, str]] = []
-    for key, value in _scope_headers(scope):
+    for key, value in Headers.from_scope(scope).items():
         lower = key.lower()
         if lower == "sec-websocket-protocol":
             subprotocols = [s.strip() for s in value.split(",")]
@@ -253,7 +233,8 @@ async def ws_proxy(
             continue
         forwardable.append((key, value))
     extra_headers = _sanitize_forwarded_headers(forwardable)
-    extra_headers["X-Forwarded-For"] = _scope_remote_addr(scope)
+    scope_client = scope.get("client")
+    extra_headers["X-Forwarded-For"] = str(scope_client[0]) if scope_client else ""
     extra_headers["X-Forwarded-Proto"] = scope.get("scheme", "http")
     extra_headers["X-Forwarded-Host"] = _scope_host(scope)
     if identity_headers:
@@ -337,16 +318,23 @@ async def ws_proxy(
 # migrated.
 
 
-def _proxied_to_quart(proxied: ProxiedResponse) -> QuartResponse:
-    headers = Headers()
-    for key, value in proxied.headers:
-        headers.add(key, value)
-    return QuartResponse(
-        proxied.body,
-        status=proxied.status_code,
-        headers=headers,
-        content_type=proxied.media_type,
-    )
+def _asgi_to_quart(proxied: ASGIResponse) -> QuartResponse:
+    headers = WerkzeugHeaders()
+    media_type: str | None = None
+    for key_b, value_b in proxied.encoded_headers:
+        key = key_b.decode("latin-1")
+        lower = key.lower()
+        # Quart computes its own content-length from the body.
+        if lower == "content-length":
+            continue
+        # ASGIResponse synthesises a single content-type from media_type — peel it
+        # back off and pass via Quart's content_type kwarg so it isn't double-set.
+        if lower == "content-type":
+            media_type = value_b.decode("latin-1")
+            continue
+        headers.add(key, value_b.decode("latin-1"))
+    body = proxied.body if isinstance(proxied.body, bytes) else proxied.body.encode("utf-8")
+    return QuartResponse(body, status=proxied.status_code, headers=headers, content_type=media_type)
 
 
 async def proxy_request_quart(
@@ -374,7 +362,7 @@ async def proxy_request_quart(
         extra_headers=extra_headers,
         timeout=timeout,
     )
-    return _proxied_to_quart(proxied)
+    return _asgi_to_quart(proxied)
 
 
 async def ws_proxy_quart(

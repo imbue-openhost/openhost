@@ -7,10 +7,10 @@ import jwt as pyjwt
 import pytest
 
 from compute_space.config import DefaultConfig
+from compute_space.core.auth.jwt_tokens import create_access_token
+from compute_space.core.auth.jwt_tokens import decode_access_token
+from compute_space.core.auth.jwt_tokens import decode_access_token_allow_expired
 from compute_space.core.auth.keys import load_keys
-from compute_space.core.auth.tokens import create_access_token
-from compute_space.core.auth.tokens import decode_access_token
-from compute_space.core.auth.tokens import decode_access_token_allow_expired
 
 # Tests use this as the zone_domain; update _setup_keys if changed.
 ZONE = "myzone.example.com"
