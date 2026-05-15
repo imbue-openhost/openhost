@@ -3,6 +3,7 @@ import secrets
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from urllib.parse import urlparse
 
 import bcrypt
 from quart import Blueprint
@@ -12,6 +13,7 @@ from quart import request
 from quart import url_for
 from quart.typing import ResponseReturnValue
 
+from compute_space.config import get_config
 from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
 from compute_space.core.auth.tokens import create_access_token
 from compute_space.db import get_db
@@ -46,13 +48,14 @@ async def login() -> ResponseReturnValue:
             response = redirect(url_for("auth.login"))
             clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
             return response
-        return await render_template("login.html")
+        return await render_template("login.html", next=request.args.get("next", ""))
 
     form = await request.form
     password = form.get("password", "")
+    next_url = form.get("next", "")
 
     if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
-        return await render_template("login.html", error="Invalid password")
+        return await render_template("login.html", error="Invalid password", next=next_url)
 
     access_token = create_access_token("owner")
     refresh_token = secrets.token_urlsafe(48)
@@ -66,7 +69,16 @@ async def login() -> ResponseReturnValue:
     )
     db.commit()
 
-    response = redirect(url_for("apps.dashboard"))
+    dest = url_for("apps.dashboard")
+    if next_url:
+        parsed = urlparse(next_url)
+        zone = get_config().zone_domain
+        if parsed.scheme == "https" and (parsed.netloc == zone or parsed.netloc.endswith("." + zone)):
+            dest = next_url
+        elif not parsed.scheme and not parsed.netloc:
+            dest = next_url
+
+    response = redirect(dest)
     set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
     return response
 

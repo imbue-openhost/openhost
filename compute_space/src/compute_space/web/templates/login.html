@@ -12,6 +12,7 @@
   <h2>OpenHost Login</h2>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   <form method="post">
+    <input type="hidden" name="next" value="{{ next }}">
     <label>Password</label>
     <input type="password" name="password" required>
     <input type="submit" value="Login">

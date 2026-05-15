@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from quart import Blueprint
 from quart import Response
 from quart import current_app
@@ -59,7 +61,8 @@ async def _app_subdomain_routing() -> ResponseReturnValue | None:
 
     if claims is None and not is_public_path(app_row, request.path):
         proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-        return redirect(f"{proto}://{get_config().zone_domain}/login")
+        original_url = f"{proto}://{request.host}{request.full_path}"
+        return redirect(f"{proto}://{get_config().zone_domain}/login?next={quote(original_url, safe='')}")
 
     # Use a longer timeout for large requests (e.g. migration data transfers)
     content_length = request.content_length or 0

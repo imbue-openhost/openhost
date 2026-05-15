@@ -6,6 +6,7 @@ from datetime import UTC
 from datetime import datetime
 from functools import wraps
 from typing import Any
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 from quart import Request
@@ -209,7 +210,8 @@ def login_required(
             claim = request.args.get("claim", "")
             response = redirect(url_for("setup.setup", claim=claim) if claim else url_for("setup.setup"))
         else:
-            response = redirect(url_for("auth.login"))
+            next_url = request.url
+            response = redirect(url_for("auth.login") + "?next=" + quote(next_url, safe=""))
 
         if has_stale_cookies:
             clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
