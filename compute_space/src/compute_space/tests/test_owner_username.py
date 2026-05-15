@@ -186,6 +186,7 @@ def _provision(tmp_path: Path, **kwargs: Any) -> dict[str, str]:
     archive_dir = tmp_path / "archive"
     archive_dir.mkdir(exist_ok=True)
     return provision_data(
+        "test-app-id",
         "probe",
         _bare_manifest(),
         str(tmp_path / "data"),
