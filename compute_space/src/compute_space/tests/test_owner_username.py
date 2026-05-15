@@ -274,13 +274,12 @@ def setup_route_app(tmp_path: Path, db_path: str) -> Iterator[tuple[Quart, str]]
     [
         "owner",
         "alice",
-        "Alice",  # mixed case is fine
         "alice42",
         "alice.bishop",
         "alice_bishop",
         "alice-bishop",
         "a",  # 1-char min
-        "a" * 50,  # max length
+        "a" * 30,  # max length
         "x.y.z-1_2",  # all-allowed-punct mix
     ],
 )
@@ -293,13 +292,14 @@ def test_validate_owner_username_accepts(value: str) -> None:
     [
         "",
         " ",
+        "Alice",  # uppercase rejected (lowercase-only)
         ".alice",  # leading punct breaks PeerTube
         "_alice",
         "-alice",
         "alice@example.com",  # email shape rejected (avoid SSO identifier collisions)
         "alice space",  # internal whitespace breaks JWT preferred_username
         "alice/bob",
-        "a" * 51,  # over max
+        "a" * 31,  # over max
         "alice\nfoo",  # control char breaks HTTP headers
         "\u00fcnicode",  # non-ASCII
     ],
@@ -353,20 +353,10 @@ def test_provision_data_stamps_owner_username_when_provided(tmp_path: Path) -> N
     assert env["OPENHOST_OWNER_USERNAME"] == "alice"
 
 
-@pytest.mark.parametrize("falsy", [None, ""])
-def test_provision_data_omits_owner_username_when_falsy(tmp_path: Path, falsy: Any) -> None:
-    """None (pre-setup) and "" (defensive against buggy callers)
-    both omit the env var entirely — apps distinguish "not set"
-    from "set to empty"."""
-    env = _provision(tmp_path, owner_username=falsy)
-    assert "OPENHOST_OWNER_USERNAME" not in env
-
-
-def test_provision_data_owner_username_default_is_none(tmp_path: Path) -> None:
-    """Backward-compat: callers that don't pass ``owner_username``
-    still get a working env dict, just without the new var."""
+def test_provision_data_owner_username_defaults_to_owner(tmp_path: Path) -> None:
+    """Callers that don't pass owner_username get 'owner' as default."""
     env = _provision(tmp_path)
-    assert "OPENHOST_OWNER_USERNAME" not in env
+    assert env["OPENHOST_OWNER_USERNAME"] == "owner"
     assert env["OPENHOST_APP_NAME"] == "probe"
     assert env["OPENHOST_ZONE_DOMAIN"] == "example.com"
 

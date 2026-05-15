@@ -87,12 +87,7 @@ async def setup() -> ResponseReturnValue:
 
     password = form.get("password", "")
     confirm = form.get("confirm_password", "")
-    # Username is optional; blank submissions fall back to
-    # ``DEFAULT_OWNER_USERNAME`` so a hurried operator can complete
-    # setup without thinking about names, and zones with no
-    # configured username still produce a working SSO claim.  The
-    # operator can change it later from the settings page.
-    username_raw = form.get("username", "").strip()
+    username_raw = form.get("username", "").strip()  # blank falls back to DEFAULT_OWNER_USERNAME
 
     if not password:
         return await render_template(
@@ -128,10 +123,6 @@ async def setup() -> ResponseReturnValue:
         (username, password_hash),
     )
 
-    # Invariant: the JWT's ``sub``/``username`` claim matches the
-    # persisted ``owner.username``.  Apps that consume the access
-    # token via the OAuth-provider service read this claim, and the
-    # proxy's owner-identity check uses the same comparison.
     access_token = create_access_token(username)
     refresh_token = secrets.token_urlsafe(48)
     refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()

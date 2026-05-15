@@ -114,7 +114,7 @@ The router injects these environment variables into your app:
 | `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data`, `sqlite`, or `access_all_data` is requested   |
 | `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data` or `access_all_data` is requested          |
 | `OPENHOST_SQLITE_<NAME>` | `/data/app_data/my-app/sqlite/main.db` (for `sqlite = ["main"]`) | Path to a provisioned SQLite database file. Set once per entry in `sqlite`                                      |
-| `OPENHOST_OWNER_USERNAME` | `alice` | The compute space owner's chosen display name. Use this to seed account names for SSO integrations (PeerTube, Mastodon, etc.) so the owner doesn't get a generated default they can't change. Omitted entirely when the owner has no username configured (pre-setup zones); apps should treat the absent variable as "no name available" rather than substituting a literal default. |
+| `OPENHOST_OWNER_USERNAME` | `alice` | The compute space owner's chosen display name. Use to seed SSO account names. Defaults to `owner` if not explicitly configured. |
 
 ### Data storage
 

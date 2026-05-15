@@ -26,17 +26,7 @@ proxy_bp = Blueprint("proxy", __name__)
 def _identity_headers(claims: dict[str, str] | None) -> dict[str, str]:
     """Build the per-request identity headers forwarded to apps.
 
-    Emits exactly ``X-OpenHost-Is-Owner: true`` when the bearer's
-    ``sub`` claim matches the persisted ``owner.username``; omits
-    the header otherwise.
-
-    Every successfully-validated JWT in this codebase today belongs
-    to the owner (login + /setup are the only token issuers, and
-    the api_tokens fallback in ``core.auth`` also stamps
-    ``sub = owner.username``).  The DB comparison is therefore
-    strictly redundant on the happy path; we keep it explicit so
-    a future multi-tenant feature that issues non-owner tokens
-    can't silently inherit owner privilege.
+    Emits ``X-OpenHost-Is-Owner: true`` when the bearer's ``sub`` matches the persisted owner username.
     """
     if not claims:
         return {}

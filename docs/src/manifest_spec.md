@@ -87,7 +87,7 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_APP_ARCHIVE_DIR` — `/data/app_archive/{app_name}` (only if app_archive access granted)
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
 - `OPENHOST_ROUTER_URL` — URL of the router's HTTP server, reachable from inside the container.
-- `OPENHOST_OWNER_USERNAME` — the compute space owner's chosen display name; use to seed SSO account names. Omitted when the owner has not configured one.
+- `OPENHOST_OWNER_USERNAME` — the compute space owner's chosen display name; use to seed SSO account names. Defaults to `owner` if not explicitly configured.
 
 ## Examples
 
