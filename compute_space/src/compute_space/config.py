@@ -12,19 +12,23 @@ import typed_settings
 
 @attr.s(auto_attribs=True, frozen=True)
 class Config:
-    # Server
+    ## Server
+    # zone_domain is where the compute space is hosted, eg `host.example.com`
+    # it can optionally include a non-80/443 port, if necessary.
     zone_domain: str
+    # the local IP to bind the compute space web server to.
     host: str
+    # the local port to bind the compute space web server to.
     port: int
 
-    # TLS
+    ## TLS
     tls_enabled: bool
     acquire_tls_cert_if_missing: bool
     acme_email: str | None
     acme_account_key_path: str | None
     acme_directory_url: str | None
 
-    # coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
+    ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
     public_ip: str | None
 
@@ -32,14 +36,14 @@ class Config:
 
     my_openhost_redirect_domain: str
 
-    # Data
+    ## Data
     data_root_dir: str
     apps_dir_override: str | None
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int
 
-    # Ports
+    ## Ports
     port_range_start: int
     port_range_end: int
 
@@ -51,6 +55,10 @@ class Config:
     # Remote URLs are dispatched through the same clone path as
     # /api/add_app and do not need to be present on disk ahead of time.
     default_apps: list[str]
+
+    @property
+    def zone_domain_no_port(self):
+        return self.zone_domain.split(":")[0]
 
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)

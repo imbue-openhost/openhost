@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import Any
 
 from litestar import Litestar
+from litestar import Request
 from litestar import Response
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.di import Provide
 from litestar.exceptions import NotAuthorizedException
 from litestar.openapi.config import OpenAPIConfig
+from litestar.response import Redirect
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 
@@ -23,7 +25,6 @@ from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import AuthMiddleware
-from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.settings import api_settings_routes
 from compute_space.web.routes.pages.login import pages_login_routes
@@ -87,6 +88,18 @@ async def _close_db_after(response: Response[Any]) -> Response[Any]:
     return response
 
 
+def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedException) -> Response[Any]:
+    """Exception handler: redirect HTML clients to /setup or /login; JSON clients get 401.
+
+    TODO: add redirect back to original target after login (?)
+    websocket-type requests should never get here - they start as HTTP requests with `Upgrade: websocket`, and should fail then.
+    """
+    if "application/json" in request.headers.get("Accept", ""):
+        return Response(content={"error": exc.detail}, status_code=401)
+
+    return Redirect(path="/login")
+
+
 def create_app(config: Config) -> Litestar:
     """Build the full Litestar app. Caller must have already initialized DB, keys, logging, and config."""
     _full_app_bootstrap(config)
@@ -116,14 +129,14 @@ def create_app(config: Config) -> Litestar:
             pages_login_routes,
             pages_settings_routes,
         ],
-        middleware=[SubdomainProxyMiddleware, AuthMiddleware],
+        middleware=[AuthMiddleware, SubdomainProxyMiddleware],
         template_config=template_config,
         after_request=_close_db_after,
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
             "db": Provide(provide_db, sync_to_thread=False),
         },
-        exception_handlers={NotAuthorizedException: login_required_redirect},
+        exception_handlers={NotAuthorizedException: _login_required_redirect},
         on_startup=[_install_template_globals],
         openapi_config=OpenAPIConfig(title="compute_space", version="0.1.0", path="/openapi"),
     )

@@ -13,7 +13,7 @@ SESSION_COOKIE_NAME = "session_token"
 
 @attr.s(auto_attribs=True, frozen=True)
 class AuthenticatedAccessor:
-    pass
+    origin: str | None
 
 
 @attr.s(auto_attribs=True, frozen=True)
