@@ -49,23 +49,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_port_mappings_host_port ON app_port_mappin
 CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_app_id ON apps(app_id);
 
--- Auth: single owner (set via setup page or claim flow)
-CREATE TABLE IF NOT EXISTS owner (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Auth: refresh tokens for self-hosted JWT auth
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash TEXT UNIQUE NOT NULL,
-    expires_at TEXT NOT NULL,
-    revoked INTEGER NOT NULL DEFAULT 0
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
 
 -- API tokens: long-lived bearer tokens that grant owner-level access
 CREATE TABLE IF NOT EXISTS api_tokens (

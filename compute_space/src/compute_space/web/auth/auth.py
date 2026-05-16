@@ -1,7 +1,4 @@
-import hashlib
 import sqlite3
-from datetime import UTC
-from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -12,74 +9,50 @@ from litestar.enums import ScopeType
 from litestar.exceptions import NotAuthorizedException
 from litestar.response import Redirect
 from litestar.types import ASGIApp
-from litestar.types import Message
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
 from quart import Response
 
 from compute_space.config import get_config
-from compute_space.core.auth.auth import AuthenticatedAPIKey
+from compute_space.core.auth.auth import SESSION_COOKIE_NAME
 from compute_space.core.auth.auth import AuthenticatedAccessor
 from compute_space.core.auth.auth import AuthenticatedApp
-from compute_space.core.auth.auth import AuthenticatedUser
-from compute_space.core.auth.jwt_tokens import create_access_token
-from compute_space.core.auth.jwt_tokens import validate_jwt_access_token
+from compute_space.core.auth.auth import validate_api_token
+from compute_space.core.auth.auth import validate_app_token
+from compute_space.core.auth.auth import validate_session_token
 from compute_space.db import get_db
-from compute_space.web.auth.authenticator import authenticate
-from compute_space.web.auth.cookies import COOKIE_ACCESS
-from compute_space.web.auth.cookies import COOKIE_REFRESH
-from compute_space.web.auth.cookies import build_auth_cookies
 
 _AnyConnection = ASGIConnection[Any, Any, Any, Any]
 
 
+def _get_bearer_token_if_set(connection: _AnyConnection) -> str | None:
+    if auth_header := connection.headers.get("Authorization", ""):
+        if auth_header.startswith("Bearer "):
+            if token := auth_header.removeprefix("Bearer ").strip():
+                return token
+    return None
+
+
 def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
-    """Resolve who is making this request, by trying each auth scheme in priority order.
+    """Resolve who is making this request, by trying each auth scheme in priority order."""
 
-    On a successful refresh-token rotation, the new access token is stashed in
-    ``scope["state"]`` so ``AuthRefreshMiddleware`` can attach a Set-Cookie header
-    to the outgoing response.
-    """
+    # TODO: attach origin information also. or maybe just make a helper and do this in routes?
 
-    # JWT access token in cookie
-    if access_token := connection.cookies.get(COOKIE_ACCESS):
-        if authenticated_user := validate_jwt_access_token(access_token):
+    # session token in cookie
+    if session_token := connection.cookies.get(SESSION_COOKIE_NAME):
+        if authenticated_user := validate_session_token(session_token, db):
             return authenticated_user
 
-    return None
-    return (
-        _try_jwt_cookie(connection)
-        or _try_refresh(connection, db)
-        or _try_bearer(connection, db)
-        or _try_origin_subdomain(connection, db)
-    )
+    # api and app tokens are both set in Authorization: Bearer header
+    if token := _get_bearer_token_if_set(connection):
+        # api token
+        if authenticated_api_token := validate_api_token(token, db):
+            return authenticated_api_token
 
-
-def _try_jwt_cookie(connection: _AnyConnection) -> AuthenticatedUser | None:
-    if not (token := connection.cookies.get(COOKIE_ACCESS)):
-        return None
-    if (claims := validate_jwt_access_token(token)) is None:
-        return None
-    return AuthenticatedUser(username=claims["sub"])
-
-
-def _try_bearer(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
-    auth_header = connection.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return None
-    if not (token := auth_header.removeprefix("Bearer ").strip()):
-        return None
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-
-    if api_row := db.execute("SELECT expires_at FROM api_tokens WHERE token_hash = ?", (token_hash,)).fetchone():
-        expires_at = api_row["expires_at"]
-        if expires_at and datetime.fromisoformat(expires_at) < datetime.now(UTC):
-            return None
-        return AuthenticatedAPIKey()
-
-    if app_row := db.execute("SELECT app_id FROM app_tokens WHERE token_hash = ?", (token_hash,)).fetchone():
-        return AuthenticatedApp(app_id=app_row["app_id"])
+        # app token
+        if authenticated_app := validate_app_token(token, db):
+            return authenticated_app
 
     return None
 
@@ -109,22 +82,13 @@ def _try_origin_subdomain(connection: _AnyConnection, db: sqlite3.Connection) ->
     return AuthenticatedApp(app_id=row["app_id"]) if row else None
 
 
-def _refresh_cookies(request: Request[Any, Any, Any], scope: Scope) -> list[Any]:
-    """Return cookies to attach if this request authenticated via the refresh path, else []."""
-    accessor = (scope.get("state") or {}).get("accessor")
-    if not isinstance(accessor, AuthenticatedUser):
-        return []
-    refresh_tok = request.cookies.get(COOKIE_REFRESH)
-    if not refresh_tok:
-        return []
-    access_tok = request.cookies.get(COOKIE_ACCESS)
-    if access_tok and validate_jwt_access_token(access_tok) is not None:
-        return []  # JWT was already valid; not a refresh request
-    new_access = create_access_token(accessor.username)
-    return build_auth_cookies(new_access, refresh_tok, request_host=request.headers.get("host", ""))
-
-
 class AuthMiddleware:
+    """Validates and adds auth information to requests, on `request.accessor`.
+
+    Auth isn't enforced here; missing auth will just yield `request.accessor = None`.
+    Auth is actually enforced in route guards.
+    """
+
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -137,31 +101,10 @@ class AuthMiddleware:
         request: Request[Any, Any, Any] = Request(scope, receive, send)
         state = scope.setdefault("state", {})
 
-        # auth
         accessor = authenticate(request, get_db())
         state["accessor"] = accessor
 
-        # send updated JWT cookie if expired, on outgoing response
-        async def wrapped_send(message: Message) -> None:
-            if message["type"] == "http.response.start":
-                if cookies := _refresh_cookies(request, scope):
-                    headers_obj: Any = message.get("headers", [])
-                    headers = list(headers_obj) if headers_obj else []
-                    for cookie in cookies:
-                        headers.append(cookie.to_encoded_header())
-                    message["headers"] = headers
-            await send(message)
-
-        await self.app(scope, receive, wrapped_send)
-
-
-async def provide_accessor(request: Request[Any, Any, Any]) -> AuthenticatedAccessor:
-    """Litestar dependency: return the AuthenticatedAccessor populated by AuthAccessorMiddleware."""
-    state = request.scope.get("state") or {}
-    accessor = state.get("accessor")
-    if accessor is None:
-        raise NotAuthorizedException(detail="Authentication required")
-    return accessor
+        await self.app(scope, receive, send)
 
 
 def login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedException) -> Response[Any]:
