@@ -1,3 +1,5 @@
+# TODO: write migrations
+
 CREATE TABLE IF NOT EXISTS apps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     -- app_id: opaque 12-char base58 identity, the cross-table FK target.
@@ -57,8 +59,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-    token      TEXT PRIMARY KEY,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);

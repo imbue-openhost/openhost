@@ -1,9 +1,9 @@
 import hashlib
 import secrets
 import sqlite3
-import time
 from datetime import UTC
 from datetime import datetime
+from datetime import timedelta
 
 import attr
 
@@ -39,11 +39,16 @@ def _hash(token: str) -> str:
 
 def create_session(user_id: int, db: sqlite3.Connection) -> str:
     token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(UTC) + timedelta(seconds=SESSION_TTL_SECONDS)
     db.execute(
         "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
-        (_hash(token), user_id, int(time.time()) + SESSION_TTL_SECONDS),
+        (_hash(token), user_id, expires_at.isoformat()),
     )
     return token
+
+
+def revoke_session(token: str, db: sqlite3.Connection) -> None:
+    db.execute("DELETE FROM sessions WHERE token_hash = ?", (_hash(token),))
 
 
 def validate_session_token(token: str, db: sqlite3.Connection) -> AuthenticatedUser | None:
@@ -53,13 +58,13 @@ def validate_session_token(token: str, db: sqlite3.Connection) -> AuthenticatedU
         FROM sessions s JOIN users u ON u.user_id = s.user_id
         WHERE s.token_hash = ?"""
     if row := db.execute(query, (token_hash,)).fetchone():
-        if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+        if datetime.fromisoformat(row["expires_at"]) >= datetime.now(UTC):
             return AuthenticatedUser(user_id=row["user_id"], username=row["username"])
     return None
 
 
 def validate_api_token(token: str, db: sqlite3.Connection) -> AuthenticatedAPIKey | None:
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_hash = _hash(token)
 
     if row := db.execute(
         "SELECT name, expires_at FROM api_tokens WHERE token_hash = ?",
@@ -73,7 +78,7 @@ def validate_api_token(token: str, db: sqlite3.Connection) -> AuthenticatedAPIKe
 def validate_app_token(token: str, db: sqlite3.Connection) -> AuthenticatedApp | None:
     token_hash = _hash(token)
     query = """
-        SELECT apps.app_id, apps.name, app_tokens.expires_at
+        SELECT apps.app_id, apps.name
         FROM app_tokens JOIN apps ON apps.app_id = app_tokens.app_id
         WHERE app_tokens.token_hash = ?"""
     if row := db.execute(query, (token_hash,)).fetchone():

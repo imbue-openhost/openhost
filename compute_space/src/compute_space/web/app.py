@@ -22,10 +22,8 @@ from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import provide_db
-from compute_space.web.auth.middleware import login_required_redirect
-from compute_space.web.auth.middleware import provide_accessor
-from compute_space.web.middleware.auth_accessor import AuthAccessorMiddleware
-from compute_space.web.middleware.auth_refresh import AuthRefreshMiddleware
+from compute_space.web.auth.auth import AuthMiddleware
+from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.settings import api_settings_routes
 from compute_space.web.routes.pages.login import pages_login_routes
@@ -118,13 +116,12 @@ def create_app(config: Config) -> Litestar:
             pages_login_routes,
             pages_settings_routes,
         ],
-        middleware=[SubdomainProxyMiddleware, AuthRefreshMiddleware, AuthAccessorMiddleware],
+        middleware=[SubdomainProxyMiddleware, AuthMiddleware],
         template_config=template_config,
         after_request=_close_db_after,
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
             "db": Provide(provide_db, sync_to_thread=False),
-            "accessor": Provide(provide_accessor),
         },
         exception_handlers={NotAuthorizedException: login_required_redirect},
         on_startup=[_install_template_globals],

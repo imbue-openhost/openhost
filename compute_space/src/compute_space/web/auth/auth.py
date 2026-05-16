@@ -1,6 +1,5 @@
 import sqlite3
 from typing import Any
-from urllib.parse import urlparse
 
 from litestar import Request
 from litestar import Response
@@ -12,12 +11,9 @@ from litestar.types import ASGIApp
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
-from quart import Response
 
-from compute_space.config import get_config
 from compute_space.core.auth.auth import SESSION_COOKIE_NAME
 from compute_space.core.auth.auth import AuthenticatedAccessor
-from compute_space.core.auth.auth import AuthenticatedApp
 from compute_space.core.auth.auth import validate_api_token
 from compute_space.core.auth.auth import validate_app_token
 from compute_space.core.auth.auth import validate_session_token
@@ -57,31 +53,6 @@ def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> Authenti
     return None
 
 
-def _try_origin_subdomain(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedApp | None:
-    """Validate that an Origin/Referer subdomain is one of our apps, gated on a valid JWT cookie.
-
-    The JWT cookie must validate (a logged-in user is calling from inside an app's iframe/page); we
-    then trust the Origin to identify which app they're acting on behalf of.
-    """
-    if _try_jwt_cookie(connection) is None:
-        return None
-
-    if not (origin := connection.headers.get("Origin", "") or connection.headers.get("Referer", "")):
-        return None
-
-    host = urlparse(origin).netloc
-    zone = get_config().zone_domain
-    if not zone or not host.endswith("." + zone):
-        return None
-
-    app_name = host[: -(len(zone) + 1)]
-    if "." in app_name:
-        return None
-
-    row = db.execute("SELECT app_id FROM apps WHERE name = ?", (app_name,)).fetchone()
-    return AuthenticatedApp(app_id=row["app_id"]) if row else None
-
-
 class AuthMiddleware:
     """Validates and adds auth information to requests, on `request.accessor`.
 
@@ -113,8 +84,8 @@ def login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedE
         return Response(content={"error": exc.detail}, status_code=401)
 
     db = get_db()
-    owner = db.execute("SELECT * FROM owner").fetchone()
-    if owner is None:
+    user = db.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+    if user is None:
         claim = request.query_params.get("claim", "")
         target = f"/setup?claim={claim}" if claim else "/setup"
     else:

@@ -1,12 +1,8 @@
 from litestar.datastructures import Cookie
 
 from compute_space.config import get_config
-from compute_space.core.auth.jwt_tokens import ACCESS_TOKEN_EXPIRY
-from compute_space.core.auth.jwt_tokens import REFRESH_GRACE_PERIOD
-from compute_space.core.auth.jwt_tokens import REFRESH_TOKEN_EXPIRY
-
-COOKIE_ACCESS = "zone_auth"
-COOKIE_REFRESH = "zone_refresh"
+from compute_space.core.auth.auth import SESSION_COOKIE_NAME
+from compute_space.core.auth.auth import SESSION_TTL_SECONDS
 
 
 def cookie_domain(request_host: str | None) -> str | None:
@@ -28,45 +24,27 @@ def cookie_domain(request_host: str | None) -> str | None:
     return zone_no_port
 
 
-def clear_auth_cookies(request_host: str | None = None) -> list[Cookie]:
-    """Build cookies that overwrite the existing auth cookies with a zero max-age."""
-    domain = cookie_domain(request_host)
-    secure = get_config().tls_enabled
-    return [
-        Cookie(key=key, value="", domain=domain, max_age=0, secure=secure, httponly=True, samesite="lax")
-        for key in (COOKIE_ACCESS, COOKIE_REFRESH)
-    ]
+def clear_session_cookie(request_host: str | None = None) -> Cookie:
+    """Build a cookie that overwrites the existing session cookie with a zero max-age."""
+    return Cookie(
+        key=SESSION_COOKIE_NAME,
+        value="",
+        domain=cookie_domain(request_host),
+        max_age=0,
+        secure=get_config().tls_enabled,
+        httponly=True,
+        samesite="lax",
+    )
 
 
-def build_auth_cookies(
-    access_token: str,
-    refresh_token: str | None = None,
-    request_host: str | None = None,
-) -> list[Cookie]:
-    """Build the cookies to set after login or token refresh."""
-    domain = cookie_domain(request_host)
-    secure = get_config().tls_enabled
-    cookies = [
-        Cookie(
-            key=COOKIE_ACCESS,
-            value=access_token,
-            domain=domain,
-            max_age=ACCESS_TOKEN_EXPIRY + int(REFRESH_GRACE_PERIOD.total_seconds()),
-            secure=secure,
-            httponly=True,
-            samesite="lax",
-        )
-    ]
-    if refresh_token:
-        cookies.append(
-            Cookie(
-                key=COOKIE_REFRESH,
-                value=refresh_token,
-                domain=domain,
-                max_age=REFRESH_TOKEN_EXPIRY,
-                secure=secure,
-                httponly=True,
-                samesite="lax",
-            )
-        )
-    return cookies
+def build_session_cookie(session_token: str, request_host: str | None = None) -> Cookie:
+    """Build the cookie to set after login."""
+    return Cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_token,
+        domain=cookie_domain(request_host),
+        max_age=SESSION_TTL_SECONDS,
+        secure=get_config().tls_enabled,
+        httponly=True,
+        samesite="lax",
+    )

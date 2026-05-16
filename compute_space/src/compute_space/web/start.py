@@ -52,7 +52,7 @@ def _bootstrap(config: Config) -> None:
 def _owner_exists(config: Config) -> bool:
     db = sqlite3.connect(config.db_path)
     try:
-        return db.execute("SELECT 1 FROM owner LIMIT 1").fetchone() is not None
+        return db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
     finally:
         db.close()
 

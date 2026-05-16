@@ -4,12 +4,8 @@ When the setup handler successfully creates the owner row, it triggers shutdown 
 ``trigger_restart()``; ``start.py`` then proceeds to boot the full app.
 """
 
-import hashlib
 import os
 import secrets
-from datetime import UTC
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,15 +25,13 @@ from litestar.template.config import TemplateConfig
 
 from compute_space.config import Config
 from compute_space.config import provide_config
-from compute_space.core.auth.jwt_tokens import REFRESH_TOKEN_EXPIRY
-from compute_space.core.auth.jwt_tokens import create_access_token
-from compute_space.core.auth.jwt_tokens import create_refresh_token
+from compute_space.core.auth.auth import create_session
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.core.updates import trigger_restart
 from compute_space.db import close_db
 from compute_space.db import get_db
-from compute_space.web.auth.cookies import build_auth_cookies
+from compute_space.web.auth.cookies import build_session_cookie
 
 
 def _verify_claim_token(claim_token: str, claim_token_path: str) -> bool:
@@ -91,19 +85,13 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
 
     db = get_db()
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    db.execute(
-        "INSERT INTO owner (id, username, password_hash) VALUES (1, 'owner', ?)",
+    cursor = db.execute(
+        "INSERT INTO users (username, password_hash) VALUES ('owner', ?)",
         (password_hash,),
     )
-
-    access_token = create_access_token("owner")
-    refresh_token = create_refresh_token()
-    refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_EXPIRY)
-    db.execute(
-        "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
-        (refresh_token_hash, expires_at.isoformat()),
-    )
+    user_id = cursor.lastrowid
+    assert user_id is not None
+    session_token = create_session(user_id, db)
     db.commit()
 
     try:
@@ -117,10 +105,8 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
         logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
     request_host = request.headers.get("host", "")
-    cookies = build_auth_cookies(access_token, refresh_token, request_host=request_host)
     response: Redirect = Redirect(path="/")
-    for cookie in cookies:
-        response.set_cookie(cookie)
+    response.set_cookie(build_session_cookie(session_token, request_host=request_host))
 
     # Shutdown the setup server; start.py will boot the full app next.
     trigger_restart()
