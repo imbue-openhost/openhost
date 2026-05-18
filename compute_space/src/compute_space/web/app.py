@@ -3,24 +3,27 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+from typing import cast
 
+from litestar import HttpMethod
 from litestar import Litestar
+from litestar import MediaType
 from litestar import Request
 from litestar import Response
+from litestar import route
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.di import Provide
 from litestar.exceptions import NotAuthorizedException
 from litestar.handlers import asgi
-from litestar.openapi.config import OpenAPIConfig
 from litestar.response import Redirect
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
+from quart import Blueprint
 from quart import Quart
 from quart import current_app
-from quart import request as quart_request
 from quart import url_for as quart_url_for
 
 from compute_space.config import Config
@@ -97,10 +100,18 @@ async def _close_db_after(response: Response[Any]) -> Response[Any]:
     return response
 
 
+@route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
+def setup_already_done() -> Response[str]:
+    return Response(
+        content="This instance has already been set up.",
+        status_code=403,
+        media_type=MediaType.TEXT,
+    )
+
+
 def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedException) -> Response[Any]:
     """Exception handler: redirect HTML clients to /setup or /login; JSON clients get 401.
 
-    TODO: add redirect back to original target after login (?)
     websocket-type requests should never get here - they start as HTTP requests with `Upgrade: websocket`, and should fail then.
     """
     if "application/json" in request.headers.get("Accept", ""):
@@ -149,6 +160,21 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     quart_app.config["MAX_CONTENT_LENGTH"] = None
     quart_app.teardown_appcontext(close_db)
 
+    # Stubs for routes that have been migrated to Litestar.  Quart's
+    # ``url_for`` resolves against blueprint-registered endpoints, and several
+    # of the layout/dashboard templates reference migrated routes by name
+    # (``pages_settings.settings_page`` -> /settings, etc.).  The handlers
+    # are never actually invoked because the corresponding specific Litestar
+    # routes win over the catch-all mount; they exist only so ``url_for``
+    # produces the right URL.
+
+    migrated_stub_bp = Blueprint("pages_settings", __name__)
+
+    @migrated_stub_bp.route("/settings")
+    async def settings_page() -> str:  # pragma: no cover — Litestar handles
+        return ""
+
+    quart_app.register_blueprint(migrated_stub_bp)
     quart_app.register_blueprint(apps_bp)
     quart_app.register_blueprint(pages_system_bp)
     quart_app.register_blueprint(pages_permissions_v2_bp)
@@ -191,10 +217,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
             "static_url": static_url,
         }
 
-    # quart_request is unused at module scope but keeps the import alive for
-    # any future hooks that need it; the linter would otherwise prune it.
-    _ = quart_request
-
     return quart_app
 
 
@@ -222,8 +244,21 @@ def create_app(config: Config) -> Litestar:
 
     @asgi(path="/", is_mount=True)
     async def quart_fallback(scope: Scope, receive: Receive, send: Send) -> None:
-        """Catch-all for anything Litestar didn't match — defers to the Quart sub-app."""
-        await quart_fallback_app(scope, receive, send)
+        """Catch-all for anything Litestar didn't match — defers to the Quart sub-app.
+
+        Litestar rewrites ``scope["path"]`` when delegating to a mount (strips
+        the mount prefix, normalises trailing slashes); reconstitute it from
+        ``raw_path`` so Quart's URL matcher sees the original request path
+        (e.g. "/health", not "health/").
+        """
+        raw_path = scope.get("raw_path")
+        if raw_path is not None:
+            patched = dict(scope)
+            patched["path"] = raw_path.decode("ascii")
+            scope = cast(Scope, patched)
+        # Quart is typed against hypercorn's ASGI aliases while Litestar uses
+        # its own; the runtime objects are interchangeable.
+        await quart_fallback_app(scope, receive, send)  # type: ignore[arg-type]
 
     atexit.register(cleanup_terminal)
 
@@ -233,6 +268,7 @@ def create_app(config: Config) -> Litestar:
             api_settings_routes,
             pages_login_routes,
             pages_settings_routes,
+            setup_already_done,
             quart_fallback,
         ],
         middleware=[AuthMiddleware, SubdomainProxyMiddleware],
@@ -244,5 +280,4 @@ def create_app(config: Config) -> Litestar:
         },
         exception_handlers={NotAuthorizedException: _login_required_redirect},
         on_startup=[_install_template_globals],
-        openapi_config=OpenAPIConfig(title="compute_space", version="0.1.0", path="/openapi"),
     )

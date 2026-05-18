@@ -1,5 +1,3 @@
-# TODO: write migrations
-
 CREATE TABLE IF NOT EXISTS apps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     -- app_id: opaque 12-char base58 identity, the cross-table FK target.

@@ -7,6 +7,7 @@ When the setup handler successfully creates the owner row, it triggers shutdown 
 import os
 import secrets
 from pathlib import Path
+from typing import Annotated
 from typing import Any
 
 import bcrypt
@@ -16,9 +17,10 @@ from litestar import Request
 from litestar import Response
 from litestar import get
 from litestar import post
+from litestar.background_tasks import BackgroundTask
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.di import Provide
-from litestar.response import Redirect
+from litestar.params import Dependency
 from litestar.response import Template
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
@@ -26,12 +28,20 @@ from litestar.template.config import TemplateConfig
 from compute_space.config import Config
 from compute_space.config import provide_config
 from compute_space.core.auth.auth import create_session
+from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
+from compute_space.core.updates import is_shutdown_pending
 from compute_space.core.updates import trigger_restart
 from compute_space.db import close_db
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import build_session_cookie
+
+# Litestar's signature model uses msgspec to validate parameters. attrs
+# classes that aren't @msgspec.Struct trip "Expected object, got DefaultConfig"
+# during request parsing; flag the injected Config as already-trusted so
+# msgspec leaves it alone.
+ConfigDep = Annotated[Config, Dependency(skip_validation=True)]
 
 
 def _verify_claim_token(claim_token: str, claim_token_path: str) -> bool:
@@ -56,7 +66,7 @@ def _claim_unauthorized() -> Response[str]:
 
 
 @get("/setup")
-async def setup_get(request: Request[Any, Any, Any], config: Config) -> Template | Response[str]:
+async def setup_get(request: Request[Any, Any, Any], config: ConfigDep) -> Template | Response[str]:
     claim_token = request.query_params.get("claim", "")
     if _claim_token_required(config) and not _verify_claim_token(claim_token, config.claim_token_path):
         return _claim_unauthorized()
@@ -64,7 +74,7 @@ async def setup_get(request: Request[Any, Any, Any], config: Config) -> Template
 
 
 @post("/setup", status_code=200)
-async def setup_post(request: Request[Any, Any, Any], config: Config) -> Response[Any]:
+async def setup_post(request: Request[Any, Any, Any], config: ConfigDep) -> Response[Any]:
     form = await request.form()
     form_claim = form.get("claim", "")
     if _claim_token_required(config) and not _verify_claim_token(form_claim, config.claim_token_path):
@@ -105,17 +115,49 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
         logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
     request_host = request.headers.get("host", "")
-    response: Redirect = Redirect(path="/")
+    # 200 + cookie + small "restarting" page (with meta-refresh to land on
+    # the dashboard once the full app is up).  We can't redirect synchronously
+    # because trigger_restart() kills the listener as soon as the response is
+    # written — the browser's redirect-follow would race the shutdown and
+    # land on a closed connection.  A meta-refresh interval gives the full
+    # app time to come up before the next navigation.
+    body = (
+        "<!doctype html><html><head><meta http-equiv=refresh content='2; url=/'>"
+        "<title>OpenHost — restarting</title></head>"
+        "<body style='font-family:system-ui;text-align:center;margin-top:4em;'>"
+        "<p>Setup complete. Restarting…</p></body></html>"
+    )
+    response = Response(content=body, status_code=200, media_type=MediaType.HTML)
     response.set_cookie(build_session_cookie(session_token, request_host=request_host))
 
-    # Shutdown the setup server; start.py will boot the full app next.
-    trigger_restart()
+    # Schedule the restart for after the response has been written so the
+    # client actually receives the 200 + Set-Cookie before the listener drops.
+    response.background = BackgroundTask(_trigger_restart_after_response)
     return response
+
+
+async def _trigger_restart_after_response() -> None:
+    """Defer trigger_restart slightly so any redirect-follow lands cleanly."""
+    import asyncio  # noqa: PLC0415
+
+    await asyncio.sleep(0.05)
+    trigger_restart()
 
 
 async def _close_db_after(response: Response[Any]) -> Response[Any]:
     close_db()
     return response
+
+
+@get("/health", sync_to_thread=False)
+def health() -> Response[dict[str, Any]]:
+    """Liveness + security audit, mirrors the full app's /health so external
+    probes (and the e2e test suite's pre-setup audit) get the same shape
+    before and after owner provisioning."""
+    if is_shutdown_pending():
+        return Response(content={"status": "restarting"}, status_code=503)
+    audit = run_audit(db=get_db())
+    return Response(content={"status": "ok", "security": audit})
 
 
 def create_setup_app(config: Config) -> Litestar:
@@ -132,7 +174,7 @@ def create_setup_app(config: Config) -> Litestar:
     static_router = create_static_files_router(path="/static", directories=[static_dir])
 
     return Litestar(
-        route_handlers=[setup_get, setup_post, static_router],
+        route_handlers=[setup_get, setup_post, health, static_router],
         template_config=template_config,
         after_request=_close_db_after,
         dependencies={"config": Provide(provide_config, sync_to_thread=False)},

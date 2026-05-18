@@ -24,7 +24,7 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
-from compute_space.web.auth.guards import require_user
+from compute_space.web.auth.guards import require_owner_auth
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -56,7 +56,7 @@ def _host_prep_fields() -> dict[str, Any]:
     return {"host_prep_ok": True, "container_runtime_available": True}
 
 
-@get("/api/settings/get_remote", guards=[require_user])
+@get("/api/settings/get_remote", guards=[require_owner_auth])
 async def get_remote(config: Config) -> dict[str, Any]:
     try:
         url = await get_remote_url(config.openhost_repo_path)
@@ -68,7 +68,7 @@ async def get_remote(config: Config) -> dict[str, Any]:
     return {"ok": True, "url": url, "ref": ref}
 
 
-@post("/api/settings/set_remote", status_code=200, guards=[require_user])
+@post("/api/settings/set_remote", status_code=200, guards=[require_owner_auth])
 async def set_remote(data: SetRemoteRequest, config: Config) -> Response[dict[str, Any]]:
     """Set git remote URL, injecting a GitHub auth token if available.
 
@@ -99,7 +99,7 @@ async def set_remote(data: SetRemoteRequest, config: Config) -> Response[dict[st
     return Response(content={"ok": True, "token_applied": token_applied})
 
 
-@post("/api/settings/check_for_updates", status_code=200, guards=[require_user])
+@post("/api/settings/check_for_updates", status_code=200, guards=[require_owner_auth])
 async def check_for_updates(config: Config) -> Response[dict[str, Any]]:
     try:
         state = await check_git_state(config.openhost_repo_path)
@@ -108,7 +108,7 @@ async def check_for_updates(config: Config) -> Response[dict[str, Any]]:
     return Response(content={"ok": True, "state": str(state), **_host_prep_fields()})
 
 
-@post("/api/settings/update_repo_state", status_code=200, guards=[require_user])
+@post("/api/settings/update_repo_state", status_code=200, guards=[require_owner_auth])
 async def update_repo_state(config: Config) -> Response[dict[str, Any]]:
     """git reset to local origin/[branch] + pixi install.
 
@@ -126,7 +126,7 @@ async def update_repo_state(config: Config) -> Response[dict[str, Any]]:
     return Response(content={"ok": True})
 
 
-@post("/api/settings/restart_compute_space", status_code=200, guards=[require_user])
+@post("/api/settings/restart_compute_space", status_code=200, guards=[require_owner_auth])
 async def restart_compute_space() -> dict[str, Any]:
     trigger_restart()
     # this response may not get sent, don't depend on it

@@ -13,7 +13,7 @@ SESSION_COOKIE_NAME = "session_token"
 
 @attr.s(auto_attribs=True, frozen=True)
 class AuthenticatedAccessor:
-    origin: str | None
+    pass
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -70,7 +70,13 @@ def validate_api_token(token: str, db: sqlite3.Connection) -> AuthenticatedAPIKe
         "SELECT name, expires_at FROM api_tokens WHERE token_hash = ?",
         (token_hash,),
     ).fetchone():
-        if datetime.fromisoformat(row["expires_at"]) >= datetime.now(UTC):
+        # NULL / empty expires_at means "never expires" — created via the
+        # "never" option in /api/tokens.  Anything else is parsed and
+        # compared.
+        expires_at = row["expires_at"]
+        if not expires_at:
+            return AuthenticatedAPIKey()
+        if datetime.fromisoformat(expires_at) >= datetime.now(UTC):
             return AuthenticatedAPIKey()
     return None
 

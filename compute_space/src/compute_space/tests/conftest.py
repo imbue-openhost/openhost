@@ -10,15 +10,22 @@ from typing import Any
 
 import pytest
 import requests
+from quart import Quart
+from quart import request as quart_request
+from quart import websocket as quart_websocket
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
+from compute_space.config import set_active_config
+from compute_space.db import get_db
 from compute_space.db.schema import schema_path
 from compute_space.tests.utils import kill_tree
 from compute_space.tests.utils import managed_router
 from compute_space.tests.utils import router_cmd
+from compute_space.web.auth.auth import RequestOrigin
+from compute_space.web.auth.auth import authenticate
 
 ROUTER_PORT = 18080
 OWNER_PASSWORD = "testpass123"
@@ -63,6 +70,7 @@ def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
         **overrides,
     )
     cfg.make_all_dirs()
+    set_active_config(cfg)
     return cfg
 
 
@@ -161,6 +169,10 @@ def admin_session(router_process: subprocess.Popen[bytes], config: Config) -> re
     Uses the zone_domain in URLs (resolved to 127.0.0.1 via the autouse DNS
     fixture) so /setup's auth cookies get ``Domain=testzone.local`` and are
     automatically sent to app subdomains too.
+
+    Once the setup POST returns, the setup-only Litestar app starts shutting
+    down so start.py can boot the full app — poll a full-app-only path
+    afterwards so callers see a ready router.
     """
     base_url = f"http://{config.zone_domain}:{config.port}"
     s = requests.Session()
@@ -172,4 +184,41 @@ def admin_session(router_process: subprocess.Popen[bytes], config: Config) -> re
         },
     )
     assert r.status_code == 200, f"Router setup failed: {r.status_code}"
-    return s
+
+    # /login lives only on the full app; use it as a "full app is up" probe.
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            probe = requests.get(f"{base_url}/login", timeout=1, allow_redirects=False)
+            if probe.status_code in (200, 302):
+                return s
+        except requests.ConnectionError:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError("Full app did not come up after /setup within 30s")
+
+
+def install_in_process_auth(quart_app: Quart) -> None:
+    """Populate ``scope["state"]`` on each request with the same accessor +
+    origin that Litestar's outer ``AuthMiddleware`` would set in production.
+
+    Tests that spin up a Quart app in isolation (no Litestar wrapper) but
+    still want the legacy ``@login_required`` / ``@app_auth_required``
+    decorators to authenticate request bearer tokens use this helper.
+    """
+
+    @quart_app.before_request
+    async def _populate_state() -> None:
+        scope = quart_request.scope
+        state = scope.setdefault("state", {})
+        state["accessor"] = authenticate(quart_request, get_db())
+        # Tests don't set Origin/Referer, so leave it None — the legacy
+        # decorators only care about App vs Router for browser-cookie auth.
+        state["origin"] = RequestOrigin(origin=None)
+
+    @quart_app.before_websocket
+    async def _populate_state_ws() -> None:
+        scope = quart_websocket.scope
+        state = scope.setdefault("state", {})
+        state["accessor"] = authenticate(quart_websocket, get_db())
+        state["origin"] = RequestOrigin(origin=None)

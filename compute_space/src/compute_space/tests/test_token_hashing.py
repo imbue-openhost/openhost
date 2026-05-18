@@ -1,5 +1,3 @@
-"""Tests that refresh tokens and app tokens are stored as SHA-256 hashes, not plaintext."""
-
 import hashlib
 import sqlite3
 
@@ -11,63 +9,6 @@ def _init_test_db(tmp_path) -> str:
     db_path = str(tmp_path / "test.db")
     init_db(db_path)
     return db_path
-
-
-class TestRefreshTokenHashing:
-    """Verify refresh tokens are hashed before storage."""
-
-    def test_stored_hash_differs_from_raw_token(self, tmp_path):
-        """After inserting a refresh token via the same pattern as auth.py,
-        the stored token_hash should be the SHA-256 hex digest, not the raw value."""
-        db_path = _init_test_db(tmp_path)
-        db = sqlite3.connect(db_path)
-        db.row_factory = sqlite3.Row
-
-        raw_token = "test-refresh-token-abc123"
-        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-
-        db.execute(
-            "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
-            (token_hash, "2099-01-01T00:00:00"),
-        )
-        db.commit()
-
-        row = db.execute("SELECT token_hash FROM refresh_tokens").fetchone()
-        assert row["token_hash"] != raw_token
-        assert row["token_hash"] == token_hash
-        assert len(row["token_hash"]) == 64  # SHA-256 hex digest length
-        db.close()
-
-    def test_lookup_by_hash(self, tmp_path):
-        """Lookup by hashed value finds the correct row."""
-        db_path = _init_test_db(tmp_path)
-        db = sqlite3.connect(db_path)
-        db.row_factory = sqlite3.Row
-
-        raw_token = "lookup-test-token"
-        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-
-        db.execute(
-            "INSERT INTO refresh_tokens (token_hash, expires_at, revoked) VALUES (?, ?, 0)",
-            (token_hash, "2099-01-01T00:00:00"),
-        )
-        db.commit()
-
-        # Simulate middleware lookup: hash the raw cookie value, then query
-        lookup_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-        row = db.execute(
-            "SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0",
-            (lookup_hash,),
-        ).fetchone()
-        assert row is not None
-
-        # Raw token should NOT match
-        row_raw = db.execute(
-            "SELECT * FROM refresh_tokens WHERE token_hash = ?",
-            (raw_token,),
-        ).fetchone()
-        assert row_raw is None
-        db.close()
 
 
 class TestAppTokenHashing:

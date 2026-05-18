@@ -27,6 +27,7 @@ from compute_space.db.connection import init_db
 from compute_space.web.routes.services_v2 import services_v2_bp
 
 from .conftest import _make_test_config
+from .conftest import install_in_process_auth
 
 CALLER_APP = "openhost-catalog"
 CALLER_TOKEN = "test-installer-caller-token"
@@ -59,6 +60,10 @@ def _make_app(cfg) -> Quart:  # noqa: ANN001
     app.config["DB_PATH"] = cfg.db_path
     app.openhost_config = cfg  # type: ignore[attr-defined]
     app.register_blueprint(services_v2_bp)
+    # The route uses @app_auth_required, which reads accessor off scope.state
+    # — normally populated by Litestar's outer AuthMiddleware.  No Litestar
+    # here, so install the same logic as a before_request hook.
+    install_in_process_auth(app)
     return app
 
 

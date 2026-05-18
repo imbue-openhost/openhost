@@ -1,3 +1,5 @@
+# TODO: think about if we're doing CORS stuff properly? how do we respond to Options requests?
+
 import sqlite3
 from typing import Any
 from urllib.parse import urlparse
@@ -63,22 +65,24 @@ def _get_bearer_token_if_set(connection: _AnyConnection) -> str | None:
 
 
 def _get_connection_origin(connection: _AnyConnection) -> str | None:
-    """yields the request's stated origin, including port if specified and non-default.
+    """gets and formats the origin header as "sub.example.com" or "sub.example.com:1234", no protocol or path, if set.
+    port is included if non-default.
+    returns None if no origin header is set.
 
-    ie "sub.example.com" or "sub.example.com:1234", no protocol or path.
-    returns None if no origin can be determined.
+    browsers have specific behaviors around the Origin header, which we rely on here.
+    - it is set on all cross-origin requests, including from subdomains.
+    - it is not set on all same-origin requests though
+    - it includes the port if non-default (not 80 or 443).
+
+    we don't use the Referer header, as it's not intended for use in CORS type origin validation.
     """
-    raw = connection.headers.get("Origin") or connection.headers.get("Referer")
-    if not raw:
-        return None
-    parsed = urlparse(raw)
-    host, port = parsed.hostname, parsed.port
-    if not host:
-        return None
-    # Drop default ports so :443/:80 match the bare host form
-    if (parsed.scheme, port) in {("https", 443), ("http", 80)}:
-        port = None
-    return f"{host}:{port}" if port else host
+    if raw := connection.headers.get("Origin"):
+        parsed = urlparse(raw)
+        host, port = parsed.hostname, parsed.port
+        if not host:
+            return None
+        return f"{host}:{port}" if port else host
+    return None
 
 
 def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
@@ -125,13 +129,15 @@ class AuthMiddleware:
         accessor = authenticate(request, get_db())
         state["accessor"] = accessor
 
-        origin_str = _get_connection_origin(request)
-        if origin_str == get_config().zone_domain:
-            origin = RouterOrigin(origin=origin_str)
-        elif app := get_app_from_hostname(origin_str):
-            origin = AppOrigin(origin=origin_str, app_id=app.app_id)
-        else:
-            origin = RequestOrigin(origin=origin_str)
+        maybe_origin = _get_connection_origin(request)
+        origin = RequestOrigin(maybe_origin)
+        if maybe_origin is not None and maybe_origin == get_config().zone_domain:
+            # if origin is set (it is set on all browser cross-origin requests and cannot be forged by js),
+            # it must match the router zone to be considered from the router itself.
+            # otherwise apps could contain JS that makes requests using the user's auth to the router.
+            origin = RouterOrigin(origin=maybe_origin)
+        elif maybe_origin is not None and (app := get_app_from_hostname(maybe_origin)) is not None:
+            origin = AppOrigin(origin=maybe_origin, app_id=app.app_id)
         state["origin"] = origin
 
         await self.app(scope, receive, send)

@@ -35,6 +35,7 @@ import pytest
 from quart import Quart
 
 import compute_space.web.routes.docs as docs_routes
+from compute_space.config import set_active_config
 from compute_space.core.apps import RESERVED_PATHS
 
 
@@ -48,9 +49,11 @@ class _FakeCfg:
 def _make_app(repo_root_override: Path) -> Quart:
     """Build a minimal Quart app with the docs blueprint registered."""
     app = Quart(__name__)
-    app.openhost_config = _FakeCfg(  # type: ignore[attr-defined]
-        openhost_repo_path=repo_root_override,
-    )
+    cfg = _FakeCfg(openhost_repo_path=repo_root_override)
+    app.openhost_config = cfg  # type: ignore[attr-defined]
+    # docs.py reads `get_config()` directly; install the fake as the active
+    # config for the duration of the test.
+    set_active_config(cfg)  # type: ignore[arg-type]
     app.register_blueprint(docs_routes.docs_bp)
     return app
 

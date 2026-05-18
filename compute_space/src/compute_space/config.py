@@ -57,7 +57,7 @@ class Config:
     default_apps: list[str]
 
     @property
-    def zone_domain_no_port(self):
+    def zone_domain_no_port(self) -> str:
         return self.zone_domain.split(":")[0]
 
     def evolve(self, **kwargs: Any) -> Self:

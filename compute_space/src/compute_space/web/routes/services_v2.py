@@ -181,10 +181,10 @@ async def oauth_callback_proxy_v2() -> Response:
     app_row = find_app_by_name(app_name)
     if not app_row:
         return _json_error("service_not_available", f"App '{app_name}' not found", 503)
-    if app_row["status"] != "running":
+    if app_row.status != "running":
         return _json_error("service_not_available", f"App '{app_name}' is not running", 503)
 
-    return await proxy_request(request, app_row["local_port"], override_path="/callback")
+    return await proxy_request(request, app_row.local_port, override_path="/callback")
 
 
 # ─── Shortname-based call proxy ───

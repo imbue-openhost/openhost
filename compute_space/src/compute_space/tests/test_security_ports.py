@@ -12,6 +12,8 @@ from unittest import mock
 
 import pytest
 
+from compute_space.core.auth import security_audit as security
+
 _SS_FORMAT = "LISTEN  0  4096  {addr}  *:*"
 
 

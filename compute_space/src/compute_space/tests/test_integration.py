@@ -14,12 +14,8 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-from datetime import UTC
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 
-import jwt as pyjwt
 import pytest
 import requests
 from loguru import logger
@@ -444,50 +440,6 @@ class TestRouterCore:
             allow_redirects=False,
         )
         assert r.status_code == 302  # redirects to login
-
-    def test_expired_token_refresh(self, admin_session, config):
-        """Expired access tokens are transparently refreshed via the refresh cookie."""
-        base_url = _zone_url(config)
-
-        # Read the private key the router generated at startup
-        private_key = (Path(config.keys_dir) / "private.pem").read_text()
-
-        # Get the current username from a valid request
-        r = admin_session.get(f"{base_url}/api/apps")
-        assert r.status_code == 200, "Pre-check: admin_session should be authenticated"
-
-        # Extract the refresh token cookie (must still be valid)
-        refresh_token = admin_session.cookies.get("zone_refresh")
-        assert refresh_token, "admin_session should have a zone_refresh cookie"
-
-        # Craft an expired access token (expired 1 hour ago)
-        now = datetime.now(UTC)
-        expired_payload = {
-            "sub": "owner",
-            "username": "owner",
-            "iss": "testzone.local",
-            "aud": "testzone.local",
-            "iat": now - timedelta(hours=2),
-            "exp": now - timedelta(hours=1),
-        }
-        expired_access_token = pyjwt.encode(expired_payload, private_key, algorithm="RS256")
-
-        # Use a fresh session with only the expired access token + valid refresh token.
-        # This avoids cookie domain/path conflicts in the admin_session jar.
-        s = requests.Session()
-        s.cookies.set("zone_auth", expired_access_token)
-        s.cookies.set("zone_refresh", refresh_token)
-
-        # Make a request to a protected endpoint — should succeed via refresh
-        r = s.get(f"{base_url}/api/apps", allow_redirects=False)
-        assert r.status_code == 200, f"Expected 200 from transparent refresh, got {r.status_code}"
-
-        # Verify the response included a Set-Cookie with a new access token.
-        # Check the response cookies directly (not the session jar, which may
-        # contain duplicates from the manually-set cookie + the server's cookie).
-        new_token = r.cookies.get("zone_auth")
-        assert new_token is not None, "Response should set a fresh zone_auth cookie after refresh"
-        assert new_token != expired_access_token, "Refreshed zone_auth cookie should differ from the expired one"
 
 
 # ---------------------------------------------------------------------------

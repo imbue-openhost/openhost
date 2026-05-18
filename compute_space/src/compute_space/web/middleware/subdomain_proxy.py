@@ -90,15 +90,15 @@ class SubdomainProxyMiddleware:
         # TODO: maybe behave differently for apps that are not in running state. not sure
 
         is_owner = _verify_owner(scope, target_app_id=app.app_id)
-        if not is_public_path(app, scope.path) and not is_owner:
+        if not is_public_path(app, scope["path"]) and not is_owner:
             raise NotAuthorizedException(detail="Authentication required to access this path")
 
         if scope_type == ScopeType.HTTP:
             proxied = await proxy_request(
-                scope,
+                cast(HTTPScope, scope),
                 receive,
                 app.local_port,
-                extra_headers=IS_OWNER_HEADER if is_owner else None,
+                extra_headers=IS_OWNER_HEADER.items() if is_owner else None,
             )
             await proxied(scope, receive, send)
         else:
@@ -155,11 +155,11 @@ def _format_proxy_request_url(scope: Scope, target_port: int, override_path: str
         # URL-encoded characters (e.g. %3A, %40) are preserved exactly as
         # the client sent them.  This is critical for protocols like Matrix
         # federation where the sending server signs the original encoded URI.
-        path = scope.raw_path.decode("ascii")
+        path = scope["raw_path"].decode("ascii")
 
     path = path.lstrip("/")
     target_url = f"http://127.0.0.1:{target_port}/{path}"
-    query_string = scope.query_string
+    query_string = scope["query_string"]
     if query_string:
         target_url += f"?{query_string.decode('utf-8')}"
     return target_url
@@ -199,17 +199,18 @@ async def proxy_request(
     # add forwarding headers for the backend app, so it can tell where the request came from.
     # these are annoying but unavoidable - we can't spoof the IP or proto in the forwarded request.
     # i don't think x-forwarded-host is needed?
-    if scope.client:
+    scope_client = scope.get("client")
+    if scope_client:
         # client IP; for some reason this is allowed to be None in ASGI
-        headers.append(("X-Forwarded-For", f"{scope.client[0]}:{scope.client[1]}"))
-    headers.append(("X-Forwarded-Proto", scope.scheme))
+        headers.append(("X-Forwarded-For", f"{scope_client[0]}:{scope_client[1]}"))
+    headers.append(("X-Forwarded-Proto", scope["scheme"]))
 
     if extra_headers:
         headers.extend(extra_headers)
 
     # TODO: this looks wrong / bad? should stream not load all into memory
     body = await _read_body(receive)
-    method = str(scope.method)
+    method = str(scope["method"])
 
     try:
         async with httpx.AsyncClient() as client:
@@ -287,11 +288,14 @@ async def ws_proxy(
         if lower in excluded_headers:
             continue
         forwardable.append((key, value))
-    extra_headers = _sanitize_forwarded_headers(forwardable)
+    sanitized = _sanitize_forwarded_headers(forwardable)
+    # websockets.connect's ``additional_headers`` wants a dict (or list of
+    # tuples); the sanitiser returns a list, so flatten into a dict here.
+    extra_headers: dict[str, str] = dict(sanitized)
     scope_client = scope.get("client")
     extra_headers["X-Forwarded-For"] = str(scope_client[0]) if scope_client else ""
     extra_headers["X-Forwarded-Proto"] = scope.get("scheme", "http")
-    extra_headers["X-Forwarded-Host"] = _scope_host(scope)
+    extra_headers["X-Forwarded-Host"] = _get_request_target_hostname(scope)
     if identity_headers:
         extra_headers.update(identity_headers)
 
