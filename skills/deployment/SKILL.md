@@ -68,26 +68,6 @@ The trailing comma after the IP is required (tells ansible it's a host list, not
 
 To deploy a specific commit: `-e openhost_commit=$(git rev-parse HEAD)`. The commit must be pushed.
 
-## Option 3: vm-manager
-
-The vm-manager app at `https://vm-manager.openhost-team.selfhost.imbue.com/` can provision instances on GCP, EC2, and Hetzner. It handles server creation, DNS, and ansible deployment automatically.
-
-Create via the web UI at `/create` or POST:
-
-```bash
-curl -X POST https://vm-manager.openhost-team.selfhost.imbue.com/create \
-  -H "Authorization: Bearer <token>" \
-  -d "name=myinstance&provider=hetzner&hetzner_location=hil&server_type=cpx21&branch=main"
-```
-
-Teardown:
-
-```bash
-curl -X POST https://vm-manager.openhost-team.selfhost.imbue.com/instance/<name>/teardown \
-  -H "Authorization: Bearer <token>" \
-  -d "provider=<provider>&location=<loc>&ip=<ip>&provider_id="
-```
-
 ## What gets installed
 
 The ansible playbook configures:
