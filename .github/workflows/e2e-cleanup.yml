@@ -1,0 +1,80 @@
+name: e2e-cleanup
+
+# Sweep for orphaned e2e instances that were not torn down by CI.
+# This can happen when cancel-in-progress kills a run after instance
+# creation but before the env file is written for teardown.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  MAX_AGE_HOURS: 3
+
+jobs:
+  cleanup-gcp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete orphaned GCP instances
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%S)
+          echo "Deleting openhost-e2e-* instances created before $CUTOFF"
+
+          INSTANCES=$(gcloud compute instances list \
+            --project="$GCP_PROJECT" \
+            --filter="name~'^openhost-e2e-' AND creationTimestamp<'${CUTOFF}'" \
+            --format="csv[no-heading](name,zone)")
+
+          if [ -z "$INSTANCES" ]; then
+            echo "No orphaned instances found"
+            exit 0
+          fi
+
+          echo "$INSTANCES" | while IFS=, read -r name zone; do
+            echo "Deleting $name ($zone)..."
+            gcloud compute instances delete "$name" \
+              --project="$GCP_PROJECT" \
+              --zone="$zone" \
+              --quiet || echo "  Failed to delete $name"
+          done
+
+  cleanup-ec2:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Delete orphaned EC2 instances
+        run: |
+          CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting openhost-e2e instances launched before $CUTOFF"
+
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:openhost-e2e,Values=true" \
+              "Name=instance-state-name,Values=running,stopped" \
+            --query "Reservations[].Instances[?LaunchTime<'${CUTOFF}'].InstanceId" \
+            --output text)
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No orphaned instances found"
+            exit 0
+          fi
+
+          for id in $INSTANCE_IDS; do
+            echo "Terminating $id..."
+            aws ec2 terminate-instances --instance-ids "$id" || echo "  Failed to terminate $id"
+          done
