@@ -60,11 +60,11 @@ jobs:
       - name: Delete orphaned EC2 instances
         run: |
           CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
-          echo "Deleting openhost-e2e instances launched before $CUTOFF"
+          echo "Deleting openhost-e2e-* instances launched before $CUTOFF"
 
           INSTANCE_IDS=$(aws ec2 describe-instances \
             --filters \
-              "Name=tag:openhost-e2e,Values=true" \
+              "Name=tag:Name,Values=openhost-e2e-*" \
               "Name=instance-state-name,Values=running,stopped" \
             --query "Reservations[].Instances[?LaunchTime<'${CUTOFF}'].InstanceId" \
             --output text)
