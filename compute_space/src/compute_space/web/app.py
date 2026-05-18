@@ -41,6 +41,7 @@ from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddlewar
 from compute_space.web.routes.api.settings import api_settings_routes
 from compute_space.web.routes.pages.login import pages_login_routes
 from compute_space.web.routes.pages.settings import pages_settings_routes
+from compute_space.web.routes.services_v2 import services_v2_routes
 
 
 def _make_static_url(static_dir: Path) -> Any:
@@ -146,7 +147,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.system import pages_system_bp  # noqa: PLC0415
-    from compute_space.web.routes.services_v2 import services_v2_bp  # noqa: PLC0415
 
     web_dir = Path(__file__).parent
     quart_app = Quart(
@@ -181,7 +181,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     quart_app.register_blueprint(api_apps_bp)
     quart_app.register_blueprint(api_archive_backend_bp)
     quart_app.register_blueprint(system_bp)
-    quart_app.register_blueprint(services_v2_bp)
     quart_app.register_blueprint(api_services_v2_bp)
     quart_app.register_blueprint(api_permissions_v2_bp)
     quart_app.register_blueprint(identity_bp)
@@ -268,6 +267,7 @@ def create_app(config: Config) -> Litestar:
             api_settings_routes,
             pages_login_routes,
             pages_settings_routes,
+            services_v2_routes,
             setup_already_done,
             quart_fallback,
         ],

@@ -12,22 +12,28 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
-from quart import Quart
+from litestar import Litestar
+from litestar.di import Provide
+from litestar.testing import TestClient
 
+from compute_space.config import provide_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.installer import INSTALLER_SERVICE_URL
 from compute_space.core.installer import InstallError
 from compute_space.core.installer import InstallResult
+from compute_space.db import provide_db
 from compute_space.db.connection import init_db
-from compute_space.web.routes.services_v2 import services_v2_bp
+from compute_space.web.auth.auth import AuthMiddleware
+from compute_space.web.routes.services_v2 import services_v2_routes
 
 from .conftest import _make_test_config
-from .conftest import install_in_process_auth
 
 CALLER_APP = "openhost-catalog"
 CALLER_TOKEN = "test-installer-caller-token"
@@ -55,16 +61,18 @@ grants = [{capability = "install", repo_url_prefix = "*"}]
 """
 
 
-def _make_app(cfg) -> Quart:  # noqa: ANN001
-    app = Quart(__name__)
-    app.config["DB_PATH"] = cfg.db_path
-    app.openhost_config = cfg  # type: ignore[attr-defined]
-    app.register_blueprint(services_v2_bp)
-    # The route uses @app_auth_required, which reads accessor off scope.state
-    # — normally populated by Litestar's outer AuthMiddleware.  No Litestar
-    # here, so install the same logic as a before_request hook.
-    install_in_process_auth(app)
-    return app
+def _make_app() -> Litestar:
+    """Build a Litestar app exposing services_v2_routes with the production
+    AuthMiddleware, so bearer-token auth is exercised end-to-end."""
+    return Litestar(
+        route_handlers=[services_v2_routes],
+        middleware=[AuthMiddleware],
+        dependencies={
+            "config": Provide(provide_config, sync_to_thread=False),
+            "db": Provide(provide_db, sync_to_thread=False),
+        },
+        openapi_config=None,
+    )
 
 
 def _seed_caller(
@@ -75,7 +83,7 @@ def _seed_caller(
     manifest_raw: str = CALLER_MANIFEST,
 ) -> None:
     """Insert the caller's apps row (with manifest_raw) + app_tokens row
-    so app_auth_required can resolve the bearer to the caller's app_id
+    so require_app_auth can resolve the bearer to the caller's app_id
     AND lookup_shortname can find the installer shortname declaration."""
     db = sqlite3.connect(db_path)
     try:
@@ -112,15 +120,16 @@ def _grant_installer(db_path: str, app_id: str, repo_url_prefix: str = "*") -> N
 
 
 @pytest.fixture
-def cfg(tmp_path: Path):
+def cfg(tmp_path: Path) -> Any:
     return _make_test_config(tmp_path, port=20500)
 
 
 @pytest.fixture
-def app(cfg):
+def client(cfg: Any) -> Iterator[TestClient[Litestar]]:
     init_db(cfg.db_path)
     _seed_caller(cfg.db_path)
-    yield _make_app(cfg)
+    with TestClient(app=_make_app()) as c:
+        yield c
 
 
 def _url(endpoint: str) -> str:
@@ -135,16 +144,14 @@ def _headers(token: str = CALLER_TOKEN) -> dict[str, str]:
 # --- /install --------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_install_without_grant_returns_permission_required(app, cfg):
-    client = app.test_client()
-    resp = await client.post(
+def test_install_without_grant_returns_permission_required(client: TestClient[Litestar]) -> None:
+    resp = client.post(
         _url("install"),
         headers=_headers(),
-        data=json.dumps({"repo_url": "https://github.com/imbue-openhost/openhost-catalog"}),
+        content=json.dumps({"repo_url": "https://github.com/imbue-openhost/openhost-catalog"}),
     )
     assert resp.status_code == 403
-    body = await resp.get_json()
+    body = resp.json()
     assert body["error"] == "permission_required"
     assert body["required_grant"]["grant"]["capability"] == "install"
     # The proposed grant must come from the consumer's manifest-declared
@@ -153,17 +160,15 @@ async def test_install_without_grant_returns_permission_required(app, cfg):
     assert body["required_grant"]["grant"]["repo_url_prefix"] == "*"
 
 
-@pytest.mark.asyncio
-async def test_install_with_non_matching_grant_denied(app, cfg):
+def test_install_with_non_matching_grant_denied(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID, repo_url_prefix="https://github.com/imbue-openhost/")
-    client = app.test_client()
-    resp = await client.post(
+    resp = client.post(
         _url("install"),
         headers=_headers(),
-        data=json.dumps({"repo_url": "https://github.com/evil/badapp"}),
+        content=json.dumps({"repo_url": "https://github.com/evil/badapp"}),
     )
     assert resp.status_code == 403
-    body = await resp.get_json()
+    body = resp.json()
     assert body["error"] == "permission_required"
 
 
@@ -189,8 +194,7 @@ grants = [{capability = "install", repo_url_prefix = "https://github.com/imbue-o
 """
 
 
-@pytest.mark.asyncio
-async def test_proposed_grant_uses_manifest_declared_prefix(cfg):
+def test_proposed_grant_uses_manifest_declared_prefix(cfg: Any) -> None:
     """When the consumer's manifest declares a broad prefix, a denial for an
     URL that matches that prefix must propose the broad grant — not a fresh
     per-URL grant — so a single approval covers every install."""
@@ -201,24 +205,21 @@ async def test_proposed_grant_uses_manifest_declared_prefix(cfg):
         token=NARROW_CALLER_TOKEN,
         manifest_raw=NARROW_CALLER_MANIFEST,
     )
-
-    app = _make_app(cfg)
-    client = app.test_client()
-    resp = await client.post(
-        _url("install"),
-        headers={"Authorization": f"Bearer {NARROW_CALLER_TOKEN}", "Content-Type": "application/json"},
-        data=json.dumps({"repo_url": "https://github.com/imbue-openhost/openhost-gemini"}),
-    )
+    with TestClient(app=_make_app()) as client:
+        resp = client.post(
+            _url("install"),
+            headers={"Authorization": f"Bearer {NARROW_CALLER_TOKEN}", "Content-Type": "application/json"},
+            content=json.dumps({"repo_url": "https://github.com/imbue-openhost/openhost-gemini"}),
+        )
     assert resp.status_code == 403
-    body = await resp.get_json()
+    body = resp.json()
     assert body["required_grant"]["grant"] == {
         "capability": "install",
         "repo_url_prefix": "https://github.com/imbue-openhost/",
     }
 
 
-@pytest.mark.asyncio
-async def test_proposed_grant_falls_back_when_manifest_prefix_doesnt_match(cfg):
+def test_proposed_grant_falls_back_when_manifest_prefix_doesnt_match(cfg: Any) -> None:
     """If the consumer's manifest only declares a narrow prefix that does NOT
     cover the requested URL, fall back to a per-URL grant rather than
     suggesting a grant that wouldn't help."""
@@ -229,91 +230,78 @@ async def test_proposed_grant_falls_back_when_manifest_prefix_doesnt_match(cfg):
         token=NARROW_CALLER_TOKEN,
         manifest_raw=NARROW_CALLER_MANIFEST,
     )
-
-    app = _make_app(cfg)
-    client = app.test_client()
-    resp = await client.post(
-        _url("install"),
-        headers={"Authorization": f"Bearer {NARROW_CALLER_TOKEN}", "Content-Type": "application/json"},
-        data=json.dumps({"repo_url": "https://gitlab.com/something/else"}),
-    )
+    with TestClient(app=_make_app()) as client:
+        resp = client.post(
+            _url("install"),
+            headers={"Authorization": f"Bearer {NARROW_CALLER_TOKEN}", "Content-Type": "application/json"},
+            content=json.dumps({"repo_url": "https://gitlab.com/something/else"}),
+        )
     assert resp.status_code == 403
-    body = await resp.get_json()
+    body = resp.json()
     assert body["required_grant"]["grant"]["repo_url_prefix"] == "https://gitlab.com/something/else"
 
 
-@pytest.mark.asyncio
-async def test_install_with_matching_grant_succeeds(app, cfg):
+def test_install_with_matching_grant_succeeds(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID, repo_url_prefix="*")
 
-    async def fake_install(repo_url, config, db, *, app_name=None, installed_by=None):
+    async def fake_install(repo_url, config, db, *, app_name=None, installed_by=None):  # type: ignore[no-untyped-def]
         return InstallResult(app_name="newapp", status="building")
 
-    client = app.test_client()
     with mock.patch("compute_space.web.routes.services_v2.install_from_repo_url", side_effect=fake_install):
-        resp = await client.post(
+        resp = client.post(
             _url("install"),
             headers=_headers(),
-            data=json.dumps({"repo_url": "https://github.com/anyone/anything"}),
+            content=json.dumps({"repo_url": "https://github.com/anyone/anything"}),
         )
-    assert resp.status_code == 200, await resp.get_data(as_text=True)
-    body = await resp.get_json()
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
     assert body == {"ok": True, "app_name": "newapp", "status": "building"}
 
 
-@pytest.mark.asyncio
-async def test_install_propagates_install_error_status_code(app, cfg):
+def test_install_propagates_install_error_status_code(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID, repo_url_prefix="*")
 
-    async def fake_install(*args, **kwargs):
+    async def fake_install(*args: Any, **kwargs: Any) -> Any:
         raise InstallError("manifest invalid", status_code=400)
 
-    client = app.test_client()
     with mock.patch("compute_space.web.routes.services_v2.install_from_repo_url", side_effect=fake_install):
-        resp = await client.post(
+        resp = client.post(
             _url("install"),
             headers=_headers(),
-            data=json.dumps({"repo_url": "https://github.com/foo/bar"}),
+            content=json.dumps({"repo_url": "https://github.com/foo/bar"}),
         )
     assert resp.status_code == 400
-    body = await resp.get_json()
+    body = resp.json()
     assert body["error"] == "install_failed"
     assert "manifest invalid" in body["message"]
 
 
-@pytest.mark.asyncio
-async def test_install_rejects_missing_repo_url(app, cfg):
+def test_install_rejects_missing_repo_url(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID, repo_url_prefix="*")
-    client = app.test_client()
-    resp = await client.post(
+    resp = client.post(
         _url("install"),
         headers=_headers(),
-        data=json.dumps({"app_name": "no-url-supplied"}),
+        content=json.dumps({"app_name": "no-url-supplied"}),
     )
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
-async def test_install_rejects_non_json_body(app, cfg):
+def test_install_rejects_non_json_body(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID, repo_url_prefix="*")
-    client = app.test_client()
-    resp = await client.post(_url("install"), headers=_headers(), data="not-json")
+    resp = client.post(_url("install"), headers=_headers(), content="not-json")
     assert resp.status_code == 400
 
 
 # --- /status/<name> --------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_status_returns_404_for_unknown_app(app, cfg):
+def test_status_returns_404_for_unknown_app(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID)
-    client = app.test_client()
-    resp = await client.get(_url("status/nope"), headers=_headers())
+    resp = client.get(_url("status/nope"), headers=_headers())
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_status_returns_403_for_app_not_installed_by_caller(app, cfg):
+def test_status_returns_403_for_app_not_installed_by_caller(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID)
     db = sqlite3.connect(cfg.db_path)
     try:
@@ -325,13 +313,11 @@ async def test_status_returns_403_for_app_not_installed_by_caller(app, cfg):
         db.commit()
     finally:
         db.close()
-    client = app.test_client()
-    resp = await client.get(_url("status/dashboard-installed-app"), headers=_headers())
+    resp = client.get(_url("status/dashboard-installed-app"), headers=_headers())
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_status_returns_app_state_for_caller_installs(app, cfg):
+def test_status_returns_app_state_for_caller_installs(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID)
     db = sqlite3.connect(cfg.db_path)
     try:
@@ -343,38 +329,33 @@ async def test_status_returns_app_state_for_caller_installs(app, cfg):
         db.commit()
     finally:
         db.close()
-    client = app.test_client()
-    resp = await client.get(_url("status/catalog-installed-app"), headers=_headers())
+    resp = client.get(_url("status/catalog-installed-app"), headers=_headers())
     assert resp.status_code == 200
-    body = await resp.get_json()
+    body = resp.json()
     assert body == {"status": "running", "error": None}
 
 
 # --- Shortname not declared ------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_unknown_shortname_returns_404(app, cfg):
+def test_unknown_shortname_returns_404(client: TestClient[Litestar], cfg: Any) -> None:
     """Calls to /api/services/v2/call/<other>/... 404 because the caller's
     manifest only declares the installer shortname."""
     _grant_installer(cfg.db_path, CALLER_APP_ID, repo_url_prefix="*")
-    client = app.test_client()
-    resp = await client.post(
+    resp = client.post(
         "/api/services/v2/call/not-installed/anything",
         headers=_headers(),
-        data=json.dumps({}),
+        content=json.dumps({}),
     )
     assert resp.status_code == 404
-    body = await resp.get_json()
+    body = resp.json()
     assert body["error"] == "shortname_not_declared"
 
 
 # --- Unknown installer sub-endpoint ----------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_unknown_installer_subpath_returns_404(app, cfg):
+def test_unknown_installer_subpath_returns_404(client: TestClient[Litestar], cfg: Any) -> None:
     _grant_installer(cfg.db_path, CALLER_APP_ID)
-    client = app.test_client()
-    resp = await client.post(_url("wat"), headers=_headers(), data=json.dumps({}))
+    resp = client.post(_url("wat"), headers=_headers(), content=json.dumps({}))
     assert resp.status_code == 404

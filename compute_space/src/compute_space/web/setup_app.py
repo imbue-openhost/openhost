@@ -7,7 +7,6 @@ When the setup handler successfully creates the owner row, it triggers shutdown 
 import os
 import secrets
 from pathlib import Path
-from typing import Annotated
 from typing import Any
 
 import bcrypt
@@ -20,7 +19,6 @@ from litestar import post
 from litestar.background_tasks import BackgroundTask
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.di import Provide
-from litestar.params import Dependency
 from litestar.response import Template
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
@@ -36,12 +34,6 @@ from compute_space.core.updates import trigger_restart
 from compute_space.db import close_db
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import build_session_cookie
-
-# Litestar's signature model uses msgspec to validate parameters. attrs
-# classes that aren't @msgspec.Struct trip "Expected object, got DefaultConfig"
-# during request parsing; flag the injected Config as already-trusted so
-# msgspec leaves it alone.
-ConfigDep = Annotated[Config, Dependency(skip_validation=True)]
 
 
 def _verify_claim_token(claim_token: str, claim_token_path: str) -> bool:
@@ -66,7 +58,7 @@ def _claim_unauthorized() -> Response[str]:
 
 
 @get("/setup")
-async def setup_get(request: Request[Any, Any, Any], config: ConfigDep) -> Template | Response[str]:
+async def setup_get(request: Request[Any, Any, Any], config: Config) -> Template | Response[str]:
     claim_token = request.query_params.get("claim", "")
     if _claim_token_required(config) and not _verify_claim_token(claim_token, config.claim_token_path):
         return _claim_unauthorized()
@@ -74,7 +66,7 @@ async def setup_get(request: Request[Any, Any, Any], config: ConfigDep) -> Templ
 
 
 @post("/setup", status_code=200)
-async def setup_post(request: Request[Any, Any, Any], config: ConfigDep) -> Response[Any]:
+async def setup_post(request: Request[Any, Any, Any], config: Config) -> Response[Any]:
     form = await request.form()
     form_claim = form.get("claim", "")
     if _claim_token_required(config) and not _verify_claim_token(form_claim, config.claim_token_path):

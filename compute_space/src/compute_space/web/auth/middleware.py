@@ -23,13 +23,14 @@ from quart import request
 from quart.typing import ResponseReturnValue
 from quart.wrappers import Websocket
 
-from compute_space.core.auth.auth import AuthenticatedAPIKey
 from compute_space.core.auth.auth import AuthenticatedApp
 from compute_space.core.auth.auth import AuthenticatedUser
 from compute_space.web.auth.auth import AppOrigin
 from compute_space.web.auth.auth import RouterOrigin
 from compute_space.web.auth.auth import get_accessor
 from compute_space.web.auth.auth import get_origin
+from compute_space.web.auth.guards import verify_app_auth
+from compute_space.web.auth.guards import verify_owner_auth
 
 
 def _scope(req_or_ws: Request | Websocket) -> LitestarScope:
@@ -80,20 +81,16 @@ def _unauthorized(detail: str = "User authentication required") -> ResponseRetur
 def login_required(
     f: Callable[..., Any],
 ) -> Callable[..., Awaitable[ResponseReturnValue]]:
-    """Same policy as Litestar's `require_user` guard: user-from-router-origin or API key."""
+    """Defer to ``verify_owner_auth`` so unmigrated Quart blueprints use the
+    same policy as the Litestar ``require_owner_auth`` guard."""
 
     @wraps(f)
     async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
-        scope = cast(LitestarScope, request.scope)
-        accessor = get_accessor(scope)
-        origin = get_origin(scope)
-        if isinstance(accessor, AuthenticatedUser):
-            if isinstance(origin, RouterOrigin):
-                return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
-            return _unauthorized("user authentication only valid for router-origin requests")
-        if isinstance(accessor, AuthenticatedAPIKey):
-            return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
-        return _unauthorized()
+        try:
+            verify_owner_auth(cast(Any, request))
+        except Exception:
+            return _unauthorized()
+        return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
     return decorated
 
@@ -112,16 +109,19 @@ def app_auth_required(
 
     @wraps(f)
     async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
+        try:
+            verify_app_auth(cast(Any, request))
+        except Exception:
+            return jsonify({"error": "Missing or invalid authorization"}), 401
         scope = cast(LitestarScope, request.scope)
         accessor = get_accessor(scope)
         origin = get_origin(scope)
         if isinstance(accessor, AuthenticatedApp):
-            app_id: str = accessor.app_id
+            kwargs["app_id"] = accessor.app_id
         elif isinstance(accessor, AuthenticatedUser) and isinstance(origin, AppOrigin):
-            app_id = origin.app_id
+            kwargs["app_id"] = origin.app_id
         else:
             return jsonify({"error": "Missing or invalid authorization"}), 401
-        kwargs["app_id"] = app_id
         return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
     return decorated

@@ -59,3 +59,27 @@ def verify_app_auth(connection: _AnyConnection) -> None:
 def require_owner_auth(connection: _AnyConnection, _route_handler: BaseRouteHandler) -> None:
     """Adapt verify_owner_auth to be used as a route guard."""
     verify_owner_auth(connection)
+
+
+def require_app_auth(connection: _AnyConnection, _route_handler: BaseRouteHandler) -> None:
+    """Adapt verify_app_auth to be used as a route guard."""
+    verify_app_auth(connection)
+
+
+def resolve_caller_app_id(connection: _AnyConnection) -> str | None:
+    """Return the calling app's app_id, or None if the request isn't app-authed.
+
+    Two routes to an app identity:
+      - Bearer app token: AuthMiddleware sets ``accessor = AuthenticatedApp``.
+      - Browser cookie from an app subdomain: ``accessor = AuthenticatedUser``
+        and the Host header matches an app subdomain (verified here against
+        the apps table).
+    """
+    accessor = get_accessor(connection.scope)
+    if isinstance(accessor, AuthenticatedApp):
+        return accessor.app_id
+    if isinstance(accessor, AuthenticatedUser):
+        origin = _get_connection_origin(connection)
+        if origin is not None and (app := get_app_from_hostname(origin)) is not None:
+            return app.app_id
+    return None
