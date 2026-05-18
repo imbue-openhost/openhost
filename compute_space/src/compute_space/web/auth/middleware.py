@@ -1,12 +1,4 @@
-"""Quart-side shim for unmigrated routes.
-
-The Litestar `AuthMiddleware` wraps the outer ASGI app and populates
-``scope["state"]["accessor"]`` and ``scope["state"]["origin"]`` for every
-request, including ones that fall through to the mounted Quart sub-app.
-These shims read that state so the existing `@login_required` /
-`@app_auth_required` decorators on unmigrated blueprints keep working
-unchanged — they just defer to the same checks `require_user` performs.
-"""
+"""Quart-side shim for unmigrated routes."""
 
 import inspect
 from collections.abc import Awaitable
@@ -23,13 +15,11 @@ from quart import request
 from quart.typing import ResponseReturnValue
 from quart.wrappers import Websocket
 
-from compute_space.core.auth.auth import AuthenticatedApp
 from compute_space.core.auth.auth import AuthenticatedUser
 from compute_space.web.auth.auth import AppOrigin
 from compute_space.web.auth.auth import RouterOrigin
 from compute_space.web.auth.auth import get_accessor
 from compute_space.web.auth.auth import get_origin
-from compute_space.web.auth.guards import verify_app_auth
 from compute_space.web.auth.guards import verify_owner_auth
 
 
@@ -90,38 +80,6 @@ def login_required(
             verify_owner_auth(cast(Any, request))
         except Exception:
             return _unauthorized()
-        return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
-
-    return decorated
-
-
-def app_auth_required(
-    f: Callable[..., Any],
-) -> Callable[..., Awaitable[ResponseReturnValue]]:
-    """Identify the calling app and inject `app_id` as a kwarg.
-
-    Two paths to an app identity:
-      - Bearer app token: outer AuthMiddleware sets accessor=AuthenticatedApp.
-      - Browser cookie from an app subdomain: accessor=AuthenticatedUser AND
-        origin=AppOrigin (the subdomain is verified against the apps table by
-        the outer middleware).
-    """
-
-    @wraps(f)
-    async def decorated(*args: Any, **kwargs: Any) -> ResponseReturnValue:
-        try:
-            verify_app_auth(cast(Any, request))
-        except Exception:
-            return jsonify({"error": "Missing or invalid authorization"}), 401
-        scope = cast(LitestarScope, request.scope)
-        accessor = get_accessor(scope)
-        origin = get_origin(scope)
-        if isinstance(accessor, AuthenticatedApp):
-            kwargs["app_id"] = accessor.app_id
-        elif isinstance(accessor, AuthenticatedUser) and isinstance(origin, AppOrigin):
-            kwargs["app_id"] = origin.app_id
-        else:
-            return jsonify({"error": "Missing or invalid authorization"}), 401
         return await _ensure_async(f, *args, **kwargs)  # type: ignore[no-any-return]
 
     return decorated
