@@ -5,13 +5,14 @@ from typing import cast
 
 import httpx
 import websockets
+from litestar import Request
 from litestar import WebSocket
+from litestar.connection import ASGIConnection
 from litestar.datastructures import Headers
 from litestar.enums import ScopeType
 from litestar.exceptions import NotAuthorizedException
 from litestar.response.base import ASGIResponse
 from litestar.types import ASGIApp
-from litestar.types import HTTPScope
 from litestar.types import Message
 from litestar.types import Receive
 from litestar.types import Scope
@@ -29,7 +30,7 @@ from compute_space.web.auth.auth import RouterOrigin
 from compute_space.web.auth.auth import get_accessor
 from compute_space.web.auth.auth import get_origin
 
-IS_OWNER_HEADER = {"X-OpenHost-Is-Owner": "true"}
+IS_OWNER_HEADER = ("X-OpenHost-Is-Owner", "true")
 
 # auth cookies must never reach a backend app
 _STRIPPED_COOKIES = frozenset({SESSION_COOKIE_NAME})
@@ -40,6 +41,7 @@ _OPENHOST_HEADER_PREFIX = "x-openhost-"
 
 
 def _verify_owner(scope: Scope, target_app_id: str) -> bool:
+    # TODO: redo this
     """is this request treated as "owner"-origin for subdomain proxy auth purposes?
 
     YES:
@@ -78,7 +80,7 @@ class SubdomainProxyMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        scope_type = scope["type"]
+        connection = ASGIConnection(scope, receive, send)
 
         host = _get_request_target_hostname(scope)
         app = get_app_from_hostname(host)
@@ -89,22 +91,32 @@ class SubdomainProxyMiddleware:
 
         # TODO: maybe behave differently for apps that are not in running state. not sure
 
-        is_owner = _verify_owner(scope, target_app_id=app.app_id)
-        if not is_public_path(app, scope["path"]) and not is_owner:
-            raise NotAuthorizedException(detail="Authentication required to access this path")
+        # add forwarding headers for the openhost app, so it can tell where the request came from.
+        # these are annoying but unavoidable - we can't spoof the IP or proto in the forwarded request.
+        # i don't think x-forwarded-host is needed?
+        extra_headers = []
+        if connection.client:
+            # client IP; for some reason this is allowed to be None in ASGI
+            extra_headers.append(("X-Forwarded-For", f"{connection.client.host}:{connection.client.port}"))
 
-        if scope_type == ScopeType.HTTP:
+        is_owner = _verify_owner(scope, target_app_id=app.app_id)
+        if is_owner:
+            extra_headers.append(IS_OWNER_HEADER)
+        else:
+            if not is_public_path(app, scope["path"]):
+                raise NotAuthorizedException(detail="Authentication required to access this path")
+
+        if scope["type"] == ScopeType.HTTP:
+            extra_headers.append(("X-Forwarded-Proto", scope["scheme"]))
             proxied = await proxy_request(
-                cast(HTTPScope, scope),
-                receive,
-                app.local_port,
-                extra_headers=IS_OWNER_HEADER.items() if is_owner else None,
+                Request(scope, receive, send),
+                target_port=app.local_port,
+                extra_headers=extra_headers,
             )
             await proxied(scope, receive, send)
         else:
-            assert scope_type == ScopeType.WEBSOCKET
-            ws = WebSocket[Any, Any, Any](scope, receive, send)
-            await ws_proxy(app.local_port, ws, identity_headers=IS_OWNER_HEADER if is_owner else None)
+            assert scope["type"] == ScopeType.WEBSOCKET
+            await ws_proxy(WebSocket(scope, receive, send), local_port=app.local_port, extra_headers=extra_headers)
             await send(cast(Message, {"type": "websocket.close", "code": 1008}))
 
 
@@ -166,11 +178,10 @@ def _format_proxy_request_url(scope: Scope, target_port: int, override_path: str
 
 
 async def proxy_request(
-    scope: HTTPScope,
-    receive: Receive,
+    request: Request,
     target_port: int,
     override_path: str | None = None,
-    extra_headers: Iterable[tuple[str, str]] | None = None,
+    extra_headers: Iterable[tuple[str, str]] = (),
     timeout: float = 30,
 ) -> ASGIResponse:
     """Forward an HTTP request to a local port.
@@ -181,7 +192,7 @@ async def proxy_request(
 
     TODO: can we import something to do this instead of hand-rolling?
     """
-    target_url = _format_proxy_request_url(scope, target_port, override_path)
+    target_url = _format_proxy_request_url(request.scope, target_port, override_path)
 
     excluded_headers = {
         "host",
@@ -192,32 +203,21 @@ async def proxy_request(
         "x-forwarded-proto",
         "x-forwarded-host",
     }
-    headers = _sanitize_forwarded_headers(
-        (k, v) for k, v in Headers.from_scope(scope).items() if k.lower() not in excluded_headers
+    new_headers = _sanitize_forwarded_headers(
+        (k, v) for k, v in request.headers.items() if k.lower() not in excluded_headers
     )
 
-    # add forwarding headers for the backend app, so it can tell where the request came from.
-    # these are annoying but unavoidable - we can't spoof the IP or proto in the forwarded request.
-    # i don't think x-forwarded-host is needed?
-    scope_client = scope.get("client")
-    if scope_client:
-        # client IP; for some reason this is allowed to be None in ASGI
-        headers.append(("X-Forwarded-For", f"{scope_client[0]}:{scope_client[1]}"))
-    headers.append(("X-Forwarded-Proto", scope["scheme"]))
-
-    if extra_headers:
-        headers.extend(extra_headers)
+    new_headers.extend(extra_headers)
 
     # TODO: this looks wrong / bad? should stream not load all into memory
-    body = await _read_body(receive)
-    method = str(scope["method"])
+    body = await _read_body(request.receive)
 
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.request(
-                method=method,
+                method=str(request.method),
                 url=target_url,
-                headers=headers,
+                headers=new_headers,
                 content=body,
                 follow_redirects=False,
                 timeout=timeout,
@@ -250,21 +250,17 @@ async def proxy_request(
 
 
 async def ws_proxy(
+    connection: WebSocket[Any, Any, Any],
     target_port: int,
-    client_ws: WebSocket[Any, Any, Any],
-    identity_headers: dict[str, str] | None = None,
+    extra_headers: Iterable[tuple[str, str]] = (),
     override_path: str | None = None,
 ) -> None:
     """Bidirectionally proxy a WebSocket connection to a backend app.
 
     Uses Litestar's WebSocket and the async ``websockets`` library.  If
     ``override_path`` is set, use it instead of the client path.
-
-
-    TODO: finish fixing this up
     """
-    scope = client_ws.scope
-    target_url = _format_proxy_request_url(client_ws.scope, target_port, override_path)
+    target_url = _format_proxy_request_url(connection.scope, target_port, override_path)
 
     excluded_headers = {
         "host",
@@ -280,28 +276,20 @@ async def ws_proxy(
     }
     subprotocols: list[str] = []
     forwardable: list[tuple[str, str]] = []
-    for key, value in Headers.from_scope(scope).items():
-        lower = key.lower()
-        if lower == "sec-websocket-protocol":
+    for key, value in connection.headers.items():
+        if key.lower() == "sec-websocket-protocol":
             subprotocols = [s.strip() for s in value.split(",")]
             continue
-        if lower in excluded_headers:
+        if key.lower() in excluded_headers:
             continue
         forwardable.append((key, value))
-    sanitized = _sanitize_forwarded_headers(forwardable)
-    # websockets.connect's ``additional_headers`` wants a dict (or list of
-    # tuples); the sanitiser returns a list, so flatten into a dict here.
-    extra_headers: dict[str, str] = dict(sanitized)
-    scope_client = scope.get("client")
-    extra_headers["X-Forwarded-For"] = str(scope_client[0]) if scope_client else ""
-    extra_headers["X-Forwarded-Proto"] = scope.get("scheme", "http")
-    extra_headers["X-Forwarded-Host"] = _get_request_target_hostname(scope)
-    if identity_headers:
-        extra_headers.update(identity_headers)
+
+    new_headers = _sanitize_forwarded_headers(forwardable)
+    new_headers.extend(extra_headers)
 
     # Accept the client WebSocket before connecting to the backend so the
     # handshake completes and both send/receive are immediately usable.
-    await client_ws.accept()
+    await connection.accept()
 
     # Only pass `subprotocols` if the client actually negotiated some.  Passing an empty list causes the
     # `websockets` client to emit an empty `Sec-WebSocket-Protocol:` header, which strict backends
@@ -329,16 +317,16 @@ async def ws_proxy(
                 try:
                     async for msg in backend:
                         if isinstance(msg, bytes):
-                            await client_ws.send_bytes(msg)
+                            await connection.send_bytes(msg)
                         else:
-                            await client_ws.send_text(msg)
+                            await connection.send_text(msg)
                 except Exception:
                     pass
 
             async def client_to_backend() -> None:
                 try:
                     while True:
-                        msg = await client_ws.receive()
+                        msg = await connection.receive()
                         msg_type = msg.get("type")
                         if msg_type == "websocket.disconnect":
                             return
