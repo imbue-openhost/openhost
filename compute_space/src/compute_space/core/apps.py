@@ -139,7 +139,7 @@ async def clone_and_read_manifest(
     tmp_parent = tempfile.mkdtemp(prefix="openhost-clone-")
     clone_dir = os.path.join(tmp_parent, "repo")
     try:
-        clone_cmd = ["git", "clone"]
+        clone_cmd = ["git", "clone", "--recurse-submodules", "--shallow-submodules"]
         if ref:
             clone_cmd.extend(["--branch", ref])
         clone_cmd.extend([clone_url, clone_dir])
