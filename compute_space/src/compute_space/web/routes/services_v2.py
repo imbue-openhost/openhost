@@ -22,6 +22,7 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import urlencode
 
 import attr
 from litestar import HttpMethod
@@ -32,6 +33,7 @@ from litestar import WebSocket
 from litestar import get
 from litestar import route
 from litestar import websocket
+from litestar.datastructures import MutableScopeHeaders
 from litestar.exceptions import NotAuthorizedException
 from litestar.response import Response
 from litestar.response.base import ASGIResponse
@@ -41,6 +43,7 @@ from packaging.version import Version
 
 from compute_space.config import Config
 from compute_space.core.apps import find_app_by_name
+from compute_space.core.apps import get_app_from_hostname
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.installer import GRANT_KEY_CAPABILITY
@@ -112,8 +115,8 @@ def _consumer_identity_headers(consumer_app_id: str, db: sqlite3.Connection) -> 
     stable app_id (good for keying stored data that should survive renames).
     """
     row = db.execute("SELECT name FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
-    name = row["name"] if row else consumer_app_id
-    return {"X-OpenHost-Consumer-Name": name, "X-OpenHost-Consumer-Id": consumer_app_id}
+    assert row is not None
+    return {"X-OpenHost-Consumer-Name": row["name"], "X-OpenHost-Consumer-Id": consumer_app_id}
 
 
 def _inject_grant_url_if_global(
@@ -150,7 +153,7 @@ def _inject_grant_url_if_global(
     )
 
 
-def _carry_response_headers(headers: Any) -> Iterable[tuple[str, str]]:
+def _carry_response_headers(headers: MutableScopeHeaders) -> Iterable[tuple[str, str]]:
     """Forward provider headers except framing ones that ASGIResponse owns itself."""
     for k, v in headers.items():
         if k.lower() in ("content-length", "content-type"):
@@ -159,10 +162,10 @@ def _carry_response_headers(headers: Any) -> Iterable[tuple[str, str]]:
 
 
 def _approve_grant_url(config: Config, consumer_app_id: str, service_url: str, grant: Any) -> str:
-    approve_path = (
-        f"/approve-permissions-v2?app={consumer_app_id}"
-        f"&service={service_url}&grant={json.dumps(grant, sort_keys=True)}"
-    )
+    # urlencode each value: service_url contains "/" and ":", grant is JSON with "{", "}",
+    # ",", '"' — all of which break query-string parsing if interpolated raw.
+    query = urlencode({"app": consumer_app_id, "service": service_url, "grant": json.dumps(grant, sort_keys=True)})
+    approve_path = f"/approve-permissions-v2?{query}"
     return f"https://{config.zone_domain}{approve_path}" if config.zone_domain else approve_path
 
 
@@ -183,11 +186,12 @@ def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any
 
 
 @route(_CALL_PATH, http_method=[HttpMethod.OPTIONS], status_code=204)
-async def service_call_cors(request: Request[Any, Any, Any], shortname: str, rest: str) -> Response[str]:
+async def service_call_cors(request: Request[Any, Any, Any], _shortname: str, _rest: str) -> Response[str]:
     """Hande CORS preflight HTTP OPTIONS request, respond with appropriate CORS headers."""
-    del shortname, rest  # path-only routing
     origin = request.headers.get("Origin", None)
-    if origin is None:
+    # block CORS preflight if Origin is not a known app - no auth headers yet but we can at least verify this,
+    # to help avoid XSRF from external sites.
+    if origin is None or get_app_from_hostname(origin) is not None:
         return Response(content="Forbidden", status_code=403, media_type=MediaType.TEXT)
     return Response(content="", status_code=204, headers=_cors_headers(origin))
 
