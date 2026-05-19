@@ -19,10 +19,10 @@ from compute_space.core.auth.auth import validate_app_token
 from compute_space.core.auth.auth import validate_session_token
 from compute_space.db import get_db
 
-_AnyConnection = ASGIConnection[Any, Any, Any, Any]
+AnyConnection = ASGIConnection[Any, Any, Any, Any]
 
 
-def _get_bearer_token_if_set(connection: _AnyConnection) -> str | None:
+def _get_bearer_token_if_set(connection: AnyConnection) -> str | None:
     if auth_header := connection.headers.get("Authorization", ""):
         if auth_header.startswith("Bearer "):
             if token := auth_header.removeprefix("Bearer ").strip():
@@ -30,7 +30,7 @@ def _get_bearer_token_if_set(connection: _AnyConnection) -> str | None:
     return None
 
 
-def get_connection_origin(connection: _AnyConnection) -> str | None:
+def get_connection_origin(connection: AnyConnection) -> str | None:
     """gets and formats the origin header as "sub.example.com" or "sub.example.com:1234", no protocol or path, if set.
     port is included if non-default.
     returns None if no origin header is set.
@@ -51,7 +51,7 @@ def get_connection_origin(connection: _AnyConnection) -> str | None:
     return None
 
 
-def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
+def authenticate(connection: AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
     """Resolve who is making this request, by trying each auth scheme in priority order."""
 
     # session token in cookie
@@ -72,7 +72,7 @@ def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> Authenti
     return None
 
 
-def verify_owner_auth(connection: _AnyConnection) -> None:
+def verify_owner_auth(connection: AnyConnection) -> None:
     """Verify that the request is authenticated as an "owner" (either a user or an API key, with valid Origin).
 
     returns if authed; raises NotAuthorizedException if not authenticated.
@@ -94,7 +94,7 @@ def verify_owner_auth(connection: _AnyConnection) -> None:
     raise NotAuthorizedException(detail="User or API key authentication required")
 
 
-def verify_app_auth(connection: _AnyConnection) -> str:
+def verify_app_auth(connection: AnyConnection) -> str:
     """Verify that the request is authenticated as an "app" (either client-side, from app js, or server-side, from an app token).
 
     returns `app_id` if authed; raises NotAuthorizedException if not authenticated.
@@ -113,11 +113,11 @@ def verify_app_auth(connection: _AnyConnection) -> str:
     raise NotAuthorizedException(detail="app authentication required")
 
 
-def require_owner_auth(connection: _AnyConnection, _route_handler: BaseRouteHandler) -> None:
+def require_owner_auth(connection: AnyConnection, _route_handler: BaseRouteHandler) -> None:
     """Adapt verify_owner_auth to be used as a route guard."""
     verify_owner_auth(connection)
 
 
-def require_app_auth(connection: _AnyConnection, _route_handler: BaseRouteHandler) -> None:
+def require_app_auth(connection: AnyConnection, _route_handler: BaseRouteHandler) -> None:
     """Adapt verify_app_auth to be used as a route guard."""
     verify_app_auth(connection)
