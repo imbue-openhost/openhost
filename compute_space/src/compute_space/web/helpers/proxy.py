@@ -22,6 +22,8 @@ from litestar.exceptions import WebSocketDisconnect
 from litestar.response.base import ASGIResponse
 from litestar.response.streaming import ASGIStreamingResponse
 from litestar.types import Scope
+from litestar.types.asgi_types import WebSocketDisconnectEvent
+from litestar.types.asgi_types import WebSocketReceiveEvent
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import WebSocketException
 from websockets.typing import Subprotocol
@@ -94,6 +96,7 @@ _HTTP_REQUEST_EXCLUDED_HEADERS = frozenset(
         # per-hop headers (these get read as we receive the incoming request, and automatically set on the outgoing)
         "host",
         "connection",
+        # we choose to decode and (potentially) re-code, vs passing thru potentially compressed body as-is. this is more flexible.
         "transfer-encoding",
         "accept-encoding",
         # stripped before we re-add manually
@@ -182,7 +185,8 @@ async def proxy_http_request(
 
         async def stream_body() -> AsyncIterator[bytes]:
             try:
-                async for chunk in upstream_response.aiter_raw():
+                # aiter_bytes (not aiter_raw) so httpx decodes any content-encoding the backend applied
+                async for chunk in upstream_response.aiter_bytes():
                     yield chunk
             finally:
                 await upstream_response.aclose()
@@ -229,8 +233,7 @@ async def proxy_websocket_request(
 ) -> None:
     """Bidirectionally proxy a WebSocket connection to a backend app.
 
-    Uses Litestar's WebSocket and the async ``websockets`` library.  If
-    ``override_path`` is set, use it instead of the client path.
+    If ``override_path`` is set, use it instead of the client path.
     """
     target_url = _format_proxy_request_url(connection.scope, target_port, override_path)
 
@@ -244,10 +247,6 @@ async def proxy_websocket_request(
         connection.headers, _WS_REQUEST_EXCLUDED_HEADERS, extra_headers
     )
 
-    # Accept the client WebSocket before connecting to the backend so the
-    # handshake completes and both send/receive are immediately usable.
-    await connection.accept()
-
     try:
         async with websockets.connect(
             target_url,
@@ -258,6 +257,7 @@ async def proxy_websocket_request(
             close_timeout=5,
             subprotocols=subprotocols,
         ) as backend:
+            await connection.accept(subprotocols=backend.subprotocol)
 
             async def backend_to_client() -> None:
                 try:
@@ -272,16 +272,17 @@ async def proxy_websocket_request(
             async def client_to_backend() -> None:
                 try:
                     while True:
-                        msg = await connection.receive()
-                        msg_type = msg.get("type")
-                        if msg_type == "websocket.disconnect":
+                        # connection.receive() returns the raw ASGI message dict (untyped);
+                        # narrow it to the only two events Litestar will deliver on a live socket.
+                        msg: WebSocketReceiveEvent | WebSocketDisconnectEvent = cast(
+                            "WebSocketReceiveEvent | WebSocketDisconnectEvent", await connection.receive()
+                        )
+                        if msg["type"] == "websocket.disconnect":
                             return
-                        if msg_type != "websocket.receive":
-                            continue
-                        if (raw_bytes := msg.get("bytes")) is not None:
-                            await backend.send(cast(bytes, raw_bytes))
-                        elif (raw_text := msg.get("text")) is not None:
-                            await backend.send(cast(str, raw_text))
+                        if msg["bytes"] is not None:
+                            await backend.send(msg["bytes"])
+                        elif msg["text"] is not None:
+                            await backend.send(msg["text"])
                 except (ConnectionClosed, WebSocketDisconnect):
                     pass
 
@@ -300,5 +301,9 @@ async def proxy_websocket_request(
             finally:
                 for t in tasks:
                     t.cancel()
+                # Drain any stored exceptions so cancelled tasks don't trigger
+                # "Task exception was never retrieved" warnings at GC.
+                await asyncio.gather(*tasks, return_exceptions=True)
     except (OSError, TimeoutError, WebSocketException):
         logger.exception(f"WebSocket backend connection failed: {target_url}")
+        await connection.close(code=1011)
