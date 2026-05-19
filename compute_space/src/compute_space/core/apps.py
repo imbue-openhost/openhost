@@ -861,7 +861,8 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
 
 
 def get_app_from_hostname(host: str) -> App | None:
-    """Extract+validate app name from a Host header value, by assuming that app_name is a subdir of zone_domain (as is convention).
+    """Extract+validate app name from a Host header value (or litestar's request.url.netloc; ie example.com[:port])
+    by assuming that app_name is a subdir of zone_domain (as is convention).
 
     returns None if an app cannot be matched from the header.
 

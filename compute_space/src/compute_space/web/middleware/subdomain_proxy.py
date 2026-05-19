@@ -1,14 +1,11 @@
 from typing import Any
-from typing import cast
 
 from litestar import Request
 from litestar import WebSocket
 from litestar.connection import ASGIConnection
-from litestar.datastructures import Headers
 from litestar.enums import ScopeType
 from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp
-from litestar.types import Message
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
@@ -22,17 +19,6 @@ from compute_space.web.helpers.proxy import proxy_websocket_request
 IS_OWNER_HEADER = ("X-OpenHost-Is-Owner", "true")
 
 
-def _get_request_target_hostname(scope: Scope) -> str:
-    """Host header with a fallback to ``scope['server']`` for synthesised scopes."""
-    host = Headers.from_scope(scope).get("host")
-    if host:
-        return host
-    server = scope.get("server")
-    if server:
-        return f"{server[0]}:{server[1]}"
-    return ""
-
-
 class SubdomainProxyMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -41,8 +27,7 @@ class SubdomainProxyMiddleware:
         # note: we don't need to handle CORS here because cross-origin requests are not allowed (those go thru services which handles its own CORS).
         connection: ASGIConnection[Any, Any, Any, Any] = ASGIConnection(scope, receive, send)
 
-        host = _get_request_target_hostname(scope)
-        app = get_app_from_hostname(host)
+        app = get_app_from_hostname(connection.url.netloc)
         if not app:
             # Not an app subdomain, pass through to router.
             await self.app(scope, receive, send)
@@ -52,11 +37,11 @@ class SubdomainProxyMiddleware:
 
         # add forwarding headers for the openhost app, so it can tell where the request came from.
         # these are annoying but unavoidable - we can't spoof the IP or proto in the forwarded request.
-        # i don't think x-forwarded-host is needed?
-        extra_headers = []
+        # X-Forwarded-Host preserves the original Host so apps that build absolute URLs don't use the proxy's internal hostname
+        extra_headers = [("X-Forwarded-Host", connection.url.netloc)]
         if connection.client:
-            # client IP; for some reason this is allowed to be None in ASGI
-            extra_headers.append(("X-Forwarded-For", f"{connection.client.host}:{connection.client.port}"))
+            # client IP; for some reason this is allowed to be None in ASGI. port should not be included.
+            extra_headers.append(("X-Forwarded-For", f"{connection.client.host}"))
 
         try:
             verify_owner_auth(connection)
@@ -80,4 +65,3 @@ class SubdomainProxyMiddleware:
                 target_port=app.local_port,
                 extra_headers=extra_headers,
             )
-            await send(cast(Message, {"type": "websocket.close", "code": 1008}))
