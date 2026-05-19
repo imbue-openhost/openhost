@@ -442,16 +442,18 @@ async def remove_app(app_id: str) -> ResponseReturnValue:
     # disappears. Must run before the atomic-claim UPDATE.
     if not keep_data and not archive_backend.is_archive_dir_healthy(config, db):
         if archive_backend.manifest_uses_archive(app_row["manifest_raw"] or ""):
-            return jsonify(
-                {
-                    "error": "Archive backend is not healthy; refusing to "
-                    "remove an archive-using app's data because the "
-                    "S3-side bytes wouldn't actually be deleted.  "
-                    "Either restore the archive mount and retry, or "
-                    "use keep_data=1 to remove the app while leaving "
-                    "its data in place."
-                }
-            ), 503
+            backend_state = archive_backend.read_state(db)
+            if backend_state.backend != "disabled":
+                return jsonify(
+                    {
+                        "error": "Archive backend is not healthy; refusing to "
+                        "remove an archive-using app's data because the "
+                        "S3-side bytes wouldn't actually be deleted.  "
+                        "Either restore the archive mount and retry, or "
+                        "use keep_data=1 to remove the app while leaving "
+                        "its data in place."
+                    }
+                ), 503
 
     # Atomic claim: ``WHERE status != 'removing'`` makes concurrent
     # POSTs safe — only the first one gets rowcount=1 and spawns a
@@ -560,13 +562,15 @@ async def rename_app(app_id: str) -> ResponseReturnValue:
     # tier are unaffected and can rename freely on any backend state.
     if archive_backend.manifest_uses_archive(app_row["manifest_raw"] or ""):
         if not archive_backend.is_archive_dir_healthy(config, db):
-            return jsonify(
-                {
-                    "error": "Archive backend is not healthy; refusing to rename "
-                    "an archive-using app until the JuiceFS mount is live "
-                    "again (see the dashboard's Archive backend panel)."
-                }
-            ), 503
+            backend_state = archive_backend.read_state(db)
+            if backend_state.backend != "disabled":
+                return jsonify(
+                    {
+                        "error": "Archive backend is not healthy; refusing to rename "
+                        "an archive-using app until the JuiceFS mount is live "
+                        "again (see the dashboard's Archive backend panel)."
+                    }
+                ), 503
 
     if new_name == old_name:
         return jsonify({"ok": True, "name": new_name})

@@ -36,15 +36,15 @@ async def _call_remove(cfg, app_id: str, *, keep_data: bool = False):
         return status, payload
 
 
-def _seed_app(db_path: str, name: str, status: str = "running") -> str:
+def _seed_app(db_path: str, name: str, status: str = "running", manifest_raw: str | None = None) -> str:
     """Insert a row and return its newly minted app_id."""
     app_id = new_app_id()
     db = sqlite3.connect(db_path)
     try:
         db.execute(
-            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status) "
-            "VALUES (?, ?, '1.0', '/r', 19500, ?)",
-            (app_id, name, status),
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES (?, ?, '1.0', '/r', 19500, ?, ?)",
+            (app_id, name, status, manifest_raw),
         )
         db.commit()
     finally:
@@ -189,3 +189,63 @@ async def test_rename_app_refuses_when_removing(tmp_path: Path) -> None:
     status, payload = await _call_route(cfg, "rename_app", app_id, form_data={"name": "newname"})
     assert status == 409
     assert "removed" in payload["error"].lower()
+
+
+# ---- Archive guard: disabled backend should not block removal ----
+
+_ARCHIVE_MANIFEST = """\
+[app]
+name = "testapp"
+version = "0.1.0"
+[data]
+access_all_data = true
+"""
+
+_ARCHIVE_ONLY_MANIFEST = """\
+[app]
+name = "testapp"
+version = "0.1.0"
+[data]
+app_archive = true
+"""
+
+
+@pytest.mark.asyncio
+async def test_remove_archive_app_allowed_when_backend_disabled(tmp_path: Path) -> None:
+    """When S3 was never configured (backend='disabled'), removing an app
+    that declares access_all_data=true should succeed — there's no S3
+    data to orphan."""
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    app_id = _seed_app(cfg.db_path, "fbrowser", manifest_raw=_ARCHIVE_MANIFEST)
+
+    with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
+        status, payload = await _call_remove(cfg, app_id, keep_data=False)
+
+    assert status == 202, f"Expected 202 but got {status}: {payload}"
+    assert payload == {"ok": True}
+    Thread.return_value.start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_remove_archive_app_blocked_when_backend_s3_unhealthy(tmp_path: Path) -> None:
+    """When S3 was configured but the mount is unhealthy, removing an
+    archive-using app should still be blocked (503) to prevent orphaning
+    S3 bytes."""
+    cfg = _make_test_config(tmp_path)
+    init_db(_FakeApp(cfg.db_path))
+    app_id = _seed_app(cfg.db_path, "myarchive", manifest_raw=_ARCHIVE_ONLY_MANIFEST)
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute("UPDATE archive_backend SET backend = 's3' WHERE id = 1")
+        db.commit()
+    finally:
+        db.close()
+
+    with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
+        status, payload = await _call_remove(cfg, app_id, keep_data=False)
+
+    assert status == 503, f"Expected 503 but got {status}: {payload}"
+    assert "not healthy" in payload["error"].lower()
+    Thread.assert_not_called()
