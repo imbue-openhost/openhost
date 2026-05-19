@@ -10,12 +10,17 @@ import tomli_w
 import typed_settings
 
 
+def _lowercase(s: str) -> str:
+    # mypy can't handle str.lower apparently
+    return s.lower()
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class Config:
     ## Server
     # zone_domain is where the compute space is hosted, eg `host.example.com`
     # it can optionally include a non-80/443 port, if necessary.
-    zone_domain: str
+    zone_domain: str = attr.ib(converter=_lowercase)
     # the local IP to bind the compute space web server to.
     host: str
     # the local port to bind the compute space web server to.

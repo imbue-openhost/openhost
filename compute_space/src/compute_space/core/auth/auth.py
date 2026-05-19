@@ -6,6 +6,7 @@ from datetime import datetime
 from datetime import timedelta
 
 import attr
+import bcrypt
 
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60  # one week
 SESSION_COOKIE_NAME = "session_token"
@@ -35,6 +36,14 @@ class AuthenticatedApp(AuthenticatedAccessor):
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def validate_password(password: str, db: sqlite3.Connection) -> int | None:
+    # currently only have 1 user
+    row = db.execute("SELECT user_id, password_hash FROM users LIMIT 1").fetchone()
+    if bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+        return int(row["user_id"])
+    return None
 
 
 def create_session(user_id: int, db: sqlite3.Connection) -> str:

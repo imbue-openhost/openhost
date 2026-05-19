@@ -22,7 +22,7 @@ from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
 from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.quart_compat import login_required
 
 system_bp: Blueprint = Blueprint("system", __name__)
 

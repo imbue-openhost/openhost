@@ -129,7 +129,7 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     blueprint registration and adding the new Litestar handler.
 
     The legacy ``@login_required`` decorator on these blueprints (see
-    ``web/auth/middleware.py``) defers to ``verify_owner_auth``, which
+    ``web/auth/quart_compat.py``) defers to ``verify_owner_auth``, which
     authenticates the request on demand against the connection's cookies /
     Bearer header — no shared state from an outer middleware required.
     """

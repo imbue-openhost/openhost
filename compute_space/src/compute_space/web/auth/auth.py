@@ -24,8 +24,8 @@ AnyConnection = ASGIConnection[Any, Any, Any, Any]
 
 def _get_bearer_token_if_set(connection: AnyConnection) -> str | None:
     if auth_header := connection.headers.get("Authorization", ""):
-        if auth_header.startswith("Bearer "):
-            if token := auth_header.removeprefix("Bearer ").strip():
+        if auth_header.lower().startswith("bearer "):
+            if token := auth_header[7:].strip():
                 return token
     return None
 
@@ -52,7 +52,10 @@ def get_connection_origin(connection: AnyConnection) -> str | None:
 
 
 def authenticate(connection: AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
-    """Resolve who is making this request, by trying each auth scheme in priority order."""
+    """Resolve who is making this request, by trying each auth scheme in priority order.
+
+    TODO: we should probs have some rate-limiting or other abuse mitigation here.
+    """
 
     # session token in cookie
     if session_token := connection.cookies.get(SESSION_COOKIE_NAME):
@@ -83,7 +86,8 @@ def verify_owner_auth(connection: AnyConnection) -> None:
     if isinstance(accessor, AuthenticatedUser):
         if origin is not None and origin != connection.base_url.netloc:
             # if origin is set (it is set on all browser cross-origin requests and cannot be forged by js),
-            # it must match the target URL. either router-origin or same-app-origin is fine.
+            # it must match the target URL. either router-to-router or same-app-origin is fine.
+            # in theory router->app is also fine but idk if this happens in practice.
             # we never allow cross-origin requests with user auth, even from other subdomains, as these could be forged by untrusted app js.
             raise NotAuthorizedException(detail="user authentication only valid for router-origin requests")
         # origin is not set on normal same-origin GETs, for example, so we allow these.

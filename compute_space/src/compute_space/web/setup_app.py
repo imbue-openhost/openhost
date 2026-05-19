@@ -106,7 +106,6 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
     except Exception as exc:
         logger.error("default_apps deploy raised unexpectedly: %s", exc)
 
-    request_host = request.headers.get("host", "")
     # 200 + cookie + small "restarting" page (with meta-refresh to land on
     # the dashboard once the full app is up).  We can't redirect synchronously
     # because trigger_restart() kills the listener as soon as the response is
@@ -120,7 +119,7 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
         "<p>Setup complete. Restarting…</p></body></html>"
     )
     response = Response(content=body, status_code=200, media_type=MediaType.HTML)
-    response.set_cookie(build_session_cookie(session_token, request_host=request_host))
+    response.set_cookie(build_session_cookie(session_token, cookie_domain=config.zone_domain_no_port))
 
     # Schedule the restart for after the response has been written so the
     # client actually receives the 200 + Set-Cookie before the listener drops.
