@@ -508,7 +508,7 @@ def _installer_permission_denied(consumer_app_id: str, repo_url: str, reason: st
         grant_url = ""
     # Persist the request so the owner can find it from the dashboard.
     try:
-        create_pending_request_v2(consumer_app_id, INSTALLER_SERVICE_URL, grant, scope="global", reason=reason)
+        create_pending_request_v2(consumer_app_id, INSTALLER_SERVICE_URL, grant, scope="global", reason=reason)  # type: ignore[arg-type]
     except Exception:
         logger.debug("failed to persist pending request for %s/installer", consumer_app_id, exc_info=True)
 
