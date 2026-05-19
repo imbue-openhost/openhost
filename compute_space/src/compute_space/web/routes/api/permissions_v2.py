@@ -10,15 +10,14 @@ from litestar import Response
 from litestar import Router
 from litestar import get
 from litestar import post
-from litestar.exceptions import NotAuthorizedException
 from litestar.params import Body
 
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
-from compute_space.web.auth.guards import require_app_auth
-from compute_space.web.auth.guards import require_owner_auth
-from compute_space.web.auth.guards import resolve_caller_app_id
+from compute_space.web.auth.auth import require_app_auth
+from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.auth.auth import verify_app_auth
 
 
 def _json_error(message: str, status: int) -> Response[dict[str, str]]:
@@ -99,9 +98,9 @@ def grant_app_scoped(
     The calling app must be a registered provider for the specified service.
     The permission is automatically scoped to the calling provider app.
     """
-    provider_app_id = resolve_caller_app_id(request)
-    if provider_app_id is None:
-        raise NotAuthorizedException(detail="Missing or invalid app authorization")
+    # ``require_app_auth`` already enforced this; verify_app_auth re-derives
+    # the app_id for us (it returns the resolved id, raising if missing).
+    provider_app_id = verify_app_auth(request)
 
     consumer_app_id = data.get("consumer_app_id")
     service_url = data.get("service_url")

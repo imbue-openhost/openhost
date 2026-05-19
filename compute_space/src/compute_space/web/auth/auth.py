@@ -1,5 +1,5 @@
-# TODO: think about if we're doing CORS stuff properly? how do we respond to Options requests?
-
+# note: we don't need to handle CORS in the main auth path because cross-origin requests are not allowed.
+# the only allowed cross-origin requests go thru the services interface which handles its own CORS.
 import sqlite3
 from typing import Any
 from urllib.parse import urlparse

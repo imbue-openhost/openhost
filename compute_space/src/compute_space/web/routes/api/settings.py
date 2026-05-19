@@ -24,7 +24,7 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
-from compute_space.web.auth.guards import require_owner_auth
+from compute_space.web.auth.auth import require_owner_auth
 
 
 @attr.s(auto_attribs=True, frozen=True)

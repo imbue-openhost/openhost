@@ -30,7 +30,6 @@ from compute_space.core.installer import InstallError
 from compute_space.core.installer import InstallResult
 from compute_space.db import provide_db
 from compute_space.db.connection import init_db
-from compute_space.web.auth.auth import AuthMiddleware
 from compute_space.web.routes.services_v2 import services_v2_routes
 
 from .conftest import _make_test_config
@@ -62,11 +61,11 @@ grants = [{capability = "install", repo_url_prefix = "*"}]
 
 
 def _make_app() -> Litestar:
-    """Build a Litestar app exposing services_v2_routes with the production
-    AuthMiddleware, so bearer-token auth is exercised end-to-end."""
+    """Build a Litestar app exposing services_v2_routes.  Auth happens inside
+    the ``require_app_auth`` guard (which calls ``authenticate(connection)``
+    on demand), so no outer middleware is needed for bearer-token auth."""
     return Litestar(
         route_handlers=[services_v2_routes],
-        middleware=[AuthMiddleware],
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
             "db": Provide(provide_db, sync_to_thread=False),

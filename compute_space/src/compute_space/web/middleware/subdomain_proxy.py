@@ -38,6 +38,7 @@ class SubdomainProxyMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # note: we don't need to handle CORS here because cross-origin requests are not allowed (those go thru services which handles its own CORS).
         connection: ASGIConnection[Any, Any, Any, Any] = ASGIConnection(scope, receive, send)
 
         host = _get_request_target_hostname(scope)

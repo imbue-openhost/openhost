@@ -23,6 +23,7 @@ import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
+import attr
 from litestar import HttpMethod
 from litestar import MediaType
 from litestar import Request
@@ -31,6 +32,7 @@ from litestar import WebSocket
 from litestar import get
 from litestar import route
 from litestar import websocket
+from litestar.exceptions import NotAuthorizedException
 from litestar.response import Response
 from litestar.response.base import ASGIResponse
 from packaging.specifiers import InvalidSpecifier
@@ -57,6 +59,7 @@ from compute_space.core.services_v2 import resolve_provider
 from compute_space.web.auth.auth import require_app_auth
 from compute_space.web.auth.auth import verify_app_auth
 from compute_space.web.helpers.proxy import proxy_http_request
+from compute_space.web.helpers.proxy import proxy_websocket_request
 
 _CALL_PATH = "/api/services/v2/call/{shortname:str}/{rest:path}"
 _HTTP_METHODS = [
@@ -67,18 +70,6 @@ _HTTP_METHODS = [
     HttpMethod.PATCH,
     HttpMethod.HEAD,
 ]
-
-
-# ─── Helpers: CORS, JSON shapes ─────────────────────────────────────────────
-
-
-def _cors_headers(origin: str) -> dict[str, str]:
-    return {
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    }
 
 
 def _json_error(error: str, message: str, status: int) -> Response[dict[str, Any]]:
@@ -96,9 +87,6 @@ def _asgi_json_error(error: str, message: str, status: int) -> ASGIResponse:
         status_code=status,
         media_type=MediaType.JSON,
     )
-
-
-# ─── Headers forwarded to the provider ──────────────────────────────────────
 
 
 def _build_permissions_header(consumer_app_id: str, service_url: str, provider_app_id: str) -> str:
@@ -126,9 +114,6 @@ def _consumer_identity_headers(consumer_app_id: str, db: sqlite3.Connection) -> 
     row = db.execute("SELECT name FROM apps WHERE app_id = ?", (consumer_app_id,)).fetchone()
     name = row["name"] if row else consumer_app_id
     return {"X-OpenHost-Consumer-Name": name, "X-OpenHost-Consumer-Id": consumer_app_id}
-
-
-# ─── 403 grant-URL injection ────────────────────────────────────────────────
 
 
 def _inject_grant_url_if_global(
@@ -181,7 +166,75 @@ def _approve_grant_url(config: Config, consumer_app_id: str, service_url: str, g
     return f"https://{config.zone_domain}{approve_path}" if config.zone_domain else approve_path
 
 
-# ─── Service call (HTTP) ────────────────────────────────────────────────────
+def _cors_headers(origin: str) -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
+
+
+def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any, Any]) -> None:
+    origin = request.headers.get("Origin", None)
+    if origin:
+        for k, v in _cors_headers(origin).items():
+            response.headers.add(k, v)
+
+
+@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS], status_code=204)
+async def service_call_cors(request: Request[Any, Any, Any], shortname: str, rest: str) -> Response[str]:
+    """Hande CORS preflight HTTP OPTIONS request, respond with appropriate CORS headers."""
+    del shortname, rest  # path-only routing
+    origin = request.headers.get("Origin", None)
+    if origin is None:
+        return Response(content="Forbidden", status_code=403, media_type=MediaType.TEXT)
+    return Response(content="", status_code=204, headers=_cors_headers(origin))
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class InstallerServiceRequest:
+    service_url: str
+    version_spec: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ServiceRequest:
+    service_url: str
+    version_spec: str
+    provider_app_id: str
+    provider_port: int
+    target_path: str
+    extra_headers: list[tuple[str, str]]
+
+
+def _service_call_common(
+    consumer_app_id: str, shortname: str, rest: str, db: sqlite3.Connection
+) -> ServiceRequest | InstallerServiceRequest:
+    service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
+
+    if service_url == INSTALLER_SERVICE_URL:
+        return InstallerServiceRequest(
+            service_url=service_url,
+            version_spec=version_spec,
+        )
+    else:
+        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
+        # `rest` is captured as "/sub/path" (leading slash); fold into the
+        # provider's endpoint.
+        target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
+        extra_headers = [
+            ("X-OpenHost-Permissions", _build_permissions_header(consumer_app_id, service_url, provider_app_id)),
+            *_consumer_identity_headers(consumer_app_id, db).items(),
+        ]
+        return ServiceRequest(
+            service_url=service_url,
+            version_spec=version_spec,
+            provider_app_id=provider_app_id,
+            provider_port=provider_port,
+            target_path=target_path,
+            extra_headers=extra_headers,
+        )
 
 
 @route(_CALL_PATH, http_method=_HTTP_METHODS, guards=[require_app_auth])
@@ -192,114 +245,74 @@ async def service_call(
     db: sqlite3.Connection,
     config: Config,
 ) -> ASGIResponse:
-    consumer_app_id = verify_app_auth(request)
     """Proxy a request to the provider declared under <shortname> in the
     consumer's manifest.
 
-    The response is streamed end-to-end except for 403s, which ``proxy_request``
-    buffers so we can inject ``grant_url``.
+    The response is streamed end-to-end except for 403s, which
+    ``proxy_http_request`` buffers so we can inject ``grant_url``.
     """
+    consumer_app_id = verify_app_auth(request)
+
     try:
-        service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
+        resolved = _service_call_common(consumer_app_id, shortname, rest, db)
     except ShortnameNotDeclared as e:
         return _asgi_json_error("shortname_not_declared", e.message, 404)
-
-    if service_url == INSTALLER_SERVICE_URL:
-        installer_response = await _handle_installer_request(consumer_app_id, version_spec, rest, request, db, config)
-        return installer_response.to_asgi_response(app=request.app, request=request)
-
-    try:
-        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         return _asgi_json_error("service_not_available", e.message, 503)
 
-    # `rest` is captured as "/sub/path" (leading slash); fold into the
-    # provider's endpoint.
-    target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
+    if isinstance(resolved, InstallerServiceRequest):
+        installer_response = await _handle_installer_request(
+            consumer_app_id, resolved.version_spec, rest, request, db, config
+        )
+        return installer_response.to_asgi_response(app=request.app, request=request)
 
     response = await proxy_http_request(
         request,
-        target_port=provider_port,
-        override_path=target_path,
-        extra_headers=[
-            ("X-OpenHost-Permissions", _build_permissions_header(consumer_app_id, service_url, provider_app_id)),
-            *_consumer_identity_headers(consumer_app_id, db).items(),
-        ],
+        target_port=resolved.provider_port,
+        override_path=resolved.target_path,
+        extra_headers=resolved.extra_headers,
     )
 
     if response.status_code == 403:
-        response = _inject_grant_url_if_global(response, service_url, consumer_app_id, config)
+        response = _inject_grant_url_if_global(response, resolved.service_url, consumer_app_id, config)
 
     _add_cors_response_headers(response, request)
     return response
 
 
-def _cors_origin(request: Request[Any, Any, Any]) -> str | None:
-    # if set, this looks like `https://example.com` or `https://example.com:1234`
-    return request.headers.get("Origin", None)
-
-
-def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any, Any]) -> None:
-    origin = _cors_origin(request)
-    if origin:
-        response.headers |= _cors_headers(origin)
-
-
-# ─── CORS preflight ─────────────────────────────────────────────────────────
-
-
-@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS], status_code=204)
-async def service_call_cors(request: Request[Any, Any, Any], shortname: str, rest: str) -> Response[str]:
-    del shortname, rest  # path-only routing
-    origin = _cors_origin(request)
-    if origin is None:
-        return Response(content="Forbidden", status_code=403, media_type=MediaType.TEXT)
-    return Response(content="", status_code=204, headers=_cors_headers(origin))
-
-
-# ─── Service call (WebSocket) ───────────────────────────────────────────────
-
-
 @websocket(_CALL_PATH)
-async def service_call_ws(socket: WebSocket[Any, Any, Any], shortname: str, rest: str) -> None:
-    """WebSocket variant of service_call.  Same auth + resolution; lifts the
-    request/response proxy to ws_proxy."""
-    consumer_app_id = resolve_caller_app_id(socket)
-    if not consumer_app_id:
+async def service_call_ws(socket: WebSocket[Any, Any, Any], shortname: str, rest: str, db: sqlite3.Connection) -> None:
+    """WebSocket variant of ``service_call``"""
+    # not using guards bc they currently only return HTTP exceptions
+    try:
+        consumer_app_id = verify_app_auth(socket)
+    except NotAuthorizedException:
         await socket.accept()
         await socket.close(code=4401, reason="Missing or invalid authorization")
         return
 
-    from compute_space.db import get_db  # noqa: PLC0415
-
-    db = get_db()
     try:
-        service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
+        resolved = _service_call_common(consumer_app_id, shortname, rest, db)
     except ShortnameNotDeclared as e:
         await socket.accept()
         await socket.close(code=4404, reason=e.message)
         return
-
-    try:
-        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
     except ServiceNotAvailable as e:
         await socket.accept()
         await socket.close(code=4503, reason=e.message)
         return
 
-    target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
-    await ws_proxy(
+    if isinstance(resolved, InstallerServiceRequest):
+        await socket.accept()
+        await socket.close(code=1011, reason="Installer service is not available over WebSocket")
+        return
+
+    await proxy_websocket_request(
         socket,
-        target_port=provider_port,
-        extra_headers=[
-            ("X-OpenHost-Permissions", _build_permissions_header(consumer_app_id, service_url, provider_app_id)),
-            *_consumer_identity_headers(consumer_app_id, db).items(),
-        ],
-        override_path=target_path,
+        target_port=resolved.provider_port,
+        override_path=resolved.target_path,
+        extra_headers=resolved.extra_headers,
     )
-
-
-# ─── OAuth callback fan-out ─────────────────────────────────────────────────
 
 
 @get("/api/services/v2/oauth_callback")
@@ -334,7 +347,7 @@ async def oauth_callback_proxy_v2(request: Request[Any, Any, Any]) -> ASGIRespon
     if app_row.status != "running":
         return _asgi_json_error("service_not_available", f"App '{app_name}' is not running", 503)
 
-    return await proxy_request(request, target_port=app_row.local_port, override_path="/callback")
+    return await proxy_http_request(request, target_port=app_row.local_port, override_path="/callback")
 
 
 # ─── Installer (router-internal v2 service) ─────────────────────────────────

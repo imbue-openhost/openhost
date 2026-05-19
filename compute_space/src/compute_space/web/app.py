@@ -36,7 +36,6 @@ from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import provide_db
-from compute_space.web.auth.auth import AuthMiddleware
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
 from compute_space.web.routes.api.settings import api_settings_routes
@@ -129,11 +128,10 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     handlers win over the mount, so migrating a route is just removing the
     blueprint registration and adding the new Litestar handler.
 
-    The outer ``AuthMiddleware`` has already populated ``scope["state"]`` with
-    the accessor + origin by the time requests reach these blueprints, so the
-    legacy ``@login_required`` / ``@app_auth_required`` decorators (see
-    ``web/auth/middleware.py``) just read that state instead of doing any
-    JWT/cookie work themselves.
+    The legacy ``@login_required`` decorator on these blueprints (see
+    ``web/auth/middleware.py``) defers to ``verify_owner_auth``, which
+    authenticates the request on demand against the connection's cookies /
+    Bearer header — no shared state from an outer middleware required.
     """
     # Imports are scoped to this builder because each module side-effectfully
     # constructs a Quart Blueprint at import time and we don't want those to
@@ -271,7 +269,7 @@ def create_app(config: Config) -> Litestar:
             setup_already_done,
             quart_fallback,
         ],
-        middleware=[AuthMiddleware, SubdomainProxyMiddleware],
+        middleware=[SubdomainProxyMiddleware],
         template_config=template_config,
         after_request=_close_db_after,
         dependencies={
