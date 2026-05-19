@@ -11,13 +11,17 @@ The HTTP call route streams the response back to the client by default; on
 ``403`` the body is buffered (see ``proxy_request``'s ``buffer_status_codes``)
 so we can inject ``grant_url`` into the ``permission_required`` payload before
 relaying it.
+
+CORS:
+- we need to handle CORS so that cross-origin service requests are allowed for client-side requests from the user's browser.
+- this involves responding to the preflight OPTIONS request, and also adding CORS headers to the proxied response.
+- the receiving app will not see or interact with this.
 """
 
 import json
 import sqlite3
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import urlparse
 
 from litestar import HttpMethod
 from litestar import MediaType
@@ -27,7 +31,6 @@ from litestar import WebSocket
 from litestar import get
 from litestar import route
 from litestar import websocket
-from litestar.exceptions import NotAuthorizedException
 from litestar.response import Response
 from litestar.response.base import ASGIResponse
 from packaging.specifiers import InvalidSpecifier
@@ -35,7 +38,6 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 from compute_space.config import Config
-from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.containers import get_docker_logs
@@ -52,10 +54,9 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import ShortnameNotDeclared
 from compute_space.core.services_v2 import lookup_shortname
 from compute_space.core.services_v2 import resolve_provider
-from compute_space.web.auth.guards import require_app_auth
-from compute_space.web.auth.guards import resolve_caller_app_id
-from compute_space.web.middleware.subdomain_proxy import proxy_request
-from compute_space.web.middleware.subdomain_proxy import ws_proxy
+from compute_space.web.auth.auth import require_app_auth
+from compute_space.web.auth.auth import verify_app_auth
+from compute_space.web.helpers.proxy import proxy_http_request
 
 _CALL_PATH = "/api/services/v2/call/{shortname:str}/{rest:path}"
 _HTTP_METHODS = [
@@ -69,27 +70,6 @@ _HTTP_METHODS = [
 
 
 # ─── Helpers: CORS, JSON shapes ─────────────────────────────────────────────
-
-
-def _cors_origin(request: Request[Any, Any, Any]) -> str | None:
-    """Return the request Origin iff it points at a valid app subdomain of this zone."""
-    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if not origin:
-        return None
-
-    parsed = urlparse(origin)
-    host = parsed.netloc or ""
-    if not parsed.scheme or not host:
-        return None
-
-    config = get_config()
-    if not config.zone_domain or not host.endswith("." + config.zone_domain):
-        return None
-    app_name = host[: -(len(config.zone_domain) + 1)]
-    if "." in app_name:
-        return None
-
-    return f"{parsed.scheme}://{host}"
 
 
 def _cors_headers(origin: str) -> dict[str, str]:
@@ -116,19 +96,6 @@ def _asgi_json_error(error: str, message: str, status: int) -> ASGIResponse:
         status_code=status,
         media_type=MediaType.JSON,
     )
-
-
-# ─── Consumer identity (Bearer-or-cookie-on-subdomain) ──────────────────────
-
-
-def _consumer_app_id_or_raise(request: Request[Any, Any, Any]) -> str:
-    """Read the caller's app_id from scope state.  ``require_app_auth`` runs
-    first and guarantees this is set for HTTP requests — the raise is just a
-    local invariant."""
-    app_id = resolve_caller_app_id(request)
-    if app_id is None:
-        raise NotAuthorizedException(detail="Missing or invalid app authorization")
-    return app_id
 
 
 # ─── Headers forwarded to the provider ──────────────────────────────────────
@@ -225,7 +192,7 @@ async def service_call(
     db: sqlite3.Connection,
     config: Config,
 ) -> ASGIResponse:
-    consumer_app_id = _consumer_app_id_or_raise(request)
+    consumer_app_id = verify_app_auth(request)
     """Proxy a request to the provider declared under <shortname> in the
     consumer's manifest.
 
@@ -239,7 +206,7 @@ async def service_call(
 
     if service_url == INSTALLER_SERVICE_URL:
         installer_response = await _handle_installer_request(consumer_app_id, version_spec, rest, request, db, config)
-        return _response_to_asgi(installer_response, request)
+        return installer_response.to_asgi_response(app=request.app, request=request)
 
     try:
         provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
@@ -250,7 +217,7 @@ async def service_call(
     # provider's endpoint.
     target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
 
-    proxied = await proxy_request(
+    response = await proxy_http_request(
         request,
         target_port=provider_port,
         override_path=target_path,
@@ -260,26 +227,22 @@ async def service_call(
         ],
     )
 
-    if proxied.status_code == 403:
-        proxied = _inject_grant_url_if_global(proxied, service_url, consumer_app_id, config)
+    if response.status_code == 403:
+        response = _inject_grant_url_if_global(response, service_url, consumer_app_id, config)
 
-    return _apply_cors(proxied, request)
-
-
-def _response_to_asgi(response: Response[Any], request: Request[Any, Any, Any]) -> ASGIResponse:
-    """Bridge a high-level Litestar Response into an ASGIResponse, for handlers
-    that return the low-level type (so 200/error paths can share a return shape)."""
-    return response.to_asgi_response(app=request.app, request=request)
-
-
-def _apply_cors(response: ASGIResponse, request: Request[Any, Any, Any]) -> ASGIResponse:
-    origin = _cors_origin(request)
-    if origin is None:
-        return response
-    # ASGIResponse stores headers on a MutableScopeHeaders; append the CORS set.
-    for k, v in _cors_headers(origin).items():
-        response.headers.add(k, v)
+    _add_cors_response_headers(response, request)
     return response
+
+
+def _cors_origin(request: Request[Any, Any, Any]) -> str | None:
+    # if set, this looks like `https://example.com` or `https://example.com:1234`
+    return request.headers.get("Origin", None)
+
+
+def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any, Any]) -> None:
+    origin = _cors_origin(request)
+    if origin:
+        response.headers |= _cors_headers(origin)
 
 
 # ─── CORS preflight ─────────────────────────────────────────────────────────

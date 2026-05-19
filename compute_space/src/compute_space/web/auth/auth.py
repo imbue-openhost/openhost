@@ -4,56 +4,22 @@ import sqlite3
 from typing import Any
 from urllib.parse import urlparse
 
-import attr
-from litestar import Request
 from litestar.connection import ASGIConnection
-from litestar.enums import ScopeType
-from litestar.types import ASGIApp
-from litestar.types import Receive
-from litestar.types import Scope
-from litestar.types import Send
+from litestar.exceptions import NotAuthorizedException
+from litestar.handlers.base import BaseRouteHandler
 
-from compute_space.config import get_config
 from compute_space.core.apps import get_app_from_hostname
 from compute_space.core.auth.auth import SESSION_COOKIE_NAME
+from compute_space.core.auth.auth import AuthenticatedAPIKey
 from compute_space.core.auth.auth import AuthenticatedAccessor
+from compute_space.core.auth.auth import AuthenticatedApp
+from compute_space.core.auth.auth import AuthenticatedUser
 from compute_space.core.auth.auth import validate_api_token
 from compute_space.core.auth.auth import validate_app_token
 from compute_space.core.auth.auth import validate_session_token
 from compute_space.db import get_db
 
 _AnyConnection = ASGIConnection[Any, Any, Any, Any]
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class RequestOrigin:
-    """Location where the request claims to originate from."""
-
-    origin: str | None
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class RouterOrigin(RequestOrigin):
-    """Request claims to originate from the router itself."""
-
-    pass
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class AppOrigin(RequestOrigin):
-    """Request claims to originate from an app subdomain."""
-
-    app_id: str
-
-
-def get_accessor(scope: Scope) -> AuthenticatedAccessor | None:
-    state = scope.get("state") or {}
-    return state.get("accessor")
-
-
-def get_origin(scope: Scope) -> RequestOrigin | None:
-    state = scope.get("state") or {}
-    return state.get("origin")
 
 
 def _get_bearer_token_if_set(connection: _AnyConnection) -> str | None:
@@ -64,7 +30,7 @@ def _get_bearer_token_if_set(connection: _AnyConnection) -> str | None:
     return None
 
 
-def _get_connection_origin(connection: _AnyConnection) -> str | None:
+def get_connection_origin(connection: _AnyConnection) -> str | None:
     """gets and formats the origin header as "sub.example.com" or "sub.example.com:1234", no protocol or path, if set.
     port is included if non-default.
     returns None if no origin header is set.
@@ -106,38 +72,52 @@ def authenticate(connection: _AnyConnection, db: sqlite3.Connection) -> Authenti
     return None
 
 
-class AuthMiddleware:
-    """Validates and adds auth information to requests, on `request.accessor` and `request.origin`.
+def verify_owner_auth(connection: _AnyConnection) -> None:
+    """Verify that the request is authenticated as an "owner" (either a user or an API key, with valid Origin).
 
-    Origin is not (cannot be) validated, but is useful for route guards to make auth decisions based on where the request claims to come from.
-
-    Auth isn't enforced here; missing auth will just yield `request.accessor = None`; it should be enforced in route guards.
+    returns if authed; raises NotAuthorizedException if not authenticated.
     """
+    accessor = authenticate(connection, db=get_db())
+    origin = get_connection_origin(connection)
 
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        # passthrough types we don't handle (like what?)
-        if scope["type"] not in (ScopeType.HTTP, ScopeType.WEBSOCKET):
-            await self.app(scope, receive, send)
-            return
-
-        request: Request[Any, Any, Any] = Request(scope, receive, send)
-        state = scope.setdefault("state", {})
-
-        accessor = authenticate(request, get_db())
-        state["accessor"] = accessor
-
-        maybe_origin = _get_connection_origin(request)
-        origin = RequestOrigin(maybe_origin)
-        if maybe_origin is not None and maybe_origin == get_config().zone_domain:
+    if isinstance(accessor, AuthenticatedUser):
+        if origin is not None and origin != connection.base_url.netloc:
             # if origin is set (it is set on all browser cross-origin requests and cannot be forged by js),
-            # it must match the router zone to be considered from the router itself.
-            # otherwise apps could contain JS that makes requests using the user's auth to the router.
-            origin = RouterOrigin(origin=maybe_origin)
-        elif maybe_origin is not None and (app := get_app_from_hostname(maybe_origin)) is not None:
-            origin = AppOrigin(origin=maybe_origin, app_id=app.app_id)
-        state["origin"] = origin
+            # it must match the target URL. either router-origin or same-app-origin is fine.
+            # we never allow cross-origin requests with user auth, even from other subdomains, as these could be forged by untrusted app js.
+            raise NotAuthorizedException(detail="user authentication only valid for router-origin requests")
+        # origin is not set on normal same-origin GETs, for example, so we allow these.
+        return
+    if isinstance(accessor, AuthenticatedAPIKey):
+        # API key requests won't come from untrusted JS, so can be trusted regardless of origin.
+        return
+    raise NotAuthorizedException(detail="User or API key authentication required")
 
-        await self.app(scope, receive, send)
+
+def verify_app_auth(connection: _AnyConnection) -> str:
+    """Verify that the request is authenticated as an "app" (either client-side, from app js, or server-side, from an app token).
+
+    returns `app_id` if authed; raises NotAuthorizedException if not authenticated.
+    """
+    accessor = authenticate(connection, db=get_db())
+    origin = get_connection_origin(connection)
+
+    if isinstance(accessor, AuthenticatedUser):
+        if origin is not None and (app := get_app_from_hostname(origin)) is not None:
+            # requests from app js come from the user's browser with the user's auth.
+            # Origin will always be set by the browser on these cross-origin requests.
+            return app.app_id
+    if isinstance(accessor, AuthenticatedApp):
+        # server-side app requests.
+        return accessor.app_id
+    raise NotAuthorizedException(detail="app authentication required")
+
+
+def require_owner_auth(connection: _AnyConnection, _route_handler: BaseRouteHandler) -> None:
+    """Adapt verify_owner_auth to be used as a route guard."""
+    verify_owner_auth(connection)
+
+
+def require_app_auth(connection: _AnyConnection, _route_handler: BaseRouteHandler) -> None:
+    """Adapt verify_app_auth to be used as a route guard."""
+    verify_app_auth(connection)
