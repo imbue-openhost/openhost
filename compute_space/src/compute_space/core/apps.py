@@ -697,9 +697,7 @@ def git_pull(
             )
 
 
-def _create_pending_for_new_consumes(
-    app_id: str, manifest: AppManifest, db: sqlite3.Connection
-) -> None:
+def _create_pending_for_new_consumes(app_id: str, manifest: AppManifest, db: sqlite3.Connection) -> None:
     """Create pending permission requests for any newly-declared
     ``[[services.v2.consumes]]`` grants that aren't already granted.
 
@@ -710,9 +708,7 @@ def _create_pending_for_new_consumes(
     """
     for consume in manifest.consumes_services_v2:
         existing = get_granted_permissions_v2(app_id, consume.service)
-        existing_grants = {
-            json.dumps(g.grant, sort_keys=True) for g in existing
-        }
+        existing_grants = {json.dumps(g.grant, sort_keys=True) for g in existing}
         for grant_payload in consume.grants:
             if json.dumps(grant_payload, sort_keys=True) not in existing_grants:
                 try:
