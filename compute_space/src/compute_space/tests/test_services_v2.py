@@ -1,8 +1,11 @@
 import pytest
 
 from compute_space.core.app_id import new_app_id
+from compute_space.core.auth.permissions_v2 import create_pending_request_v2
+from compute_space.core.auth.permissions_v2 import dismiss_pending_request_v2
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
+from compute_space.core.auth.permissions_v2 import get_pending_requests_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
 from compute_space.core.services_v2 import ServiceNotAvailable
@@ -296,3 +299,93 @@ class TestShortnameLookup:
         multi_id = _install_consumer(db, "multi", perms)
         assert lookup_shortname(multi_id, "secrets", db) == (SVC_SECRETS, ">=0.1.0")
         assert lookup_shortname(multi_id, "oauth", db) == (SVC_OAUTH, "==1.0.0")
+
+
+# ---------------------------------------------------------------------------
+# Pending permission requests
+# ---------------------------------------------------------------------------
+
+
+class TestPendingRequests:
+    def test_create_and_list(self, db, monkeypatch):
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
+        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "DB_URL"}, reason="needs DB access")
+
+        pending = get_pending_requests_v2()
+        assert len(pending) == 1
+        assert pending[0].consumer_app_id == "test-app"
+        assert pending[0].service_url == SVC_SECRETS
+        assert pending[0].grant == {"key": "DB_URL"}
+        assert pending[0].reason == "needs DB access"
+
+    def test_create_is_idempotent(self, db, monkeypatch):
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
+        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"})
+        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"})
+
+        pending = get_pending_requests_v2()
+        assert len(pending) == 1
+
+    def test_dismiss(self, db, monkeypatch):
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
+        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"})
+        assert dismiss_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"}) is True
+        assert len(get_pending_requests_v2()) == 0
+
+    def test_dismiss_nonexistent_returns_false(self, db, monkeypatch):
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
+        assert dismiss_pending_request_v2("test-app", SVC_SECRETS, {"key": "NOPE"}) is False
+
+    def test_filter_by_consumer(self, db, monkeypatch):
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
+        create_pending_request_v2("app-a", SVC_SECRETS, {"key": "X"})
+        create_pending_request_v2("app-b", SVC_OAUTH, {"provider": "google"})
+
+        assert len(get_pending_requests_v2("app-a")) == 1
+        assert len(get_pending_requests_v2("app-b")) == 1
+        assert len(get_pending_requests_v2()) == 2
+
+
+# ---------------------------------------------------------------------------
+# Provider authorization check (grant_app_scoped)
+# ---------------------------------------------------------------------------
+
+
+class TestProviderAuthCheck:
+    """Verify that only registered providers can grant app-scoped permissions."""
+
+    def test_registered_provider_can_grant(self, db, monkeypatch):
+        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
+        provider_id = _add_provider(db, SVC_OAUTH, "oauth-provider", "0.1.0", "/oauth/")
+        consumer_id = _install_consumer(db, "consumer")
+
+        # Provider is registered, so a direct grant should work.
+        grant_permission_v2(
+            consumer_app_id=consumer_id,
+            service_url=SVC_OAUTH,
+            grant_payload={"provider": "google", "scopes": ["email"]},
+            scope="app",
+            provider_app_id=provider_id,
+        )
+        grants = get_granted_permissions_v2(consumer_id, SVC_OAUTH)
+        assert len(grants) == 1
+        assert grants[0].scope == "app"
+
+    def test_non_provider_is_rejected_by_db_check(self, db):
+        """An app that is not a registered provider for a service
+        should fail the DB lookup that the grant_app_scoped endpoint
+        performs before calling grant_permission_v2."""
+        non_provider_id = new_app_id()
+        db.execute(
+            """INSERT INTO apps (app_id, name, version, repo_path, local_port, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (non_provider_id, "non-provider", "0.1.0", "/tmp/np", 9200, "running"),
+        )
+        db.commit()
+
+        # Simulate the check the endpoint does.
+        row = db.execute(
+            "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_id = ?",
+            (SVC_OAUTH, non_provider_id),
+        ).fetchone()
+        assert row is None, "non-provider should not be in service_providers_v2"

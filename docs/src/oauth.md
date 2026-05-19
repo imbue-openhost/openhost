@@ -6,7 +6,7 @@ The secrets app provides OAuth tokens to other apps via the cross-app service sy
 
 ### Requesting a token
 
-1. **App requests a token:** `POST /_services/secrets/oauth/token` with `{"provider": "google", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"], "return_to": "//app.zone.domain/callback", "account": "user@gmail.com"}`
+1. **App requests a token:** `POST /api/services/v2/call/<shortname>/oauth/token` with `{"provider": "google", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"], "return_to": "//app.zone.domain/callback", "account": "user@gmail.com"}` (where `<shortname>` is the alias declared in the app's `[[services.v2.consumes]]` block)
 
 2. **Token cached?** Returns it immediately. Tokens that don't expire (GitHub) are returned as-is. Expiring tokens (Google) are checked with a 60s buffer.
 
@@ -21,7 +21,7 @@ Tokens are stored with an `account` label, keyed by `(provider, scopes, account)
 - **Connecting a new account:** Request a token with `"account": "new"`. After OAuth, the secrets app resolves the identity (e.g. `user@gmail.com`) and stores the token under that name.
 - **Using a specific account:** Request with `"account": "user@gmail.com"` to get that account's token.
 - **Default fallback:** Request with `"account": "default"` (or omit it). If there's exactly one token for that provider+scopes, it's returned regardless of account name.
-- **Listing accounts:** `POST /_services/secrets/oauth/accounts` with `{"provider": "google", "scopes": [...]}` returns `{"accounts": ["user1@gmail.com", "user2@gmail.com"]}`.
+- **Listing accounts:** `POST /api/services/v2/call/<shortname>/oauth/accounts` with `{"provider": "google", "scopes": [...]}` returns `{"accounts": ["user1@gmail.com", "user2@gmail.com"]}`.
 
 ### Authorization code flow (Google)
 
@@ -43,33 +43,36 @@ The `authorize_url` points to `secrets.<zone_domain>/oauth/device?...` — a pag
 3. Polls GitHub in the background until the user authorizes
 4. Fetches the user's identity (GitHub username), stores the token, and redirects to `return_to`
 
-### Permission flow
+### Permission flow (v2)
 
-Before an app can request OAuth tokens, it needs service permissions. Permission keys follow the format `oauth:<provider>:<scope>`.
+Before an app can request OAuth tokens, it needs v2 service permissions. Apps declare the services they consume in their `openhost.toml`:
 
-When an app calls `/_services/secrets/oauth/token` without the needed permissions, the router handles it automatically:
+```toml
+[[services.v2.consumes]]
+service   = "github.com/imbue-openhost/openhost/services/oauth"
+shortname = "oauth"
+version   = ">=0.1.0"
+grants    = [{provider = "google", scopes = ["email"]}]
+```
 
-1. Router checks `service_permissions` table → permissions not granted
-2. Router auto-creates pending permission requests for the denied scopes
-3. Router stores the original token request in an in-memory flow state
-4. Router returns `401` with `authorize_url` pointing to `/approve-permissions?app=<app>&next=/_oauth/continue/<flow_id>`
-5. User approves permissions on the approval page
-6. Browser follows `next` to `/_oauth/continue/<flow_id>`, which proxies the original token request to the secrets app
-7. Secrets app returns `401` with the OAuth `authorize_url` → router redirects to it
-8. User completes OAuth → secrets app stores token → redirects to the app's `return_to`
+When an app calls the OAuth service without the needed permissions:
 
-This means the app only ever sees `200` (token) or `401` (single `authorize_url` that handles everything). The app never needs to call `/_services/request-permission` for OAuth.
+1. The OAuth provider returns `403` with `{"error": "permission_required", "required_grant": {"grant": ..., "scope": "app", "grant_url": "..."}}`
+2. For app-scoped grants, the `grant_url` points to the OAuth provider's own consent page where the user approves the OAuth flow
+3. After approval, the provider calls `POST /api/permissions/v2/grant_app_scoped` to record the grant
+4. For global-scoped grants, the router injects a `grant_url` pointing to `/approve-permissions-v2` where the owner can approve
+5. Pending requests are persisted so the owner can review them from the dashboard without needing to re-trigger the flow
 
-The `/_services/request-permission` endpoint still exists and accepts a list of keys: `{"service": "secrets", "keys": [{"key": "oauth:google:scope", "reason": "..."}]}`.
+Permissions auto-granted at install time (when `grant_permissions_v2=True`) skip this flow entirely.
 
 ### Browser auth (CORS)
 
-The `/_services/` endpoints accept two forms of authentication:
+The `/api/services/v2/call/` endpoints accept two forms of authentication:
 
 - **Server-to-server:** `Authorization: Bearer <app_token>` header
-- **Browser:** JWT auth cookie + `Origin` header. The router derives the app name from the Origin's subdomain (e.g. `oauth-demo.zone.domain` → app `oauth-demo`).
+- **Browser:** JWT auth cookie + `Origin` header. The router derives the app identity from the Origin's subdomain (e.g. `oauth-demo.zone.domain` → app `oauth-demo`).
 
-For browser requests, the router adds CORS headers allowing the app's subdomain origin with credentials. This lets client-side JavaScript call `/_services/` endpoints on the zone domain directly.
+For browser requests, the router adds CORS headers allowing the app's subdomain origin with credentials. This lets client-side JavaScript call service endpoints on the zone domain directly.
 
 ### Token storage
 
@@ -144,7 +147,7 @@ The `oauth.js` library handles the popup lifecycle, postMessage communication, a
 
 ## Adding a new provider
 
-Add an entry to `PROVIDERS` in `apps/secrets_v1/src/secrets_v1/oauth.py` with either `"flow": "auth_code"` or `"flow": "device"`:
+Add an entry to the providers configuration in the OAuth provider app with either `"flow": "auth_code"` or `"flow": "device"`:
 
 ```python
 # Auth code flow provider
@@ -173,17 +176,18 @@ For auth code providers, register the redirect URI: `https://my.<base_domain>/se
 
 For device flow providers, no redirect URI is needed.
 
-To support identity resolution (account names), add a case in `fetch_account_identity()` in `oauth.py` that calls the provider's userinfo endpoint.
+To support identity resolution (account names), add a case in `fetch_account_identity()` that calls the provider's userinfo endpoint.
 
-If the provider has a non-standard revocation API (like GitHub), add a case in the `revoke_token()` function in `oauth.py`.
+If the provider has a non-standard revocation API (like GitHub), add a case in the `revoke_token()` function.
 
 ## Files
 
-- `apps/secrets_v1/src/secrets_v1/oauth.py` — provider configs, auth URL builder, code exchange, device flow, token refresh, revocation, identity resolution
-- `apps/secrets_v1/src/secrets_v1/app.py` — `/_service/oauth/token` endpoint, `/_service/oauth/accounts` endpoint, `/oauth/callback` handler, `/oauth/device` page, dashboard APIs
-- `apps/secrets_v1/src/secrets_v1/schema.sql` — `oauth_tokens` table (keyed by provider, scopes, account)
-- `apps/secrets_v1/src/secrets_v1/templates/oauth_device.html` — device flow authorization page (shows code + verification link)
-- `compute_space/compute_space/web/routes/services.py` — service proxy with permission checking, browser auth (CORS), auto-permission-request flow for OAuth, `/_oauth/continue` endpoint
+- `apps/oauth_provider/src/oauth_provider/` — OAuth provider app (v2 service interface)
+  - `core/permissions.py` — v2 grant parsing, permission checking, app-scoped grant helper
+  - `core/oauth.py` — provider configs, auth URL builder, code exchange, device flow, token refresh, revocation
+- `compute_space/src/compute_space/web/routes/services_v2.py` — v2 service proxy with shortname routing, permission header injection, CORS, OAuth callback proxy
+- `compute_space/src/compute_space/web/routes/api/permissions_v2.py` — permission management API (grant, revoke, pending requests)
+- `compute_space/src/compute_space/core/auth/permissions_v2.py` — core permission DB operations
 - `apps/oauth_demo/` — example app with two demo modes:
   - `server_demo.py` — server-side OAuth with full-page redirects
   - `client_demo.py` — client-side SPA using `static/oauth.js` and popups

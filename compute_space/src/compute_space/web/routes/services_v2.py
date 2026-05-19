@@ -2,6 +2,7 @@
 provider-side permission validation."""
 
 import json
+import logging
 import sqlite3
 from typing import Any
 from urllib.parse import urlparse
@@ -18,6 +19,7 @@ from quart import websocket
 from compute_space.config import get_config
 from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth.auth import resolve_app_from_token
+from compute_space.core.auth.permissions_v2 import create_pending_request_v2
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.installer import GRANT_KEY_CAPABILITY
@@ -38,6 +40,8 @@ from compute_space.web.auth.middleware import _app_from_origin
 from compute_space.web.auth.middleware import app_auth_required
 from compute_space.web.proxy import proxy_request
 from compute_space.web.proxy import ws_proxy
+
+logger = logging.getLogger(__name__)
 
 services_v2_bp = Blueprint("services_v2", __name__)
 
@@ -137,6 +141,14 @@ async def _add_grant_url_if_global_grant_needed(
         grant=json.dumps(grant, sort_keys=True),
     )
     required_grant["grant_url"] = f"https://{config.zone_domain}{approve_path}"
+
+    # Persist the request so the owner can find it later from the
+    # dashboard without needing to re-trigger the original 403.
+    reason = body.get("message") or None
+    try:
+        create_pending_request_v2(consumer_app_id, service_url, grant, scope="global", reason=reason)
+    except Exception:
+        logger.debug("failed to persist pending request for %s/%s", consumer_app_id, service_url, exc_info=True)
 
     return Response(
         json.dumps(body),
@@ -494,6 +506,12 @@ def _installer_permission_denied(consumer_app_id: str, repo_url: str, reason: st
     except Exception:
         # In tests where the permissions blueprint isn't registered.
         grant_url = ""
+    # Persist the request so the owner can find it from the dashboard.
+    try:
+        create_pending_request_v2(consumer_app_id, INSTALLER_SERVICE_URL, grant, scope="global", reason=reason)
+    except Exception:
+        logger.debug("failed to persist pending request for %s/installer", consumer_app_id, exc_info=True)
+
     body = {
         "error": "permission_required",
         "message": reason,

@@ -19,6 +19,8 @@ from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.auth import read_owner_username
+from compute_space.core.auth.permissions_v2 import create_pending_request_v2
+from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
@@ -695,6 +697,36 @@ def git_pull(
             )
 
 
+def _create_pending_for_new_consumes(
+    app_id: str, manifest: AppManifest, db: sqlite3.Connection
+) -> None:
+    """Create pending permission requests for any newly-declared
+    ``[[services.v2.consumes]]`` grants that aren't already granted.
+
+    Called during app reload so the owner is notified about new
+    service consumption without needing to trigger a 403 first.
+    Uses its own DB connection for the permissions queries since
+    the core permissions module calls ``get_db()`` internally.
+    """
+    for consume in manifest.consumes_services_v2:
+        existing = get_granted_permissions_v2(app_id, consume.service)
+        existing_grants = {
+            json.dumps(g.grant, sort_keys=True) for g in existing
+        }
+        for grant_payload in consume.grants:
+            if json.dumps(grant_payload, sort_keys=True) not in existing_grants:
+                try:
+                    create_pending_request_v2(
+                        consumer_app_id=app_id,
+                        service_url=consume.service,
+                        grant_payload=grant_payload,
+                        scope="global",
+                        reason="Newly declared in app manifest after reload",
+                    )
+                except Exception:
+                    logger.debug("failed to create pending request for %s/%s", app_id, consume.service, exc_info=True)
+
+
 def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
     """Reload an app in a background thread: re-read manifest, rebuild, start."""
     db = sqlite3.connect(config.db_path, check_same_thread=False)
@@ -747,7 +779,15 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 # Diff port mappings: preserve existing host_port for unchanged labels
                 _sync_port_mappings(app_id, manifest.port_mappings, db, config)
 
+                # Re-register v2 service providers from the new manifest.
+                register_v2_service_providers(app_id, manifest, db)
+
                 db.commit()
+
+                # Check for newly declared service consumption that
+                # doesn't have corresponding granted permissions yet.
+                # Create pending requests so the owner knows about them.
+                _create_pending_for_new_consumes(app_id, manifest, db)
             except ValueError:
                 pass
 
