@@ -1,3 +1,4 @@
+import sqlite3
 from typing import Any
 
 import attr
@@ -9,6 +10,9 @@ from litestar import post
 
 from compute_space.config import Config
 from compute_space.core.apps import inject_github_token_in_url
+from compute_space.core.auth.auth import read_owner_username
+from compute_space.core.auth.auth import update_owner_username
+from compute_space.core.auth.auth import validate_owner_username
 from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
 from compute_space.core.containers import container_runtime_available
 from compute_space.core.git_ops import RemoteNotSetError
@@ -133,7 +137,50 @@ async def restart_compute_space() -> dict[str, Any]:
     return {"ok": True}
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class SetOwnerUsernameRequest:
+    username: str = ""
+
+
+@get("/api/settings/owner_username", guards=[require_owner_auth])
+async def get_owner_username(db: sqlite3.Connection) -> dict[str, Any]:
+    """Return the configured owner username for the dashboard form."""
+    return {"ok": True, "username": read_owner_username(db)}
+
+
+@post("/api/settings/owner_username", status_code=200, guards=[require_owner_auth])
+async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> Response[dict[str, Any]]:
+    """Update the owner's display username.
+
+    Forwarded to per-app containers via ``OPENHOST_OWNER_USERNAME`` on their
+    next reload; already-running containers keep the old value until they restart.
+    """
+    candidate = (data.username or "").strip()
+    error = validate_owner_username(candidate)
+    if error is not None:
+        return Response(content={"ok": False, "error": error}, status_code=400)
+
+    try:
+        update_owner_username(db, candidate)
+        db.commit()
+    except ValueError as e:
+        # No user row yet — operator's next step is /setup, not retry.
+        return Response(content={"ok": False, "error": str(e)}, status_code=400)
+    except sqlite3.Error as e:
+        return Response(content={"ok": False, "error": f"database error: {e}"}, status_code=500)
+
+    return Response(content={"ok": True, "username": candidate})
+
+
 api_settings_routes = Router(
     path="/",
-    route_handlers=[get_remote, set_remote, check_for_updates, update_repo_state, restart_compute_space],
+    route_handlers=[
+        get_remote,
+        set_remote,
+        check_for_updates,
+        update_repo_state,
+        restart_compute_space,
+        get_owner_username,
+        set_owner_username,
+    ],
 )

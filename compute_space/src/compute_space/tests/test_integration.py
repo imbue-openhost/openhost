@@ -63,6 +63,7 @@ def test_sqlite_provisioning():
             my_openhost_redirect_domain="my.test.example.com",
             zone_domain="test.example.com",
             port=manifest.container_port,
+            owner_username="owner",
         )
 
         sqlite_dir = os.path.join(data_dir, "app_data", "testapp", "sqlite")

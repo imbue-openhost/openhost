@@ -25,7 +25,9 @@ from litestar.template.config import TemplateConfig
 
 from compute_space.config import Config
 from compute_space.config import provide_config
+from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import create_session
+from compute_space.core.auth.auth import validate_owner_username
 from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
@@ -74,22 +76,31 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
 
     password = form.get("password", "")
     confirm = form.get("confirm_password", "")
+    username_raw = form.get("username", "").strip()  # blank falls back to DEFAULT_OWNER_USERNAME
+
+    def _error(msg: str) -> Template:
+        return Template(
+            template_name="setup.html",
+            context={"error": msg, "claim": form_claim, "username": username_raw},
+        )
+
     if not password:
-        return Template(
-            template_name="setup.html",
-            context={"error": "Password is required", "claim": form_claim},
-        )
+        return _error("Password is required")
     if password != confirm:
-        return Template(
-            template_name="setup.html",
-            context={"error": "Passwords do not match", "claim": form_claim},
-        )
+        return _error("Passwords do not match")
+    if username_raw:
+        username_error = validate_owner_username(username_raw)
+        if username_error is not None:
+            return _error(username_error)
+        username = username_raw
+    else:
+        username = DEFAULT_OWNER_USERNAME
 
     db = get_db()
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     cursor = db.execute(
-        "INSERT INTO users (username, password_hash) VALUES ('owner', ?)",
-        (password_hash,),
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        (username, password_hash),
     )
     user_id = cursor.lastrowid
     assert user_id is not None

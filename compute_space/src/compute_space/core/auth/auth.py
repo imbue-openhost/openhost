@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 import sqlite3
 from datetime import UTC
@@ -10,6 +11,48 @@ import bcrypt
 
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60  # one week
 SESSION_COOKIE_NAME = "session_token"
+
+# Lowercase alphanumeric + dots/underscores/hyphens, starting with an alphanumeric.
+# Length cap matches Mastodon's 30-char column. Lowercase-only so usernames are safe for subdomains.
+OWNER_USERNAME_MAX_LEN = 30
+_OWNER_USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,29}$")
+DEFAULT_OWNER_USERNAME = "owner"
+
+
+def validate_owner_username(value: str) -> str | None:
+    """Return None if valid, else an error string for the setup/settings form."""
+    if not value:
+        return "Username is required."
+    if len(value) > OWNER_USERNAME_MAX_LEN:
+        return f"Username must be at most {OWNER_USERNAME_MAX_LEN} characters."
+    if not _OWNER_USERNAME_RE.match(value):
+        return (
+            "Username must start with a lowercase letter or digit and contain only"
+            " lowercase letters, digits, `.`, `_` or `-`."
+        )
+    return None
+
+
+def read_owner_username(db: sqlite3.Connection) -> str | None:
+    """Return the configured owner username, or None if no user exists (pre-setup)."""
+    row = db.execute("SELECT username FROM users ORDER BY user_id LIMIT 1").fetchone()
+    if row is None:
+        return None
+    username: str = row["username"]
+    return username or None
+
+
+def update_owner_username(db: sqlite3.Connection, new_username: str) -> None:
+    """Replace the owner's username. Caller must validate input and commit.
+
+    Raises ValueError if no user row exists (pre-setup).
+    """
+    cursor = db.execute(
+        "UPDATE users SET username = ? WHERE user_id = (SELECT user_id FROM users ORDER BY user_id LIMIT 1)",
+        (new_username,),
+    )
+    if cursor.rowcount == 0:
+        raise ValueError("No user exists; cannot update username before /setup runs.")
 
 
 @attr.s(auto_attribs=True, frozen=True)
