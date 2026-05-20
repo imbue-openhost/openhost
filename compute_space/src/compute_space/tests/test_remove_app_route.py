@@ -1,38 +1,43 @@
-"""Tests for the /remove_app/<app_id> Quart route."""
+"""Tests for the /remove_app/<app_id> route."""
 
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
-from quart import Quart
+from litestar import Litestar
+from litestar.testing import TestClient
 
-import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core.app_id import new_app_id
 from compute_space.db.connection import init_db
+from compute_space.web.routes.api.apps import api_apps_routes
 
+from ._litestar_helpers import auth_cookie
+from ._litestar_helpers import make_test_app
 from .conftest import _make_test_config
 
 
-async def _call_remove(cfg, app_id: str, *, keep_data: bool = False):
-    # Bypass @login_required by calling __wrapped__ directly — same
-    # pattern as test_app_status.py.
-    app = Quart(__name__)
-    app.config["DB_PATH"] = cfg.db_path
-    app.openhost_config = cfg  # type: ignore[attr-defined]
-    form_data = {"keep_data": "1"} if keep_data else {}
-    async with app.app_context(), app.test_request_context(f"/remove_app/{app_id}", method="POST", form=form_data):
-        view = apps_routes.remove_app.__wrapped__  # type: ignore[attr-defined]
-        response = await view(app_id)
-        if isinstance(response, tuple):
-            resp_obj, status = response[0], response[1]
-        else:
-            resp_obj, status = response, response.status_code
-        payload = await resp_obj.get_json()
-        return status, payload
+@pytest.fixture
+def cfg(tmp_path: Path) -> Any:
+    cfg = _make_test_config(tmp_path)
+    init_db(cfg.db_path)
+    return cfg
+
+
+@pytest.fixture
+def client(cfg: Any) -> Iterator[TestClient[Litestar]]:
+    with TestClient(app=make_test_app(api_apps_routes)) as c:
+        yield c
+
+
+@pytest.fixture
+def cookies(cfg: Any) -> dict[str, str]:
+    return auth_cookie(cfg)
 
 
 def _seed_app(db_path: str, name: str, status: str = "running") -> str:
@@ -51,19 +56,18 @@ def _seed_app(db_path: str, name: str, status: str = "running") -> str:
     return app_id
 
 
-@pytest.mark.asyncio
-async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
+def test_remove_returns_202_and_marks_removing(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
     """Happy path: row flips to 'removing' synchronously, worker is
     spawned, response is 202."""
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp")
 
-    with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
-        status, payload = await _call_remove(cfg, app_id, keep_data=False)
+    with patch("compute_space.web.routes.api.apps.Thread") as Thread:
+        resp = client.post(f"/remove_app/{app_id}", cookies=cookies)
 
-    assert status == 202
-    assert payload == {"ok": True}
+    assert resp.status_code == 202
+    assert resp.json() == {"ok": True}
     Thread.assert_called_once()
     # Constructing the Thread isn't enough — the route must call .start().
     Thread.return_value.start.assert_called_once()
@@ -75,39 +79,35 @@ async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
     assert row == ("removing",)
 
 
-@pytest.mark.asyncio
-async def test_remove_404_when_app_missing(tmp_path: Path) -> None:
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
-
-    with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
+def test_remove_404_when_app_missing(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    with patch("compute_space.web.routes.api.apps.Thread") as Thread:
         # Mint a valid-shaped id that won't exist in the DB.
-        status, payload = await _call_remove(cfg, new_app_id())
+        resp = client.post(f"/remove_app/{new_app_id()}", cookies=cookies)
 
-    assert status == 404
-    assert "not found" in (payload.get("error") or "").lower()
+    assert resp.status_code == 404
+    body = resp.json()
+    assert "not found" in (body.get("error") or "").lower()
     Thread.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
+def test_remove_rolls_back_if_thread_spawn_fails(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
     """If Thread.start() raises (resource exhaustion), the route must
     flip the row to 'error' so the operator can retry from the
     dashboard. Otherwise the row sits stuck in 'removing' and every
     retry hits the already_removing short-circuit.
     """
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp")
 
     failing_thread = MagicMock()
     failing_thread.return_value.start.side_effect = RuntimeError("can't start new thread")
 
-    with patch("compute_space.web.routes.api.apps.threading.Thread", failing_thread):
-        status, payload = await _call_remove(cfg, app_id)
+    with patch("compute_space.web.routes.api.apps.Thread", failing_thread):
+        resp = client.post(f"/remove_app/{app_id}", cookies=cookies)
 
-    assert status == 503
-    assert "removal worker" in payload["error"].lower()
+    assert resp.status_code == 503
+    assert "removal worker" in resp.json()["error"].lower()
     db = sqlite3.connect(cfg.db_path)
     try:
         row = db.execute("SELECT status FROM apps WHERE app_id = ?", (app_id,)).fetchone()
@@ -116,75 +116,42 @@ async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
     assert row[0] == "error"
 
 
-@pytest.mark.asyncio
-async def test_concurrent_removes_only_spawn_one_worker(tmp_path: Path) -> None:
+def test_concurrent_removes_only_spawn_one_worker(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
     """Two POSTs racing on the same app: only one wins the atomic claim."""
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp")
 
-    with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
-        status1, payload1 = await _call_remove(cfg, app_id)
-        status2, payload2 = await _call_remove(cfg, app_id)
+    with patch("compute_space.web.routes.api.apps.Thread") as Thread:
+        resp1 = client.post(f"/remove_app/{app_id}", cookies=cookies)
+        resp2 = client.post(f"/remove_app/{app_id}", cookies=cookies)
 
-    assert status1 == 202
-    assert payload1 == {"ok": True}
-    assert status2 == 202
-    assert payload2.get("already_removing") is True
+    assert resp1.status_code == 202
+    assert resp1.json() == {"ok": True}
+    assert resp2.status_code == 202
+    assert resp2.json().get("already_removing") is True
     assert Thread.call_count == 1
 
 
 # Guards on sibling routes (stop, reload, rename) while a removal is in flight.
 
 
-async def _call_route(cfg, view_name: str, app_id: str, *, form_data=None, method="POST"):
-    app = Quart(__name__)
-    app.config["DB_PATH"] = cfg.db_path
-    app.openhost_config = cfg  # type: ignore[attr-defined]
-    async with (
-        app.app_context(),
-        app.test_request_context(f"/{view_name}/{app_id}", method=method, form=form_data or {}),
-    ):
-        view = getattr(apps_routes, view_name).__wrapped__  # type: ignore[attr-defined]
-        result = view(app_id)
-        if hasattr(result, "__await__"):
-            result = await result
-        if isinstance(result, tuple):
-            resp_obj, status = result[0], result[1]
-        else:
-            resp_obj, status = result, result.status_code
-        payload = await resp_obj.get_json()
-        return status, payload
-
-
-@pytest.mark.asyncio
-async def test_stop_app_refuses_when_removing(tmp_path: Path) -> None:
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
+def test_stop_app_refuses_when_removing(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     app_id = _seed_app(cfg.db_path, "myapp", status="removing")
+    resp = client.post(f"/stop_app/{app_id}", cookies=cookies)
+    assert resp.status_code == 409
+    assert "removed" in resp.json()["error"].lower()
 
-    status, payload = await _call_route(cfg, "stop_app", app_id)
-    assert status == 409
-    assert "removed" in payload["error"].lower()
 
-
-@pytest.mark.asyncio
-async def test_reload_app_refuses_when_removing(tmp_path: Path) -> None:
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
+def test_reload_app_refuses_when_removing(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     app_id = _seed_app(cfg.db_path, "myapp", status="removing")
+    resp = client.post(f"/reload_app/{app_id}", cookies=cookies)
+    assert resp.status_code == 409
+    assert "removed" in resp.json()["error"].lower()
 
-    status, payload = await _call_route(cfg, "reload_app", app_id)
-    assert status == 409
-    assert "removed" in payload["error"].lower()
 
-
-@pytest.mark.asyncio
-async def test_rename_app_refuses_when_removing(tmp_path: Path) -> None:
-    cfg = _make_test_config(tmp_path)
-    init_db(cfg.db_path)
+def test_rename_app_refuses_when_removing(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     app_id = _seed_app(cfg.db_path, "myapp", status="removing")
-
-    status, payload = await _call_route(cfg, "rename_app", app_id, form_data={"name": "newname"})
-    assert status == 409
-    assert "removed" in payload["error"].lower()
+    resp = client.post(f"/rename_app/{app_id}", data={"name": "newname"}, cookies=cookies)
+    assert resp.status_code == 409
+    assert "removed" in resp.json()["error"].lower()

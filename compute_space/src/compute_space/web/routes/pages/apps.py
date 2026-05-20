@@ -1,44 +1,34 @@
+import sqlite3
 import urllib.parse
+from typing import Any
 
-from quart import Blueprint
-from quart import redirect
-from quart import render_template
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from litestar import Request
+from litestar import Router
+from litestar import get
+from litestar.exceptions import HTTPException
+from litestar.response import Redirect
+from litestar.response import Template
 
-from compute_space.config import get_config
+from compute_space.config import Config
 from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.containers import get_docker_logs
-from compute_space.db import get_db
-from compute_space.web.auth.quart_compat import login_required
-
-apps_bp = Blueprint("apps", __name__)
+from compute_space.web.auth.auth import require_owner_auth
 
 
-# ─── Dashboard ───
-
-
-@apps_bp.route("/")
-@apps_bp.route("/dashboard")
-@login_required
-async def dashboard() -> str:
-    db = get_db()
+@get(["/", "/dashboard"], guards=[require_owner_auth])
+async def dashboard(db: sqlite3.Connection) -> Template:
     apps_list = db.execute("SELECT * FROM apps ORDER BY name").fetchall()
-    return await render_template("dashboard.html", apps=apps_list)
+    return Template(template_name="dashboard.html", context={"apps": apps_list})
 
 
-@apps_bp.route("/app_detail/<app_id>")
-@login_required
-async def app_detail(app_id: str) -> str | tuple[str, int]:
+@get("/app_detail/{app_id:str}", guards=[require_owner_auth])
+async def app_detail(app_id: str, request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config) -> Template:
     if not is_valid_app_id(app_id):
-        return "Invalid app_id", 400
-    config = get_config()
-    db = get_db()
+        raise HTTPException(detail="Invalid app_id", status_code=400)
     app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     if not app_row:
-        return "App not found", 404
+        raise HTTPException(detail="App not found", status_code=404)
     app_name = app_row["name"]
     databases = db.execute("SELECT * FROM app_databases WHERE app_id = ?", (app_id,)).fetchall()
     port_mappings = db.execute(
@@ -46,60 +36,60 @@ async def app_detail(app_id: str) -> str | tuple[str, int]:
         (app_id,),
     ).fetchall()
     logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
-    next_url = request.args.get("next", "")
+    next_url = request.query_params.get("next", "")
 
-    return await render_template(
-        "app_detail.html",
-        app=app_row,
-        databases=databases,
-        port_mappings=port_mappings,
-        logs=logs,
-        next_url=next_url,
+    return Template(
+        template_name="app_detail.html",
+        context={
+            "app": app_row,
+            "databases": databases,
+            "port_mappings": port_mappings,
+            "logs": logs,
+            "next_url": next_url,
+        },
     )
 
 
-# ─── Add App ───
-
-
-@apps_bp.route("/handle_invite")
-@login_required
-def handle_invite() -> ResponseReturnValue:
+@get("/handle_invite", guards=[require_owner_auth])
+async def handle_invite(request: Request[Any, Any, Any], db: sqlite3.Connection) -> Redirect:
     """Route invite links: if the app is installed, redirect to it; otherwise install first."""
-    app_name = request.args.get("app", "")
-    repo_url = request.args.get("repo", "")
+    params = dict(request.query_params)
+    app_name = params.get("app", "")
+    repo_url = params.get("repo", "")
 
-    invite_params = {k: v for k, v in request.args.items() if k not in ("app", "repo")}
+    invite_params = {k: v for k, v in params.items() if k not in ("app", "repo")}
     invite_qs = urllib.parse.urlencode(invite_params)
+    all_qs = urllib.parse.urlencode(params)
 
-    db = get_db()
     app_row = db.execute("SELECT app_id, name, status FROM apps WHERE name = ?", (app_name,)).fetchone()
 
     if app_row:
         if app_row["status"] == "running":
-            ext_host = request.headers.get("X-Forwarded-Host", request.host)
-            proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-            return redirect(f"{proto}://{app_name}.{ext_host}/handle_invite?{invite_qs}")
-        return redirect(
-            url_for(
-                "apps.app_detail",
-                app_id=app_row["app_id"],
-                next="/handle_invite?" + urllib.parse.urlencode(request.args),
-            )
-        )
+            ext_host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+            proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+            return Redirect(path=f"{proto}://{app_name}.{ext_host}/handle_invite?{invite_qs}")
+        next_url = "/handle_invite?" + all_qs
+        return Redirect(path=f"/app_detail/{app_row['app_id']}?{urllib.parse.urlencode({'next': next_url})}")
 
-    next_url = "/handle_invite?" + urllib.parse.urlencode(request.args)
-    return redirect(url_for("apps.add_app", repo=repo_url, next=next_url))
+    next_url = "/handle_invite?" + all_qs
+    return Redirect(path="/add_app?" + urllib.parse.urlencode({"repo": repo_url, "next": next_url}))
 
 
-@apps_bp.route("/add_app")
-@login_required
-async def add_app() -> ResponseReturnValue:
-    config = get_config()
+@get("/add_app", guards=[require_owner_auth])
+async def add_app(request: Request[Any, Any, Any], config: Config) -> Template:
     # initial_repo/next_url: passed from query params so JS can auto-start
     # cloning when landing here via invite link (/add_app?repo=...&next=...)
-    return await render_template(
-        "add_app.html",
-        builtin_apps=list_builtin_apps(config),
-        initial_repo=request.args.get("repo", ""),
-        next_url=request.args.get("next", ""),
+    return Template(
+        template_name="add_app.html",
+        context={
+            "builtin_apps": list_builtin_apps(config),
+            "initial_repo": request.query_params.get("repo", ""),
+            "next_url": request.query_params.get("next", ""),
+        },
     )
+
+
+pages_apps_routes = Router(
+    path="/",
+    route_handlers=[dashboard, app_detail, handle_invite, add_app],
+)

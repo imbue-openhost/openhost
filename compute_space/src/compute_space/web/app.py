@@ -1,9 +1,7 @@
 import atexit
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any
-from typing import cast
 
 from litestar import HttpMethod
 from litestar import Litestar
@@ -16,17 +14,9 @@ from litestar.di import Provide
 from litestar.exceptions import HTTPException
 from litestar.exceptions import NotAuthorizedException
 from litestar.exceptions.responses import create_exception_response
-from litestar.handlers import asgi
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from litestar.types import ASGIApp
-from litestar.types import Receive
-from litestar.types import Scope
-from litestar.types import Send
-from quart import Blueprint
-from quart import Quart
-from quart import current_app
-from quart import url_for as quart_url_for
 
 from compute_space.config import Config
 from compute_space.config import get_config
@@ -41,10 +31,19 @@ from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
+from compute_space.web.routes.api.apps import api_apps_routes
+from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
+from compute_space.web.routes.api.identity import identity_routes
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
+from compute_space.web.routes.api.services_v2 import api_services_v2_routes
 from compute_space.web.routes.api.settings import api_settings_routes
+from compute_space.web.routes.api.system import system_routes
+from compute_space.web.routes.docs import docs_routes
+from compute_space.web.routes.pages.apps import pages_apps_routes
 from compute_space.web.routes.pages.login import pages_login_routes
+from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_routes
 from compute_space.web.routes.pages.settings import pages_settings_routes
+from compute_space.web.routes.pages.system import pages_system_routes
 from compute_space.web.routes.services_v2 import services_v2_routes
 
 
@@ -67,17 +66,40 @@ def _make_static_url(static_dir: Path) -> Any:
     return static_url
 
 
-# Shared layout.html uses ``url_for(endpoint)`` with Quart blueprint endpoint
-# names.  Litestar's own ``url_for`` only knows about Litestar routes, so for
-# pages rendered via Litestar's Template response we map the legacy endpoint
-# names to their paths directly.  Keep in sync with the routes the layout links to.
-_LAYOUT_ENDPOINT_PATHS: dict[str, str] = {
+# Map the ``url_for(endpoint, **kwargs)`` calls scattered across the Jinja
+# templates onto concrete paths.  We keep the legacy Quart-style "blueprint.view"
+# endpoint names so templates don't have to change as routes move between
+# frameworks.  Values use ``str.format``-style placeholders for routes with
+# path params.  Add a new entry whenever a template gains a ``url_for`` call.
+_TEMPLATE_ENDPOINT_PATHS: dict[str, str] = {
     "apps.dashboard": "/dashboard",
     "apps.add_app": "/add_app",
+    "apps.app_detail": "/app_detail/{app_id}",
     "pages_system.system_page": "/system/",
     "pages_system.logs_page": "/logs/",
     "pages_system.terminal_page": "/terminal/",
     "pages_settings.settings_page": "/settings",
+    "api_apps.api_apps": "/api/apps",
+    "api_apps.stop_app": "/stop_app/{app_id}",
+    "api_apps.reload_app": "/reload_app/{app_id}",
+    "api_apps.remove_app": "/remove_app/{app_id}",
+    "api_apps.rename_app": "/rename_app/{app_id}",
+    "api_apps.app_logs": "/app_logs/{app_id}",
+    "api_apps.app_status": "/api/app_status/{app_id}",
+    "system.api_tokens_list": "/api/tokens",
+    "system.api_tokens_create": "/api/tokens",
+    "system.security_audit": "/api/security-audit",
+    "system.listening_ports": "/api/listening-ports",
+    "system.api_storage_status": "/api/storage-status",
+    "system.restart_router": "/restart_router",
+    "system.drop_docker_cache": "/api/drop-docker-cache",
+    "system.ssh_status": "/api/ssh-status",
+    "system.toggle_ssh": "/toggle-ssh",
+    "system.toggle_storage_guard": "/api/storage-guard",
+    "system.compute_space_logs": "/api/compute_space_logs",
+    "api_archive_backend.get_archive_backend": "/api/storage/archive_backend",
+    "api_archive_backend.test_connection": "/api/storage/archive_backend/test_connection",
+    "api_archive_backend.configure_archive_backend": "/api/storage/archive_backend/configure",
 }
 
 
@@ -89,11 +111,12 @@ def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
         proto = "https" if config.tls_enabled else "http"
         return f"{proto}://{app_name}.{zone_domain}/"
 
-    def url_for(endpoint: str, **_: Any) -> str:
+    def url_for(endpoint: str, **kwargs: Any) -> str:
         try:
-            return _LAYOUT_ENDPOINT_PATHS[endpoint]
+            path = _TEMPLATE_ENDPOINT_PATHS[endpoint]
         except KeyError as e:
-            raise KeyError(f"No layout path mapping for endpoint {endpoint!r}") from e
+            raise KeyError(f"No template path mapping for endpoint {endpoint!r}") from e
+        return path.format(**kwargs)
 
     return {
         "zone_name": zone_name,
@@ -119,15 +142,6 @@ def _full_app_bootstrap(config: Config) -> None:
     load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)
     retry_pending_default_apps(config)
-
-
-@route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
-def setup_already_done() -> Response[str]:
-    return Response(
-        content="This instance has already been set up.",
-        status_code=403,
-        media_type=MediaType.TEXT,
-    )
 
 
 def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedException) -> Response[Any]:
@@ -167,102 +181,17 @@ def _reject_app_subdomain_requests(request: Request[Any, Any, Any]) -> Response[
     host = request.url.netloc.split(":", 1)[0]
     zone = get_config().zone_domain
     if zone and host.endswith("." + zone):
-        return Response(content=None, status_code=404)
+        return Response(content=None, status_code=404, media_type=MediaType.TEXT)
     return None
 
 
-def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
-    """Build a Quart app holding the blueprints not yet ported to Litestar.
-
-    Mounted at "/" under Litestar via ``@asgi(is_mount=True)``; specific Litestar
-    handlers win over the mount, so migrating a route is just removing the
-    blueprint registration and adding the new Litestar handler.
-
-    The legacy ``@login_required`` decorator on these blueprints (see
-    ``web/auth/quart_compat.py``) defers to ``verify_owner_auth``, which
-    authenticates the request on demand against the connection's cookies /
-    Bearer header — no shared state from an outer middleware required.
-    """
-    # Imports are scoped to this builder because each module side-effectfully
-    # constructs a Quart Blueprint at import time and we don't want those to
-    # exist if a caller (e.g. the setup-only app) builds Litestar alone.
-    from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.archive_backend import api_archive_backend_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.identity import identity_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.services_v2 import api_services_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.system import system_bp  # noqa: PLC0415
-    from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.system import pages_system_bp  # noqa: PLC0415
-
-    web_dir = Path(__file__).parent
-    quart_app = Quart(
-        __name__,
-        template_folder=str(web_dir / "templates"),
-        static_folder=str(static_dir),
+@route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
+def setup_already_done() -> Response[str]:
+    return Response(
+        content="This instance has already been set up.",
+        status_code=403,
+        media_type=MediaType.TEXT,
     )
-    quart_app.openhost_config = config  # type: ignore[attr-defined]
-    quart_app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
-    # App installs and data migrations can ship large request bodies.
-    quart_app.config["MAX_CONTENT_LENGTH"] = None
-
-    # Stubs for routes that have been migrated to Litestar.  Quart's
-    # ``url_for`` resolves against blueprint-registered endpoints, and several
-    # of the layout/dashboard templates reference migrated routes by name
-    # (``pages_settings.settings_page`` -> /settings, etc.).  The handlers
-    # are never actually invoked because the corresponding specific Litestar
-    # routes win over the catch-all mount; they exist only so ``url_for``
-    # produces the right URL.
-
-    migrated_stub_bp = Blueprint("pages_settings", __name__)
-
-    @migrated_stub_bp.route("/settings")
-    async def settings_page() -> str:  # pragma: no cover — Litestar handles
-        return ""
-
-    quart_app.register_blueprint(migrated_stub_bp)
-    quart_app.register_blueprint(apps_bp)
-    quart_app.register_blueprint(pages_system_bp)
-    quart_app.register_blueprint(pages_permissions_v2_bp)
-    quart_app.register_blueprint(api_apps_bp)
-    quart_app.register_blueprint(api_archive_backend_bp)
-    quart_app.register_blueprint(system_bp)
-    quart_app.register_blueprint(api_services_v2_bp)
-    quart_app.register_blueprint(identity_bp)
-    quart_app.register_blueprint(docs_bp)
-
-    # Quart-side templating helpers, matching the Litestar Jinja globals so the
-    # shared layout.html renders the same way regardless of which framework
-    # handled the request.  static_url uses Quart's own ``url_for`` so the
-    # blueprint-registered ``/static`` endpoint resolves correctly.
-    @quart_app.context_processor
-    async def _inject_template_globals() -> dict[str, Any]:
-        zone_domain = config.zone_domain
-        zone_name = zone_domain.split(".")[0] if zone_domain else None
-
-        def app_url(app_name: str) -> str:
-            proto = "https" if config.tls_enabled else "http"
-            return f"{proto}://{app_name}.{zone_domain}/"
-
-        def static_url(filename: str) -> str:
-            base = quart_url_for("static", filename=filename)
-            try:
-                static_root = Path(current_app.static_folder or "")
-                mtime = int((static_root / filename).stat().st_mtime)
-            except OSError:
-                return base
-            sep = "&" if "?" in base else "?"
-            return f"{base}{sep}v={mtime}"
-
-        return {
-            "zone_name": zone_name,
-            "zone_domain": zone_domain,
-            "app_url": app_url,
-            "static_url": static_url,
-        }
-
-    return quart_app
 
 
 def create_app(config: Config) -> ASGIApp:
@@ -288,38 +217,26 @@ def create_app(config: Config) -> ASGIApp:
 
     static_router = create_static_files_router(path="/static", directories=[static_dir])
 
-    quart_fallback_app = _build_quart_fallback(config, static_dir)
-
-    @asgi(path="/", is_mount=True)
-    async def quart_fallback(scope: Scope, receive: Receive, send: Send) -> None:
-        """Catch-all for anything Litestar didn't match — defers to the Quart sub-app.
-
-        Litestar rewrites ``scope["path"]`` when delegating to a mount (strips
-        the mount prefix, normalises trailing slashes); reconstitute it from
-        ``raw_path`` so Quart's URL matcher sees the original request path
-        (e.g. "/health", not "health/").
-        """
-        raw_path = scope.get("raw_path")
-        if raw_path is not None:
-            patched = dict(scope)
-            patched["path"] = raw_path.decode("ascii")
-            scope = cast(Scope, patched)
-        # Quart is typed against hypercorn's ASGI aliases while Litestar uses
-        # its own; the runtime objects are interchangeable.
-        await quart_fallback_app(scope, receive, send)  # type: ignore[arg-type]
-
     atexit.register(cleanup_terminal)
 
     litestar_app = Litestar(
         route_handlers=[
             static_router,
+            api_apps_routes,
+            api_archive_backend_routes,
             api_permissions_v2_routes,
+            api_services_v2_routes,
             api_settings_routes,
+            system_routes,
+            identity_routes,
+            docs_routes,
+            pages_apps_routes,
             pages_login_routes,
+            pages_permissions_v2_routes,
             pages_settings_routes,
+            pages_system_routes,
             services_v2_routes,
             setup_already_done,
-            quart_fallback,
         ],
         template_config=template_config,
         before_request=_reject_app_subdomain_requests,
