@@ -26,6 +26,21 @@ from compute_space.web.helpers.proxy import proxy_websocket_request
 IS_OWNER_HEADER = ("X-OpenHost-Is-Owner", "true")
 
 
+async def _send_bad_request(scope: Scope, send: Send) -> None:
+    """Best-effort 400/close for malformed requests where Litestar's response
+    machinery isn't safe to use (e.g. URL parsing already failed)."""
+    try:
+        if scope["type"] == ScopeType.HTTP:
+            start: HTTPResponseStartEvent = {"type": "http.response.start", "status": 400, "headers": []}
+            body: HTTPResponseBodyEvent = {"type": "http.response.body", "body": b"", "more_body": False}
+            await send(start)
+            await send(body)
+        elif scope["type"] == ScopeType.WEBSOCKET:
+            await send(WebSocketCloseEvent(type="websocket.close", code=1002, reason="bad request"))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _send_internal_error(scope: Scope, send: Send) -> None:
     """Best-effort 500/close for use from the outer ASGI layer where Litestar's
     response machinery may not be safe to invoke (e.g. URL parsing already failed).
@@ -89,9 +104,17 @@ class SubdomainProxyMiddleware:
         # note: we don't need to handle CORS here because cross-origin requests are not allowed (those go thru services which handles its own CORS).
         connection: ASGIConnection[Any, Any, Any, Any] = ASGIConnection(scope, receive, send)
 
-        app = get_app_from_hostname(connection.url.netloc)
+        try:
+            netloc = connection.url.netloc
+        except ValueError:
+            # Malformed Host / request target (e.g. open-proxy scanners sending
+            # `CONNECT host:443:443`).  Reply 400 quietly — not worth a traceback.
+            await _send_bad_request(scope, send)
+            return
+
+        app = get_app_from_hostname(netloc)
         if not app:
-            if _looks_like_app_subdomain(connection.url.netloc):
+            if _looks_like_app_subdomain(netloc):
                 # The hostname looks like an app subdomain but no app is deployed
                 # there — return 404 instead of falling through to the router
                 if scope["type"] == ScopeType.HTTP:
@@ -110,7 +133,7 @@ class SubdomainProxyMiddleware:
         # add forwarding headers for the openhost app, so it can tell where the request came from.
         # these are annoying but unavoidable - we can't spoof the IP or proto in the forwarded request.
         # X-Forwarded-Host preserves the original Host so apps that build absolute URLs don't use the proxy's internal hostname
-        extra_headers = [("X-Forwarded-Host", connection.url.netloc)]
+        extra_headers = [("X-Forwarded-Host", netloc)]
         if connection.client:
             # client IP; for some reason this is allowed to be None in ASGI. port should not be included.
             extra_headers.append(("X-Forwarded-For", f"{connection.client.host}"))

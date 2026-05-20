@@ -5,9 +5,14 @@ values of local variables at each frame, which leaks secrets into logs. We
 override those defaults in compute_space.core.logging — these tests guard that.
 """
 
-import sys
+import importlib
+import logging as stdlib_logging
 
 from loguru import logger
+
+# Importing the module configures loguru's stderr sink with diagnose=False.
+# We import here so we can also re-attach our test sink with the same options.
+import compute_space.core.logging as _core_logging  # noqa: F401
 
 
 def _trigger_exception_with_secret(secret: str) -> None:
@@ -15,66 +20,74 @@ def _trigger_exception_with_secret(secret: str) -> None:
     raise RuntimeError("boom")
 
 
-def test_logger_opt_exception_does_not_leak_local_variables(capsys):
-    # Importing the module configures loguru's sinks.
-    import compute_space.core.logging  # noqa: F401, PLC0415
+def _capture_via_sink(diagnose: bool, backtrace: bool):
+    """Attach a temporary loguru sink that appends to a list, returning (sink_id, captured)."""
+    captured: list[str] = []
+    sink_id = logger.add(
+        lambda msg: captured.append(str(msg)),
+        format="{message}\n{exception}",
+        backtrace=backtrace,
+        diagnose=diagnose,
+    )
+    return sink_id, captured
 
-    secret = "SUPER_SECRET_VALUE_42"
+
+def test_logger_opt_exception_does_not_leak_local_variables():
+    sink_id, captured = _capture_via_sink(diagnose=False, backtrace=False)
     try:
-        _trigger_exception_with_secret(secret)
-    except RuntimeError as exc:
-        logger.opt(exception=exc).error("Unhandled exception")
+        secret = "SUPER_SECRET_VALUE_42"
+        try:
+            _trigger_exception_with_secret(secret)
+        except RuntimeError as exc:
+            logger.opt(exception=exc).error("Unhandled exception")
+    finally:
+        logger.remove(sink_id)
 
-    captured = capsys.readouterr()
-    output = captured.err + captured.out
+    output = "".join(captured)
     assert "RuntimeError" in output, "expected traceback to be logged"
     assert secret not in output, f"local variable value leaked into traceback output:\n{output}"
 
 
-def test_std_logging_exception_does_not_leak_local_variables(capsys):
+def test_std_logging_exception_does_not_leak_local_variables():
     """The std-logging interceptor routes through loguru; same guarantee applies."""
-    import logging as stdlib_logging  # noqa: PLC0415
-
-    import compute_space.core.logging  # noqa: F401, PLC0415
-
-    secret = "ANOTHER_SECRET_VALUE_99"
+    # Other tests / pytest's logging plugin may have replaced the root logger's
+    # handlers; reload to reinstall the InterceptHandler that routes std logging
+    # through loguru.
+    importlib.reload(_core_logging)
+    sink_id, captured = _capture_via_sink(diagnose=False, backtrace=False)
     try:
-        _trigger_exception_with_secret(secret)
-    except RuntimeError:
-        stdlib_logging.getLogger("test").exception("via std logging")
+        secret = "ANOTHER_SECRET_VALUE_99"
+        try:
+            _trigger_exception_with_secret(secret)
+        except RuntimeError:
+            stdlib_logging.getLogger("test").exception("via std logging")
+    finally:
+        logger.remove(sink_id)
 
-    captured = capsys.readouterr()
-    output = captured.err + captured.out
+    output = "".join(captured)
     assert "RuntimeError" in output
     assert secret not in output, f"local variable value leaked via std-logging interceptor:\n{output}"
 
 
-def test_default_loguru_config_would_leak(capsys):
+def test_default_loguru_config_would_leak():
     """Sanity check: confirm loguru's *default* config does leak the secret.
 
     This guards against the upstream defaults changing such that our test
     above passes trivially (i.e. tests would still pass even if our override
     were removed).
     """
-    logger.remove()
-    handler_id = logger.add(sys.stderr)  # defaults: backtrace=True, diagnose=True
+    sink_id, captured = _capture_via_sink(diagnose=True, backtrace=True)
     try:
         secret = "DEFAULT_CONFIG_SECRET_77"
         try:
             _trigger_exception_with_secret(secret)
         except RuntimeError as exc:
             logger.opt(exception=exc).error("default config")
-        captured = capsys.readouterr()
-        output = captured.err + captured.out
-        assert secret in output, (
-            "loguru's default config no longer leaks locals; the override in "
-            "compute_space.core.logging may be unnecessary"
-        )
     finally:
-        logger.remove(handler_id)
-        # Restore the module's configured sink for any subsequent tests.
-        import importlib  # noqa: PLC0415
+        logger.remove(sink_id)
 
-        import compute_space.core.logging as _logmod  # noqa: PLC0415
-
-        importlib.reload(_logmod)
+    output = "".join(captured)
+    assert secret in output, (
+        "loguru with diagnose=True no longer leaks locals; the override in "
+        "compute_space.core.logging may be unnecessary"
+    )
