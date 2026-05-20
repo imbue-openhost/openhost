@@ -7,7 +7,6 @@ This also takes care of stripping openhost/auth relevant headers and cookies fro
 
 import asyncio
 from collections.abc import AsyncIterator
-from collections.abc import Container
 from collections.abc import Iterable
 from collections.abc import Set
 from typing import Any
@@ -129,19 +128,16 @@ async def proxy_http_request(
     override_path: str | None = None,
     extra_headers: Iterable[tuple[str, str]] = (),
     timeout: float = 30,
-    buffer_status_codes: Container[int] = frozenset({403}),
 ) -> ASGIResponse:
-    """Forward an HTTP request to a local port and return the response as an
-    ASGIResponse (streaming by default).
+    """Forward an HTTP request to a local port and return the response.
 
     The request body is streamed straight from the client into httpx via
-    ``request.stream()``; the response is streamed back via
-    ``ASGIStreamingResponse`` so neither direction has to fit in memory.
+    ``request.stream()``.
 
-    When the upstream status is in ``buffer_status_codes`` (default: just 403)
-    the body is buffered into bytes instead and a plain ``ASGIResponse`` is
-    returned.  This is the hook services_v2 uses to inspect 403 responses and
-    inject ``grant_url`` before relaying them.
+    Responses with a known ``Content-Length`` up to ``_BUFFER_THRESHOLD`` are
+    buffered into a plain ``ASGIResponse`` (which sets ``Content-Length`` and
+    avoids chunked encoding).  Larger or unknown-length responses are streamed
+    back via ``ASGIStreamingResponse`` so they don't have to fit in memory.
     """
     target_url = _format_proxy_request_url(request.scope, target_port, override_path)
     new_request_headers = _build_forwarded_request_headers(
@@ -189,15 +185,12 @@ async def proxy_http_request(
             if k.lower() not in _HTTP_RESPONSE_EXCLUDED_HEADERS
         ]
 
-        # Buffer small / special-status responses instead of streaming.
-        # Streaming forces chunked transfer-encoding and uses an anyio task
-        # group with a disconnect listener that can cancel the stream before
-        # the terminus chunk is sent, causing intermittent
-        # ChunkedEncodingError on the client side.
+        # Buffer small responses instead of streaming.  Streaming forces
+        # chunked transfer-encoding and uses an anyio task group with a
+        # disconnect listener that can cancel the stream before the terminus
+        # chunk is sent, causing intermittent ChunkedEncodingError.
         upstream_content_length = upstream_response.headers.get("content-length")
-        should_buffer = upstream_response.status_code in buffer_status_codes or (
-            upstream_content_length is not None and int(upstream_content_length) <= _BUFFER_THRESHOLD
-        )
+        should_buffer = upstream_content_length is not None and int(upstream_content_length) <= _BUFFER_THRESHOLD
         if should_buffer:
             body = await upstream_response.aread()
             await upstream_response.aclose()
