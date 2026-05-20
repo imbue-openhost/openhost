@@ -49,13 +49,13 @@ class OkResponse:
 
 @attr.s(auto_attribs=True, frozen=True)
 class SetDefaultRequest:
-    service_url: str = ""
-    app_id: str = ""
+    service_url: str
+    app_id: str
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class RemoveDefaultRequest:
-    service_url: str = ""
+    service_url: str
 
 
 @get("/api/services/v2", guards=[require_owner_auth])
@@ -80,10 +80,8 @@ async def list_services_v2(db: sqlite3.Connection) -> list[ProviderV2]:
 
 
 @get("/api/services/v2/providers", guards=[require_owner_auth])
-async def discover_providers(db: sqlite3.Connection, service: str | None = None) -> DiscoverProvidersResponse:
+async def discover_providers(db: sqlite3.Connection, service: str) -> DiscoverProvidersResponse:
     """Discover providers for a service, optionally filtered by version specifier."""
-    if not service:
-        raise HTTPException(detail="service query param is required", status_code=400)
 
     rows = db.execute(
         """SELECT sp.app_id, a.name AS app_name, sp.service_version, sp.endpoint, a.status
@@ -128,9 +126,6 @@ async def list_defaults(db: sqlite3.Connection) -> list[DefaultEntry]:
 @post("/api/services/v2/defaults", status_code=200, guards=[require_owner_auth])
 async def set_default(data: SetDefaultRequest, db: sqlite3.Connection) -> OkResponse:
     """Set the default provider for a service."""
-    if not data.service_url or not data.app_id:
-        raise HTTPException(detail="service_url and app_id are required", status_code=400)
-
     row = db.execute(
         "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_id = ?",
         (data.service_url, data.app_id),
@@ -149,9 +144,6 @@ async def set_default(data: SetDefaultRequest, db: sqlite3.Connection) -> OkResp
 @delete("/api/services/v2/defaults", status_code=200, guards=[require_owner_auth])
 async def remove_default(data: RemoveDefaultRequest, db: sqlite3.Connection) -> OkResponse:
     """Remove the default provider for a service (falls back to highest version)."""
-    if not data.service_url:
-        raise HTTPException(detail="service_url is required", status_code=400)
-
     db.execute("DELETE FROM service_defaults WHERE service_url = ?", (data.service_url,))
     db.commit()
     return OkResponse(ok=True)
