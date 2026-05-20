@@ -224,10 +224,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     # constructs a Quart Blueprint at import time and we don't want those to
     # exist if a caller (e.g. the setup-only app) builds Litestar alone.
     from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
-<<<<<<< HEAD
-=======
-    from compute_space.web.routes.api.archive_backend import api_archive_backend_bp  # noqa: PLC0415
->>>>>>> 57d15f5 (Migrate small page + API routes to Litestar)
     from compute_space.web.routes.api.system import system_bp  # noqa: PLC0415
     from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
 
