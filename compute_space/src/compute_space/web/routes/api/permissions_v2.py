@@ -1,39 +1,50 @@
+"""Owner-facing CRUD + provider-app grant endpoint for v2 permissions."""
+
+from typing import Annotated
+from typing import Any
+
 import attr
-from quart import Blueprint
-from quart import Response
-from quart import jsonify
-from quart import request
+from litestar import MediaType
+from litestar import Request
+from litestar import Response
+from litestar import Router
+from litestar import get
+from litestar import post
+from litestar.params import Body
 
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
-from compute_space.web.auth.middleware import app_auth_required
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.auth import require_app_auth
+from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.auth.auth import verify_app_auth
 
-api_permissions_v2_bp = Blueprint("api_permissions_v2", __name__)
+
+def _json_error(message: str, status: int) -> Response[dict[str, str]]:
+    return Response(content={"error": message}, status_code=status, media_type=MediaType.JSON)
 
 
-@api_permissions_v2_bp.route("/api/permissions/v2", methods=["GET"])
-@login_required
-async def list_permissions_v2() -> Response:
+@get("/api/permissions/v2", guards=[require_owner_auth], sync_to_thread=False)
+def list_permissions_v2(app_id: str | None = None) -> list[dict[str, Any]]:
     """List all V2 permissions, optionally filtered by app_id."""
-    app_id = request.args.get("app_id")
-    return jsonify([attr.asdict(p) for p in get_all_permissions_v2(app_id)])
+    return [attr.asdict(p) for p in get_all_permissions_v2(app_id)]
 
 
-@api_permissions_v2_bp.route("/api/permissions/v2/grant_global_scoped", methods=["POST"])
-@login_required
-async def grant_global_scoped() -> Response | tuple[Response, int]:
+@post(
+    "/api/permissions/v2/grant_global_scoped",
+    guards=[require_owner_auth],
+    status_code=200,
+    sync_to_thread=False,
+)
+def grant_global_scoped(
+    data: Annotated[dict[str, Any], Body(media_type=MediaType.JSON)],
+) -> Response[dict[str, Any]]:
     """Grant a global-scoped V2 permission (owner-authed)."""
-    data = await request.get_json()
-    if not data:
-        return jsonify({"error": "JSON body required"}), 400
-
     app_id = data.get("app_id")
     service_url = data.get("service_url")
     grant_payload = data.get("grant")
     if not app_id or not service_url or grant_payload is None:
-        return jsonify({"error": "app_id, service_url, and grant are required"}), 400
+        return _json_error("app_id, service_url, and grant are required", 400)
 
     grant_permission_v2(
         consumer_app_id=app_id,
@@ -41,22 +52,24 @@ async def grant_global_scoped() -> Response | tuple[Response, int]:
         grant_payload=grant_payload,
         scope="global",
     )
-    return jsonify({"ok": True})
+    return Response(content={"ok": True})
 
 
-@api_permissions_v2_bp.route("/api/permissions/v2/revoke", methods=["POST"])
-@login_required
-async def revoke_v2() -> Response | tuple[Response, int]:
+@post(
+    "/api/permissions/v2/revoke",
+    guards=[require_owner_auth],
+    status_code=200,
+    sync_to_thread=False,
+)
+def revoke_v2(
+    data: Annotated[dict[str, Any], Body(media_type=MediaType.JSON)],
+) -> Response[dict[str, Any]]:
     """Revoke a V2 permission."""
-    data = await request.get_json()
-    if not data:
-        return jsonify({"error": "JSON body required"}), 400
-
     app_id = data.get("app_id")
     service_url = data.get("service_url")
     grant_payload = data.get("grant")
     if not app_id or not service_url or grant_payload is None:
-        return jsonify({"error": "app_id, service_url, and grant are required"}), 400
+        return _json_error("app_id, service_url, and grant are required", 400)
 
     revoked = revoke_permission_v2(
         consumer_app_id=app_id,
@@ -66,29 +79,34 @@ async def revoke_v2() -> Response | tuple[Response, int]:
         provider_app_id=data.get("provider_app_id"),
     )
     if not revoked:
-        return jsonify({"error": "Permission not found"}), 404
-    return jsonify({"ok": True})
+        return _json_error("Permission not found", 404)
+    return Response(content={"ok": True})
 
 
-@api_permissions_v2_bp.route("/api/permissions/v2/grant_app_scoped", methods=["POST"])
-@app_auth_required
-async def grant_app_scoped(app_id: str) -> Response | tuple[Response, int]:
-    """Grant an app-scoped V2 permission, authenticated with the provider's app token.
+@post(
+    "/api/permissions/v2/grant_app_scoped",
+    guards=[require_app_auth],
+    status_code=200,
+    sync_to_thread=False,
+)
+def grant_app_scoped(
+    request: Request[Any, Any, Any],
+    data: Annotated[dict[str, Any], Body(media_type=MediaType.JSON)],
+) -> Response[dict[str, Any]]:
+    """Grant an app-scoped V2 permission, authenticated with the provider app's token.
 
     The calling app must be a registered provider for the specified service.
     The permission is automatically scoped to the calling provider app.
     """
-    provider_app_id = app_id
-
-    data = await request.get_json()
-    if not data:
-        return jsonify({"error": "JSON body required"}), 400
+    # ``require_app_auth`` already enforced this; verify_app_auth re-derives
+    # the app_id for us (it returns the resolved id, raising if missing).
+    provider_app_id = verify_app_auth(request)
 
     consumer_app_id = data.get("consumer_app_id")
     service_url = data.get("service_url")
     grant_payload = data.get("grant")
     if not consumer_app_id or not service_url or grant_payload is None:
-        return jsonify({"error": "consumer_app_id, service_url, and grant are required"}), 400
+        return _json_error("consumer_app_id, service_url, and grant are required", 400)
 
     grant_permission_v2(
         consumer_app_id=consumer_app_id,
@@ -97,4 +115,10 @@ async def grant_app_scoped(app_id: str) -> Response | tuple[Response, int]:
         scope="app",
         provider_app_id=provider_app_id,
     )
-    return jsonify({"ok": True})
+    return Response(content={"ok": True})
+
+
+api_permissions_v2_routes = Router(
+    path="/",
+    route_handlers=[list_permissions_v2, grant_global_scoped, revoke_v2, grant_app_scoped],
+)

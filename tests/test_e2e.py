@@ -107,15 +107,24 @@ class TestSelfHost:
             timeout=30,
             allow_redirects=False,
         )
-        assert r.status_code == 302, f"Setup POST should redirect, got {r.status_code}: {r.text[:500]}"
-        assert "/dashboard" in r.headers.get("Location", ""), (
-            f"Expected redirect to /dashboard, got {r.headers.get('Location')}"
-        )
+        # setup_app returns 200 + meta-refresh + Set-Cookie, then triggers a
+        # restart (it can't 302 synchronously without racing the listener
+        # shutdown). Treat the "Restarting…" page as the success signal and
+        # wait for the full app to come back up before hitting /dashboard.
+        assert r.status_code == 200, f"Setup POST returned {r.status_code}: {r.text[:500]}"
+        assert "Restarting" in r.text, f"Expected restart page, got: {r.text[:500]}"
 
         set_cookies = r.headers.get("Set-Cookie", "")
-        assert "zone_auth" in set_cookies, f"Setup must set zone_auth cookie. Set-Cookie: {set_cookies[:300]}"
+        assert "session_token" in set_cookies, f"Setup must set session_token cookie. Set-Cookie: {set_cookies[:300]}"
 
         session.cookies.update(r.cookies)
+        poll_endpoint(
+            requests.Session(),
+            f"{router_url}/health",
+            timeout=120,
+            interval=2,
+            fail_msg=f"Router at {router_url} did not come back after setup restart",
+        )
         r = session.get(f"{router_url}/dashboard", timeout=10)
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
@@ -205,16 +214,18 @@ class TestSelfHost:
             timeout=5,
         )
         assert r.status_code == 200
-        headers = r.json()["headers"]
+        # ASGI passes header names lowercase, so the backend sees lowercase keys.
+        # HTTP headers are case-insensitive per spec — normalize for lookup.
+        headers = {k.lower(): v for k, v in r.json()["headers"].items()}
         # Custom headers are forwarded
-        assert headers.get("X-Custom-Test") == "test-value"
+        assert headers.get("x-custom-test") == "test-value"
         # X-Forwarded-* are set by the proxy
-        assert "X-Forwarded-For" in headers
-        assert "X-Forwarded-Host" in headers
+        assert "x-forwarded-for" in headers
+        assert "x-forwarded-host" in headers
         # Spoofed values are overwritten
-        assert "attacker-ip" not in headers.get("X-Forwarded-For", "")
-        assert headers.get("X-Forwarded-Proto") != "evil"
-        assert headers.get("X-Forwarded-Host") != "evil.example.com"
+        assert "attacker-ip" not in headers.get("x-forwarded-for", "")
+        assert headers.get("x-forwarded-proto") != "evil"
+        assert headers.get("x-forwarded-host") != "evil.example.com"
 
     def test_07e_subdomain_unauth_rejected(self, domain):
         """Unauthenticated subdomain request to a non-public path is rejected."""
@@ -382,16 +393,16 @@ class TestSelfHost:
         login_session.verify = True
         r = login_session.post(
             f"{router_url}/login",
-            data={"username": "admin", "password": OWNER_PASSWORD},
+            data={"username": "admin", "password": OWNER_PASSWORD, "next": "/dashboard"},
             allow_redirects=False,
             timeout=10,
         )
-        # Should redirect to dashboard
+        # Should redirect to the requested next URL (/dashboard)
         assert r.status_code == 302
         assert "/dashboard" in r.headers.get("Location", "")
-        # Auth cookies should be set
+        # Session cookie should be set
         set_cookies = r.headers.get("Set-Cookie", "")
-        assert "zone_auth" in set_cookies
+        assert "session_token" in set_cookies
 
         # Follow redirect, verify dashboard works
         login_session.cookies.update(r.cookies)

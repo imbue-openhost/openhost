@@ -17,7 +17,6 @@ from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import AppManifest
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
@@ -50,7 +49,7 @@ def cfg(tmp_path: Path):
 
 @pytest.fixture
 def app(cfg):
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     yield _make_app(cfg)
 
 

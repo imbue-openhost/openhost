@@ -3,8 +3,8 @@ from quart import render_template
 from quart import websocket
 
 from compute_space.core.terminal import handle_terminal_ws
-from compute_space.web.auth.middleware import get_current_user_from_request
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.quart_compat import get_current_user_from_request
+from compute_space.web.auth.quart_compat import login_required
 
 pages_system_bp = Blueprint("pages_system", __name__)
 
@@ -33,7 +33,6 @@ async def terminal_page() -> str:
 @pages_system_bp.websocket("/terminal/ws")
 async def terminal_ws() -> None:
     """WebSocket endpoint for the terminal PTY bridge."""
-    claims: dict[str, str] | None = get_current_user_from_request(websocket)
-    if claims is None:
+    if get_current_user_from_request(websocket) is None:
         return
     await handle_terminal_ws(websocket)

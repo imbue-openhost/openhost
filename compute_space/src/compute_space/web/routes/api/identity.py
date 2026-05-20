@@ -14,7 +14,7 @@ from quart.typing import ResponseReturnValue
 from compute_space.core.auth import identity
 from compute_space.core.auth.keys import get_public_key_pem
 from compute_space.core.logging import logger
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.quart_compat import login_required
 
 identity_bp = Blueprint("identity", __name__)
 

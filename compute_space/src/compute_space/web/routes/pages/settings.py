@@ -1,12 +1,13 @@
-from quart import Blueprint
-from quart import render_template
+from litestar import Router
+from litestar import get
+from litestar.response import Template
 
-from compute_space.web.auth.middleware import login_required
-
-pages_settings_bp = Blueprint("pages_settings", __name__)
+from compute_space.web.auth.auth import require_owner_auth
 
 
-@pages_settings_bp.route("/settings")
-@login_required
-async def settings_page() -> str:
-    return await render_template("settings.html")
+@get("/settings", guards=[require_owner_auth])
+async def settings_page() -> Template:
+    return Template(template_name="settings.html")
+
+
+pages_settings_routes = Router(path="/", route_handlers=[settings_page])

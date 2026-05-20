@@ -14,7 +14,6 @@ import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core.app_id import new_app_id
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
@@ -57,7 +56,7 @@ async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
     """Happy path: row flips to 'removing' synchronously, worker is
     spawned, response is 202."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp")
 
     with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
@@ -79,7 +78,7 @@ async def test_remove_returns_202_and_marks_removing(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_remove_404_when_app_missing(tmp_path: Path) -> None:
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
 
     with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
         # Mint a valid-shaped id that won't exist in the DB.
@@ -98,7 +97,7 @@ async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
     retry hits the already_removing short-circuit.
     """
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp")
 
     failing_thread = MagicMock()
@@ -121,7 +120,7 @@ async def test_remove_rolls_back_if_thread_spawn_fails(tmp_path: Path) -> None:
 async def test_concurrent_removes_only_spawn_one_worker(tmp_path: Path) -> None:
     """Two POSTs racing on the same app: only one wins the atomic claim."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp")
 
     with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
@@ -161,7 +160,7 @@ async def _call_route(cfg, view_name: str, app_id: str, *, form_data=None, metho
 @pytest.mark.asyncio
 async def test_stop_app_refuses_when_removing(tmp_path: Path) -> None:
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp", status="removing")
 
     status, payload = await _call_route(cfg, "stop_app", app_id)
@@ -172,7 +171,7 @@ async def test_stop_app_refuses_when_removing(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_reload_app_refuses_when_removing(tmp_path: Path) -> None:
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp", status="removing")
 
     status, payload = await _call_route(cfg, "reload_app", app_id)
@@ -183,7 +182,7 @@ async def test_reload_app_refuses_when_removing(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_rename_app_refuses_when_removing(tmp_path: Path) -> None:
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myapp", status="removing")
 
     status, payload = await _call_route(cfg, "rename_app", app_id, form_data={"name": "newname"})

@@ -57,6 +57,7 @@ def test_provision_data_creates_archive_subdir_when_opted_in(tmp_path) -> None:
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
 
     expected = archive_dir / manifest.name
@@ -85,6 +86,7 @@ def test_provision_data_skips_archive_when_not_opted_in(tmp_path) -> None:
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
 
     assert "OPENHOST_APP_ARCHIVE_DIR" not in env
@@ -110,6 +112,7 @@ def test_provision_data_archive_subdir_under_access_all_data(tmp_path) -> None:
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
 
     assert (archive_dir / manifest.name).is_dir()
@@ -136,6 +139,7 @@ def test_provision_data_refuses_when_archive_dir_missing(tmp_path) -> None:
             my_openhost_redirect_domain="my.example.com",
             zone_domain="example.com",
             port=8080,
+            owner_username="owner",
         )
 
 
@@ -158,6 +162,7 @@ def test_provision_data_skips_archive_for_access_all_data_when_archive_dir_missi
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
 
     assert "OPENHOST_APP_ARCHIVE_DIR" not in env
@@ -190,6 +195,7 @@ def test_provision_data_does_not_fail_when_archive_dir_missing_and_no_archive_op
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
 
 
@@ -212,6 +218,7 @@ def test_provision_data_archive_idempotent_on_redeploy(tmp_path) -> None:
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
     marker = archive_dir / manifest.name / "marker.txt"
     marker.write_text("hello")
@@ -226,6 +233,7 @@ def test_provision_data_archive_idempotent_on_redeploy(tmp_path) -> None:
         my_openhost_redirect_domain="my.example.com",
         zone_domain="example.com",
         port=8080,
+        owner_username="owner",
     )
     assert marker.read_text() == "hello"
 

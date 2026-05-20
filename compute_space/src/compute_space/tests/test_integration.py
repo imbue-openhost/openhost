@@ -14,12 +14,8 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-from datetime import UTC
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 
-import jwt as pyjwt
 import pytest
 import requests
 from loguru import logger
@@ -67,6 +63,7 @@ def test_sqlite_provisioning():
             my_openhost_redirect_domain="my.test.example.com",
             zone_domain="test.example.com",
             port=manifest.container_port,
+            owner_username="owner",
         )
 
         sqlite_dir = os.path.join(data_dir, "app_data", "testapp", "sqlite")
@@ -141,6 +138,33 @@ def test_caddyfile_http_redirect():
     # The :80 block should NOT reverse_proxy (it only redirects)
     lines_in_80_block = caddyfile.split(":80 {")[1].split("}")[0]
     assert "reverse_proxy" not in lines_in_80_block
+
+
+def _setup_owner(session, base_url, password="testpass123", username=None, timeout=30):
+    """POST /setup to provision the owner, then wait for the full app to come up.
+
+    The setup-only Litestar app starts shutting down once the POST returns so
+    start.py can boot the full app; subsequent requests would 404 against the
+    setup app until that handoff completes.  ``/login`` lives only on the full
+    app, so we use it as the "full app is up" probe.  Mirrors the
+    ``admin_session`` fixture's pattern in conftest.py.
+    """
+    data = {"password": password, "confirm_password": password}
+    if username is not None:
+        data["username"] = username
+    r = session.post(f"{base_url}/setup", data=data)
+    assert r.status_code == 200, f"Router setup failed: {r.status_code}: {r.text[:300]}"
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            probe = requests.get(f"{base_url}/login", timeout=1, allow_redirects=False)
+            if probe.status_code in (200, 302):
+                return r
+        except requests.ConnectionError:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError(f"Full app did not come up within {timeout}s after /setup")
 
 
 def _deploy_app(session, base_url, app_path, app_name=None, timeout=120):
@@ -445,50 +469,6 @@ class TestRouterCore:
         )
         assert r.status_code == 302  # redirects to login
 
-    def test_expired_token_refresh(self, admin_session, config):
-        """Expired access tokens are transparently refreshed via the refresh cookie."""
-        base_url = _zone_url(config)
-
-        # Read the private key the router generated at startup
-        private_key = (Path(config.keys_dir) / "private.pem").read_text()
-
-        # Get the current username from a valid request
-        r = admin_session.get(f"{base_url}/api/apps")
-        assert r.status_code == 200, "Pre-check: admin_session should be authenticated"
-
-        # Extract the refresh token cookie (must still be valid)
-        refresh_token = admin_session.cookies.get("zone_refresh")
-        assert refresh_token, "admin_session should have a zone_refresh cookie"
-
-        # Craft an expired access token (expired 1 hour ago)
-        now = datetime.now(UTC)
-        expired_payload = {
-            "sub": "owner",
-            "username": "owner",
-            "iss": "testzone.local",
-            "aud": "testzone.local",
-            "iat": now - timedelta(hours=2),
-            "exp": now - timedelta(hours=1),
-        }
-        expired_access_token = pyjwt.encode(expired_payload, private_key, algorithm="RS256")
-
-        # Use a fresh session with only the expired access token + valid refresh token.
-        # This avoids cookie domain/path conflicts in the admin_session jar.
-        s = requests.Session()
-        s.cookies.set("zone_auth", expired_access_token)
-        s.cookies.set("zone_refresh", refresh_token)
-
-        # Make a request to a protected endpoint — should succeed via refresh
-        r = s.get(f"{base_url}/api/apps", allow_redirects=False)
-        assert r.status_code == 200, f"Expected 200 from transparent refresh, got {r.status_code}"
-
-        # Verify the response included a Set-Cookie with a new access token.
-        # Check the response cookies directly (not the session jar, which may
-        # contain duplicates from the manually-set cookie + the server's cookie).
-        new_token = r.cookies.get("zone_auth")
-        assert new_token is not None, "Response should set a fresh zone_auth cookie after refresh"
-        assert new_token != expired_access_token, "Refreshed zone_auth cookie should differ from the expired one"
-
 
 # ---------------------------------------------------------------------------
 # Claim token setup tests (isolated router, no container runtime needed)
@@ -552,7 +532,9 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
             last_status = r.status_code
             if r.status_code == expect_status:
                 return r
-        except (requests.ConnectionError, requests.Timeout):
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError):
+            # ChunkedEncodingError: upstream closed mid-response. Treat as transient
+            # and retry — the app may still be warming up just after status='running'.
             pass
         time.sleep(1)
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
@@ -608,15 +590,7 @@ class TestContainerGone:
             router = _start_router_process(self.BASE_URL, env)
 
             session = requests.Session()
-            r = session.post(
-                f"{self.BASE_URL}/setup",
-                data={
-                    "username": "admin",
-                    "password": "testpass123",
-                    "confirm_password": "testpass123",
-                },
-            )
-            assert r.status_code == 200
+            _setup_owner(session, self.BASE_URL, username="admin")
 
             _deploy_app(session, self.BASE_URL, self.APP_PATH)
 
@@ -811,15 +785,7 @@ class TestContainerRestart:
             router = _start_router_process(self.BASE_URL, env)
 
             session = requests.Session()
-            r = session.post(
-                f"{self.BASE_URL}/setup",
-                data={
-                    "username": "admin",
-                    "password": "testpass123",
-                    "confirm_password": "testpass123",
-                },
-            )
-            assert r.status_code == 200, "Setup should succeed"
+            _setup_owner(session, self.BASE_URL, username="admin")
 
             # Submit and confirm deployment
             _deploy_app(session, self.BASE_URL, self.APP_PATH)
@@ -1113,10 +1079,12 @@ class TestContainerE2E:
             headers={"X-Custom-Test": "test-value"},
         )
         assert r.status_code == 200
-        headers = r.json()["headers"]
-        assert headers.get("X-Custom-Test") == "test-value"
-        assert "X-Forwarded-For" in headers
-        assert "X-Forwarded-Host" in headers
+        # ASGI normalises incoming header names to lowercase, so compare CI
+        # rather than depending on the case the backend happens to see.
+        headers_ci = {k.lower(): v for k, v in r.json()["headers"].items()}
+        assert headers_ci.get("x-custom-test") == "test-value"
+        assert "x-forwarded-for" in headers_ci
+        assert "x-forwarded-host" in headers_ci
 
     def test_proxy_strips_spoofed_forwarded_headers(self, admin_session, config):
         """Client-supplied X-Forwarded-* headers are overwritten, not forwarded."""

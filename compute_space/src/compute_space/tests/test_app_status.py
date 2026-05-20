@@ -20,7 +20,6 @@ from compute_space.core.app_id import new_app_id
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 
@@ -28,7 +27,7 @@ async def _app_status_response(tmp_path: Path, *, error_message: str, port: int)
     """Drive /api/app_status/<name> end-to-end against a real Quart app
     with a real on-disk sqlite schema.  Returns (status_code, payload)."""
     cfg = _make_test_config(tmp_path, port=port)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
 
     # Insert one app row with the error_message of interest.
     app_id = new_app_id()

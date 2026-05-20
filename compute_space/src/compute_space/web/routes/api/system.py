@@ -12,9 +12,9 @@ from quart import request
 from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-from compute_space.core.auth.security import is_sshd_active
-from compute_space.core.auth.security import list_listening_ports
-from compute_space.core.auth.security import run_audit
+from compute_space.core.auth.security_audit import is_sshd_active
+from compute_space.core.auth.security_audit import list_listening_ports
+from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.logging import get_log_path
 from compute_space.core.storage import is_guard_paused
@@ -22,7 +22,7 @@ from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
 from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.quart_compat import login_required
 
 system_bp: Blueprint = Blueprint("system", __name__)
 

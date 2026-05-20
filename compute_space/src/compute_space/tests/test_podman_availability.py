@@ -29,7 +29,6 @@ from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
 from compute_space.db.connection import init_db as real_init_db
 
-from .conftest import _FakeApp
 from .conftest import _make_test_config
 
 # ---------------------------------------------------------------------------
@@ -165,7 +164,7 @@ def _insert_app(db_path: str, name: str, status: str, container_id: str | None, 
 
 def _init_schema(db_path: str) -> None:
     """Create the minimal apps schema we need for these tests."""
-    real_init_db(_FakeApp(db_path))
+    real_init_db(db_path)
 
 
 def test_check_app_status_marks_running_apps_error_when_podman_missing(

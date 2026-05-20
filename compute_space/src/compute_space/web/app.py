@@ -3,36 +3,113 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+from typing import cast
 
+from litestar import HttpMethod
+from litestar import Litestar
+from litestar import MediaType
+from litestar import Request
+from litestar import Response
+from litestar import route
+from litestar.contrib.jinja import JinjaTemplateEngine
+from litestar.di import Provide
+from litestar.exceptions import HTTPException
+from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions.responses import create_exception_response
+from litestar.handlers import asgi
+from litestar.static_files import create_static_files_router
+from litestar.template.config import TemplateConfig
+from litestar.types import ASGIApp
+from litestar.types import Receive
+from litestar.types import Scope
+from litestar.types import Send
+from quart import Blueprint
 from quart import Quart
 from quart import current_app
-from quart import redirect
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from quart import url_for as quart_url_for
 
 from compute_space.config import Config
-from compute_space.config import load_config
+from compute_space.config import get_config
+from compute_space.config import provide_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.identity import load_identity_keys
-from compute_space.core.auth.keys import load_keys
-from compute_space.core.logging import setup_file_logging
+from compute_space.core.logging import logger
 from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
 from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
-from compute_space.db import close_db
-from compute_space.db import get_db
-from compute_space.db import init_db
-from compute_space.web.routes.pages.setup import setup_bp
+from compute_space.db import provide_db
+from compute_space.web.auth.auth import login_required_redirect
+from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
+from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
+from compute_space.web.routes.api.settings import api_settings_routes
+from compute_space.web.routes.pages.login import pages_login_routes
+from compute_space.web.routes.pages.settings import pages_settings_routes
+from compute_space.web.routes.services_v2 import services_v2_routes
 
-# ─── App Factory ───
+
+def _make_static_url(static_dir: Path) -> Any:
+    """Build a Jinja ``static_url`` global that appends ``?v=<mtime>`` for cache-busting.
+
+    Browsers aggressively cache static JS/CSS, so a deploy that ships a new
+    template + JS would otherwise leave returning visitors running stale JS
+    against new HTML.  Appending the file's mtime forces a fresh fetch.
+    """
+
+    def static_url(filename: str) -> str:
+        base = f"/static/{filename}"
+        try:
+            mtime = int((static_dir / filename).stat().st_mtime)
+        except OSError:
+            return base
+        return f"{base}?v={mtime}"
+
+    return static_url
 
 
-def init_app(app: Quart) -> None:
-    """Initialize DB and app state. Call after data directories are ready."""
-    config = app.openhost_config  # type: ignore[attr-defined]
-    init_db(app)
+# Shared layout.html uses ``url_for(endpoint)`` with Quart blueprint endpoint
+# names.  Litestar's own ``url_for`` only knows about Litestar routes, so for
+# pages rendered via Litestar's Template response we map the legacy endpoint
+# names to their paths directly.  Keep in sync with the routes the layout links to.
+_LAYOUT_ENDPOINT_PATHS: dict[str, str] = {
+    "apps.dashboard": "/dashboard",
+    "apps.add_app": "/add_app",
+    "pages_system.system_page": "/system/",
+    "pages_system.logs_page": "/logs/",
+    "pages_system.terminal_page": "/terminal/",
+    "pages_settings.settings_page": "/settings",
+}
+
+
+def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
+    zone_domain = config.zone_domain
+    zone_name = zone_domain.split(".")[0] if zone_domain else None
+
+    def app_url(app_name: str) -> str:
+        proto = "https" if config.tls_enabled else "http"
+        return f"{proto}://{app_name}.{zone_domain}/"
+
+    def url_for(endpoint: str, **_: Any) -> str:
+        try:
+            return _LAYOUT_ENDPOINT_PATHS[endpoint]
+        except KeyError as e:
+            raise KeyError(f"No layout path mapping for endpoint {endpoint!r}") from e
+
+    return {
+        "zone_name": zone_name,
+        "zone_domain": zone_domain,
+        "app_url": app_url,
+        "static_url": _make_static_url(static_dir),
+        "url_for": url_for,
+    }
+
+
+def _full_app_bootstrap(config: Config) -> None:
+    """Side-effects required before the full app handles requests.
+
+    DB / keys / logging are already initialized in ``start.py``; this only covers the
+    heavier setup steps that don't make sense for the setup-only app.
+    """
     db = sqlite3.connect(config.db_path)
     try:
         archive_backend.attach_on_startup(config, db)
@@ -44,127 +121,132 @@ def init_app(app: Quart) -> None:
     retry_pending_default_apps(config)
 
 
-def create_app(config: Config | None = None) -> Quart:
-    if config is None:
-        config = load_config()
+@route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
+def setup_already_done() -> Response[str]:
+    return Response(
+        content="This instance has already been set up.",
+        status_code=403,
+        media_type=MediaType.TEXT,
+    )
 
-    app = Quart(__name__)
-    app.openhost_config = config  # type: ignore[attr-defined]
-    app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
-    app.config["DB_PATH"] = config.db_path
-    # Allow large request bodies for migration and data transfers
-    app.config["MAX_CONTENT_LENGTH"] = None
 
-    setup_file_logging(Path(os.path.dirname(config.db_path)) / "compute_space.log")
+def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedException) -> Response[Any]:
+    """Exception handler: redirect HTML clients to /login; JSON clients get 401.
 
-    # Load auth keys
-    load_keys(config.keys_dir)
+    websocket-type requests should never get here - they start as HTTP requests with `Upgrade: websocket`, and should fail then.
+    """
+    if "application/json" in request.headers.get("Accept", ""):
+        return Response(content={"error": exc.detail}, status_code=401)
 
-    # Register teardown
-    app.teardown_appcontext(close_db)
+    return login_required_redirect(request)
 
-    # Register blueprints (imported here per Flask/Quart convention - blueprints have globals/side effects)
+
+def _log_unhandled_exception(request: Request[Any, Any, Any], exc: Exception) -> Response[Any]:
+    """Log a traceback for any exception not caught by a more specific handler.
+
+    Litestar's default behaviour serialises the exception into a 500 JSON response
+    but doesn't log it, so genuine bugs disappear silently.  Stay quiet for
+    intentional 4xx HTTPException responses; log everything else (including 5xx
+    HTTPException like NoRouteMatchFoundException which wraps real bugs).
+    """
+    status_code = getattr(exc, "status_code", 500)
+    if not isinstance(exc, HTTPException) or status_code >= 500:
+        logger.opt(exception=exc).error("Unhandled exception in {} {}", request.method, request.url.path)
+    return create_exception_response(request=request, exc=exc)
+
+
+def _reject_app_subdomain_requests(request: Request[Any, Any, Any]) -> Response[Any] | None:
+    """Defense-in-depth: refuse any request whose Host is an app subdomain.
+
+    App-subdomain traffic is supposed to be intercepted by SubdomainProxyMiddleware
+    (outer ASGI) before Litestar ever sees it.  If a request reaches Litestar with
+    a ``*.zone_domain`` Host — e.g. the middleware was bypassed in a test or a
+    deployment variant — refuse it rather than accidentally serve a router route
+    (like /health) under the app's hostname.
+    """
+    host = request.url.netloc.split(":", 1)[0]
+    zone = get_config().zone_domain
+    if zone and host.endswith("." + zone):
+        return Response(content=None, status_code=404)
+    return None
+
+
+def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
+    """Build a Quart app holding the blueprints not yet ported to Litestar.
+
+    Mounted at "/" under Litestar via ``@asgi(is_mount=True)``; specific Litestar
+    handlers win over the mount, so migrating a route is just removing the
+    blueprint registration and adding the new Litestar handler.
+
+    The legacy ``@login_required`` decorator on these blueprints (see
+    ``web/auth/quart_compat.py``) defers to ``verify_owner_auth``, which
+    authenticates the request on demand against the connection's cookies /
+    Bearer header — no shared state from an outer middleware required.
+    """
+    # Imports are scoped to this builder because each module side-effectfully
+    # constructs a Quart Blueprint at import time and we don't want those to
+    # exist if a caller (e.g. the setup-only app) builds Litestar alone.
     from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
     from compute_space.web.routes.api.archive_backend import api_archive_backend_bp  # noqa: PLC0415
     from compute_space.web.routes.api.identity import identity_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_bp  # noqa: PLC0415
     from compute_space.web.routes.api.services_v2 import api_services_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.settings import api_settings_bp  # noqa: PLC0415
     from compute_space.web.routes.api.system import system_bp  # noqa: PLC0415
     from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.apps import apps_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.login import auth_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_bp  # noqa: PLC0415
-    from compute_space.web.routes.pages.settings import pages_settings_bp  # noqa: PLC0415
     from compute_space.web.routes.pages.system import pages_system_bp  # noqa: PLC0415
-    from compute_space.web.routes.proxy import proxy_bp  # noqa: PLC0415
-    from compute_space.web.routes.services_v2 import services_v2_bp  # noqa: PLC0415
 
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(apps_bp)
-    app.register_blueprint(pages_settings_bp)
-    app.register_blueprint(pages_system_bp)
-    app.register_blueprint(api_apps_bp)
-    app.register_blueprint(api_archive_backend_bp)
-    app.register_blueprint(api_settings_bp)
-    app.register_blueprint(system_bp)
-    app.register_blueprint(services_v2_bp)
-    app.register_blueprint(setup_bp)
-    app.register_blueprint(api_services_v2_bp)
-    app.register_blueprint(api_permissions_v2_bp)
-    app.register_blueprint(pages_permissions_v2_bp)
-    app.register_blueprint(identity_bp)
-    # Register docs BEFORE the catch-all proxy so /docs/... is
-    # always handled by the docs blueprint regardless of whether
-    # a user happens to have deployed an app named "docs".
-    app.register_blueprint(docs_bp)
-    app.register_blueprint(
-        proxy_bp
-    )  # last — has catch-all; registers before_app_request / before_app_websocket subdomain hooks
+    web_dir = Path(__file__).parent
+    quart_app = Quart(
+        __name__,
+        template_folder=str(web_dir / "templates"),
+        static_folder=str(static_dir),
+    )
+    quart_app.openhost_config = config  # type: ignore[attr-defined]
+    quart_app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
+    # App installs and data migrations can ship large request bodies.
+    quart_app.config["MAX_CONTENT_LENGTH"] = None
 
-    # Initialize DB and app state
-    init_app(app)
+    # Stubs for routes that have been migrated to Litestar.  Quart's
+    # ``url_for`` resolves against blueprint-registered endpoints, and several
+    # of the layout/dashboard templates reference migrated routes by name
+    # (``pages_settings.settings_page`` -> /settings, etc.).  The handlers
+    # are never actually invoked because the corresponding specific Litestar
+    # routes win over the catch-all mount; they exist only so ``url_for``
+    # produces the right URL.
 
-    # ─── Before-request hooks ───
+    migrated_stub_bp = Blueprint("pages_settings", __name__)
 
-    @app.before_request
-    async def _require_owner() -> ResponseReturnValue | None:
-        """Redirect to setup if no owner has been created yet."""
-        if getattr(app, "_owner_verified", False):
-            return None
-        if request.path in ("/setup", "/health"):
-            return None
-        # Docs ("/docs/" landing + "/docs/<anything>") must be
-        # readable even before the zone owner has been provisioned
-        # — the docs are usually what an operator consults BEFORE
-        # finishing setup.  The docs blueprint itself is public
-        # (no @login_required), but the before-request hook above
-        # would otherwise redirect every pre-setup request to
-        # /setup.  Whitelist /docs explicitly here.
-        if request.path == "/docs" or request.path.startswith("/docs/"):
-            return None
-        db = get_db()
-        owner = db.execute("SELECT 1 FROM owner LIMIT 1").fetchone()
-        if owner is not None:
-            app._owner_verified = True  # type: ignore[attr-defined]
-            return None
-        claim = request.args.get("claim", "")
-        return redirect(url_for("setup.setup", claim=claim) if claim else url_for("setup.setup"))
+    @migrated_stub_bp.route("/settings")
+    async def settings_page() -> str:  # pragma: no cover — Litestar handles
+        return ""
 
-    # ─── Context processor ───
+    quart_app.register_blueprint(migrated_stub_bp)
+    quart_app.register_blueprint(apps_bp)
+    quart_app.register_blueprint(pages_system_bp)
+    quart_app.register_blueprint(pages_permissions_v2_bp)
+    quart_app.register_blueprint(api_apps_bp)
+    quart_app.register_blueprint(api_archive_backend_bp)
+    quart_app.register_blueprint(system_bp)
+    quart_app.register_blueprint(api_services_v2_bp)
+    quart_app.register_blueprint(identity_bp)
+    quart_app.register_blueprint(docs_bp)
 
-    @app.context_processor
-    async def _inject_zone_name() -> dict[str, Any]:
-        """Make zone_name and app_url helper available in all templates."""
-        zone_domain: str | None = config.zone_domain
-        if zone_domain:
-            zone_name: str | None = zone_domain.split(".")[0]
-        else:
-            ext_host: str = request.headers.get("X-Forwarded-Host", request.host).split(":")[0]
-            parts: list[str] = ext_host.split(".")
-            zone_name = parts[0] if len(parts) > 2 else None
-
-        proto: str = request.headers.get("X-Forwarded-Proto", request.scheme)
-        request_host: str = request.headers.get("X-Forwarded-Host", request.host)
-        base_host: str = zone_domain or request_host
-        if zone_domain and ":" not in zone_domain and ":" in request_host:
-            _, _, port = request_host.partition(":")
-            if port:
-                base_host = f"{zone_domain}:{port}"
+    # Quart-side templating helpers, matching the Litestar Jinja globals so the
+    # shared layout.html renders the same way regardless of which framework
+    # handled the request.  static_url uses Quart's own ``url_for`` so the
+    # blueprint-registered ``/static`` endpoint resolves correctly.
+    @quart_app.context_processor
+    async def _inject_template_globals() -> dict[str, Any]:
+        zone_domain = config.zone_domain
+        zone_name = zone_domain.split(".")[0] if zone_domain else None
 
         def app_url(app_name: str) -> str:
-            return f"{proto}://{app_name}.{base_host}/"
+            proto = "https" if config.tls_enabled else "http"
+            return f"{proto}://{app_name}.{zone_domain}/"
 
         def static_url(filename: str) -> str:
-            """Like ``url_for('static', ...)`` but cache-busted by file mtime.
-
-            Browsers aggressively cache static JS/CSS, so a deploy that ships a
-            new template + JS would otherwise leave returning visitors running
-            stale JS against new HTML (silently no-op'ing on missing element
-            ids).  Appending ``?v=<mtime>`` forces a fresh fetch whenever the
-            file changes.
-            """
-            base = url_for("static", filename=filename)
+            base = quart_url_for("static", filename=filename)
             try:
                 static_root = Path(current_app.static_folder or "")
                 mtime = int((static_root / filename).stat().st_mtime)
@@ -175,18 +257,80 @@ def create_app(config: Config | None = None) -> Quart:
 
         return {
             "zone_name": zone_name,
-            "zone_domain": base_host,
+            "zone_domain": zone_domain,
             "app_url": app_url,
             "static_url": static_url,
         }
 
-    # Terminal cleanup
+    return quart_app
+
+
+def create_app(config: Config) -> ASGIApp:
+    """Build the full router ASGI app.  The returned app is the Litestar app wrapped
+    in ``SubdomainProxyMiddleware`` so app-subdomain requests are diverted to backend
+    containers before Litestar attempts any routing.  Caller must have already
+    initialized DB, keys, logging, and config."""
+    _full_app_bootstrap(config)
+
+    web_dir = Path(__file__).parent
+    static_dir = web_dir / "static"
+    template_dir = web_dir / "templates"
+
+    template_config: TemplateConfig[JinjaTemplateEngine] = TemplateConfig(
+        directory=template_dir,
+        engine=JinjaTemplateEngine,
+    )
+
+    def _install_template_globals(app: Litestar) -> None:
+        engine = app.template_engine
+        if isinstance(engine, JinjaTemplateEngine):
+            engine.engine.globals.update(_template_globals(config, static_dir))
+
+    static_router = create_static_files_router(path="/static", directories=[static_dir])
+
+    quart_fallback_app = _build_quart_fallback(config, static_dir)
+
+    @asgi(path="/", is_mount=True)
+    async def quart_fallback(scope: Scope, receive: Receive, send: Send) -> None:
+        """Catch-all for anything Litestar didn't match — defers to the Quart sub-app.
+
+        Litestar rewrites ``scope["path"]`` when delegating to a mount (strips
+        the mount prefix, normalises trailing slashes); reconstitute it from
+        ``raw_path`` so Quart's URL matcher sees the original request path
+        (e.g. "/health", not "health/").
+        """
+        raw_path = scope.get("raw_path")
+        if raw_path is not None:
+            patched = dict(scope)
+            patched["path"] = raw_path.decode("ascii")
+            scope = cast(Scope, patched)
+        # Quart is typed against hypercorn's ASGI aliases while Litestar uses
+        # its own; the runtime objects are interchangeable.
+        await quart_fallback_app(scope, receive, send)  # type: ignore[arg-type]
+
     atexit.register(cleanup_terminal)
 
-    return app
-
-
-if __name__ == "__main__":
-    app = create_app()
-    cfg = app.openhost_config  # type: ignore[attr-defined]
-    app.run(host=cfg.host, port=cfg.port)
+    litestar_app = Litestar(
+        route_handlers=[
+            static_router,
+            api_permissions_v2_routes,
+            api_settings_routes,
+            pages_login_routes,
+            pages_settings_routes,
+            services_v2_routes,
+            setup_already_done,
+            quart_fallback,
+        ],
+        template_config=template_config,
+        before_request=_reject_app_subdomain_requests,
+        dependencies={
+            "config": Provide(provide_config, sync_to_thread=False),
+            "db": Provide(provide_db),
+        },
+        exception_handlers={
+            NotAuthorizedException: _login_required_redirect,
+            Exception: _log_unhandled_exception,
+        },
+        on_startup=[_install_template_globals],
+    )
+    return SubdomainProxyMiddleware(litestar_app)

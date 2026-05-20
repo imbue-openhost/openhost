@@ -7,7 +7,7 @@ from quart import request
 
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
 from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.quart_compat import login_required
 
 pages_permissions_v2_bp = Blueprint("pages_permissions_v2", __name__)
 
