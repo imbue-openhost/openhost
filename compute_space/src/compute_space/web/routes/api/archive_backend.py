@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sqlite3
+from typing import Annotated
 
 import attr
 from litestar import MediaType
@@ -12,6 +13,8 @@ from litestar import Response
 from litestar import Router
 from litestar import get
 from litestar import post
+from litestar.enums import RequestEncodingType
+from litestar.params import Body
 
 from compute_space.config import Config
 from compute_space.core import archive_backend
@@ -61,27 +64,6 @@ class ErrorResponse:
     error: str
 
 
-@attr.s(auto_attribs=True, frozen=True)
-class TestS3ConnectionRequest:
-    s3_bucket: str = ""
-    s3_access_key_id: str = ""
-    s3_secret_access_key: str = ""
-    s3_region: str = ""
-    s3_endpoint: str = ""
-    s3_prefix: str = ""
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class ConfigureBackendRequest:
-    s3_bucket: str = ""
-    s3_access_key_id: str = ""
-    s3_secret_access_key: str = ""
-    s3_region: str = ""
-    s3_endpoint: str = ""
-    s3_prefix: str = ""
-    juicefs_volume_name: str = ""
-
-
 def _state_to_response(
     state: BackendState, archive_dir: str | None, meta_db_path: str, meta_dumps: MetaDumpsSummary | None
 ) -> BackendStateResponse:
@@ -120,6 +102,27 @@ def _normalise_s3_prefix(raw: str | None) -> str | None:
     return cleaned
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class TestConnectionForm:
+    s3_bucket: str
+    s3_access_key_id: str
+    s3_secret_access_key: str
+    s3_region: str = ""
+    s3_endpoint: str = ""
+    s3_prefix: str = ""
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ConfigureArchiveForm:
+    s3_bucket: str
+    s3_access_key_id: str
+    s3_secret_access_key: str
+    s3_region: str = ""
+    s3_endpoint: str = ""
+    s3_prefix: str = ""
+    juicefs_volume_name: str = ""
+
+
 @get("/api/storage/archive_backend", guards=[require_owner_auth])
 async def get_archive_backend(db: sqlite3.Connection, config: Config) -> BackendStateResponse:
     """Return current archive-backend state (secret redacted) plus archive_dir, meta_db_path, meta_dumps."""
@@ -150,30 +153,20 @@ async def get_archive_backend(db: sqlite3.Connection, config: Config) -> Backend
 
 @post("/api/storage/archive_backend/test_connection", status_code=200, guards=[require_owner_auth])
 async def test_connection(
-    data: TestS3ConnectionRequest,
+    data: Annotated[TestConnectionForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
 ) -> Response[TestConnectionOk] | Response[TestConnectionError]:
     """Pre-flight S3 reachability/credentials check; doesn't touch the DB or live mount."""
-    bucket = data.s3_bucket.strip()
-    access_key = data.s3_access_key_id.strip()
-    secret_key = data.s3_secret_access_key.strip()
-    region = data.s3_region.strip() or None
-    endpoint = data.s3_endpoint.strip() or None
     try:
-        _normalise_s3_prefix(data.s3_prefix)
+        _normalise_s3_prefix(data.s3_prefix or None)
     except ValueError as exc:
         return Response(content=TestConnectionError(ok=False, error=f"invalid s3_prefix: {exc}"), status_code=400)
-    if not (bucket and access_key and secret_key):
-        return Response(
-            content=TestConnectionError(ok=False, error="bucket, access_key_id, and secret_access_key are required"),
-            status_code=400,
-        )
     error = await asyncio.to_thread(
         archive_backend.test_s3_credentials,
-        bucket,
-        region,
-        endpoint,
-        access_key,
-        secret_key,
+        data.s3_bucket,
+        data.s3_region.strip() or None,
+        data.s3_endpoint.strip() or None,
+        data.s3_access_key_id,
+        data.s3_secret_access_key,
     )
     if error:
         return Response(content=TestConnectionError(ok=False, error=error), status_code=400)
@@ -182,13 +175,11 @@ async def test_connection(
 
 @post("/api/storage/archive_backend/configure", status_code=200, guards=[require_owner_auth])
 async def configure_archive_backend(
-    data: ConfigureBackendRequest, db: sqlite3.Connection, config: Config
+    data: Annotated[ConfigureArchiveForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
+    db: sqlite3.Connection,
+    config: Config,
 ) -> Response[BackendStateResponse] | Response[ErrorResponse]:
-    """One-shot configuration: ``backend='disabled'`` -> ``'s3'``.  No re-runs.
-
-    Required: s3_bucket, s3_access_key_id, s3_secret_access_key.
-    Optional: s3_region, s3_endpoint, s3_prefix, juicefs_volume_name.
-    """
+    """One-shot configuration: ``backend='disabled'`` -> ``'s3'``.  No re-runs."""
     state = archive_backend.read_state(db)
     if state.backend != "disabled":
         return Response(
@@ -201,26 +192,14 @@ async def configure_archive_backend(
             status_code=409,
         )
 
-    bucket = data.s3_bucket.strip()
-    access_key = data.s3_access_key_id.strip()
-    secret_key = data.s3_secret_access_key.strip()
-    region = data.s3_region.strip() or None
-    endpoint = data.s3_endpoint.strip() or None
-    volume_name = data.juicefs_volume_name.strip() or None
     try:
-        prefix = _normalise_s3_prefix(data.s3_prefix)
+        prefix = _normalise_s3_prefix(data.s3_prefix or None)
     except ValueError as exc:
         return Response(content=ErrorResponse(error=f"invalid s3_prefix: {exc}"), status_code=400)
 
-    missing = []
-    if not bucket:
-        missing.append("s3_bucket")
-    if not access_key:
-        missing.append("s3_access_key_id")
-    if not secret_key:
-        missing.append("s3_secret_access_key")
-    if missing:
-        return Response(content=ErrorResponse(error=f"Missing required fields: {', '.join(missing)}"), status_code=400)
+    region = data.s3_region.strip() or None
+    endpoint = data.s3_endpoint.strip() or None
+    volume_name = data.juicefs_volume_name.strip() or None
 
     # The format+mount steps can take 10-30s.  Run off-loop so the event
     # loop doesn't block.  ``db`` from ``provide_db()`` is request-thread-bound
@@ -234,12 +213,12 @@ async def configure_archive_backend(
             archive_backend.configure_backend(
                 config,
                 worker_db,
-                s3_bucket=bucket,
+                s3_bucket=data.s3_bucket,
                 s3_region=region,
                 s3_endpoint=endpoint,
                 s3_prefix=prefix,
-                s3_access_key_id=access_key,
-                s3_secret_access_key=secret_key,
+                s3_access_key_id=data.s3_access_key_id,
+                s3_secret_access_key=data.s3_secret_access_key,
                 juicefs_volume_name=volume_name,
             )
         finally:
