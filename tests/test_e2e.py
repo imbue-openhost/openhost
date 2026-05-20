@@ -214,16 +214,18 @@ class TestSelfHost:
             timeout=5,
         )
         assert r.status_code == 200
-        headers = r.json()["headers"]
+        # ASGI passes header names lowercase, so the backend sees lowercase keys.
+        # HTTP headers are case-insensitive per spec — normalize for lookup.
+        headers = {k.lower(): v for k, v in r.json()["headers"].items()}
         # Custom headers are forwarded
-        assert headers.get("X-Custom-Test") == "test-value"
+        assert headers.get("x-custom-test") == "test-value"
         # X-Forwarded-* are set by the proxy
-        assert "X-Forwarded-For" in headers
-        assert "X-Forwarded-Host" in headers
+        assert "x-forwarded-for" in headers
+        assert "x-forwarded-host" in headers
         # Spoofed values are overwritten
-        assert "attacker-ip" not in headers.get("X-Forwarded-For", "")
-        assert headers.get("X-Forwarded-Proto") != "evil"
-        assert headers.get("X-Forwarded-Host") != "evil.example.com"
+        assert "attacker-ip" not in headers.get("x-forwarded-for", "")
+        assert headers.get("x-forwarded-proto") != "evil"
+        assert headers.get("x-forwarded-host") != "evil.example.com"
 
     def test_07e_subdomain_unauth_rejected(self, domain):
         """Unauthenticated subdomain request to a non-public path is rejected."""

@@ -247,7 +247,9 @@ async def proxy_websocket_request(
 
     If ``override_path`` is set, use it instead of the client path.
     """
-    target_url = _format_proxy_request_url(connection.scope, target_port, override_path)
+    # _format_proxy_request_url returns http://; the websockets library
+    # requires a ws:// (or wss://) URI for connect().
+    target_url = _format_proxy_request_url(connection.scope, target_port, override_path).replace("http://", "ws://", 1)
 
     if subprotocols_str := connection.headers.get("Sec-WebSocket-Protocol"):
         subprotocols = [Subprotocol(s.strip()) for s in subprotocols_str.split(",")]
