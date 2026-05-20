@@ -1,38 +1,69 @@
-from quart import Blueprint
-from quart import render_template
-from quart import websocket
+from typing import Any
+from typing import AnyStr
+
+from litestar import Router
+from litestar import WebSocket
+from litestar import get
+from litestar import websocket
+from litestar.exceptions import NotAuthorizedException
+from litestar.response import Template
 
 from compute_space.core.terminal import handle_terminal_ws
-from compute_space.web.auth.quart_compat import get_current_user_from_request
-from compute_space.web.auth.quart_compat import login_required
-
-pages_system_bp = Blueprint("pages_system", __name__)
+from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.auth.auth import verify_owner_auth
 
 
-@pages_system_bp.route("/system/")
-@login_required
-async def system_page() -> str:
+@get("/system/", guards=[require_owner_auth])
+async def system_page() -> Template:
     """Serve the System page (security audit, storage, maintenance actions)."""
-    return await render_template("system.html")
+    return Template(template_name="system.html")
 
 
-@pages_system_bp.route("/logs/")
-@login_required
-async def logs_page() -> str:
+@get("/logs/", guards=[require_owner_auth])
+async def logs_page() -> Template:
     """Serve the compute space logs page."""
-    return await render_template("logs.html")
+    return Template(template_name="logs.html")
 
 
-@pages_system_bp.route("/terminal/")
-@login_required
-async def terminal_page() -> str:
+@get("/terminal/", guards=[require_owner_auth])
+async def terminal_page() -> Template:
     """Serve the web terminal UI."""
-    return await render_template("terminal.html")
+    return Template(template_name="terminal.html")
 
 
-@pages_system_bp.websocket("/terminal/ws")
-async def terminal_ws() -> None:
-    """WebSocket endpoint for the terminal PTY bridge."""
-    if get_current_user_from_request(websocket) is None:
+class _LitestarTerminalAdapter:
+    """Adapt a Litestar WebSocket to the framework-neutral ``TerminalWebsocket``
+    Protocol that ``handle_terminal_ws`` expects."""
+
+    def __init__(self, ws: WebSocket[Any, Any, Any]) -> None:
+        self._ws = ws
+
+    async def send(self, data: bytes) -> None:
+        await self._ws.send_bytes(data)
+
+    async def receive(self) -> AnyStr:
+        data: AnyStr = await self._ws.receive_bytes()  # type: ignore[assignment]
+        return data
+
+
+@websocket("/terminal/ws")
+async def terminal_ws(socket: WebSocket[Any, Any, Any]) -> None:
+    """WebSocket endpoint for the terminal PTY bridge.
+
+    Guards currently only signal failure via HTTPException, so the auth check is
+    inline: accept first so the client gets a clean close on failure.
+    """
+    try:
+        verify_owner_auth(socket)
+    except NotAuthorizedException:
+        await socket.accept()
+        await socket.close(code=4401, reason="Missing or invalid authorization")
         return
-    await handle_terminal_ws(websocket)
+    await socket.accept()
+    await handle_terminal_ws(_LitestarTerminalAdapter(socket))
+
+
+pages_system_routes = Router(
+    path="/",
+    route_handlers=[system_page, logs_page, terminal_page, terminal_ws],
+)

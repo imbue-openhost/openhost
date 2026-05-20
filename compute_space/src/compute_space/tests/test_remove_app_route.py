@@ -215,7 +215,7 @@ async def test_remove_archive_app_allowed_when_backend_disabled(tmp_path: Path) 
     that declares access_all_data=true should succeed — there's no S3
     data to orphan."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "fbrowser", manifest_raw=_ARCHIVE_MANIFEST)
 
     with patch("compute_space.web.routes.api.apps.threading.Thread") as Thread:
@@ -232,7 +232,7 @@ async def test_remove_archive_app_blocked_when_backend_s3_unhealthy(tmp_path: Pa
     archive-using app should still be blocked (503) to prevent orphaning
     S3 bytes."""
     cfg = _make_test_config(tmp_path)
-    init_db(_FakeApp(cfg.db_path))
+    init_db(cfg.db_path)
     app_id = _seed_app(cfg.db_path, "myarchive", manifest_raw=_ARCHIVE_ONLY_MANIFEST)
 
     db = sqlite3.connect(cfg.db_path)
