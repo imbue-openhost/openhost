@@ -109,6 +109,8 @@ _HTTP_REQUEST_EXCLUDED_HEADERS = frozenset(
     }
 )
 
+_BUFFER_THRESHOLD = 512_000  # 500 KB — buffer small upstream responses to avoid chunked encoding
+
 _HTTP_RESPONSE_EXCLUDED_HEADERS = frozenset(
     {
         # per-hop headers (these get read as we receive the incoming request, and automatically set on the outgoing)
@@ -187,7 +189,16 @@ async def proxy_http_request(
             if k.lower() not in _HTTP_RESPONSE_EXCLUDED_HEADERS
         ]
 
-        if upstream_response.status_code in buffer_status_codes:
+        # Buffer small / special-status responses instead of streaming.
+        # Streaming forces chunked transfer-encoding and uses an anyio task
+        # group with a disconnect listener that can cancel the stream before
+        # the terminus chunk is sent, causing intermittent
+        # ChunkedEncodingError on the client side.
+        upstream_content_length = upstream_response.headers.get("content-length")
+        should_buffer = upstream_response.status_code in buffer_status_codes or (
+            upstream_content_length is not None and int(upstream_content_length) <= _BUFFER_THRESHOLD
+        )
+        if should_buffer:
             body = await upstream_response.aread()
             await upstream_response.aclose()
             await client.aclose()
