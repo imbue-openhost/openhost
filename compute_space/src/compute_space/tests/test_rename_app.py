@@ -164,6 +164,10 @@ async def test_rename_refuses_archive_using_app_when_archive_unhealthy(tmp_path:
                VALUES (?, ?, '1.0', ?, ?, 'running', ?)""",
             (app_id, "old-name", "/tmp/repo/old-name", 19500, "[data]\napp_archive = true\n"),
         )
+        # Set backend to "s3" so the guard fires when the mount is
+        # unhealthy.  With backend="disabled" (the default) the guard
+        # is intentionally skipped since there's no S3 data to orphan.
+        db.execute("UPDATE archive_backend SET backend = 's3' WHERE id = 1")
         db.commit()
     finally:
         db.close()
