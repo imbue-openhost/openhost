@@ -13,7 +13,9 @@ from litestar import Response
 from litestar import route
 from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.di import Provide
+from litestar.exceptions import HTTPException
 from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions.responses import create_exception_response
 from litestar.handlers import asgi
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
@@ -31,6 +33,7 @@ from compute_space.config import get_config
 from compute_space.config import provide_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.identity import load_identity_keys
+from compute_space.core.logging import logger
 from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
 from compute_space.core.storage import start_storage_guard
@@ -121,6 +124,18 @@ def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorized
         return Response(content={"error": exc.detail}, status_code=401)
 
     return login_required_redirect(request)
+
+
+def _log_unhandled_exception(request: Request[Any, Any, Any], exc: Exception) -> Response[Any]:
+    """Log a traceback for any exception not caught by a more specific handler.
+
+    Litestar's default behaviour serialises the exception into a 500 JSON response
+    but doesn't log it, so genuine bugs disappear silently.  HTTPException subclasses
+    (404, 401, etc) are intentional and stay quiet.
+    """
+    if not isinstance(exc, HTTPException):
+        logger.opt(exception=exc).error("Unhandled exception in {} {}", request.method, request.url.path)
+    return create_exception_response(request=request, exc=exc)
 
 
 def _reject_app_subdomain_requests(request: Request[Any, Any, Any]) -> Response[Any] | None:
@@ -297,7 +312,10 @@ def create_app(config: Config) -> ASGIApp:
             "config": Provide(provide_config, sync_to_thread=False),
             "db": Provide(provide_db, sync_to_thread=False),
         },
-        exception_handlers={NotAuthorizedException: _login_required_redirect},
+        exception_handlers={
+            NotAuthorizedException: _login_required_redirect,
+            Exception: _log_unhandled_exception,
+        },
         on_startup=[_install_template_globals],
     )
     return SubdomainProxyMiddleware(litestar_app)
