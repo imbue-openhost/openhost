@@ -18,6 +18,7 @@ import websockets
 from litestar import Request
 from litestar import WebSocket
 from litestar.datastructures import Headers
+from litestar.enums import ScopeType
 from litestar.exceptions import WebSocketDisconnect
 from litestar.response.base import ASGIResponse
 from litestar.response.streaming import ASGIStreamingResponse
@@ -84,7 +85,9 @@ def _format_proxy_request_url(scope: Scope, target_port: int, override_path: str
         path = scope["raw_path"].decode("ascii")
 
     path = path.lstrip("/")
-    target_url = f"http://127.0.0.1:{target_port}/{path}"
+    # websockets.connect() rejects http/https URIs; use ws for WS scopes.
+    scheme = "ws" if scope["type"] == ScopeType.WEBSOCKET else "http"
+    target_url = f"{scheme}://127.0.0.1:{target_port}/{path}"
     query_string = scope["query_string"]
     if query_string:
         target_url += f"?{query_string.decode('utf-8')}"
@@ -247,9 +250,7 @@ async def proxy_websocket_request(
 
     If ``override_path`` is set, use it instead of the client path.
     """
-    # _format_proxy_request_url returns http://; the websockets library
-    # requires a ws:// (or wss://) URI for connect().
-    target_url = _format_proxy_request_url(connection.scope, target_port, override_path).replace("http://", "ws://", 1)
+    target_url = _format_proxy_request_url(connection.scope, target_port, override_path)
 
     if subprotocols_str := connection.headers.get("Sec-WebSocket-Protocol"):
         subprotocols = [Subprotocol(s.strip()) for s in subprotocols_str.split(",")]
