@@ -45,6 +45,7 @@ from compute_space.web.routes.api.identity import identity_routes
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
 from compute_space.web.routes.api.services_v2 import api_services_v2_routes
 from compute_space.web.routes.api.settings import api_settings_routes
+from compute_space.web.routes.api.system import system_routes
 from compute_space.web.routes.pages.apps import pages_apps_routes
 from compute_space.web.routes.pages.login import pages_login_routes
 from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_routes
@@ -224,7 +225,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     # constructs a Quart Blueprint at import time and we don't want those to
     # exist if a caller (e.g. the setup-only app) builds Litestar alone.
     from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
-    from compute_space.web.routes.api.system import system_bp  # noqa: PLC0415
     from compute_space.web.routes.docs import docs_bp  # noqa: PLC0415
 
     web_dir = Path(__file__).parent
@@ -269,7 +269,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     quart_app.register_blueprint(pages_settings_stub_bp)
     quart_app.register_blueprint(apps_stub_bp)
     quart_app.register_blueprint(api_apps_bp)
-    quart_app.register_blueprint(system_bp)
     quart_app.register_blueprint(docs_bp)
 
     # Quart-side templating helpers, matching the Litestar Jinja globals so the
@@ -339,6 +338,7 @@ def create_app(config: Config) -> ASGIApp:
             api_permissions_v2_routes,
             api_services_v2_routes,
             api_settings_routes,
+            system_routes,
             identity_routes,
             pages_apps_routes,
             pages_login_routes,

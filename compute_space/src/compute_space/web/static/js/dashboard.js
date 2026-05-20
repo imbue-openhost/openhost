@@ -87,14 +87,18 @@ function loadTokens() {
 }
 
 function createToken() {
-  var fd = new FormData();
-  fd.append('name', document.getElementById('token-name').value);
+  var body = {name: document.getElementById('token-name').value};
   if (document.getElementById('token-no-expiry').checked) {
-    fd.append('expiry_hours', 'never');
+    body.expiry_hours = 'never';
   } else {
-    fd.append('expiry_hours', document.getElementById('token-expiry').value);
+    body.expiry_hours = document.getElementById('token-expiry').value;
   }
-  fetch(config.tokensCreateUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+  fetch(config.tokensCreateUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) { alert(data.error); return; }

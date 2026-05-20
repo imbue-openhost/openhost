@@ -66,10 +66,12 @@ function updateListeningPorts() {
 // ─── Storage Status ───
 
 function toggleStorageGuard(pause) {
-  var fd = new FormData();
-  fd.append('paused', pause ? '1' : '0');
-  fetch(config.toggleStorageGuardUrl, {method: 'POST', credentials: 'same-origin', body: fd})
-    .then(function() { updateStorageStatus(); });
+  fetch(config.toggleStorageGuardUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({paused: !!pause}),
+  }).then(function() { updateStorageStatus(); });
 }
 
 function updateStorageStatus() {
