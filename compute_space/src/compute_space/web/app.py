@@ -1,5 +1,4 @@
 import atexit
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -18,14 +17,6 @@ from litestar.exceptions.responses import create_exception_response
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from litestar.types import ASGIApp
-from litestar.types import Message
-from litestar.types import Receive
-from litestar.types import Scope
-from litestar.types import Send
-from quart import Blueprint
-from quart import Quart
-from quart import current_app
-from quart import url_for as quart_url_for
 
 from compute_space.config import Config
 from compute_space.config import get_config
@@ -76,10 +67,11 @@ def _make_static_url(static_dir: Path) -> Any:
 
 
 # Templates use ``url_for(endpoint, **kwargs)`` with the legacy Quart blueprint
-# endpoint names.  Litestar's own ``url_for`` only knows about Litestar routes,
-# so we map the legacy endpoint names to their paths directly here.  Values may
-# use ``str.format``-style placeholders for routes with path params; the
-# ``url_for`` shim runs them through ``str.format(**kwargs)``.
+# endpoint names that pre-date the Litestar migration.  Litestar's own
+# ``url_for`` only knows about Litestar routes, so we map the legacy endpoint
+# names to their paths directly here.  Values may use ``str.format``-style
+# placeholders for routes with path params; the ``url_for`` shim runs them
+# through ``str.format(**kwargs)``.
 #
 # Add a new entry whenever a template gains a ``url_for(...)`` call to an
 # endpoint that isn't already listed.
@@ -211,93 +203,6 @@ def _reject_app_subdomain_requests(request: Request[Any, Any, Any]) -> Response[
     return None
 
 
-def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
-    """Build a Quart app holding the blueprints not yet ported to Litestar.
-
-    Mounted at "/" under Litestar via ``@asgi(is_mount=True)``; specific Litestar
-    handlers win over the mount, so migrating a route is just removing the
-    blueprint registration and adding the new Litestar handler.
-
-    The legacy ``@login_required`` decorator on these blueprints (see
-    ``web/auth/quart_compat.py``) defers to ``verify_owner_auth``, which
-    authenticates the request on demand against the connection's cookies /
-    Bearer header — no shared state from an outer middleware required.
-    """
-    web_dir = Path(__file__).parent
-    quart_app = Quart(
-        __name__,
-        template_folder=str(web_dir / "templates"),
-        static_folder=str(static_dir),
-    )
-    quart_app.openhost_config = config  # type: ignore[attr-defined]
-    quart_app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
-    # App installs and data migrations can ship large request bodies.
-    quart_app.config["MAX_CONTENT_LENGTH"] = None
-
-    # Stubs for routes that have been migrated to Litestar.  Quart's
-    # ``url_for`` resolves against blueprint-registered endpoints, and several
-    # of the layout/dashboard templates reference migrated routes by name
-    # (``pages_settings.settings_page`` -> /settings, etc.).  The handlers
-    # are never actually invoked because the corresponding specific Litestar
-    # routes win over the catch-all mount; they exist only so ``url_for``
-    # produces the right URL.
-
-    pages_settings_stub_bp = Blueprint("pages_settings", __name__)
-
-    @pages_settings_stub_bp.route("/settings")
-    async def settings_page() -> str:  # pragma: no cover — Litestar handles
-        return ""
-
-    # Stubs for endpoints whose handler moved to Litestar but are still
-    # referenced from unmigrated Quart routes via ``url_for(...)`` (e.g.
-    # /api/clone_and_get_app_info builds a redirect to ``apps.add_app``).
-    # Same rationale as ``pages_settings_stub_bp`` above.
-    apps_stub_bp = Blueprint("apps", __name__)
-
-    @apps_stub_bp.route("/add_app")
-    async def add_app() -> str:  # pragma: no cover — Litestar handles
-        return ""
-
-    @apps_stub_bp.route("/app_detail/<app_id>")
-    async def app_detail(app_id: str) -> str:  # pragma: no cover — Litestar handles
-        return ""
-
-    quart_app.register_blueprint(pages_settings_stub_bp)
-    quart_app.register_blueprint(apps_stub_bp)
-
-    # Quart-side templating helpers, matching the Litestar Jinja globals so the
-    # shared layout.html renders the same way regardless of which framework
-    # handled the request.  static_url uses Quart's own ``url_for`` so the
-    # blueprint-registered ``/static`` endpoint resolves correctly.
-    @quart_app.context_processor
-    async def _inject_template_globals() -> dict[str, Any]:
-        zone_domain = config.zone_domain
-        zone_name = zone_domain.split(".")[0] if zone_domain else None
-
-        def app_url(app_name: str) -> str:
-            proto = "https" if config.tls_enabled else "http"
-            return f"{proto}://{app_name}.{zone_domain}/"
-
-        def static_url(filename: str) -> str:
-            base = quart_url_for("static", filename=filename)
-            try:
-                static_root = Path(current_app.static_folder or "")
-                mtime = int((static_root / filename).stat().st_mtime)
-            except OSError:
-                return base
-            sep = "&" if "?" in base else "?"
-            return f"{base}{sep}v={mtime}"
-
-        return {
-            "zone_name": zone_name,
-            "zone_domain": zone_domain,
-            "app_url": app_url,
-            "static_url": static_url,
-        }
-
-    return quart_app
-
-
 def create_app(config: Config) -> ASGIApp:
     """Build the full router ASGI app.  The returned app is the Litestar app wrapped
     in ``SubdomainProxyMiddleware`` so app-subdomain requests are diverted to backend
@@ -321,17 +226,15 @@ def create_app(config: Config) -> ASGIApp:
 
     static_router = create_static_files_router(path="/static", directories=[static_dir])
 
-    quart_fallback_app = _build_quart_fallback(config, static_dir)
-
     atexit.register(cleanup_terminal)
 
     litestar_app = Litestar(
         route_handlers=[
             static_router,
+            api_apps_routes,
             api_archive_backend_routes,
             api_permissions_v2_routes,
             api_services_v2_routes,
-            api_apps_routes,
             api_settings_routes,
             system_routes,
             identity_routes,
@@ -356,45 +259,4 @@ def create_app(config: Config) -> ASGIApp:
         },
         on_startup=[_install_template_globals],
     )
-    return SubdomainProxyMiddleware(_wrap_with_quart_fallback(litestar_app, quart_fallback_app))
-
-
-def _wrap_with_quart_fallback(litestar_app: ASGIApp, quart_app: Quart) -> ASGIApp:
-    """Wrap a Litestar ASGI app so that requests it doesn't match (404) are
-    re-served by the Quart fallback ``quart_app``.
-
-    Why not just register the Quart sub-app via ``@asgi(path="/", is_mount=True)``?
-    Litestar 2.x routes path-parameterised handlers (``/app_detail/{app_id}``,
-    ``/api/tokens/{token_id:int}``) at lower precedence than a mount at "/", so
-    the mount silently shadows them — the specific Litestar route never runs and
-    every such request 404s out of Quart instead.  Wrapping Litestar in an outer
-    middleware sidesteps the routing precedence rule: Litestar runs first, the
-    mount-style fallback only kicks in when Litestar genuinely had no match.
-    """
-
-    async def app(scope: Scope, receive: Receive, send: Send) -> None:
-        # Buffering only makes sense for HTTP; pass websocket lifespan etc. straight through.
-        if scope["type"] != "http":  # type: ignore[comparison-overlap]
-            await litestar_app(scope, receive, send)
-            return
-
-        buffered: list[Message] = []
-        status_code = 0
-
-        async def buffer_send(message: Message) -> None:
-            nonlocal status_code
-            if message["type"] == "http.response.start":
-                status_code = int(message["status"])
-            buffered.append(message)
-
-        await litestar_app(scope, receive, buffer_send)
-
-        if status_code == 404:
-            # Litestar consumes the request body only when a handler runs; on
-            # a routing 404 the body is still available for Quart to re-read.
-            await quart_app(scope, receive, send)  # type: ignore[arg-type]
-            return
-        for message in buffered:
-            await send(message)
-
-    return app
+    return SubdomainProxyMiddleware(litestar_app)
