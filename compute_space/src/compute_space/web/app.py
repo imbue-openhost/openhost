@@ -66,52 +66,6 @@ def _make_static_url(static_dir: Path) -> Any:
     return static_url
 
 
-# Templates use ``url_for(endpoint, **kwargs)`` with the legacy Quart blueprint
-# endpoint names that pre-date the Litestar migration.  Litestar's own
-# ``url_for`` only knows about Litestar routes, so we map the legacy endpoint
-# names to their paths directly here.  Values may use ``str.format``-style
-# placeholders for routes with path params; the ``url_for`` shim runs them
-# through ``str.format(**kwargs)``.
-#
-# Add a new entry whenever a template gains a ``url_for(...)`` call to an
-# endpoint that isn't already listed.
-_TEMPLATE_ENDPOINT_PATHS: dict[str, str] = {
-    # layout.html (rendered for every page)
-    "apps.dashboard": "/dashboard",
-    "apps.add_app": "/add_app",
-    "pages_system.system_page": "/system/",
-    "pages_system.logs_page": "/logs/",
-    "pages_system.terminal_page": "/terminal/",
-    "pages_settings.settings_page": "/settings",
-    # dashboard.html
-    "apps.app_detail": "/app_detail/{app_id}",
-    "api_apps.api_apps": "/api/apps",
-    "system.api_tokens_list": "/api/tokens",
-    "system.api_tokens_create": "/api/tokens",
-    # app_detail.html
-    "api_apps.stop_app": "/stop_app/{app_id}",
-    "api_apps.reload_app": "/reload_app/{app_id}",
-    "api_apps.remove_app": "/remove_app/{app_id}",
-    "api_apps.rename_app": "/rename_app/{app_id}",
-    "api_apps.app_logs": "/app_logs/{app_id}",
-    "api_apps.app_status": "/api/app_status/{app_id}",
-    "system.drop_docker_cache": "/api/drop-docker-cache",
-    # system.html
-    "system.security_audit": "/api/security-audit",
-    "system.listening_ports": "/api/listening-ports",
-    "system.api_storage_status": "/api/storage-status",
-    "system.restart_router": "/restart_router",
-    "system.ssh_status": "/api/ssh-status",
-    "system.toggle_ssh": "/toggle-ssh",
-    "system.toggle_storage_guard": "/api/storage-guard",
-    "api_archive_backend.get_archive_backend": "/api/storage/archive_backend",
-    "api_archive_backend.test_connection": "/api/storage/archive_backend/test_connection",
-    "api_archive_backend.configure_archive_backend": "/api/storage/archive_backend/configure",
-    # logs.html
-    "system.compute_space_logs": "/api/compute_space_logs",
-}
-
-
 def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
     zone_domain = config.zone_domain
     zone_name = zone_domain.split(".")[0] if zone_domain else None
@@ -120,19 +74,11 @@ def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
         proto = "https" if config.tls_enabled else "http"
         return f"{proto}://{app_name}.{zone_domain}/"
 
-    def url_for(endpoint: str, **kwargs: Any) -> str:
-        try:
-            path = _TEMPLATE_ENDPOINT_PATHS[endpoint]
-        except KeyError as e:
-            raise KeyError(f"No template path mapping for endpoint {endpoint!r}") from e
-        return path.format(**kwargs) if kwargs else path
-
     return {
         "zone_name": zone_name,
         "zone_domain": zone_domain,
         "app_url": app_url,
         "static_url": _make_static_url(static_dir),
-        "url_for": url_for,
     }
 
 
