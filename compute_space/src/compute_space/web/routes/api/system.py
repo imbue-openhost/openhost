@@ -49,8 +49,8 @@ class CreateTokenRequest:
     sentinel ``"never"`` (= no expiry) and a numeric value share one field
     without forcing the JS client to send different keys."""
 
-    name: str = ""
-    expiry_hours: str = ""
+    name: str
+    expiry_hours: str | None = None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -135,9 +135,9 @@ async def api_tokens_create(
     data: CreateTokenRequest, db: sqlite3.Connection
 ) -> Response[CreatedToken] | Response[ErrorResponse]:
     name = data.name.strip() or "Untitled"
-    expiry_hours_raw = data.expiry_hours.strip()
+    expiry_hours_raw = data.expiry_hours.strip() if data.expiry_hours else ""
     expires_at: datetime | None
-    if expiry_hours_raw == "" or expiry_hours_raw.lower() == "never":
+    if not expiry_hours_raw or expiry_hours_raw.lower() == "never":
         expires_at = None
     else:
         try:

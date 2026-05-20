@@ -57,7 +57,6 @@ RESERVED_PATHS = {
     "/app",
     "/setup",
     "/.well-known",
-    "/handle_invite",
     "/terminal",
     "/toggle-ssh",
     "/identity",

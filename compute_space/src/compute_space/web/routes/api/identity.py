@@ -11,7 +11,6 @@ from litestar import post
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
 from litestar.params import Body
-from litestar.params import Parameter
 from litestar.response import Redirect
 from litestar.response import Template
 
@@ -44,7 +43,7 @@ class ZoneIdentityResponse:
 
 @attr.s(auto_attribs=True, frozen=True)
 class IdentityApproveForm:
-    callback: str = ""
+    callback: str
 
 
 @get("/.well-known/jwks.json", sync_to_thread=False)
@@ -88,16 +87,8 @@ def openhost_identity() -> ZoneIdentityResponse:
 
 
 @get("/identity/approve", guards=[require_owner_auth])
-async def identity_approve(
-    callback: Annotated[str, Parameter(query="callback")],
-    app_name: Annotated[str, Parameter(query="app_name", required=False)] = "an app",
-    requesting_domain: Annotated[str, Parameter(query="requesting_domain", required=False)] = "unknown",
-) -> Template:
+async def identity_approve(callback: str, app_name: str, requesting_domain: str) -> Template:
     """Show the owner an approval page for a federated login request."""
-    callback = callback.strip()
-    if not callback:
-        raise HTTPException(detail="Missing callback parameter", status_code=400)
-
     parsed = urllib.parse.urlparse(callback)
     if parsed.scheme not in ("https", "http") or not parsed.netloc:
         raise HTTPException(detail="Invalid callback URL", status_code=400)
@@ -117,23 +108,19 @@ async def identity_approve_submit(
     data: Annotated[IdentityApproveForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
 ) -> Redirect:
     """Owner approved the login — sign an identity token and redirect back."""
-    callback = data.callback.strip()
-    if not callback:
-        raise HTTPException(detail="Missing callback parameter", status_code=400)
-
-    parsed = urllib.parse.urlparse(callback)
+    parsed = urllib.parse.urlparse(data.callback)
     if parsed.scheme not in ("https", "http") or not parsed.netloc:
         raise HTTPException(detail="Invalid callback URL", status_code=400)
 
     try:
-        token = identity.sign_identity_token(callback)
+        token = identity.sign_identity_token(data.callback)
     except RuntimeError as e:
         logger.error("Failed to sign identity token: %s", e)
         raise HTTPException(detail="Identity service unavailable", status_code=503) from e
 
-    separator = "&" if "?" in callback else "?"
+    separator = "&" if "?" in data.callback else "?"
     encoded_token = urllib.parse.quote(token, safe="")
-    return Redirect(path=f"{callback}{separator}identity_token={encoded_token}")
+    return Redirect(path=f"{data.callback}{separator}identity_token={encoded_token}")
 
 
 identity_routes = Router(
