@@ -9,85 +9,103 @@ column was written before the marker rename.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
-from quart import Quart
+from litestar import Litestar
+from litestar.testing import TestClient
 
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.db.connection import init_db
+from compute_space.web.routes.api.apps import api_apps_routes
 
+from ._litestar_helpers import auth_cookie
+from ._litestar_helpers import make_test_app
 from .conftest import _make_test_config
 
 
-async def _app_status_response(tmp_path: Path, *, error_message: str, port: int) -> tuple[int, dict]:
-    """Drive /api/app_status/<name> end-to-end against a real Quart app
-    with a real on-disk sqlite schema.  Returns (status_code, payload)."""
-    cfg = _make_test_config(tmp_path, port=port)
+@pytest.fixture
+def cfg(tmp_path: Path) -> Any:
+    cfg = _make_test_config(tmp_path, port=20100)
     init_db(cfg.db_path)
+    return cfg
 
-    # Insert one app row with the error_message of interest.
+
+@pytest.fixture
+def client(cfg: Any) -> Iterator[TestClient[Litestar]]:
+    with TestClient(app=make_test_app(api_apps_routes)) as c:
+        yield c
+
+
+@pytest.fixture
+def cookies(cfg: Any) -> dict[str, str]:
+    return auth_cookie(cfg)
+
+
+def _seed_app_with_error(cfg: Any, error_message: str, port: int) -> str:
+    """Insert one app row with the given error_message and return its app_id."""
     app_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
     try:
         db.execute(
             """INSERT INTO apps (app_id, name, version, repo_path, local_port, status, error_message)
                VALUES (?, 'notes', '1.0', '/repo/notes', ?, 'error', ?)""",
-            (app_id, port + 10, error_message),
+            (app_id, port, error_message),
         )
         db.commit()
     finally:
         db.close()
-
-    app = Quart(__name__)
-    app.config["DB_PATH"] = cfg.db_path
-    app.openhost_config = cfg  # type: ignore[attr-defined]
-    # apps_routes uses a login_required middleware; bypass it here by
-    # calling the unwrapped view function directly.
-    async with app.app_context(), app.test_request_context(f"/api/app_status/{app_id}"):
-        response = apps_routes.app_status.__wrapped__(app_id)  # type: ignore[attr-defined]
-        payload = await response.get_json()
-        status = response.status_code
-    return status, payload
+    return app_id
 
 
-@pytest.mark.asyncio
-async def test_current_marker_maps_to_build_cache_corrupt_error_kind(tmp_path: Path) -> None:
-    status, payload = await _app_status_response(
-        tmp_path,
+def test_current_marker_maps_to_build_cache_corrupt_error_kind(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    app_id = _seed_app_with_error(
+        cfg,
         error_message=f"{BUILD_CACHE_CORRUPT_MARKER} Container build cache is corrupted.",
-        port=20100,
+        port=20110,
     )
-    assert status == 200
+    resp = client.get(f"/api/app_status/{app_id}", cookies=cookies)
+    assert resp.status_code == 200
+    payload = resp.json()
     assert payload["error_kind"] == "build_cache_corrupt"
     assert payload["error"] == "Container build cache is corrupted."
 
 
-@pytest.mark.asyncio
-async def test_legacy_marker_still_maps_to_build_cache_corrupt_error_kind(tmp_path: Path) -> None:
+def test_legacy_marker_still_maps_to_build_cache_corrupt_error_kind(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
     """Rows whose error_message was written before the marker rename
     must still trigger the 'drop cache' remediation toast in the UI."""
-    status, payload = await _app_status_response(
-        tmp_path,
+    app_id = _seed_app_with_error(
+        cfg,
         error_message="[CACHE_CORRUPT] Docker build cache is corrupted.",
-        port=20101,
+        port=20111,
     )
-    assert status == 200
+    resp = client.get(f"/api/app_status/{app_id}", cookies=cookies)
+    assert resp.status_code == 200
+    payload = resp.json()
     assert payload["error_kind"] == "build_cache_corrupt"
     assert payload["error"] == "Container build cache is corrupted."
 
 
-@pytest.mark.asyncio
-async def test_unrelated_error_message_has_no_error_kind(tmp_path: Path) -> None:
-    status, payload = await _app_status_response(
-        tmp_path,
+def test_unrelated_error_message_has_no_error_kind(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    app_id = _seed_app_with_error(
+        cfg,
         error_message="App started but not responding to HTTP",
-        port=20102,
+        port=20112,
     )
-    assert status == 200
+    resp = client.get(f"/api/app_status/{app_id}", cookies=cookies)
+    assert resp.status_code == 200
+    payload = resp.json()
     assert payload["error_kind"] is None
 
 

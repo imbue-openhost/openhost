@@ -40,6 +40,7 @@ from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
+from compute_space.web.routes.api.apps import api_apps_routes
 from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
 from compute_space.web.routes.api.identity import identity_routes
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
@@ -222,11 +223,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     authenticates the request on demand against the connection's cookies /
     Bearer header — no shared state from an outer middleware required.
     """
-    # Imports are scoped to this builder because each module side-effectfully
-    # constructs a Quart Blueprint at import time and we don't want those to
-    # exist if a caller (e.g. the setup-only app) builds Litestar alone.
-    from compute_space.web.routes.api.apps import api_apps_bp  # noqa: PLC0415
-
     web_dir = Path(__file__).parent
     quart_app = Quart(
         __name__,
@@ -268,7 +264,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
 
     quart_app.register_blueprint(pages_settings_stub_bp)
     quart_app.register_blueprint(apps_stub_bp)
-    quart_app.register_blueprint(api_apps_bp)
 
     # Quart-side templating helpers, matching the Litestar Jinja globals so the
     # shared layout.html renders the same way regardless of which framework
@@ -336,6 +331,7 @@ def create_app(config: Config) -> ASGIApp:
             api_archive_backend_routes,
             api_permissions_v2_routes,
             api_services_v2_routes,
+            api_apps_routes,
             api_settings_routes,
             system_routes,
             identity_routes,

@@ -177,7 +177,7 @@ def _deploy_app(session, base_url, app_path, app_name=None, timeout=120):
     if app_name:
         data["app_name"] = app_name
 
-    r = session.post(f"{base_url}/api/add_app", data=data, timeout=timeout)
+    r = session.post(f"{base_url}/api/add_app", json=data, timeout=timeout)
     assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:300]}"
     return r
 
@@ -321,7 +321,7 @@ class TestRouterCore:
         base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
-            data={},
+            json={},
         )
         assert r.status_code == 400
         assert "No repository URL provided" in r.json()["error"]
@@ -330,7 +330,7 @@ class TestRouterCore:
         base_url = _zone_url(config)
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
-            data={"repo_url": "file:///nonexistent/path"},
+            json={"repo_url": "file:///nonexistent/path"},
         )
         assert r.status_code == 400
         assert "Local path does not exist" in r.json()["error"]
@@ -341,7 +341,7 @@ class TestRouterCore:
         repo_url = f"file://{_FIXTURES_DIR}/test_app"
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
-            data={"repo_url": repo_url},
+            json={"repo_url": repo_url},
         )
         assert r.status_code == 200, f"Unexpected status {r.status_code}"
         data = r.json()
@@ -376,7 +376,7 @@ class TestRouterCore:
         repo_url = f"file://{git_dir}"
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
-            data={"repo_url": repo_url},
+            json={"repo_url": repo_url},
         )
         assert r.status_code == 200, f"Unexpected status {r.status_code}"
         data = r.json()
@@ -390,7 +390,7 @@ class TestRouterCore:
         repo_url = f"file://{bare_path}"
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
-            data={"repo_url": repo_url},
+            json={"repo_url": repo_url},
         )
         assert r.status_code == 200, f"Unexpected status {r.status_code}"
         data = r.json()
@@ -1274,7 +1274,7 @@ class TestRemoveKeepData:
         app_id = app_id_for(admin_session, base_url, "test-app")
         r = admin_session.post(
             f"{base_url}/remove_app/{app_id}",
-            data={"keep_data": "1"},
+            json={"keep_data": True},
         )
         assert r.status_code == 202
         wait_app_removed(admin_session, base_url, "test-app")
@@ -1432,7 +1432,7 @@ class TestGitUrlDeployE2E:
         # Step 1: clone and get app info
         r = admin_session.post(
             f"{base_url}/api/clone_and_get_app_info",
-            data={"repo_url": repo_url},
+            json={"repo_url": repo_url},
         )
         assert r.status_code == 200, f"clone_and_get_app_info failed: {r.status_code}"
         data = r.json()
@@ -1442,7 +1442,7 @@ class TestGitUrlDeployE2E:
         # Step 2: deploy
         r = admin_session.post(
             f"{base_url}/api/add_app",
-            data={
+            json={
                 "repo_url": repo_url,
                 "app_name": self.APP_NAME,
                 "clone_dir": clone_dir,

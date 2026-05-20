@@ -12,13 +12,13 @@ from unittest import mock
 import pytest
 from litestar import Litestar
 from litestar.testing import TestClient
-from quart import Quart
 
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core import archive_backend
 from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import AppManifest
 from compute_space.db.connection import init_db
+from compute_space.web.routes.api.apps import api_apps_routes
 from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
 
 from ._litestar_helpers import auth_cookie
@@ -307,11 +307,7 @@ def test_manifest_uses_archive_matches_either_flag() -> None:
     assert not archive_backend.manifest_uses_archive("[data]\napp_archive = false\napp_data = true\n")
 
 
-# --- install/reload gates (still-Quart api/apps routes) -------------------
-#
-# These exercise archive-backend gates inside api/apps endpoints (api_add_app
-# and reload_app), so they stay on the legacy Quart `.__wrapped__` pattern
-# until api/apps itself is migrated to Litestar.
+# --- install/reload gates (api/apps endpoints' archive backend checks) ----
 
 
 def _archive_manifest(name: str, *, app_archive: bool, access_all_data: bool = False) -> AppManifest:
@@ -345,52 +341,45 @@ def _archive_manifest(name: str, *, app_archive: bool, access_all_data: bool = F
     )
 
 
-def _add_app_test_app(cfg: Any) -> Quart:
-    test_app = Quart(__name__)
-    test_app.config["DB_PATH"] = cfg.db_path
-    test_app.openhost_config = cfg  # type: ignore[attr-defined]
-    test_app.add_url_rule(
-        "/api/add_app",
-        view_func=apps_routes.api_add_app.__wrapped__,  # type: ignore[attr-defined]
-        methods=["POST"],
-    )
-    return test_app
+@pytest.fixture
+def apps_client(cfg: Any) -> Iterator[TestClient[Litestar]]:
+    with TestClient(app=make_test_app(api_apps_routes)) as c:
+        yield c
 
 
-@pytest.mark.asyncio
-async def test_add_app_refuses_archive_app_when_backend_disabled(cfg: Any, tmp_path: Path) -> None:
+def test_add_app_refuses_archive_app_when_backend_disabled(
+    apps_client: TestClient[Litestar], cookies: dict[str, str], tmp_path: Path
+) -> None:
     """An app with ``app_archive = true`` cannot be installed while the
     backend is 'disabled'.  400 (operator-actionable: configure S3) rather
     than 503 (transient retry)."""
     fake_clone_dir = str(tmp_path / "clone")
     os.makedirs(fake_clone_dir)
-    test_app = _add_app_test_app(cfg)
-    client = test_app.test_client()
     with (
         mock.patch.object(apps_routes, "parse_manifest", return_value=_archive_manifest("probe", app_archive=True)),
         mock.patch.object(apps_routes, "validate_manifest", return_value=None),
     ):
-        resp = await client.post(
+        resp = apps_client.post(
             "/api/add_app",
-            form={
+            json={
                 "repo_url": "https://example.invalid/repo",
                 "app_name": "probe",
                 "clone_dir": fake_clone_dir,
             },
+            cookies=cookies,
         )
     assert resp.status_code == 400
-    body = await resp.get_json()
+    body = resp.json()
     assert "S3" in body["error"] or "system page" in body["error"].lower()
 
 
-@pytest.mark.asyncio
-async def test_add_app_allows_access_all_data_when_backend_disabled(cfg: Any, tmp_path: Path) -> None:
+def test_add_app_allows_access_all_data_when_backend_disabled(
+    apps_client: TestClient[Litestar], cookies: dict[str, str], tmp_path: Path
+) -> None:
     """``access_all_data = true`` (without ``app_archive``) does NOT need a
     configured archive backend — the app silently goes without the mount."""
     fake_clone_dir = str(tmp_path / "clone-aad")
     os.makedirs(fake_clone_dir)
-    test_app = _add_app_test_app(cfg)
-    client = test_app.test_client()
     with (
         mock.patch.object(
             apps_routes,
@@ -400,22 +389,23 @@ async def test_add_app_allows_access_all_data_when_backend_disabled(cfg: Any, tm
         mock.patch.object(apps_routes, "validate_manifest", return_value=None),
         mock.patch.object(apps_routes, "insert_and_deploy", return_value="seer"),
     ):
-        resp = await client.post(
+        resp = apps_client.post(
             "/api/add_app",
-            form={
+            json={
                 "repo_url": "https://example.invalid/repo",
                 "app_name": "seer",
                 "clone_dir": fake_clone_dir,
             },
+            cookies=cookies,
         )
-    body_text = await resp.get_data(as_text=True)
     # Must NOT reject with archive-related 400/503.
-    assert resp.status_code != 400 or "archive" not in body_text.lower(), body_text
-    assert resp.status_code != 503 or "archive" not in body_text.lower(), body_text
+    assert resp.status_code != 400 or "archive" not in resp.text.lower(), resp.text
+    assert resp.status_code != 503 or "archive" not in resp.text.lower(), resp.text
 
 
-@pytest.mark.asyncio
-async def test_reload_app_refuses_when_archive_unhealthy(cfg: Any) -> None:
+def test_reload_app_refuses_when_archive_unhealthy(
+    cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
     """An archive-using app cannot be reloaded while the JuiceFS mount is
     unhealthy; without this guard, provision_data would write to the
     underlying empty mount-point and lose those writes once the mount
@@ -435,22 +425,13 @@ async def test_reload_app_refuses_when_archive_unhealthy(cfg: Any) -> None:
         db.commit()
     finally:
         db.close()
-
-    test_app = Quart(__name__)
-    test_app.config["DB_PATH"] = cfg.db_path
-    test_app.openhost_config = cfg  # type: ignore[attr-defined]
-    test_app.add_url_rule(
-        "/reload_app/<app_id>",
-        view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
-        methods=["POST"],
-    )
-    client = test_app.test_client()
-    resp = await client.post(f"/reload_app/{archived_id}")
+    resp = apps_client.post(f"/reload_app/{archived_id}", cookies=cookies)
     assert resp.status_code == 503
 
 
-@pytest.mark.asyncio
-async def test_reload_app_allows_access_all_data_when_archive_unhealthy(cfg: Any) -> None:
+def test_reload_app_allows_access_all_data_when_archive_unhealthy(
+    cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
     """access_all_data apps can still reload while the archive is unhealthy
     — they just see the archive when it's available."""
     seer_id = new_app_id()
@@ -468,20 +449,9 @@ async def test_reload_app_allows_access_all_data_when_archive_unhealthy(cfg: Any
         db.commit()
     finally:
         db.close()
-
-    test_app = Quart(__name__)
-    test_app.config["DB_PATH"] = cfg.db_path
-    test_app.openhost_config = cfg  # type: ignore[attr-defined]
-    test_app.add_url_rule(
-        "/reload_app/<app_id>",
-        view_func=apps_routes.reload_app.__wrapped__,  # type: ignore[attr-defined]
-        methods=["POST"],
-    )
-    client = test_app.test_client()
     with (
         mock.patch("compute_space.web.routes.api.apps.stop_app_process"),
         mock.patch("compute_space.web.routes.api.apps.reload_app_background"),
     ):
-        resp = await client.post(f"/reload_app/{seer_id}")
-        body = await resp.get_data(as_text=True)
-        assert resp.status_code != 503 or "archive" not in body.lower()
+        resp = apps_client.post(f"/reload_app/{seer_id}", cookies=cookies)
+    assert resp.status_code != 503 or "archive" not in resp.text.lower()

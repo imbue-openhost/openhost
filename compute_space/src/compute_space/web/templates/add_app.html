@@ -109,12 +109,13 @@ async function cloneApp(url) {
   hide('confirm-section');
   show('cloning-status');
 
-  const form = new FormData();
-  form.append('repo_url', repoUrl);
-
   let resp;
   try {
-    resp = await fetch('/api/clone_and_get_app_info', { method: 'POST', body: form });
+    resp = await fetch('/api/clone_and_get_app_info', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({repo_url: repoUrl}),
+    });
   } catch (e) {
     showError('Network error: ' + e.message);
     show('clone-form');
@@ -318,22 +319,25 @@ async function deployApp() {
   hide('confirm-section');
   show('installing-status');
 
-  const form = new FormData();
-  form.append('repo_url', repoUrl);
-  form.append('app_name', appName);
-  if (cloneDir) form.append('clone_dir', cloneDir);
-
-  // Collect port overrides as individual form fields
+  // Collect typed port overrides keyed by label.
+  const portOverrides = {};
   document.querySelectorAll('.port-host-input').forEach(input => {
     const val = parseInt(input.value, 10);
     if (!isNaN(val) && val > 0) {
-      form.append(`port_override.${input.dataset.label}`, val.toString());
+      portOverrides[input.dataset.label] = val;
     }
   });
 
+  const body = {repo_url: repoUrl, app_name: appName, port_overrides: portOverrides};
+  if (cloneDir) body.clone_dir = cloneDir;
+
   let resp;
   try {
-    resp = await fetch('/api/add_app', { method: 'POST', body: form });
+    resp = await fetch('/api/add_app', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
   } catch (e) {
     hide('installing-status');
     showError('Network error: ' + e.message);
