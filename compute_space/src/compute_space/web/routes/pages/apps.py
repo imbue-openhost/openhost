@@ -1,10 +1,8 @@
 import sqlite3
-from typing import Annotated
 
 from litestar import Router
 from litestar import get
 from litestar.exceptions import HTTPException
-from litestar.params import Parameter
 from litestar.response import Template
 
 from compute_space.config import Config
@@ -21,12 +19,7 @@ async def dashboard(db: sqlite3.Connection) -> Template:
 
 
 @get("/app_detail/{app_id:str}", guards=[require_owner_auth])
-async def app_detail(
-    app_id: str,
-    db: sqlite3.Connection,
-    config: Config,
-    next: Annotated[str, Parameter(query="next", required=False)] = "",
-) -> Template:
+async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: str = "") -> Template:
     if not is_valid_app_id(app_id):
         raise HTTPException(detail="Invalid app_id", status_code=400)
     app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
@@ -53,11 +46,7 @@ async def app_detail(
 
 
 @get("/add_app", guards=[require_owner_auth])
-async def add_app(
-    config: Config,
-    repo: Annotated[str, Parameter(query="repo", required=False)] = "",
-    next: Annotated[str, Parameter(query="next", required=False)] = "",
-) -> Template:
+async def add_app(config: Config, repo: str = "", next: str = "") -> Template:
     return Template(
         template_name="add_app.html",
         context={
