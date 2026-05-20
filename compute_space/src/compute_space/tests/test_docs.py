@@ -29,14 +29,20 @@ What we cover:
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
-from quart import Quart
+from litestar import Litestar
+from litestar.testing import TestClient
 
 import compute_space.web.routes.docs as docs_routes
 from compute_space.config import set_active_config
 from compute_space.core.apps import RESERVED_PATHS
+from compute_space.web.routes.docs import docs_routes as docs_router
+
+from ._litestar_helpers import make_test_app
 
 
 class _FakeCfg:
@@ -46,20 +52,8 @@ class _FakeCfg:
         self.openhost_repo_path = openhost_repo_path
 
 
-def _make_app(repo_root_override: Path) -> Quart:
-    """Build a minimal Quart app with the docs blueprint registered."""
-    app = Quart(__name__)
-    cfg = _FakeCfg(openhost_repo_path=repo_root_override)
-    app.openhost_config = cfg  # type: ignore[attr-defined]
-    # docs.py reads `get_config()` directly; install the fake as the active
-    # config for the duration of the test.
-    set_active_config(cfg)  # type: ignore[arg-type]
-    app.register_blueprint(docs_routes.docs_bp)
-    return app
-
-
 @pytest.fixture(autouse=True)
-def _clear_render_cache():
+def _clear_render_cache() -> Iterator[None]:
     """Reset the module-global mtime cache between tests so each
     test starts from a clean slate."""
     docs_routes._render_cache.clear()
@@ -104,54 +98,58 @@ def _populate_fake_docs(src_dir: Path) -> None:
     (src_dir / "creating_an_app.md").write_text("# Creating an App\n\nGuide content.\n")
 
 
+def _client(repo_root: Path) -> tuple[TestClient[Litestar], Any]:
+    """Build a Litestar TestClient pointed at ``repo_root``; the docs route reads
+    ``get_config().openhost_repo_path`` so we install the fake as the active config."""
+    cfg = _FakeCfg(openhost_repo_path=repo_root)
+    set_active_config(cfg)  # type: ignore[arg-type]
+    return TestClient(app=make_test_app(docs_router)), cfg
+
+
 @pytest.fixture
-def app_with_docs(tmp_path: Path) -> Quart:
-    """A Quart app pointing at a fake repo root with docs/src/ populated."""
+def client_with_docs(tmp_path: Path) -> Iterator[TestClient[Litestar]]:
     repo_root = tmp_path / "repo"
     _populate_fake_docs(repo_root / "docs" / "src")
-    return _make_app(repo_root_override=repo_root)
+    client, _cfg = _client(repo_root)
+    with client as c:
+        yield c
 
 
 @pytest.fixture
-def app_without_docs(tmp_path: Path) -> Quart:
-    """A Quart app whose docs/src/ does NOT exist (corrupt install)."""
+def client_without_docs(tmp_path: Path) -> Iterator[TestClient[Litestar]]:
     repo_root = tmp_path / "repo-no-docs"
     repo_root.mkdir()
-    return _make_app(repo_root_override=repo_root)
+    client, _cfg = _client(repo_root)
+    with client as c:
+        yield c
 
 
 # -- happy path -----------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_index_renders_introduction(app_with_docs: Quart):
+def test_index_renders_introduction(client_with_docs: TestClient[Litestar]) -> None:
     """``GET /docs/`` must render ``introduction.md``."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/")
+    resp = client_with_docs.get("/docs/")
     assert resp.status_code == 200
-    body = (await resp.get_data()).decode()
+    body = resp.text
     assert "Welcome to OpenHost" in body
     assert "self-hosted application platform" in body
 
 
-@pytest.mark.asyncio
-async def test_slug_renders_corresponding_markdown(app_with_docs: Quart):
+def test_slug_renders_corresponding_markdown(client_with_docs: TestClient[Litestar]) -> None:
     """``GET /docs/manifest_spec`` renders ``manifest_spec.md``."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/manifest_spec")
+    resp = client_with_docs.get("/docs/manifest_spec")
     assert resp.status_code == 200
-    body = (await resp.get_data()).decode()
+    body = resp.text
     assert "<h1" in body
     assert "Manifest" in body
     assert "Each app declares" in body
 
 
-@pytest.mark.asyncio
-async def test_code_blocks_are_syntax_highlighted(app_with_docs: Quart):
+def test_code_blocks_are_syntax_highlighted(client_with_docs: TestClient[Litestar]) -> None:
     """Fenced code blocks with a language tag run through Pygments."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/manifest_spec")
-    body = (await resp.get_data()).decode()
+    resp = client_with_docs.get("/docs/manifest_spec")
+    body = resp.text
     # The Pygments HtmlFormatter wraps highlighted output in
     # ``<div class="codehilite">`` and tags individual tokens with
     # CSS classes like ``.n`` (name), ``.s2`` (double-quoted str), etc.
@@ -159,12 +157,10 @@ async def test_code_blocks_are_syntax_highlighted(app_with_docs: Quart):
     assert "image" in body
 
 
-@pytest.mark.asyncio
-async def test_sidebar_contains_summary_entries(app_with_docs: Quart):
+def test_sidebar_contains_summary_entries(client_with_docs: TestClient[Litestar]) -> None:
     """The sidebar exposes the SUMMARY.md sections + links."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/")
-    body = (await resp.get_data()).decode()
+    resp = client_with_docs.get("/docs/")
+    body = resp.text
     assert "Concepts" in body
     assert "Guides" in body
     assert 'href="/docs/manifest_spec"' in body
@@ -172,53 +168,43 @@ async def test_sidebar_contains_summary_entries(app_with_docs: Quart):
     assert 'href="/docs/creating_an_app"' in body
 
 
-@pytest.mark.asyncio
-async def test_active_sidebar_link_marked(app_with_docs: Quart):
+def test_active_sidebar_link_marked(client_with_docs: TestClient[Litestar]) -> None:
     """The currently-rendered page's sidebar link gets ``class="active"``."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/manifest_spec")
-    body = (await resp.get_data()).decode()
-    # Find the link to manifest_spec and verify it carries the active marker.
+    resp = client_with_docs.get("/docs/manifest_spec")
+    body = resp.text
     assert 'href="/docs/manifest_spec"' in body and "active" in body
 
 
-@pytest.mark.asyncio
-async def test_internal_md_links_rewritten(app_with_docs: Quart):
+def test_internal_md_links_rewritten(client_with_docs: TestClient[Litestar]) -> None:
     """Markdown like ``[manifest spec](./manifest_spec.md)`` should
     render as a link to ``/docs/manifest_spec``, NOT a literal
     ``href="./manifest_spec.md"`` that would 404."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/")
-    body = (await resp.get_data()).decode()
+    resp = client_with_docs.get("/docs/")
+    body = resp.text
     assert 'href="/docs/manifest_spec"' in body
     assert 'href="./manifest_spec.md"' not in body
     assert 'href="manifest_spec.md"' not in body
 
 
-@pytest.mark.asyncio
-async def test_prev_next_navigation(app_with_docs: Quart):
+def test_prev_next_navigation(client_with_docs: TestClient[Litestar]) -> None:
     """Each page surfaces prev/next links based on SUMMARY.md order."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/manifest_spec")
-    body = (await resp.get_data()).decode()
+    resp = client_with_docs.get("/docs/manifest_spec")
+    body = resp.text.lower()
     # In our SUMMARY: introduction, manifest_spec, routing, creating_an_app.
     # manifest_spec should point back to introduction and forward to routing.
-    assert "introduction" in body.lower()
-    assert "routing" in body.lower()
+    assert "introduction" in body
+    assert "routing" in body
 
 
 # -- 404 / safety ---------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_unknown_slug_404(app_with_docs: Quart):
+def test_unknown_slug_404(client_with_docs: TestClient[Litestar]) -> None:
     """A request for a slug whose .md doesn't exist returns 404."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs/this_does_not_exist")
+    resp = client_with_docs.get("/docs/this_does_not_exist")
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "evil_slug",
     [
@@ -232,81 +218,75 @@ async def test_unknown_slug_404(app_with_docs: Quart):
         "introduction.md.bak",
     ],
 )
-async def test_path_traversal_blocked(app_with_docs: Quart, evil_slug: str):
+def test_path_traversal_blocked(client_with_docs: TestClient[Litestar], evil_slug: str) -> None:
     """The slug regex rejects anything outside ``[A-Za-z0-9_-]+``.
 
-    Whether Quart returns 404 directly or 308-rewrites and then 404s,
+    Whether the framework returns 404 directly or 308-rewrites and then 404s,
     the response must NOT be 200 and must NOT echo a sensitive
     sentinel from outside the docs dir.
     """
-    client = app_with_docs.test_client()
-    resp = await client.get(f"/docs/{evil_slug}", follow_redirects=True)
+    resp = client_with_docs.get(f"/docs/{evil_slug}", follow_redirects=True)
     assert resp.status_code != 200
-    body = (await resp.get_data()).decode("utf-8", errors="replace")
     # Sanity: no actual /etc/passwd content
-    assert "root:x:" not in body
+    assert "root:x:" not in resp.text
 
 
 # -- error paths ----------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_missing_docs_dir_returns_503(app_without_docs: Quart):
+def test_missing_docs_dir_returns_503(client_without_docs: TestClient[Litestar]) -> None:
     """When ``docs/src/`` doesn't exist, the route returns 503 with
     an actionable error message rather than 200/blank.
 
     This is the "operator's checkout is broken / incomplete" path.
     """
-    client = app_without_docs.test_client()
-    resp = await client.get("/docs/")
+    resp = client_without_docs.get("/docs/")
     assert resp.status_code == 503
-    body = (await resp.get_data()).decode()
-    assert "docs source directory is missing" in body.lower()
+    assert "docs source directory is missing" in resp.text.lower()
 
 
 # -- redirects ------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_trailing_slash_redirect(app_with_docs: Quart):
-    """``/docs`` (no slash) → ``/docs/`` so mdBook-style relative
-    asset links would resolve correctly.  We don't use such relative
-    links any more, but the redirect is kept for bookmark stability."""
-    client = app_with_docs.test_client()
-    resp = await client.get("/docs")
-    assert resp.status_code in (301, 302, 308)
-    assert resp.headers["Location"].endswith("/docs/")
+def test_both_slash_variants_serve_index(client_with_docs: TestClient[Litestar]) -> None:
+    """``/docs`` and ``/docs/`` both serve the index — Litestar normalises
+    trailing slashes during routing, so a single handler covers both."""
+    for path in ("/docs", "/docs/"):
+        resp = client_with_docs.get(path, follow_redirects=False)
+        assert resp.status_code == 200, path
+        assert "Welcome to OpenHost" in resp.text, path
 
 
 # -- cache ----------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_render_cache_invalidates_on_mtime_change(app_with_docs: Quart):
+def test_render_cache_invalidates_on_mtime_change(tmp_path: Path) -> None:
     """Modifying the markdown source after the first render must be
     reflected on the next request — the mtime check should bust the
     cache."""
-    client = app_with_docs.test_client()
-    resp1 = await client.get("/docs/")
-    body1 = (await resp1.get_data()).decode()
-    assert "Welcome to OpenHost" in body1
+    repo_root = tmp_path / "repo"
+    _populate_fake_docs(repo_root / "docs" / "src")
+    client, _cfg = _client(repo_root)
+    with client as c:
+        resp1 = c.get("/docs/")
+        assert "Welcome to OpenHost" in resp1.text
 
-    # Mutate the source.  Sleep so mtime resolution definitely
-    # increases (some filesystems have 1s resolution).
-    src = app_with_docs.openhost_config.openhost_repo_path / "docs" / "src" / "introduction.md"
-    time.sleep(1.05)
-    src.write_text("# A New Heading\n\nFresh content.\n")
+        # Mutate the source.  Sleep so mtime resolution definitely
+        # increases (some filesystems have 1s resolution).
+        src = repo_root / "docs" / "src" / "introduction.md"
+        time.sleep(1.05)
+        src.write_text("# A New Heading\n\nFresh content.\n")
 
-    resp2 = await client.get("/docs/")
-    body2 = (await resp2.get_data()).decode()
-    assert "A New Heading" in body2
-    assert "Welcome to OpenHost" not in body2
+        resp2 = c.get("/docs/")
+        body2 = resp2.text
+        assert "A New Heading" in body2
+        assert "Welcome to OpenHost" not in body2
 
 
 # -- RESERVED_PATHS regression --------------------------------------
 
 
-def test_docs_in_reserved_paths():
+def test_docs_in_reserved_paths() -> None:
     """An operator must NOT be able to deploy an app named ``docs``
     — that would shadow the route ordering and break the manual.
 

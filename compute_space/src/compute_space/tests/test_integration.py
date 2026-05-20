@@ -407,7 +407,7 @@ class TestRouterCore:
         base = _zone_url(config)
 
         # Create a token
-        r = admin_session.post(f"{base}/api/tokens", data={"name": "test-token", "expiry_hours": "1"})
+        r = admin_session.post(f"{base}/api/tokens", json={"name": "test-token", "expiry_hours": "1"})
         assert r.status_code == 200
         data = r.json()
         assert "token" in data
@@ -431,7 +431,7 @@ class TestRouterCore:
         # Delete the token
         token_id = next(t["id"] for t in tokens if t["name"] == "test-token")
         r = admin_session.delete(f"{base}/api/tokens/{token_id}")
-        assert r.status_code == 200
+        assert r.status_code == 204
 
         # Token should no longer work
         r = requests.get(
@@ -444,7 +444,7 @@ class TestRouterCore:
     def test_api_token_no_expiry(self, admin_session, config):
         """Tokens created with expiry_hours=never should work."""
         base = _zone_url(config)
-        r = admin_session.post(f"{base}/api/tokens", data={"name": "no-expiry", "expiry_hours": "never"})
+        r = admin_session.post(f"{base}/api/tokens", json={"name": "no-expiry", "expiry_hours": "never"})
         data = r.json()
         assert data["expires_at"] is None
 

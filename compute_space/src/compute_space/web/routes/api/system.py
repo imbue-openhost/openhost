@@ -1,17 +1,22 @@
 import hashlib
 import secrets
+import sqlite3
 import subprocess
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 
-from quart import Blueprint
-from quart import Response
-from quart import jsonify
-from quart import request
-from quart.typing import ResponseReturnValue
+import attr
+from litestar import MediaType
+from litestar import Response
+from litestar import Router
+from litestar import delete
+from litestar import get
+from litestar import post
 
-from compute_space.config import get_config
+from compute_space.config import Config
+from compute_space.core.auth.security_audit import AuditResult
+from compute_space.core.auth.security_audit import ListeningPort
 from compute_space.core.auth.security_audit import is_sshd_active
 from compute_space.core.auth.security_audit import list_listening_ports
 from compute_space.core.auth.security_audit import run_audit
@@ -21,210 +26,243 @@ from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
-from compute_space.db import get_db
-from compute_space.web.auth.quart_compat import login_required
+from compute_space.web.auth.auth import require_owner_auth
 
-system_bp: Blueprint = Blueprint("system", __name__)
-
-DEFAULT_TOKEN_EXPIRY_HOURS: int = 8
+DEFAULT_TOKEN_EXPIRY_HOURS: float = 8.0
 
 
-# ─── API Tokens ───
+# ─── attrs models ──────────────────────────────────────────────────────────
 
 
-@system_bp.route("/api/tokens", methods=["GET"])
-@login_required
-async def api_tokens_list() -> Response:
-    db = get_db()
+@attr.s(auto_attribs=True, frozen=True)
+class ApiToken:
+    id: int
+    name: str
+    expires_at: str | None
+    created_at: str
+    expired: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CreateTokenRequest:
+    """Body for ``POST /api/tokens``.  ``expiry_hours`` is a string so the
+    sentinel ``"never"`` (= no expiry) and a numeric value share one field
+    without forcing the JS client to send different keys."""
+
+    name: str
+    expiry_hours: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CreatedToken:
+    token: str
+    name: str
+    expires_at: str | None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ErrorResponse:
+    error: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class OkResponse:
+    ok: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HealthOk:
+    status: str  # "ok"
+    security: AuditResult
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HealthRestarting:
+    status: str  # "restarting"
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ListeningPortsResponse:
+    ports: list[ListeningPort]
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ToggleStorageGuardRequest:
+    paused: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class StorageGuardResponse:
+    guard_paused: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SshStatusResponse:
+    ssh_enabled: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class DropCacheOk:
+    ok: bool  # always True
+    output: str
+
+
+# ─── API Tokens ────────────────────────────────────────────────────────────
+
+
+@get("/api/tokens", guards=[require_owner_auth])
+async def api_tokens_list(db: sqlite3.Connection) -> list[ApiToken]:
     rows = db.execute("SELECT id, name, expires_at, created_at FROM api_tokens ORDER BY created_at DESC").fetchall()
     now = datetime.now(UTC)
-    tokens = []
+    tokens: list[ApiToken] = []
     for r in rows:
         has_expiry = bool(r["expires_at"])
         expired = has_expiry and datetime.fromisoformat(r["expires_at"]) < now
         tokens.append(
-            {
-                "id": r["id"],
-                "name": r["name"],
-                "expires_at": r["expires_at"] or None,
-                "created_at": r["created_at"],
-                "expired": expired,
-            }
+            ApiToken(
+                id=r["id"],
+                name=r["name"],
+                expires_at=r["expires_at"] or None,
+                created_at=r["created_at"],
+                expired=expired,
+            )
         )
-    return jsonify(tokens)
+    return tokens
 
 
-@system_bp.route("/api/tokens", methods=["POST"])
-@login_required
-async def api_tokens_create() -> Response | tuple[Response, int]:
-    form = await request.form
-    name = (form.get("name") or "").strip() or "Untitled"
-    expiry_hours_raw = form.get("expiry_hours", "").strip()
-    if expiry_hours_raw == "" or expiry_hours_raw.lower() == "never":
+@post("/api/tokens", status_code=200, guards=[require_owner_auth])
+async def api_tokens_create(
+    data: CreateTokenRequest, db: sqlite3.Connection
+) -> Response[CreatedToken] | Response[ErrorResponse]:
+    name = data.name.strip() or "Untitled"
+    expiry_hours_raw = data.expiry_hours.strip() if data.expiry_hours else ""
+    expires_at: datetime | None
+    if not expiry_hours_raw or expiry_hours_raw.lower() == "never":
         expires_at = None
     else:
         try:
             expiry_hours = float(expiry_hours_raw)
-        except (ValueError, TypeError):
+        except ValueError:
             expiry_hours = DEFAULT_TOKEN_EXPIRY_HOURS
         if expiry_hours <= 0:
-            return jsonify({"error": "Expiry must be positive"}), 400
+            return Response(content=ErrorResponse(error="Expiry must be positive"), status_code=400)
         expires_at = datetime.now(UTC) + timedelta(hours=expiry_hours)
 
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
-    db = get_db()
     db.execute(
         "INSERT INTO api_tokens (name, token_hash, expires_at) VALUES (?, ?, ?)",
         (name, token_hash, expires_at.isoformat() if expires_at else ""),
     )
     db.commit()
 
-    return jsonify(
-        {
-            "token": raw_token,
-            "name": name,
-            "expires_at": expires_at.isoformat() if expires_at else None,
-        }
+    return Response(
+        content=CreatedToken(
+            token=raw_token,
+            name=name,
+            expires_at=expires_at.isoformat() if expires_at else None,
+        ),
+        status_code=200,
+        media_type=MediaType.JSON,
     )
 
 
-@system_bp.route("/api/tokens/<int:token_id>", methods=["DELETE"])
-@login_required
-async def api_tokens_delete(token_id: int) -> Response:
-    db = get_db()
+@delete("/api/tokens/{token_id:int}", guards=[require_owner_auth])
+async def api_tokens_delete(token_id: int, db: sqlite3.Connection) -> None:
     db.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
     db.commit()
-    return jsonify({"ok": True})
 
 
-# ─── Compute Space Logs ───
+# ─── Compute Space Logs ────────────────────────────────────────────────────
 
 
-@system_bp.route("/api/compute_space_logs")
-@login_required
-def compute_space_logs() -> Response:
+@get("/api/compute_space_logs", guards=[require_owner_auth], media_type=MediaType.TEXT, sync_to_thread=False)
+def compute_space_logs() -> Response[str]:
     """Return the compute space log file contents."""
     log_path = get_log_path()
     if log_path is None:
-        return Response("Log file not configured", status=503, content_type="text/plain")
+        return Response(content="Log file not configured", status_code=503, media_type=MediaType.TEXT)
     with open(log_path) as f:
-        return Response(f.read(), content_type="text/plain")
+        return Response(content=f.read(), status_code=200, media_type=MediaType.TEXT)
 
 
-# ─── Health & Security ───
+# ─── Health & Security ─────────────────────────────────────────────────────
 
 
-@system_bp.route("/health")
-def health() -> ResponseReturnValue:
+@get("/health", sync_to_thread=False)
+def health(db: sqlite3.Connection) -> Response[HealthRestarting] | HealthOk:
     if is_shutdown_pending():
-        return jsonify({"status": "restarting"}), 503
-    audit = run_audit(db=get_db())
-    return jsonify({"status": "ok", "security": audit})
+        return Response(content=HealthRestarting(status="restarting"), status_code=503)
+    return HealthOk(status="ok", security=run_audit(db=db))
 
 
-@system_bp.route("/api/security-audit")
-@login_required
-def security_audit() -> Response:
-    return jsonify(run_audit(db=get_db()))
+@get("/api/security-audit", guards=[require_owner_auth], sync_to_thread=False)
+def security_audit(db: sqlite3.Connection) -> AuditResult:
+    return run_audit(db=db)
 
 
-@system_bp.route("/api/listening-ports")
-@login_required
-def listening_ports() -> Response:
+@get("/api/listening-ports", guards=[require_owner_auth], sync_to_thread=False)
+def listening_ports(db: sqlite3.Connection) -> ListeningPortsResponse:
     """Return every TCP port the VM is listening on, with classification."""
-    return jsonify({"ports": list_listening_ports(db=get_db())})
+    return ListeningPortsResponse(ports=list_listening_ports(db=db))
 
 
-@system_bp.route("/api/storage-status")
-@login_required
-def api_storage_status() -> Response:
-    return jsonify(storage_status(get_config()))
+@get("/api/storage-status", guards=[require_owner_auth], sync_to_thread=False)
+def api_storage_status(config: Config) -> dict[str, object]:
+    return storage_status(config)
 
 
-@system_bp.route("/api/storage-guard", methods=["POST"])
-@login_required
-async def toggle_storage_guard() -> Response:
+@post("/api/storage-guard", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
+def toggle_storage_guard(data: ToggleStorageGuardRequest) -> StorageGuardResponse:
     """Pause or resume the storage guard."""
-    form = await request.form
-    paused = (form.get("paused") or "").strip().lower() in ("1", "true", "yes")
-    set_guard_paused(paused)
-    return jsonify({"guard_paused": is_guard_paused()})
+    set_guard_paused(data.paused)
+    return StorageGuardResponse(guard_paused=is_guard_paused())
 
 
-# ─── SSH Toggle ───
+# ─── SSH Toggle ────────────────────────────────────────────────────────────
 
 
-@system_bp.route("/api/ssh-status")
-@login_required
-def ssh_status() -> Response:
-    return jsonify({"ssh_enabled": is_sshd_active()})
+@get("/api/ssh-status", guards=[require_owner_auth], sync_to_thread=False)
+def ssh_status() -> SshStatusResponse:
+    return SshStatusResponse(ssh_enabled=is_sshd_active())
 
 
-@system_bp.route("/toggle-ssh", methods=["POST"])
-@login_required
-async def toggle_ssh() -> Response:
+@post("/toggle-ssh", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
+def toggle_ssh() -> SshStatusResponse:
     if is_sshd_active():
         subprocess.run(
-            [
-                "sudo",
-                "-n",
-                "systemctl",
-                "stop",
-                "ssh.service",
-                "sshd.service",
-                "ssh.socket",
-            ],
+            ["sudo", "-n", "systemctl", "stop", "ssh.service", "sshd.service", "ssh.socket"],
             timeout=10,
         )
         subprocess.run(
-            [
-                "sudo",
-                "-n",
-                "systemctl",
-                "mask",
-                "ssh.service",
-                "sshd.service",
-                "ssh.socket",
-            ],
+            ["sudo", "-n", "systemctl", "mask", "ssh.service", "sshd.service", "ssh.socket"],
             timeout=10,
         )
-        return jsonify({"ssh_enabled": False})
-    else:
-        subprocess.run(
-            [
-                "sudo",
-                "-n",
-                "systemctl",
-                "unmask",
-                "ssh.service",
-                "sshd.service",
-                "ssh.socket",
-            ],
-            timeout=10,
-        )
-        subprocess.run(["sudo", "-n", "systemctl", "start", "ssh.service"], timeout=10)
-        return jsonify({"ssh_enabled": is_sshd_active()})
+        return SshStatusResponse(ssh_enabled=False)
+    subprocess.run(
+        ["sudo", "-n", "systemctl", "unmask", "ssh.service", "sshd.service", "ssh.socket"],
+        timeout=10,
+    )
+    subprocess.run(["sudo", "-n", "systemctl", "start", "ssh.service"], timeout=10)
+    return SshStatusResponse(ssh_enabled=is_sshd_active())
 
 
-# ─── Router restart ───
+# ─── Router restart ────────────────────────────────────────────────────────
 
 
-@system_bp.route("/api/drop-docker-cache", methods=["POST"])
-@login_required
-def drop_docker_cache() -> Response | tuple[Response, int]:
+@post("/api/drop-docker-cache", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
+def drop_docker_cache() -> Response[DropCacheOk] | Response[ErrorResponse]:
     """Drop the container build cache to free disk space."""
     try:
         output = drop_docker_build_cache()
     except RuntimeError as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify({"ok": True, "output": output})
+        return Response(content=ErrorResponse(error=str(e)), status_code=500)
+    return Response(content=DropCacheOk(ok=True, output=output), status_code=200, media_type=MediaType.JSON)
 
 
-@system_bp.route("/restart_router", methods=["POST"])
-@login_required
-def restart_router() -> Response:
+@post("/restart_router", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
+def restart_router() -> OkResponse:
     """Restart the router systemd service to pick up code changes."""
     subprocess.Popen(
         [
@@ -236,4 +274,24 @@ def restart_router() -> Response:
         ],
         start_new_session=True,
     )
-    return jsonify({"ok": True})
+    return OkResponse(ok=True)
+
+
+system_routes = Router(
+    path="/",
+    route_handlers=[
+        api_tokens_list,
+        api_tokens_create,
+        api_tokens_delete,
+        compute_space_logs,
+        health,
+        security_audit,
+        listening_ports,
+        api_storage_status,
+        toggle_storage_guard,
+        ssh_status,
+        toggle_ssh,
+        drop_docker_cache,
+        restart_router,
+    ],
+)
