@@ -17,9 +17,12 @@ function cancelName() {
 function saveName() {
   var input = document.getElementById('name-input');
   var errEl = document.getElementById('name-error');
-  var fd = new FormData();
-  fd.append('name', input.value);
-  fetch(config.renameAppUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+  fetch(config.renameAppUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: input.value}),
+  })
     .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
       if (!res.ok) { errEl.textContent = res.data.error; return; }
@@ -59,10 +62,13 @@ function appAction(url, data, opts) {
   // text shown next to the action buttons while the request is in flight.
   opts = opts || {};
   var label = opts.label || (opts.isRemove ? 'Removing' : 'Working');
-  var fd = new FormData();
-  if (data) Object.keys(data).forEach(function(k) { fd.append(k, data[k]); });
   var clear = setActionsBusy(label);
-  fetch(url, {method: 'POST', credentials: 'same-origin', body: fd})
+  fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data || {}),
+  })
     .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
       if (!res.ok || (res.data && res.data.error)) {

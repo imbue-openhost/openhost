@@ -72,8 +72,8 @@
 <div id="app-action-buttons" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
   <button class="btn" onclick="appAction('{{ url_for('api_apps.stop_app', app_id=app.app_id) }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_id=app.app_id) }}', null, {label: 'Reloading'})">Reload App</button>
-  <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_id=app.app_id) }}', {update: '1'}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
-  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('{{ url_for('api_apps.remove_app', app_id=app.app_id) }}', {keep_data: '1'}, {isRemove: true, label: 'Removing (keeping data)'})">Remove App (Keep Data)</button>
+  <button class="btn" onclick="appAction('{{ url_for('api_apps.reload_app', app_id=app.app_id) }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
+  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('{{ url_for('api_apps.remove_app', app_id=app.app_id) }}', {keep_data: true}, {isRemove: true, label: 'Removing (keeping data)'})">Remove App (Keep Data)</button>
   <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('{{ url_for('api_apps.remove_app', app_id=app.app_id) }}', {}, {isRemove: true, label: 'Removing'})">Remove App &amp; Data</button>
   <span id="app-action-msg" style="margin-left:0.5em;"></span>
 </div>
