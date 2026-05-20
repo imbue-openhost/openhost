@@ -38,7 +38,6 @@ from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
 from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
-from compute_space.db import close_db
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
@@ -120,11 +119,6 @@ def _full_app_bootstrap(config: Config) -> None:
     load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)
     retry_pending_default_apps(config)
-
-
-async def _close_db_after(response: Response[Any]) -> Response[Any]:
-    close_db()
-    return response
 
 
 @route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
@@ -212,7 +206,6 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     quart_app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
     # App installs and data migrations can ship large request bodies.
     quart_app.config["MAX_CONTENT_LENGTH"] = None
-    quart_app.teardown_appcontext(close_db)
 
     # Stubs for routes that have been migrated to Litestar.  Quart's
     # ``url_for`` resolves against blueprint-registered endpoints, and several
@@ -330,10 +323,9 @@ def create_app(config: Config) -> ASGIApp:
         ],
         template_config=template_config,
         before_request=_reject_app_subdomain_requests,
-        after_request=_close_db_after,
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
-            "db": Provide(provide_db, sync_to_thread=False),
+            "db": Provide(provide_db),
         },
         exception_handlers={
             NotAuthorizedException: _login_required_redirect,

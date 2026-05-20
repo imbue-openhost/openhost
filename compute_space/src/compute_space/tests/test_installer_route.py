@@ -68,7 +68,7 @@ def _make_app() -> Litestar:
         route_handlers=[services_v2_routes],
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
-            "db": Provide(provide_db, sync_to_thread=False),
+            "db": Provide(provide_db),
         },
         openapi_config=None,
     )

@@ -10,17 +10,38 @@ from litestar.types import ASGIApp
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
+from litestar.types.asgi_types import HTTPResponseBodyEvent
+from litestar.types.asgi_types import HTTPResponseStartEvent
 from litestar.types.asgi_types import WebSocketCloseEvent
 
 from compute_space.config import get_config
 from compute_space.core.apps import get_app_from_hostname
 from compute_space.core.apps import is_public_path
+from compute_space.core.logging import logger
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.auth.auth import verify_owner_auth
 from compute_space.web.helpers.proxy import proxy_http_request
 from compute_space.web.helpers.proxy import proxy_websocket_request
 
 IS_OWNER_HEADER = ("X-OpenHost-Is-Owner", "true")
+
+
+async def _send_internal_error(scope: Scope, send: Send) -> None:
+    """Best-effort 500/close for use from the outer ASGI layer where Litestar's
+    response machinery may not be safe to invoke (e.g. URL parsing already failed).
+
+    If the response has already started, ``send`` will raise — swallow that so
+    we don't compound one error with another."""
+    try:
+        if scope["type"] == ScopeType.HTTP:
+            start: HTTPResponseStartEvent = {"type": "http.response.start", "status": 500, "headers": []}
+            body: HTTPResponseBodyEvent = {"type": "http.response.body", "body": b"", "more_body": False}
+            await send(start)
+            await send(body)
+        elif scope["type"] == ScopeType.WEBSOCKET:
+            await send(WebSocketCloseEvent(type="websocket.close", code=1011, reason="internal error"))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _looks_like_app_subdomain(netloc: str) -> bool:
@@ -46,6 +67,20 @@ class SubdomainProxyMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await self._dispatch(scope, receive, send)
+        except Exception:
+            # We're the outermost ASGI layer wrapping Litestar; any exception
+            # raised here (in middleware logic, in URL/header parsing, or from
+            # the proxied request) escapes past Litestar's exception handlers
+            # straight up to hypercorn, which would log a raw traceback and
+            # drop the connection.  Log it ourselves and reply 5xx cleanly.
+            path = scope.get("path", "?") if isinstance(scope, dict) else "?"
+            method = scope.get("method", scope.get("type", "?")) if isinstance(scope, dict) else "?"
+            logger.opt(exception=True).error("Unhandled exception in proxy middleware: {} {}", method, path)
+            await _send_internal_error(scope, send)
+
+    async def _dispatch(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in (ScopeType.HTTP, ScopeType.WEBSOCKET):
             # lifespan etc. — pass through.
             await self.app(scope, receive, send)

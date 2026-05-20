@@ -1,13 +1,12 @@
 import contextlib
-import contextvars
 import sqlite3
 import uuid
+from collections.abc import Generator
 from collections.abc import Iterator
 
 from compute_space.db.versioned import apply_migrations
 
 _db_path: str | None = None
-_db_var: contextvars.ContextVar[sqlite3.Connection | None] = contextvars.ContextVar("db", default=None)
 
 
 @contextlib.contextmanager
@@ -37,37 +36,28 @@ def init_db(db_path: str) -> None:
 
 
 def get_db() -> sqlite3.Connection:
-    db = _db_var.get()
-    if db is None:
-        if _db_path is None:
-            raise RuntimeError("init_db() must be called before get_db()")
-        db = sqlite3.connect(_db_path, check_same_thread=False)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA foreign_keys=ON")
-        _db_var.set(db)
+    """Return a fresh SQLite connection.
+
+    Each call opens a new connection; CPython closes the underlying handle when
+    the caller's last reference drops.  No cross-call sharing — callers that
+    need a single transaction across multiple helpers must pass their conn
+    explicitly.
+    """
+    if _db_path is None:
+        raise RuntimeError("init_db() must be called before get_db()")
+    db = sqlite3.connect(_db_path, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA foreign_keys=ON")
     return db
 
 
-def close_db(exception: BaseException | None = None) -> None:
-    db = _db_var.get()
-    if db is not None:
+def provide_db() -> Generator[sqlite3.Connection, None, None]:
+    """Litestar dependency: hand a fresh SQLite connection to a route, and close
+    it once the handler returns.  Generator form so Litestar runs the post-yield
+    cleanup deterministically instead of relying on GC of ``parsed_kwargs``."""
+    db = get_db()
+    try:
+        yield db
+    finally:
         db.close()
-        _db_var.set(None)
-
-
-def provide_db() -> sqlite3.Connection:
-    """Litestar dependency: hand the per-request SQLite connection to a route.
-
-    Returns the same connection that ``get_db()`` returns (contextvar-backed),
-    so transitive ``get_db()`` calls from helpers in ``core/`` see the same
-    connection within a request.  The connection is opened lazily on first
-    access and closed once at the end of the request — by Litestar's
-    ``after_request`` hook for routed paths, or by ``SubdomainProxyMiddleware``
-    for the proxy short-circuit path.
-
-    Per-request (not pooled) is the right shape for SQLite: connections are
-    cheap, single-writer means pooling buys nothing, and request-scoping keeps
-    transactions and any future savepoint usage cleanly contained.
-    """
-    return get_db()

@@ -33,7 +33,6 @@ from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.core.updates import is_shutdown_pending
 from compute_space.core.updates import trigger_restart
-from compute_space.db import close_db
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import build_session_cookie
 
@@ -146,11 +145,6 @@ async def _trigger_restart_after_response() -> None:
     trigger_restart()
 
 
-async def _close_db_after(response: Response[Any]) -> Response[Any]:
-    close_db()
-    return response
-
-
 @get("/health", sync_to_thread=False)
 def health() -> Response[dict[str, Any]]:
     """Liveness + security audit, mirrors the full app's /health so external
@@ -178,6 +172,5 @@ def create_setup_app(config: Config) -> Litestar:
     return Litestar(
         route_handlers=[setup_get, setup_post, health, static_router],
         template_config=template_config,
-        after_request=_close_db_after,
         dependencies={"config": Provide(provide_config, sync_to_thread=False)},
     )

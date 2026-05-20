@@ -154,7 +154,7 @@ def _make_settings_app() -> Litestar:
         route_handlers=[api_settings_routes],
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
-            "db": Provide(provide_db, sync_to_thread=False),
+            "db": Provide(provide_db),
         },
         openapi_config=None,
     )
@@ -166,7 +166,7 @@ def _make_login_app() -> Litestar:
         route_handlers=[pages_login_routes],
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
-            "db": Provide(provide_db, sync_to_thread=False),
+            "db": Provide(provide_db),
         },
         openapi_config=None,
     )
