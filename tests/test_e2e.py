@@ -317,7 +317,7 @@ class TestSelfHost:
         """Create an API token and use it to access a protected endpoint."""
         r = session.post(
             f"{router_url}/api/tokens",
-            data={"name": "e2e-test-token", "expiry_hours": "1"},
+            json={"name": "e2e-test-token", "expiry_hours": "1"},
             timeout=10,
         )
         assert r.status_code == 200
@@ -363,7 +363,7 @@ class TestSelfHost:
 
         # Delete it
         r = session.delete(f"{router_url}/api/tokens/{token_id}", timeout=10)
-        assert r.status_code == 200
+        assert r.status_code == 204
 
         # Token should no longer work
         token = getattr(TestSelfHost, "_api_token", None)
