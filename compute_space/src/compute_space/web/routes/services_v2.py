@@ -7,10 +7,10 @@ Routes:
     WS      /api/services/v2/call/{shortname}/{rest:path} — proxied WS call
     GET     /api/services/v2/oauth_callback              — OAuth callback fan-out
 
-The HTTP call route streams the response back to the client by default; on
-``403`` the body is buffered (see ``proxy_request``'s ``buffer_status_codes``)
-so we can inject ``grant_url`` into the ``permission_required`` payload before
-relaying it.
+The HTTP call route proxies the response back to the client.  Small responses
+(including 403s) are automatically buffered by ``proxy_http_request``, so we
+can inspect and inject ``grant_url`` into ``permission_required`` payloads
+before relaying them.
 
 CORS:
 - we need to handle CORS so that cross-origin service requests are allowed for client-side requests from the user's browser.
@@ -251,9 +251,6 @@ async def service_call(
 ) -> ASGIResponse:
     """Proxy a request to the provider declared under <shortname> in the
     consumer's manifest.
-
-    The response is streamed end-to-end except for 403s, which
-    ``proxy_http_request`` buffers so we can inject ``grant_url``.
     """
     consumer_app_id = verify_app_auth(request)
 
