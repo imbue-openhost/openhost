@@ -532,7 +532,9 @@ def _wait_for_url(session, url, timeout=30, expect_status=200):
             last_status = r.status_code
             if r.status_code == expect_status:
                 return r
-        except (requests.ConnectionError, requests.Timeout):
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError):
+            # ChunkedEncodingError: upstream closed mid-response. Treat as transient
+            # and retry — the app may still be warming up just after status='running'.
             pass
         time.sleep(1)
     raise AssertionError(f"URL {url} did not return {expect_status} within {timeout}s (last status: {last_status})")
