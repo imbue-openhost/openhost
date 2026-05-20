@@ -68,6 +68,20 @@ def _make_static_url(static_dir: Path) -> Any:
     return static_url
 
 
+# Shared layout.html uses ``url_for(endpoint)`` with Quart blueprint endpoint
+# names.  Litestar's own ``url_for`` only knows about Litestar routes, so for
+# pages rendered via Litestar's Template response we map the legacy endpoint
+# names to their paths directly.  Keep in sync with the routes the layout links to.
+_LAYOUT_ENDPOINT_PATHS: dict[str, str] = {
+    "apps.dashboard": "/dashboard",
+    "apps.add_app": "/add_app",
+    "pages_system.system_page": "/system/",
+    "pages_system.logs_page": "/logs/",
+    "pages_system.terminal_page": "/terminal/",
+    "pages_settings.settings_page": "/settings",
+}
+
+
 def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
     zone_domain = config.zone_domain
     zone_name = zone_domain.split(".")[0] if zone_domain else None
@@ -76,11 +90,18 @@ def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
         proto = "https" if config.tls_enabled else "http"
         return f"{proto}://{app_name}.{zone_domain}/"
 
+    def url_for(endpoint: str, **_: Any) -> str:
+        try:
+            return _LAYOUT_ENDPOINT_PATHS[endpoint]
+        except KeyError as e:
+            raise KeyError(f"No layout path mapping for endpoint {endpoint!r}") from e
+
     return {
         "zone_name": zone_name,
         "zone_domain": zone_domain,
         "app_url": app_url,
         "static_url": _make_static_url(static_dir),
+        "url_for": url_for,
     }
 
 
@@ -130,10 +151,12 @@ def _log_unhandled_exception(request: Request[Any, Any, Any], exc: Exception) ->
     """Log a traceback for any exception not caught by a more specific handler.
 
     Litestar's default behaviour serialises the exception into a 500 JSON response
-    but doesn't log it, so genuine bugs disappear silently.  HTTPException subclasses
-    (404, 401, etc) are intentional and stay quiet.
+    but doesn't log it, so genuine bugs disappear silently.  Stay quiet for
+    intentional 4xx HTTPException responses; log everything else (including 5xx
+    HTTPException like NoRouteMatchFoundException which wraps real bugs).
     """
-    if not isinstance(exc, HTTPException):
+    status_code = getattr(exc, "status_code", 500)
+    if not isinstance(exc, HTTPException) or status_code >= 500:
         logger.opt(exception=exc).error("Unhandled exception in {} {}", request.method, request.url.path)
     return create_exception_response(request=request, exc=exc)
 
