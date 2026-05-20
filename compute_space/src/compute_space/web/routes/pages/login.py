@@ -1,5 +1,6 @@
 import sqlite3
 from typing import Any
+from urllib.parse import urlparse
 
 from litestar import Request
 from litestar import Response
@@ -19,24 +20,43 @@ from compute_space.web.auth.cookies import build_session_cookie
 from compute_space.web.auth.cookies import clear_session_cookie
 
 
+def _validated_next(next_url: str, zone_domain: str) -> str | None:
+    """Return ``next_url`` if it's a safe post-login redirect target, else None.
+
+    Accepts either a same-zone absolute URL (router or app subdomain) or a path-relative URL.
+    Anything else is rejected so a hostile ``?next=`` can't bounce the operator off to a phishing page.
+    """
+    if not next_url:
+        return None
+    parsed = urlparse(next_url)
+    if not parsed.scheme and not parsed.netloc:
+        return next_url
+    if parsed.netloc == zone_domain or parsed.netloc.endswith("." + zone_domain):
+        return next_url
+    return None
+
+
 @get("/login")
 async def login_get(request: Request[Any, Any, Any], db: sqlite3.Connection) -> Response[Any]:
+    next_param = request.query_params.get("next", "")
     if authenticate(request, db=db) is not None:
-        return Redirect(path="/")
-    return Template(template_name="login.html")
+        return Redirect(path=next_param or "/")
+    return Template(template_name="login.html", context={"next": next_param})
 
 
 @post("/login", status_code=200)
 async def login_post(request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config) -> Response[Any]:
     form = await request.form()
     password = form.get("password")
+    next_url = form.get("next", "")
     if password is None or not (user_id := validate_password(password, db)):
-        return Template(template_name="login.html", context={"error": "Invalid password"})
+        return Template(template_name="login.html", context={"error": "Invalid password", "next": next_url})
 
     session_token = create_session(user_id, db)
     db.commit()
 
-    response = Redirect(path="/")
+    dest = _validated_next(next_url, config.zone_domain) or "/"
+    response = Redirect(path=dest)
     # cookie domain is zone_domain_no_port, ie `host.example.com` (no port); this will cover also `app.host.example.com`
     response.set_cookie(build_session_cookie(session_token, cookie_domain=config.zone_domain_no_port))
     return response

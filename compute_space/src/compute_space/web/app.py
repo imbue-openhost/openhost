@@ -15,7 +15,6 @@ from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.di import Provide
 from litestar.exceptions import NotAuthorizedException
 from litestar.handlers import asgi
-from litestar.response import Redirect
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
 from litestar.types import Receive
@@ -36,6 +35,7 @@ from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import close_db
 from compute_space.db import provide_db
+from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
 from compute_space.web.routes.api.settings import api_settings_routes
@@ -111,14 +111,14 @@ def setup_already_done() -> Response[str]:
 
 
 def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorizedException) -> Response[Any]:
-    """Exception handler: redirect HTML clients to /setup or /login; JSON clients get 401.
+    """Exception handler: redirect HTML clients to /login; JSON clients get 401.
 
     websocket-type requests should never get here - they start as HTTP requests with `Upgrade: websocket`, and should fail then.
     """
     if "application/json" in request.headers.get("Accept", ""):
         return Response(content={"error": exc.detail}, status_code=401)
 
-    return Redirect(path="/login")
+    return login_required_redirect(request)
 
 
 def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:

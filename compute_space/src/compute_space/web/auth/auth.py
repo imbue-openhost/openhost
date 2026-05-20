@@ -2,12 +2,17 @@
 # the only allowed cross-origin requests go thru the services interface which handles its own CORS.
 import sqlite3
 from typing import Any
+from urllib.parse import quote
 from urllib.parse import urlparse
 
+from litestar import Request
+from litestar import Response
 from litestar.connection import ASGIConnection
 from litestar.exceptions import NotAuthorizedException
 from litestar.handlers.base import BaseRouteHandler
+from litestar.response import Redirect
 
+from compute_space.config import get_config
 from compute_space.core.apps import get_app_from_hostname
 from compute_space.core.auth.auth import SESSION_COOKIE_NAME
 from compute_space.core.auth.auth import AuthenticatedAPIKey
@@ -125,3 +130,23 @@ def require_owner_auth(connection: AnyConnection, _route_handler: BaseRouteHandl
 def require_app_auth(connection: AnyConnection, _route_handler: BaseRouteHandler) -> None:
     """Adapt verify_app_auth to be used as a route guard."""
     verify_app_auth(connection)
+
+
+def login_required_redirect(request: Request[Any, Any, Any]) -> Response[Any]:
+    """Return a 302 redirecting the user to the login page, with ?next= set to the originally requested URL.
+
+    The redirect target is absolute (zone domain) so this works when raised from an
+    app-subdomain request — a relative ``/login`` would otherwise resolve against
+    the app's host instead of the router's.
+
+    This should only be called for non-API HTTP requests.
+    In general you should just raise a NotAuthorizedException and let litestar call this for you.
+    """
+    config = get_config()
+    proto = "https" if config.tls_enabled else "http"
+    # `request.url` will always be HTTP because HTTPS was terminated by caddy; need to add back the correct proto.
+    next_url = f"{proto}://{request.url.netloc}{request.url.path}"
+    if request.url.query:
+        next_url = f"{next_url}?{request.url.query}"
+    login_url = f"{proto}://{config.zone_domain}/login?next={quote(next_url, safe='')}"
+    return Redirect(path=login_url)
