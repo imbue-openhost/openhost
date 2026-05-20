@@ -36,12 +36,12 @@
 <body>
   <h1>{% if zone_name %}{{ zone_name }}'s Private Compute Space{% else %}OpenHost{% endif %}</h1>
   <nav>
-    <a href="{{ url_for('apps.dashboard') }}">Dashboard</a>
-    <a href="{{ url_for('apps.add_app') }}">Deploy App</a>
-    <a href="{{ url_for('pages_system.system_page') }}">System</a>
-    <a href="{{ url_for('pages_system.logs_page') }}">Logs</a>
-    <a href="{{ url_for('pages_system.terminal_page') }}">Terminal</a>
-    <a href="{{ url_for('pages_settings.settings_page') }}">Settings</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/add_app">Deploy App</a>
+    <a href="/system/">System</a>
+    <a href="/logs/">Logs</a>
+    <a href="/terminal/">Terminal</a>
+    <a href="/settings">Settings</a>
     <a href="/docs/" target="_blank" rel="noopener">Docs</a>
     <span class="spacer"></span>
   </nav>
