@@ -167,10 +167,12 @@ def _resolve_app_or_error(
     Returns (row, None) on success, (None, error_response) on bad id or unknown app.
     """
     if not is_valid_app_id(app_id):
-        return None, Response(content=ErrorResponse(error="Invalid app_id"), status_code=400)
+        return None, Response(
+            content=ErrorResponse(error="Invalid app_id"), status_code=400, media_type=MediaType.JSON
+        )
     row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     if not row:
-        return None, Response(content=ErrorResponse(error="App not found"), status_code=404)
+        return None, Response(content=ErrorResponse(error="App not found"), status_code=404, media_type=MediaType.JSON)
     return row, None
 
 

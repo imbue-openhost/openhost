@@ -154,7 +154,7 @@ class TestSelfHost:
         repo_url = f"file://{TEST_APP_PATH}"
         r = session.post(
             f"{router_url}/api/add_app",
-            data={"repo_url": repo_url},
+            json={"repo_url": repo_url},
             timeout=120,
         )
         assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:500]}"
@@ -269,7 +269,7 @@ class TestSelfHost:
         """Deploy a second instance of the test app with a different name."""
         r = session.post(
             f"{router_url}/api/add_app",
-            data={"repo_url": f"file://{TEST_APP_PATH}", "app_name": "test-app-2"},
+            json={"repo_url": f"file://{TEST_APP_PATH}", "app_name": "test-app-2"},
             timeout=120,
         )
         assert r.status_code == 200, f"add_app failed: {r.status_code}: {r.text[:500]}"
