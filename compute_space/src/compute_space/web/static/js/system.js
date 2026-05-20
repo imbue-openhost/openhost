@@ -302,18 +302,27 @@ function showConfigureForm() {
   document.getElementById('ab-submit-btn').onclick = submitConfigure;
 }
 
+function _archiveBackendBody() {
+  return {
+    s3_bucket: document.getElementById('ab-bucket').value,
+    s3_region: document.getElementById('ab-region').value,
+    s3_endpoint: document.getElementById('ab-endpoint').value,
+    s3_prefix: document.getElementById('ab-prefix').value,
+    s3_access_key_id: document.getElementById('ab-access-key').value,
+    s3_secret_access_key: document.getElementById('ab-secret-key').value,
+  };
+}
+
 function testArchiveConnection() {
   var msg = document.getElementById('ab-msg');
   msg.textContent = 'Testing…';
   msg.style.color = '';
-  var fd = new FormData();
-  fd.append('s3_bucket', document.getElementById('ab-bucket').value);
-  fd.append('s3_region', document.getElementById('ab-region').value);
-  fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
-  fd.append('s3_prefix', document.getElementById('ab-prefix').value);
-  fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
-  fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
-  fetch(config.archiveBackendTestUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+  fetch(config.archiveBackendTestUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(_archiveBackendBody()),
+  })
     .then(function(r) { return r.json().then(function(b) { return [r.status, b]; }); })
     .then(function(pair) {
       var ok = pair[0] === 200 && pair[1].ok;
@@ -333,17 +342,15 @@ function submitConfigure() {
     msg.textContent = 'Tick the confirmation checkbox first.';
     return;
   }
-  var fd = new FormData();
-  fd.append('s3_bucket', document.getElementById('ab-bucket').value);
-  fd.append('s3_region', document.getElementById('ab-region').value);
-  fd.append('s3_endpoint', document.getElementById('ab-endpoint').value);
-  fd.append('s3_prefix', document.getElementById('ab-prefix').value);
-  fd.append('s3_access_key_id', document.getElementById('ab-access-key').value);
-  fd.append('s3_secret_access_key', document.getElementById('ab-secret-key').value);
   msg.style.color = '';
   msg.textContent = 'Configuring (may take 10-30s)…';
   document.getElementById('ab-submit-btn').disabled = true;
-  fetch(config.archiveBackendConfigureUrl, {method: 'POST', credentials: 'same-origin', body: fd})
+  fetch(config.archiveBackendConfigureUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(_archiveBackendBody()),
+  })
     .then(function(r) { return r.json().then(function(b) { return [r.status, b]; }); })
     .then(function(pair) {
       if (pair[0] === 200) {
