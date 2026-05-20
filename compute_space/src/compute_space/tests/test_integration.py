@@ -140,6 +140,33 @@ def test_caddyfile_http_redirect():
     assert "reverse_proxy" not in lines_in_80_block
 
 
+def _setup_owner(session, base_url, password="testpass123", username=None, timeout=30):
+    """POST /setup to provision the owner, then wait for the full app to come up.
+
+    The setup-only Litestar app starts shutting down once the POST returns so
+    start.py can boot the full app; subsequent requests would 404 against the
+    setup app until that handoff completes.  ``/login`` lives only on the full
+    app, so we use it as the "full app is up" probe.  Mirrors the
+    ``admin_session`` fixture's pattern in conftest.py.
+    """
+    data = {"password": password, "confirm_password": password}
+    if username is not None:
+        data["username"] = username
+    r = session.post(f"{base_url}/setup", data=data)
+    assert r.status_code == 200, f"Router setup failed: {r.status_code}: {r.text[:300]}"
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            probe = requests.get(f"{base_url}/login", timeout=1, allow_redirects=False)
+            if probe.status_code in (200, 302):
+                return r
+        except requests.ConnectionError:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError(f"Full app did not come up within {timeout}s after /setup")
+
+
 def _deploy_app(session, base_url, app_path, app_name=None, timeout=120):
     """Deploy a local app directory via the file:// URL flow.
 
@@ -561,15 +588,7 @@ class TestContainerGone:
             router = _start_router_process(self.BASE_URL, env)
 
             session = requests.Session()
-            r = session.post(
-                f"{self.BASE_URL}/setup",
-                data={
-                    "username": "admin",
-                    "password": "testpass123",
-                    "confirm_password": "testpass123",
-                },
-            )
-            assert r.status_code == 200
+            _setup_owner(session, self.BASE_URL, username="admin")
 
             _deploy_app(session, self.BASE_URL, self.APP_PATH)
 
@@ -764,15 +783,7 @@ class TestContainerRestart:
             router = _start_router_process(self.BASE_URL, env)
 
             session = requests.Session()
-            r = session.post(
-                f"{self.BASE_URL}/setup",
-                data={
-                    "username": "admin",
-                    "password": "testpass123",
-                    "confirm_password": "testpass123",
-                },
-            )
-            assert r.status_code == 200, "Setup should succeed"
+            _setup_owner(session, self.BASE_URL, username="admin")
 
             # Submit and confirm deployment
             _deploy_app(session, self.BASE_URL, self.APP_PATH)
@@ -1066,10 +1077,12 @@ class TestContainerE2E:
             headers={"X-Custom-Test": "test-value"},
         )
         assert r.status_code == 200
-        headers = r.json()["headers"]
-        assert headers.get("X-Custom-Test") == "test-value"
-        assert "X-Forwarded-For" in headers
-        assert "X-Forwarded-Host" in headers
+        # ASGI normalises incoming header names to lowercase, so compare CI
+        # rather than depending on the case the backend happens to see.
+        headers_ci = {k.lower(): v for k, v in r.json()["headers"].items()}
+        assert headers_ci.get("x-custom-test") == "test-value"
+        assert "x-forwarded-for" in headers_ci
+        assert "x-forwarded-host" in headers_ci
 
     def test_proxy_strips_spoofed_forwarded_headers(self, admin_session, config):
         """Client-supplied X-Forwarded-* headers are overwritten, not forwarded."""

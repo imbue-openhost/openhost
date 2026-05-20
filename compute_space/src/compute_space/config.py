@@ -249,12 +249,7 @@ def provide_config() -> Config:
     calling the module-level accessor.  ``get_config()`` stays available for
     non-DI callers (middleware, ``core/`` helpers).
 
-    The conversion to a bare ``Config`` (rather than handing back the active
-    ``DefaultConfig`` subclass) exists because Litestar runs msgspec on every
-    handler param annotated with the declared type — and msgspec rejects a
-    subclass instance where a base class is annotated ("Expected object, got
-    DefaultConfig").  ``DefaultConfig`` adds no fields of its own, so the
-    field-by-field reconstruction loses nothing.
+    litestar got confused by returning a DefaultConfig so we convert it back to plain Config.
     """
     active = get_config()
     if type(active) is Config:

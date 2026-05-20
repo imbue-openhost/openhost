@@ -317,7 +317,7 @@ def test_route_get_returns_current_value(cfg: Any, settings_client: TestClient[L
     cookies = _auth_cookie(cfg, username="zack")
     resp = settings_client.get("/api/settings/owner_username", cookies=cookies)
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "username": "zack"}
+    assert resp.json() == {"username": "zack"}
 
 
 def test_route_set_updates_user_row(cfg: Any, settings_client: TestClient[Litestar]) -> None:
@@ -328,7 +328,7 @@ def test_route_set_updates_user_row(cfg: Any, settings_client: TestClient[Litest
         cookies=cookies,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"ok": True, "username": "alice"}
+    assert resp.json() == {"username": "alice"}
     # Pin persisted state, not just the response — guards against a bug
     # where the route returns the new value but forgets to commit.
     assert _read_username_direct(cfg.db_path) == "alice"
@@ -351,8 +351,7 @@ def test_route_set_rejects_invalid(
     resp = settings_client.post("/api/settings/owner_username", json=payload, cookies=cookies)
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["ok"] is False
-    assert needle in body["error"]
+    assert needle in body["detail"]
 
 
 # ---------------------------------------------------------------------------

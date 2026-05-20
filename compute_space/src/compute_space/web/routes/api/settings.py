@@ -1,12 +1,11 @@
 import sqlite3
-from typing import Any
 
 import attr
 import git
-from litestar import Response
 from litestar import Router
 from litestar import get
 from litestar import post
+from litestar.exceptions import HTTPException
 
 from compute_space.config import Config
 from compute_space.core.apps import inject_github_token_in_url
@@ -30,50 +29,109 @@ from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
 from compute_space.web.auth.auth import require_owner_auth
 
+# --- request / response types -----------------------------------------------
+
 
 @attr.s(auto_attribs=True, frozen=True)
 class SetRemoteRequest:
     url: str = ""
 
 
-def _host_prep_fields() -> dict[str, Any]:
-    """Flat host-prep status fields for inclusion in update-related responses.
+@attr.s(auto_attribs=True, frozen=True)
+class SetOwnerUsernameRequest:
+    username: str = ""
 
-    The UI reads ``host_prep_ok`` / ``host_prep_message`` directly off the
-    top-level JSON, so these are merged in flat rather than nested.
+
+@attr.s(auto_attribs=True, frozen=True)
+class GetRemoteResponse:
+    url: str | None = None
+    ref: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetRemoteResponse:
+    token_applied: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HostPrepOk:
+    """Flat fields the dashboard reads when the host is ready for updates."""
+
+    host_prep_ok: bool  # always True for this variant
+    container_runtime_available: bool  # always True
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HostPrepBlocked:
+    """Flat fields the dashboard reads when an update would brick the router.
+
+    Carries the reason/message pair the banner renders verbatim.
     """
+
+    host_prep_ok: bool  # always False for this variant
+    container_runtime_available: bool
+    host_prep_reason: str
+    host_prep_message: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CheckUpdatesOk:
+    state: str
+    host_prep_ok: bool
+    container_runtime_available: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CheckUpdatesBlocked:
+    state: str
+    host_prep_ok: bool
+    container_runtime_available: bool
+    host_prep_reason: str
+    host_prep_message: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class OwnerUsernameResponse:
+    username: str | None
+
+
+def _host_prep_fields() -> HostPrepOk | HostPrepBlocked:
+    """Probe the live runtime and the sentinel; return the shape the UI expects."""
     if not container_runtime_available():
-        return {
-            "host_prep_ok": False,
-            "container_runtime_available": False,
-            "host_prep_reason": "container_runtime_missing",
-            "host_prep_message": CONTAINER_RUNTIME_MISSING_ERROR,
-        }
+        return HostPrepBlocked(
+            host_prep_ok=False,
+            container_runtime_available=False,
+            host_prep_reason="container_runtime_missing",
+            host_prep_message=CONTAINER_RUNTIME_MISSING_ERROR,
+        )
     prep = host_prep_status()
     if not prep.ok:
-        return {
-            "host_prep_ok": False,
-            "container_runtime_available": True,
-            "host_prep_reason": prep.reason,
-            "host_prep_message": prep.message,
-        }
-    return {"host_prep_ok": True, "container_runtime_available": True}
+        return HostPrepBlocked(
+            host_prep_ok=False,
+            container_runtime_available=True,
+            host_prep_reason=prep.reason,
+            host_prep_message=prep.message,
+        )
+    return HostPrepOk(host_prep_ok=True, container_runtime_available=True)
+
+
+# --- routes -----------------------------------------------------------------
 
 
 @get("/api/settings/get_remote", guards=[require_owner_auth])
-async def get_remote(config: Config) -> dict[str, Any]:
+async def get_remote(config: Config) -> GetRemoteResponse:
     try:
         url = await get_remote_url(config.openhost_repo_path)
         ref = await get_current_ref(config.openhost_repo_path)
     except RemoteNotSetError:
-        return {"ok": True}
+        return GetRemoteResponse()
     except (git.InvalidGitRepositoryError, git.NoSuchPathError) as e:
-        return {"ok": False, "error": repr(e)}
-    return {"ok": True, "url": url, "ref": ref}
+        raise HTTPException(detail=repr(e), status_code=500) from e
+    return GetRemoteResponse(url=url, ref=ref)
 
 
 @post("/api/settings/set_remote", status_code=200, guards=[require_owner_auth])
-async def set_remote(data: SetRemoteRequest, config: Config) -> Response[dict[str, Any]]:
+async def set_remote(data: SetRemoteRequest, config: Config) -> SetRemoteResponse:
     """Set git remote URL, injecting a GitHub auth token if available.
 
     A checkout is required so we can persist the ``ref`` setting properly,
@@ -81,7 +139,7 @@ async def set_remote(data: SetRemoteRequest, config: Config) -> Response[dict[st
     """
     url = (data.url or "").strip()
     if not url:
-        return Response(content={"ok": False, "error": "url is required"}, status_code=400)
+        raise HTTPException(detail="url is required", status_code=400)
 
     base_url, ref = parse_repo_url(url)
     ref = ref or "main"
@@ -99,57 +157,68 @@ async def set_remote(data: SetRemoteRequest, config: Config) -> Response[dict[st
         await set_remote_url(config.openhost_repo_path, base_url)
         await hard_checkout_and_validate(config.openhost_repo_path, ref)
     except Exception as e:
-        return Response(content={"ok": False, "error": str(e)}, status_code=500)
-    return Response(content={"ok": True, "token_applied": token_applied})
+        raise HTTPException(detail=str(e), status_code=500) from e
+    return SetRemoteResponse(token_applied=token_applied)
 
 
 @post("/api/settings/check_for_updates", status_code=200, guards=[require_owner_auth])
-async def check_for_updates(config: Config) -> Response[dict[str, Any]]:
+async def check_for_updates(config: Config) -> CheckUpdatesOk | CheckUpdatesBlocked:
     try:
         state = await check_git_state(config.openhost_repo_path)
     except Exception as e:
-        return Response(content={"ok": False, "error": repr(e)}, status_code=500)
-    return Response(content={"ok": True, "state": str(state), **_host_prep_fields()})
+        raise HTTPException(detail=repr(e), status_code=500) from e
+    prep = _host_prep_fields()
+    if isinstance(prep, HostPrepBlocked):
+        return CheckUpdatesBlocked(
+            state=str(state),
+            host_prep_ok=prep.host_prep_ok,
+            container_runtime_available=prep.container_runtime_available,
+            host_prep_reason=prep.host_prep_reason,
+            host_prep_message=prep.host_prep_message,
+        )
+    return CheckUpdatesOk(
+        state=str(state),
+        host_prep_ok=prep.host_prep_ok,
+        container_runtime_available=prep.container_runtime_available,
+    )
 
 
-@post("/api/settings/update_repo_state", status_code=200, guards=[require_owner_auth])
-async def update_repo_state(config: Config) -> Response[dict[str, Any]]:
+@post("/api/settings/update_repo_state", status_code=204, guards=[require_owner_auth])
+async def update_repo_state(config: Config) -> None:
     """git reset to local origin/[branch] + pixi install.
 
-    Returns HTTP 409 when the host isn't prepared for the installed runtime.
+    Returns HTTP 409 when the host isn't prepared for the installed runtime;
+    the blocking host_prep fields are carried in the exception's ``extra``.
     """
     prep = _host_prep_fields()
-    if not prep["host_prep_ok"]:
-        return Response(content={"ok": False, "error": prep["host_prep_message"], **prep}, status_code=409)
+    if isinstance(prep, HostPrepBlocked):
+        raise HTTPException(
+            detail=prep.host_prep_message,
+            status_code=409,
+            extra=attr.asdict(prep),
+        )
 
     ref = await get_current_ref(config.openhost_repo_path)
     try:
         await hard_checkout_and_validate(config.openhost_repo_path, ref)
     except Exception as e:
-        return Response(content={"ok": False, "error": repr(e)}, status_code=500)
-    return Response(content={"ok": True})
+        raise HTTPException(detail=repr(e), status_code=500) from e
 
 
-@post("/api/settings/restart_compute_space", status_code=200, guards=[require_owner_auth])
-async def restart_compute_space() -> dict[str, Any]:
-    trigger_restart()
+@post("/api/settings/restart_compute_space", status_code=204, guards=[require_owner_auth])
+async def restart_compute_space() -> None:
     # this response may not get sent, don't depend on it
-    return {"ok": True}
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class SetOwnerUsernameRequest:
-    username: str = ""
+    trigger_restart()
 
 
 @get("/api/settings/owner_username", guards=[require_owner_auth])
-async def get_owner_username(db: sqlite3.Connection) -> dict[str, Any]:
+async def get_owner_username(db: sqlite3.Connection) -> OwnerUsernameResponse:
     """Return the configured owner username for the dashboard form."""
-    return {"ok": True, "username": read_owner_username(db)}
+    return OwnerUsernameResponse(username=read_owner_username(db))
 
 
 @post("/api/settings/owner_username", status_code=200, guards=[require_owner_auth])
-async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> Response[dict[str, Any]]:
+async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
     """Update the owner's display username.
 
     Forwarded to per-app containers via ``OPENHOST_OWNER_USERNAME`` on their
@@ -158,18 +227,18 @@ async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connecti
     candidate = (data.username or "").strip()
     error = validate_owner_username(candidate)
     if error is not None:
-        return Response(content={"ok": False, "error": error}, status_code=400)
+        raise HTTPException(detail=error, status_code=400)
 
     try:
         update_owner_username(db, candidate)
         db.commit()
     except ValueError as e:
         # No user row yet — operator's next step is /setup, not retry.
-        return Response(content={"ok": False, "error": str(e)}, status_code=400)
+        raise HTTPException(detail=str(e), status_code=400) from e
     except sqlite3.Error as e:
-        return Response(content={"ok": False, "error": f"database error: {e}"}, status_code=500)
+        raise HTTPException(detail=f"database error: {e}", status_code=500) from e
 
-    return Response(content={"ok": True, "username": candidate})
+    return OwnerUsernameResponse(username=candidate)
 
 
 api_settings_routes = Router(

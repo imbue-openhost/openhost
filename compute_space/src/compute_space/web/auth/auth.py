@@ -132,21 +132,30 @@ def require_app_auth(connection: AnyConnection, _route_handler: BaseRouteHandler
     verify_app_auth(connection)
 
 
+def build_login_url(netloc: str, path: str, query: str) -> str:
+    """Build an absolute ``/login?next=<original>`` URL on the zone domain.
+
+    Caller passes URL parts so this works from either a Litestar ``Request`` or
+    a raw ASGI scope without coupling either side to the other.
+
+    The redirect target is absolute (zone domain) so this works when called from
+    an app-subdomain request — a relative ``/login`` would otherwise resolve
+    against the app's host instead of the router's.
+    """
+    config = get_config()
+    proto = "https" if config.tls_enabled else "http"
+    # `request.url` always reports HTTP because Caddy terminated TLS before
+    # forwarding to hypercorn — rebuild with the configured proto.
+    next_url = f"{proto}://{netloc}{path}"
+    if query:
+        next_url = f"{next_url}?{query}"
+    return f"{proto}://{config.zone_domain}/login?next={quote(next_url, safe='')}"
+
+
 def login_required_redirect(request: Request[Any, Any, Any]) -> Response[Any]:
     """Return a 302 redirecting the user to the login page, with ?next= set to the originally requested URL.
-
-    The redirect target is absolute (zone domain) so this works when raised from an
-    app-subdomain request — a relative ``/login`` would otherwise resolve against
-    the app's host instead of the router's.
 
     This should only be called for non-API HTTP requests.
     In general you should just raise a NotAuthorizedException and let litestar call this for you.
     """
-    config = get_config()
-    proto = "https" if config.tls_enabled else "http"
-    # `request.url` will always be HTTP because HTTPS was terminated by caddy; need to add back the correct proto.
-    next_url = f"{proto}://{request.url.netloc}{request.url.path}"
-    if request.url.query:
-        next_url = f"{next_url}?{request.url.query}"
-    login_url = f"{proto}://{config.zone_domain}/login?next={quote(next_url, safe='')}"
-    return Redirect(path=login_url)
+    return Redirect(path=build_login_url(request.url.netloc, request.url.path, request.url.query))

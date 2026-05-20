@@ -60,12 +60,13 @@ async function checkForUpdates() {
 
   try {
     const resp = await fetch('/api/settings/check_for_updates', {method: 'POST'});
-    const data = await resp.json();
-    if (!data.ok) {
-      el.innerHTML = '<p class="error">Repo is in an invalid state for updating (no .git perhaps?): ' + esc(data.error) + '</p>'
+    if (!resp.ok) {
+      const err = await resp.json();
+      el.innerHTML = '<p class="error">Repo is in an invalid state for updating (no .git perhaps?): ' + esc(err.detail || '') + '</p>'
         + '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Retry</button>';
       return;
     }
+    const data = await resp.json();
 
     const checkAgainBtn = '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Check again</button>';
 
@@ -115,9 +116,9 @@ async function applyUpdate() {
 
   try {
     const resp = await fetch('/api/settings/update_repo_state', {method: 'POST'});
-    const data = await resp.json();
-    if (!data.ok) {
-      el.innerHTML = '<p class="error">' + esc(data.error) + '</p>'
+    if (!resp.ok) {
+      const err = await resp.json();
+      el.innerHTML = '<p class="error">' + esc(err.detail || '') + '</p>'
         + '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Retry</button>';
       return;
     }
@@ -171,6 +172,7 @@ async function loadRemote() {
   const btn = document.getElementById('set-remote-btn');
   try {
     const resp = await fetch('/api/settings/get_remote');
+    if (!resp.ok) throw new Error('failed to load remote');
     const data = await resp.json();
     savedRemote = data.url || '';
     if (savedRemote && data.ref) {
@@ -205,8 +207,10 @@ async function setRemote() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({url}),
     });
-    const data = await resp.json();
-    if (!data.ok) throw new Error(data.error);
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'failed to set remote');
+    }
     try {
       await fetch('/api/settings/restart_compute_space', {method: 'POST'});
     } catch (e) {
@@ -238,8 +242,11 @@ async function loadOwnerUsername() {
   const msg = document.getElementById('username-msg');
   try {
     const resp = await fetch('/api/settings/owner_username');
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'failed to load');
+    }
     const data = await resp.json();
-    if (!data.ok) throw new Error(data.error || 'failed to load');
     savedUsername = data.username || '';
     input.value = savedUsername;
     input.placeholder = 'e.g. yourname';
@@ -283,8 +290,11 @@ async function setOwnerUsername() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({username}),
     });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'failed to save');
+    }
     const data = await resp.json();
-    if (!data.ok) throw new Error(data.error || 'failed to save');
     savedUsername = data.username;
     msg.textContent = 'Saved.';
     msg.className = '';

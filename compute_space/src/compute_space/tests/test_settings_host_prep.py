@@ -9,6 +9,8 @@ surface the exact reason/message the dashboard banner renders.
 The handlers are Litestar route handlers — to exercise them in isolation
 we call the underlying coroutine via ``handler.fn(...)``, passing the
 ``config`` dependency directly instead of going through Litestar's DI.
+On the error path the handler raises ``HTTPException``; we inspect its
+``status_code`` / ``detail`` / ``extra`` directly.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from typing import Any
 from typing import cast
 
 import pytest
+from litestar.exceptions import HTTPException
 
 import compute_space.web.routes.api.settings as settings_mod
 from compute_space.config import Config
@@ -39,8 +42,8 @@ def _fake_config(repo_path: Path) -> Config:
 async def test_check_for_updates_reports_podman_ok_and_sentinel_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Happy path: both signals OK means ``host_prep_ok=True`` and no
-    reason/message fields appear in the response."""
+    """Happy path: both signals OK means ``host_prep_ok=True`` and the
+    response is the ``CheckUpdatesOk`` variant (no reason/message fields)."""
 
     async def fake_check_git_state(_repo_path: Path) -> GitState:
         return GitState.UP_TO_DATE
@@ -49,16 +52,11 @@ async def test_check_for_updates_reports_podman_ok_and_sentinel_ok(
     monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: True)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    response = await settings_mod.check_for_updates.fn(config=_fake_config(tmp_path))
-    payload: dict[str, Any] = response.content  # type: ignore[assignment]
+    result = await settings_mod.check_for_updates.fn(config=_fake_config(tmp_path))
 
-    assert payload["ok"] is True
-    assert payload["host_prep_ok"] is True
-    assert payload["container_runtime_available"] is True
-    # When everything is OK the response must NOT include a
-    # remediation message; that's the UI's signal to hide the banner.
-    assert "host_prep_reason" not in payload
-    assert "host_prep_message" not in payload
+    assert isinstance(result, settings_mod.CheckUpdatesOk)
+    assert result.host_prep_ok is True
+    assert result.container_runtime_available is True
 
 
 @pytest.mark.asyncio
@@ -80,14 +78,13 @@ async def test_check_for_updates_reports_podman_missing_as_authoritative(
     # response must STILL surface the podman-missing reason.
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    response = await settings_mod.check_for_updates.fn(config=_fake_config(tmp_path))
-    payload: dict[str, Any] = response.content  # type: ignore[assignment]
+    result = await settings_mod.check_for_updates.fn(config=_fake_config(tmp_path))
 
-    assert payload["ok"] is True
-    assert payload["host_prep_ok"] is False
-    assert payload["container_runtime_available"] is False
-    assert payload["host_prep_reason"] == "container_runtime_missing"
-    assert payload["host_prep_message"] == CONTAINER_RUNTIME_MISSING_ERROR
+    assert isinstance(result, settings_mod.CheckUpdatesBlocked)
+    assert result.host_prep_ok is False
+    assert result.container_runtime_available is False
+    assert result.host_prep_reason == "container_runtime_missing"
+    assert result.host_prep_message == CONTAINER_RUNTIME_MISSING_ERROR
 
 
 @pytest.mark.asyncio
@@ -110,13 +107,13 @@ async def test_check_for_updates_surfaces_sentinel_mismatch_when_podman_ok(
         lambda: HostPrepStatus(False, "wrong_version", "re-run ansible to bump runtime_version"),
     )
 
-    response = await settings_mod.check_for_updates.fn(config=_fake_config(tmp_path))
-    payload: dict[str, Any] = response.content  # type: ignore[assignment]
+    result = await settings_mod.check_for_updates.fn(config=_fake_config(tmp_path))
 
-    assert payload["host_prep_ok"] is False
-    assert payload["container_runtime_available"] is True
-    assert payload["host_prep_reason"] == "wrong_version"
-    assert "ansible" in payload["host_prep_message"]
+    assert isinstance(result, settings_mod.CheckUpdatesBlocked)
+    assert result.host_prep_ok is False
+    assert result.container_runtime_available is True
+    assert result.host_prep_reason == "wrong_version"
+    assert "ansible" in result.host_prep_message
 
 
 @pytest.mark.asyncio
@@ -135,12 +132,13 @@ async def test_update_repo_state_refuses_with_409_when_podman_missing(
     monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: False)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    response = await settings_mod.update_repo_state.fn(config=_fake_config(tmp_path))
-    assert response.status_code == 409
-    payload: dict[str, Any] = response.content  # type: ignore[assignment]
-    assert payload["ok"] is False
-    assert payload["host_prep_reason"] == "container_runtime_missing"
-    assert payload["host_prep_ok"] is False
+    with pytest.raises(HTTPException) as excinfo:
+        await settings_mod.update_repo_state.fn(config=_fake_config(tmp_path))
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.extra is not None
+    extra = cast(dict[str, Any], excinfo.value.extra)
+    assert extra["host_prep_reason"] == "container_runtime_missing"
+    assert extra["host_prep_ok"] is False
 
 
 @pytest.mark.asyncio
@@ -161,11 +159,12 @@ async def test_update_repo_state_refuses_with_409_when_sentinel_mismatched(
         lambda: HostPrepStatus(False, "wrong_version", "bump required"),
     )
 
-    response = await settings_mod.update_repo_state.fn(config=_fake_config(tmp_path))
-    assert response.status_code == 409
-    payload: dict[str, Any] = response.content  # type: ignore[assignment]
-    assert payload["ok"] is False
-    assert payload["host_prep_reason"] == "wrong_version"
+    with pytest.raises(HTTPException) as excinfo:
+        await settings_mod.update_repo_state.fn(config=_fake_config(tmp_path))
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.extra is not None
+    extra = cast(dict[str, Any], excinfo.value.extra)
+    assert extra["host_prep_reason"] == "wrong_version"
 
 
 @pytest.mark.asyncio
@@ -186,8 +185,6 @@ async def test_update_repo_state_proceeds_when_host_prepared(monkeypatch: pytest
     monkeypatch.setattr(settings_mod, "container_runtime_available", lambda: True)
     monkeypatch.setattr(settings_mod, "host_prep_status", lambda: HostPrepStatus(True, "", "ok"))
 
-    response = await settings_mod.update_repo_state.fn(config=_fake_config(tmp_path))
-    payload: dict[str, Any] = response.content  # type: ignore[assignment]
-
+    # No exception on the happy path, and the checkout actually ran.
+    await settings_mod.update_repo_state.fn(config=_fake_config(tmp_path))
     assert called["n"] == 1
-    assert payload == {"ok": True}

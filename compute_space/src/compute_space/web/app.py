@@ -17,6 +17,7 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.handlers import asgi
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
+from litestar.types import ASGIApp
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
@@ -26,6 +27,7 @@ from quart import current_app
 from quart import url_for as quart_url_for
 
 from compute_space.config import Config
+from compute_space.config import get_config
 from compute_space.config import provide_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.identity import load_identity_keys
@@ -119,6 +121,22 @@ def _login_required_redirect(request: Request[Any, Any, Any], exc: NotAuthorized
         return Response(content={"error": exc.detail}, status_code=401)
 
     return login_required_redirect(request)
+
+
+def _reject_app_subdomain_requests(request: Request[Any, Any, Any]) -> Response[Any] | None:
+    """Defense-in-depth: refuse any request whose Host is an app subdomain.
+
+    App-subdomain traffic is supposed to be intercepted by SubdomainProxyMiddleware
+    (outer ASGI) before Litestar ever sees it.  If a request reaches Litestar with
+    a ``*.zone_domain`` Host — e.g. the middleware was bypassed in a test or a
+    deployment variant — refuse it rather than accidentally serve a router route
+    (like /health) under the app's hostname.
+    """
+    host = request.url.netloc.split(":", 1)[0]
+    zone = get_config().zone_domain
+    if zone and host.endswith("." + zone):
+        return Response(content=None, status_code=404)
+    return None
 
 
 def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
@@ -216,8 +234,11 @@ def _build_quart_fallback(config: Config, static_dir: Path) -> Quart:
     return quart_app
 
 
-def create_app(config: Config) -> Litestar:
-    """Build the full Litestar app. Caller must have already initialized DB, keys, logging, and config."""
+def create_app(config: Config) -> ASGIApp:
+    """Build the full router ASGI app.  The returned app is the Litestar app wrapped
+    in ``SubdomainProxyMiddleware`` so app-subdomain requests are diverted to backend
+    containers before Litestar attempts any routing.  Caller must have already
+    initialized DB, keys, logging, and config."""
     _full_app_bootstrap(config)
 
     web_dir = Path(__file__).parent
@@ -258,7 +279,7 @@ def create_app(config: Config) -> Litestar:
 
     atexit.register(cleanup_terminal)
 
-    return Litestar(
+    litestar_app = Litestar(
         route_handlers=[
             static_router,
             api_permissions_v2_routes,
@@ -269,8 +290,8 @@ def create_app(config: Config) -> Litestar:
             setup_already_done,
             quart_fallback,
         ],
-        middleware=[SubdomainProxyMiddleware],
         template_config=template_config,
+        before_request=_reject_app_subdomain_requests,
         after_request=_close_db_after,
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
@@ -279,3 +300,4 @@ def create_app(config: Config) -> Litestar:
         exception_handlers={NotAuthorizedException: _login_required_redirect},
         on_startup=[_install_template_globals],
     )
+    return SubdomainProxyMiddleware(litestar_app)

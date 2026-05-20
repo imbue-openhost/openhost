@@ -116,6 +116,7 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+INSERT INTO "users" VALUES(1,'admin','argon2-stub-owner-hash','2024-01-01T00:00:00');
 CREATE INDEX idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX idx_apps_app_id ON apps(app_id);
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);

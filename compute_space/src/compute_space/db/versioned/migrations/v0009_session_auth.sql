@@ -6,14 +6,11 @@
 -- and a multi-user-shaped ``users`` table (still only one row in
 -- practice, but the schema no longer hard-codes singularity).
 --
--- The old data is dropped wholesale: the migration runs once during the
--- upgrade, after which the operator must re-run /setup (which now
--- inserts into ``users`` and ``sessions``).  This matches what the
--- operator already has to do, since the JWT signing key on disk is
--- regenerated on first boot of the new code anyway.
-
-DROP TABLE IF EXISTS refresh_tokens;
-DROP TABLE IF EXISTS owner;
+-- The existing owner row is migrated into ``users`` so the operator
+-- keeps their username/password and does not have to re-run /setup
+-- after the upgrade. ``refresh_tokens`` is dropped (existing JWT
+-- refresh tokens are not portable to the opaque-session scheme — any
+-- logged-in browsers will just need to log in once).
 
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,6 +18,12 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+INSERT INTO users (username, password_hash, created_at)
+SELECT username, password_hash, created_at FROM owner;
+
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS owner;
 
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,

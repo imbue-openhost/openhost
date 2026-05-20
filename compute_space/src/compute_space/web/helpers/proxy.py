@@ -143,13 +143,25 @@ async def proxy_http_request(
         request.headers, _HTTP_REQUEST_EXCLUDED_HEADERS, extra_headers
     )
 
+    # Don't use ``request.stream()``, it doesn't seem to work in an outer middleware?
+    async def _body_stream() -> AsyncIterator[bytes]:
+        while True:
+            msg = await request.receive()
+            if msg["type"] == "http.request":
+                if body := msg.get("body"):
+                    yield body
+                if not msg.get("more_body", False):
+                    return
+            elif msg["type"] == "http.disconnect":
+                return
+
     client = httpx.AsyncClient(timeout=timeout)
     try:
         new_request = client.build_request(
             method=str(request.method),
             url=target_url,
             headers=new_request_headers,
-            content=request.stream(),
+            content=_body_stream(),
         )
         try:
             upstream_response = await client.send(new_request, stream=True)
