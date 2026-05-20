@@ -62,7 +62,7 @@ class AuthRequiredResponse:
 
 @attr.s(auto_attribs=True, frozen=True)
 class CloneRequest:
-    repo_url: str = ""
+    repo_url: str
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -87,9 +87,9 @@ class CheckPortResponse:
 
 @attr.s(auto_attribs=True, frozen=True)
 class AddAppRequest:
-    repo_url: str = ""
-    app_name: str = ""
-    clone_dir: str = ""
+    repo_url: str
+    app_name: str | None = None
+    clone_dir: str | None = None
     grant_permissions_v2: bool = False
     port_overrides: dict[str, int] = attr.Factory(dict)
 
@@ -135,7 +135,7 @@ class RemoveAppAlreadyRemoving:
 
 @attr.s(auto_attribs=True, frozen=True)
 class RenameAppRequest:
-    name: str = ""
+    name: str
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -214,10 +214,10 @@ async def clone_and_get_app_info(
 
 
 @get("/api/check_port", guards=[require_owner_auth])
-async def check_port(port: int, db: sqlite3.Connection) -> Response[CheckPortResponse] | Response[ErrorResponse]:
+async def check_port(
+    port: Annotated[int, Parameter(ge=1, le=65535)], db: sqlite3.Connection
+) -> Response[CheckPortResponse]:
     """Check if a host port is available. Returns {port, available, used_by}."""
-    if port < 1 or port > 65535:
-        return Response(content=ErrorResponse(error="port must be 1-65535"), status_code=400)
     available, used_by = check_port_available(port, db)
     return Response(
         content=CheckPortResponse(port=port, available=available, used_by=used_by),
@@ -232,8 +232,8 @@ async def api_add_app(
 ) -> Response[AddAppResponse] | Response[ErrorResponse] | Response[AuthRequiredResponse]:
     """Install an app. Optionally takes a clone_dir from a prior clone_and_get_app_info call."""
     repo_url = data.repo_url.strip()
-    app_name: str | None = data.app_name.strip() or None
-    clone_dir: str | None = data.clone_dir.strip() or None
+    app_name: str | None = (data.app_name.strip() or None) if data.app_name else None
+    clone_dir: str | None = (data.clone_dir.strip() or None) if data.clone_dir else None
 
     if not repo_url:
         return Response(content=ErrorResponse(error="No repository URL provided"), status_code=400)

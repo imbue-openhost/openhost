@@ -324,7 +324,6 @@ class TestRouterCore:
             json={},
         )
         assert r.status_code == 400
-        assert "No repository URL provided" in r.json()["error"]
 
     def test_add_app_bad_path(self, admin_session, config):
         base_url = _zone_url(config)
