@@ -1,13 +1,12 @@
 import contextlib
 import sqlite3
 import uuid
+from collections.abc import Generator
 from collections.abc import Iterator
 
-from quart import Quart
-from quart import current_app
-from quart import g
-
 from compute_space.db.versioned import apply_migrations
+
+_db_path: str | None = None
 
 
 @contextlib.contextmanager
@@ -29,20 +28,36 @@ def make_atomic_with_savepoint(db: sqlite3.Connection) -> Iterator[None]:
         raise
 
 
+def init_db(db_path: str) -> None:
+    """Configure the SQLite path used by ``get_db()`` and run migrations."""
+    global _db_path
+    _db_path = db_path
+    apply_migrations(db_path)
+
+
 def get_db() -> sqlite3.Connection:
-    if "db" not in g:
-        g.db = sqlite3.connect(current_app.config["DB_PATH"], check_same_thread=False)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
-        g.db.execute("PRAGMA foreign_keys=ON")
-    return g.db  # type: ignore[no-any-return]
+    """Return a fresh SQLite connection.
+
+    Each call opens a new connection; CPython closes the underlying handle when
+    the caller's last reference drops.  No cross-call sharing — callers that
+    need a single transaction across multiple helpers must pass their conn
+    explicitly.
+    """
+    if _db_path is None:
+        raise RuntimeError("init_db() must be called before get_db()")
+    db = sqlite3.connect(_db_path, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA foreign_keys=ON")
+    return db
 
 
-def close_db(exception: BaseException | None = None) -> None:
-    db = g.pop("db", None)
-    if db is not None:
+def provide_db() -> Generator[sqlite3.Connection, None, None]:
+    """Litestar dependency: hand a fresh SQLite connection to a route, and close
+    it once the handler returns.  Generator form so Litestar runs the post-yield
+    cleanup deterministically instead of relying on GC of ``parsed_kwargs``."""
+    db = get_db()
+    try:
+        yield db
+    finally:
         db.close()
-
-
-def init_db(app: Quart) -> None:
-    apply_migrations(app.config["DB_PATH"])

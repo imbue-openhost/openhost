@@ -18,6 +18,7 @@ import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
+from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
@@ -56,7 +57,6 @@ RESERVED_PATHS = {
     "/app",
     "/setup",
     "/.well-known",
-    "/handle_invite",
     "/terminal",
     "/toggle-ssh",
     "/identity",
@@ -64,6 +64,46 @@ RESERVED_PATHS = {
     "/system",
     "/docs",
 }
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class App:
+    """In-memory mirror of one row of the ``apps`` table."""
+
+    id: int
+    app_id: str
+    name: str
+    manifest_name: str
+    version: str
+    description: str | None
+    runtime_type: str
+    repo_path: str
+    repo_url: str | None
+    health_check: str | None
+    local_port: int
+    container_port: int | None
+    container_id: str | None
+    status: str
+    error_message: str | None
+    memory_mb: int
+    cpu_millicores: int
+    gpu: int
+    public_paths: list[str]
+    manifest_raw: str | None
+    installed_by: str | None
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "App":
+        fields = {f.name: row[f.name] for f in attr.fields(cls)}
+        fields["public_paths"] = json.loads(fields["public_paths"] or "[]")
+        return cls(**fields)
+
+
+def find_app_by_name(name: str) -> App | None:
+    row = get_db().execute("SELECT * FROM apps WHERE name = ?", (name,)).fetchone()
+    return App.from_row(row) if row else None
 
 
 def list_builtin_apps(config: Config) -> list[dict[str, str]]:
@@ -139,7 +179,7 @@ async def clone_and_read_manifest(
     tmp_parent = tempfile.mkdtemp(prefix="openhost-clone-")
     clone_dir = os.path.join(tmp_parent, "repo")
     try:
-        clone_cmd = ["git", "clone"]
+        clone_cmd = ["git", "clone", "--recurse-submodules", "--shallow-submodules"]
         if ref:
             clone_cmd.extend(["--branch", ref])
         clone_cmd.extend([clone_url, clone_dir])
@@ -289,7 +329,7 @@ def insert_and_deploy(
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
         zone_domain=config.zone_domain,
         port=config.port,
-        owner_username=read_owner_username(db) or "owner",
+        owner_username=read_owner_username(db) or DEFAULT_OWNER_USERNAME,
     )
 
     db.execute(
@@ -552,7 +592,7 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
         zone_domain=config.zone_domain,
         port=config.port,
-        owner_username=read_owner_username(db) or "owner",
+        owner_username=read_owner_username(db) or DEFAULT_OWNER_USERNAME,
     )
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
@@ -823,10 +863,11 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
         db.close()
 
 
-def parse_app_from_host(host: str) -> str | None:
-    """Extract app name from a Host header value, by assuming that app_name is a subdir of zone_domain (as is convention).
+def get_app_from_hostname(host: str) -> App | None:
+    """Extract+validate app name from a Host header value (or litestar's request.url.netloc; ie example.com[:port])
+    by assuming that app_name is a subdir of zone_domain (as is convention).
 
-    returns None if an app_name cannot be parsed from the header.
+    returns None if an app cannot be matched from the header.
 
     if zone_dir==host.imbue.com:
         ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
@@ -834,29 +875,18 @@ def parse_app_from_host(host: str) -> str | None:
         localhost:8080 -> None
     """
     config = get_config()
-    zone_domain_no_port = config.zone_domain.split(":", 1)[0]
+    zone_domain_no_port = config.zone_domain_no_port
     host_no_port = host.split(":", 1)[0]
     if host_no_port == zone_domain_no_port:
         return None
     if host_no_port.endswith("." + zone_domain_no_port):
         app_name = host_no_port[: -(len(zone_domain_no_port) + 1)]
         if "." not in app_name:
-            return app_name
+            if app := find_app_by_name(app_name):
+                return app
     return None
 
 
-def find_app_by_name(name: str) -> sqlite3.Row | None:
-    row: sqlite3.Row | None = (
-        get_db()
-        .execute(
-            "SELECT name, local_port, status, public_paths FROM apps WHERE name = ?",
-            (name,),
-        )
-        .fetchone()
-    )
-    return row
-
-
-def is_public_path(app_row: sqlite3.Row, request_path: str) -> bool:
-    public_paths = json.loads(app_row["public_paths"] or "[]")
-    return any(request_path == pp or request_path.startswith(pp.rstrip("/") + "/") for pp in public_paths)
+def is_public_path(app: App, request_path: str) -> bool:
+    # TODO: we should consider if this is the appropriate matching logic
+    return any(request_path == pp or request_path.startswith(pp.rstrip("/") + "/") for pp in app.public_paths)

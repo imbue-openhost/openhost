@@ -9,6 +9,7 @@ not at import time.
 
 import inspect
 import logging
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -19,6 +20,12 @@ _log_path: Path | None = None
 _pending_log_path: Path | None = None
 
 _LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss} | {level:<7} | {name}:{function}:{line} | {message}"
+
+# Replace loguru's default stderr sink, which has diagnose=True/backtrace=True
+# and produces tracebacks annotated with local variable values. We want plain
+# Python tracebacks.
+logger.remove()
+logger.add(sys.stderr, format=_LOG_FORMAT, backtrace=False, diagnose=False)
 
 
 class _InterceptHandler(logging.Handler):
@@ -68,7 +75,7 @@ def setup_file_logging(logfile_path: Path) -> None:
     _pending_log_path = None
     # Truncate so the API returns only current-invocation logs
     open(_log_path, "w").close()
-    logger.add(str(_log_path), level="INFO", format=_LOG_FORMAT, catch=True)
+    logger.add(str(_log_path), level="INFO", format=_LOG_FORMAT, catch=True, backtrace=False, diagnose=False)
 
 
 def retry_file_logging() -> None:

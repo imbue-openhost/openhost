@@ -123,6 +123,17 @@ Notes:
 pre-commit install
 ```
 
+### sculptor workspace setup script
+
+add
+```
+cp -r [YOUR_LOCAL_OPENHOST_CHECKOUT]/.idea .
+pre-commit install
+```
+
+in settings->repositories->openhost->Workspace setup command. adapt to any IDE config or other git-ignored files you'd like copied over; this one is for pycharm + pre-commit.
+
+
 ## testing
 
 ```bash

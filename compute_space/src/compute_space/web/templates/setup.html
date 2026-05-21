@@ -18,7 +18,7 @@
     <label>Username (optional)</label>
     <input type="text" name="username" id="username" autocomplete="username"
            value="{{ username or '' }}"
-           pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,49}" maxlength="50">
+           pattern="[a-z0-9][a-z0-9._\-]{0,29}" maxlength="30">
     <p class="hint">
       Used by apps you install (PeerTube, Mastodon, etc.) as your
       account name. Leave blank to use the default

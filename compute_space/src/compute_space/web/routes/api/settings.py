@@ -1,13 +1,14 @@
 import sqlite3
 
+import attr
 import bcrypt
 import git
-from quart import Blueprint
-from quart import jsonify
-from quart import request
-from quart.typing import ResponseReturnValue
+from litestar import Router
+from litestar import get
+from litestar import post
+from litestar.exceptions import HTTPException
 
-from compute_space.config import get_config
+from compute_space.config import Config
 from compute_space.core.apps import inject_github_token_in_url
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.auth import update_owner_username
@@ -27,39 +28,119 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.updates import check_git_state
 from compute_space.core.updates import hard_checkout_and_validate
 from compute_space.core.updates import trigger_restart
-from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
+from compute_space.web.auth.auth import require_owner_auth
 
-api_settings_bp = Blueprint("api_settings", __name__)
+# --- request / response types -----------------------------------------------
 
 
-@api_settings_bp.route("/api/settings/get_remote", methods=["GET"])
-@login_required
-async def get_remote() -> ResponseReturnValue:
-    config = get_config()
+@attr.s(auto_attribs=True, frozen=True)
+class SetRemoteRequest:
+    url: str = ""
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetOwnerUsernameRequest:
+    username: str = ""
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class GetRemoteResponse:
+    url: str | None = None
+    ref: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetRemoteResponse:
+    token_applied: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HostPrepOk:
+    """Flat fields the dashboard reads when the host is ready for updates."""
+
+    host_prep_ok: bool  # always True for this variant
+    container_runtime_available: bool  # always True
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HostPrepBlocked:
+    """Flat fields the dashboard reads when an update would brick the router.
+
+    Carries the reason/message pair the banner renders verbatim.
+    """
+
+    host_prep_ok: bool  # always False for this variant
+    container_runtime_available: bool
+    host_prep_reason: str
+    host_prep_message: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CheckUpdatesOk:
+    state: str
+    host_prep_ok: bool
+    container_runtime_available: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CheckUpdatesBlocked:
+    state: str
+    host_prep_ok: bool
+    container_runtime_available: bool
+    host_prep_reason: str
+    host_prep_message: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class OwnerUsernameResponse:
+    username: str | None
+
+
+def _host_prep_fields() -> HostPrepOk | HostPrepBlocked:
+    """Probe the live runtime and the sentinel; return the shape the UI expects."""
+    if not container_runtime_available():
+        return HostPrepBlocked(
+            host_prep_ok=False,
+            container_runtime_available=False,
+            host_prep_reason="container_runtime_missing",
+            host_prep_message=CONTAINER_RUNTIME_MISSING_ERROR,
+        )
+    prep = host_prep_status()
+    if not prep.ok:
+        return HostPrepBlocked(
+            host_prep_ok=False,
+            container_runtime_available=True,
+            host_prep_reason=prep.reason,
+            host_prep_message=prep.message,
+        )
+    return HostPrepOk(host_prep_ok=True, container_runtime_available=True)
+
+
+# --- routes -----------------------------------------------------------------
+
+
+@get("/api/settings/get_remote", guards=[require_owner_auth])
+async def get_remote(config: Config) -> GetRemoteResponse:
     try:
         url = await get_remote_url(config.openhost_repo_path)
         ref = await get_current_ref(config.openhost_repo_path)
     except RemoteNotSetError:
-        return jsonify({"ok": True, "url": None, "ref": None})
+        return GetRemoteResponse()
     except (git.InvalidGitRepositoryError, git.NoSuchPathError) as e:
-        return jsonify({"ok": False, "error": repr(e)}), 500
-    return jsonify({"ok": True, "url": url, "ref": ref})
+        raise HTTPException(detail=repr(e), status_code=500) from e
+    return GetRemoteResponse(url=url, ref=ref)
 
 
-@api_settings_bp.route("/api/settings/set_remote", methods=["POST"])
-@login_required
-async def set_remote() -> ResponseReturnValue:
+@post("/api/settings/set_remote", status_code=200, guards=[require_owner_auth])
+async def set_remote(data: SetRemoteRequest, config: Config) -> SetRemoteResponse:
     """Set git remote URL, injecting a GitHub auth token if available.
 
-    We have to do the checkout too, so that we can persist the `ref` setting properly.
-    Which means a whole reboot is required.
+    A checkout is required so we can persist the ``ref`` setting properly,
+    which means a whole reboot is needed afterwards.
     """
-    config = get_config()
-    data = await request.get_json()
-    url = data.get("url", "").strip() if data else ""
+    url = (data.url or "").strip()
     if not url:
-        return jsonify({"ok": False, "error": "url is required"}), 400
+        raise HTTPException(detail="url is required", status_code=400)
 
     base_url, ref = parse_repo_url(url)
     ref = ref or "main"
@@ -77,168 +158,142 @@ async def set_remote() -> ResponseReturnValue:
         await set_remote_url(config.openhost_repo_path, base_url)
         await hard_checkout_and_validate(config.openhost_repo_path, ref)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify({"ok": True, "token_applied": token_applied})
+        raise HTTPException(detail=str(e), status_code=500) from e
+    return SetRemoteResponse(token_applied=token_applied)
 
 
-def _host_prep_payload() -> dict[str, object]:
-    """Return whether the host is ready to run the installed router code.
-
-    Combines a live container-runtime probe (currently ``podman --version``)
-    with the ``/etc/openhost/runtime`` sentinel.  Never raises.
-    """
-    runtime_ok = container_runtime_available()
-    prep = host_prep_status()
-    payload: dict[str, object] = {
-        "host_prep_ok": runtime_ok and prep.ok,
-        "container_runtime_available": runtime_ok,
-    }
-    if not runtime_ok:
-        payload["host_prep_reason"] = "container_runtime_missing"
-        payload["host_prep_message"] = CONTAINER_RUNTIME_MISSING_ERROR
-    elif not prep.ok:
-        payload["host_prep_reason"] = prep.reason
-        payload["host_prep_message"] = prep.message
-    return payload
-
-
-@api_settings_bp.route("/api/settings/check_for_updates", methods=["POST"])
-@login_required
-async def check_for_updates() -> ResponseReturnValue:
-    config = get_config()
+@post("/api/settings/check_for_updates", status_code=200, guards=[require_owner_auth])
+async def check_for_updates(config: Config) -> CheckUpdatesOk | CheckUpdatesBlocked:
     try:
         state = await check_git_state(config.openhost_repo_path)
     except Exception as e:
-        return jsonify({"ok": False, "error": repr(e)}), 500
+        raise HTTPException(detail=repr(e), status_code=500) from e
+    prep = _host_prep_fields()
+    if isinstance(prep, HostPrepBlocked):
+        return CheckUpdatesBlocked(
+            state=str(state),
+            host_prep_ok=prep.host_prep_ok,
+            container_runtime_available=prep.container_runtime_available,
+            host_prep_reason=prep.host_prep_reason,
+            host_prep_message=prep.host_prep_message,
+        )
+    return CheckUpdatesOk(
+        state=str(state),
+        host_prep_ok=prep.host_prep_ok,
+        container_runtime_available=prep.container_runtime_available,
+    )
 
-    payload: dict[str, object] = {"ok": True, "state": str(state)}
-    payload.update(_host_prep_payload())
-    return jsonify(payload)
 
-
-@api_settings_bp.route("/api/settings/update_repo_state", methods=["POST"])
-@login_required
-async def update_repo_state() -> ResponseReturnValue:
+@post("/api/settings/update_repo_state", status_code=204, guards=[require_owner_auth])
+async def update_repo_state(config: Config) -> None:
     """git reset to local origin/[branch] + pixi install.
 
-    Returns HTTP 409 when the host isn't prepared for the installed
-    runtime (the dashboard banner is the UI layer on top).
+    Returns HTTP 409 when the host isn't prepared for the installed runtime;
+    the blocking host_prep fields are carried in the exception's ``extra``.
     """
-    config = get_config()
-
-    prep = _host_prep_payload()
-    if not prep["host_prep_ok"]:
-        payload: dict[str, object] = {"ok": False, "error": prep["host_prep_message"]}
-        payload.update(prep)
-        return jsonify(payload), 409
+    prep = _host_prep_fields()
+    if isinstance(prep, HostPrepBlocked):
+        raise HTTPException(
+            detail=prep.host_prep_message,
+            status_code=409,
+            extra=attr.asdict(prep),
+        )
 
     ref = await get_current_ref(config.openhost_repo_path)
     try:
         await hard_checkout_and_validate(config.openhost_repo_path, ref)
     except Exception as e:
-        return jsonify({"ok": False, "error": repr(e)}), 500
-    return jsonify({"ok": True})
+        raise HTTPException(detail=repr(e), status_code=500) from e
 
 
-@api_settings_bp.route("/api/settings/restart_compute_space", methods=["POST"])
-@login_required
-async def restart_compute_space() -> ResponseReturnValue:
-    trigger_restart()
+@post("/api/settings/restart_compute_space", status_code=204, guards=[require_owner_auth])
+async def restart_compute_space() -> None:
     # this response may not get sent, don't depend on it
-    return jsonify({"ok": True})
+    trigger_restart()
 
 
-@api_settings_bp.route("/api/settings/change_password", methods=["POST"])
-@login_required
-async def change_password() -> ResponseReturnValue:
-    data = await request.get_json()
-    current = data.get("current_password", "")
-    new_pw = data.get("new_password", "")
-    confirm = data.get("confirm_password", "")
+@attr.s(auto_attribs=True, frozen=True)
+class ChangePasswordRequest:
+    current_password: str = ""
+    new_password: str = ""
+    confirm_password: str = ""
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ChangePasswordResponse:
+    ok: bool = True
+
+
+@post("/api/settings/change_password", status_code=200, guards=[require_owner_auth])
+async def change_password(data: ChangePasswordRequest, db: sqlite3.Connection) -> ChangePasswordResponse:
+    current = (data.current_password or "").strip()
+    new_pw = (data.new_password or "").strip()
+    confirm = (data.confirm_password or "").strip()
 
     if not current or not new_pw:
-        return jsonify({"ok": False, "error": "All fields required"}), 400
+        raise HTTPException(detail="All fields required", status_code=400)
     if new_pw != confirm:
-        return jsonify({"ok": False, "error": "Passwords do not match"}), 400
+        raise HTTPException(detail="Passwords do not match", status_code=400)
     if len(new_pw) < 8:
-        return jsonify({"ok": False, "error": "Password must be at least 8 characters"}), 400
+        raise HTTPException(detail="Password must be at least 8 characters", status_code=400)
 
-    db = get_db()
-    owner = db.execute("SELECT * FROM owner").fetchone()
-    if not owner:
-        return jsonify({"ok": False, "error": "No owner found"}), 404
+    row = db.execute("SELECT user_id, password_hash FROM users LIMIT 1").fetchone()
+    if not row:
+        raise HTTPException(detail="No owner found", status_code=404)
 
-    if not bcrypt.checkpw(current.encode(), owner["password_hash"].encode()):
-        return jsonify({"ok": False, "error": "Current password is incorrect"}), 403
+    if not bcrypt.checkpw(current.encode(), row["password_hash"].encode()):
+        raise HTTPException(detail="Current password is incorrect", status_code=403)
 
     new_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
-    db.execute("UPDATE owner SET password_hash = ? WHERE id = 1", (new_hash,))
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE user_id = ?",
+        (new_hash, row["user_id"]),
+    )
     db.commit()
 
-    return jsonify({"ok": True})
+    return ChangePasswordResponse(ok=True)
 
 
-@api_settings_bp.route("/api/settings/owner_username", methods=["GET"])
-@login_required
-async def get_owner_username() -> ResponseReturnValue:
-    """Return the configured owner username for the dashboard form.
-
-    Always returns 200 with the current value (or null if no owner
-    row exists, which only happens during the brief window before
-    /setup completes -- login_required would normally already reject
-    in that state).
-    """
-    db = get_db()
-    return jsonify({"ok": True, "username": read_owner_username(db)})
+@get("/api/settings/owner_username", guards=[require_owner_auth])
+async def get_owner_username(db: sqlite3.Connection) -> OwnerUsernameResponse:
+    """Return the configured owner username for the dashboard form."""
+    return OwnerUsernameResponse(username=read_owner_username(db))
 
 
-@api_settings_bp.route("/api/settings/owner_username", methods=["POST"])
-@login_required
-async def set_owner_username() -> ResponseReturnValue:
+@post("/api/settings/owner_username", status_code=200, guards=[require_owner_auth])
+async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
     """Update the owner's display username.
 
-    The new value is forwarded to per-app containers via
-    ``OPENHOST_OWNER_USERNAME`` on their next reload -- already-running
-    containers keep the old value until they restart, which mirrors
-    how every other ``OPENHOST_*`` env var is plumbed.  We don't
-    bounce apps automatically here because that would surprise the
-    operator; apps that haven't picked up the new value yet are
-    surfaced as "stale" via the usual reload UI.
-
-    Returns:
-        - 400 with an operator-readable error on validation failure
-          or pre-setup state (no owner row yet).
-        - 500 with a structured error on DB failures (disk full,
-          WAL lock timeout, etc.) -- matches the style of the other
-          settings routes on the same page so the dashboard's
-          generic error handler can render the message.
-        - 200 with the new value on success.
+    Forwarded to per-app containers via ``OPENHOST_OWNER_USERNAME`` on their
+    next reload; already-running containers keep the old value until they restart.
     """
-    data = await request.get_json()
-    # ``data`` may be any JSON value (dict, list, scalar, ``None``);
-    # only a JSON object can carry a ``username`` field.  Reject the
-    # other shapes loudly with 400 rather than letting a non-mapping
-    # ``data`` raise AttributeError on ``.get`` and surface as 500.
-    if data is not None and not isinstance(data, dict):
-        return jsonify({"ok": False, "error": "request body must be a JSON object"}), 400
-    raw = (data or {}).get("username", "")
-    if not isinstance(raw, str):
-        return jsonify({"ok": False, "error": "username must be a string"}), 400
-    candidate = raw.strip()
+    candidate = (data.username or "").strip()
     error = validate_owner_username(candidate)
     if error is not None:
-        return jsonify({"ok": False, "error": error}), 400
+        raise HTTPException(detail=error, status_code=400)
 
-    db = get_db()
     try:
         update_owner_username(db, candidate)
         db.commit()
     except ValueError as e:
-        # ``update_owner_username`` raises ValueError when the owner
-        # row is missing -- this is a 400, not a 500: the operator's
-        # next action is "complete /setup", not "retry".
-        return jsonify({"ok": False, "error": str(e)}), 400
+        # No user row yet — operator's next step is /setup, not retry.
+        raise HTTPException(detail=str(e), status_code=400) from e
     except sqlite3.Error as e:
-        return jsonify({"ok": False, "error": f"database error: {e}"}), 500
+        raise HTTPException(detail=f"database error: {e}", status_code=500) from e
 
-    return jsonify({"ok": True, "username": candidate})
+    return OwnerUsernameResponse(username=candidate)
+
+
+api_settings_routes = Router(
+    path="/",
+    route_handlers=[
+        get_remote,
+        set_remote,
+        check_for_updates,
+        update_repo_state,
+        restart_compute_space,
+        change_password,
+        get_owner_username,
+        set_owner_username,
+    ],
+)
