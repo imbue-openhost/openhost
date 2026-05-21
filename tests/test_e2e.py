@@ -651,7 +651,7 @@ class TestSelfHost:
         )
         assert r.status_code == 200, f"configure failed: {r.status_code}: {r.text[:500]}"
         data = r.json()
-        assert data.get("ok"), f"configure not ok: {data}"
+        assert data.get("backend") == "s3", f"configure didn't set backend to s3: {data}"
 
     def test_13h_verify_archive_backend_state(self, session, router_url):
         """Verify the archive backend reports as configured."""
