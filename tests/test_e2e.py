@@ -587,7 +587,7 @@ class TestSelfHost:
 
         bucket = "openhost-e2e-archive"
         # MinIO S3 API is on port 9106 (host-mapped), accessible as localhost on the host
-        endpoint = f"http://localhost:9106"
+        endpoint = "http://localhost:9106"
         ssh_key = os.environ.get("OPENHOST_SSH_KEY", "")
         public_ip = os.environ.get("OPENHOST_PUBLIC_IP", "")
         assert ssh_key and public_ip, "SSH credentials not available for bucket creation"
