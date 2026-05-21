@@ -28,7 +28,6 @@ from compute_space.config import provide_config
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import create_session
 from compute_space.core.auth.auth import validate_owner_username
-from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.core.updates import is_shutdown_pending
@@ -154,14 +153,13 @@ async def _trigger_restart_after_response() -> None:
 
 
 @get("/health", sync_to_thread=False)
-def health() -> Response[dict[str, Any]]:
-    """Liveness + security audit, mirrors the full app's /health so external
-    probes (and the e2e test suite's pre-setup audit) get the same shape
-    before and after owner provisioning."""
+def health() -> Response[dict[str, str]]:
+    """Liveness probe.  Returns ``{"status": "ok"}`` (or 503 when restarting).
+    Security audit data is only available via the authenticated
+    ``/api/security-audit`` endpoint."""
     if is_shutdown_pending():
         return Response(content={"status": "restarting"}, status_code=503)
-    audit = run_audit(db=get_db())
-    return Response(content={"status": "ok", "security": audit})
+    return Response(content={"status": "ok"})
 
 
 def create_setup_app(config: Config) -> Litestar:
