@@ -185,13 +185,13 @@ def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any
             response.headers.add(k, v)
 
 
-@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS], status_code=204)
-async def service_call_cors(request: Request[Any, Any, Any], _shortname: str, _rest: str) -> Response[str]:
+@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS])
+async def service_call_cors(request: Request[Any, Any, Any], shortname: str, rest: str) -> Response[str]:
     """Hande CORS preflight HTTP OPTIONS request, respond with appropriate CORS headers."""
     origin = request.headers.get("Origin", None)
     # block CORS preflight if Origin is not a known app - no auth headers yet but we can at least verify this,
     # to help avoid XSRF from external sites.
-    if origin is None or get_app_from_hostname(origin) is not None:
+    if origin is None or get_app_from_hostname(origin) is None:
         return Response(content="Forbidden", status_code=403, media_type=MediaType.TEXT)
     return Response(content="", status_code=204, headers=_cors_headers(origin))
 
@@ -504,5 +504,9 @@ def _installer_permission_denied(
 
 services_v2_routes = Router(
     path="/",
-    route_handlers=[service_call, service_call_cors, service_call_ws, oauth_callback_proxy_v2],
+    # service_call_cors MUST come before service_call: Litestar v2.21.1 has a
+    # bug where registering a non-OPTIONS handler first causes an auto-generated
+    # OPTIONS handler to be appended, which then silently overwrites any explicit
+    # OPTIONS handler via last-writer-wins in route_handler_method_map.
+    route_handlers=[service_call_cors, service_call, service_call_ws, oauth_callback_proxy_v2],
 )
