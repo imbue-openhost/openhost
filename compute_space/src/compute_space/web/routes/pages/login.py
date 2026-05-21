@@ -37,10 +37,10 @@ def _validated_next(next_url: str, zone_domain: str) -> str | None:
 
 
 @get("/login")
-async def login_get(request: Request[Any, Any, Any], db: sqlite3.Connection) -> Response[Any]:
+async def login_get(request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config) -> Response[Any]:
     next_param = request.query_params.get("next", "")
     if authenticate(request, db=db) is not None:
-        return Redirect(path=next_param or "/")
+        return Redirect(path=_validated_next(next_param, config.zone_domain) or "/")
     return Template(template_name="login.html", context={"next": next_param})
 
 
