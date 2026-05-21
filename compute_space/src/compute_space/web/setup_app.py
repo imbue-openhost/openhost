@@ -28,7 +28,6 @@ from compute_space.config import provide_config
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import create_session
 from compute_space.core.auth.auth import validate_owner_username
-from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
 from compute_space.core.updates import is_shutdown_pending
@@ -56,6 +55,14 @@ def _claim_token_required(config: Config) -> bool:
 
 def _claim_unauthorized() -> Response[str]:
     return Response(content="Invalid or missing claim token.", status_code=403, media_type=MediaType.TEXT)
+
+
+@get("/")
+async def root_redirect() -> Response[None]:
+    """Redirect to /setup before the owner is provisioned."""
+    from litestar.response import Redirect  # noqa: PLC0415
+
+    return Redirect(path="/setup")
 
 
 @get("/setup")
@@ -146,14 +153,13 @@ async def _trigger_restart_after_response() -> None:
 
 
 @get("/health", sync_to_thread=False)
-def health() -> Response[dict[str, Any]]:
-    """Liveness + security audit, mirrors the full app's /health so external
-    probes (and the e2e test suite's pre-setup audit) get the same shape
-    before and after owner provisioning."""
+def health() -> Response[dict[str, str]]:
+    """Liveness probe.  Returns ``{"status": "ok"}`` (or 503 when restarting).
+    Security audit data is only available via the authenticated
+    ``/api/security-audit`` endpoint."""
     if is_shutdown_pending():
         return Response(content={"status": "restarting"}, status_code=503)
-    audit = run_audit(db=get_db())
-    return Response(content={"status": "ok", "security": audit})
+    return Response(content={"status": "ok"})
 
 
 def create_setup_app(config: Config) -> Litestar:
@@ -170,7 +176,7 @@ def create_setup_app(config: Config) -> Litestar:
     static_router = create_static_files_router(path="/static", directories=[static_dir])
 
     return Litestar(
-        route_handlers=[setup_get, setup_post, health, static_router],
+        route_handlers=[root_redirect, setup_get, setup_post, health, static_router],
         template_config=template_config,
         dependencies={"config": Provide(provide_config, sync_to_thread=False)},
     )
