@@ -131,8 +131,11 @@ async def proxy_http_request(
 ) -> ASGIResponse:
     """Forward an HTTP request to a local port and return the response.
 
-    The request body is streamed straight from the client into httpx via
-    ``request.stream()``.
+    The request body is read eagerly from the ASGI ``receive`` channel and
+    forwarded to the backend as bytes.  Eager reading keeps the ``receive``
+    lifecycle clean (fully consumed before we touch the response side) and
+    avoids httpx adding a spurious ``Transfer-Encoding: chunked`` header to
+    bodyless requests.
 
     Responses with a known ``Content-Length`` up to ``_BUFFER_THRESHOLD`` are
     buffered into a plain ``ASGIResponse`` (which sets ``Content-Length`` and
@@ -144,17 +147,32 @@ async def proxy_http_request(
         request.headers, _HTTP_REQUEST_EXCLUDED_HEADERS, extra_headers
     )
 
-    # Don't use ``request.stream()``, it doesn't seem to work in an outer middleware?
-    async def _body_stream() -> AsyncIterator[bytes]:
-        while True:
-            msg = await request.receive()
-            if msg["type"] == "http.request":
-                if body := msg.get("body"):
-                    yield body
-                if not msg.get("more_body", False):
-                    return
-            elif msg["type"] == "http.disconnect":
-                return
+    # Read the inbound body eagerly so we fully consume the ASGI receive
+    # channel before we start proxying the response.  Streaming the body via
+    # an async generator that called ``receive()`` inside httpx's send loop
+    # created a race: if the ASGI server delivered an ``http.disconnect``
+    # while the generator was suspended (between send and response), the
+    # proxy would surface a 500 to the client.  Eager reading also avoids
+    # httpx injecting ``Transfer-Encoding: chunked`` on bodyless GETs.
+    body_parts: list[bytes] = []
+    while True:
+        msg = await request.receive()
+        if msg["type"] == "http.request":
+            if chunk := msg.get("body"):
+                body_parts.append(chunk)
+            if not msg.get("more_body", False):
+                break
+        elif msg["type"] == "http.disconnect":
+            break
+    request_body = b"".join(body_parts)
+
+    # Pass content=None for truly bodyless requests (e.g. GET with no
+    # Content-Length / Transfer-Encoding) so httpx omits body framing
+    # entirely.  For requests that explicitly declared a body — even an
+    # empty one (Content-Length: 0) — forward the bytes so the backend
+    # sees the same semantics the client intended.
+    has_declared_body = "content-length" in request.headers or "transfer-encoding" in request.headers
+    content = request_body if has_declared_body else None
 
     client = httpx.AsyncClient(timeout=timeout)
     try:
@@ -162,7 +180,7 @@ async def proxy_http_request(
             method=str(request.method),
             url=target_url,
             headers=new_request_headers,
-            content=_body_stream(),
+            content=content,
         )
         try:
             upstream_response = await client.send(new_request, stream=True)
