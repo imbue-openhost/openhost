@@ -191,7 +191,7 @@ async def service_call_cors(request: Request[Any, Any, Any], _shortname: str, _r
     origin = request.headers.get("Origin", None)
     # block CORS preflight if Origin is not a known app - no auth headers yet but we can at least verify this,
     # to help avoid XSRF from external sites.
-    if origin is None or get_app_from_hostname(origin) is not None:
+    if origin is None or get_app_from_hostname(origin) is None:
         return Response(content="Forbidden", status_code=403, media_type=MediaType.TEXT)
     return Response(content="", status_code=204, headers=_cors_headers(origin))
 
@@ -504,5 +504,9 @@ def _installer_permission_denied(
 
 services_v2_routes = Router(
     path="/",
-    route_handlers=[service_call, service_call_cors, service_call_ws, oauth_callback_proxy_v2],
+    # service_call_cors MUST come before service_call: Litestar v2.21.1 processes
+    # handlers in order and auto-generates an OPTIONS handler after the first
+    # handler that doesn't include OPTIONS, silently shadowing any explicit
+    # OPTIONS handler that appears later in the list.
+    route_handlers=[service_call_cors, service_call, service_call_ws, oauth_callback_proxy_v2],
 )
