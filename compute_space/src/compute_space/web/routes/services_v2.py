@@ -185,8 +185,8 @@ def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any
             response.headers.add(k, v)
 
 
-@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS], status_code=204)
-async def service_call_cors(request: Request[Any, Any, Any], _shortname: str, _rest: str) -> Response[str]:
+@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS])
+async def service_call_cors(request: Request[Any, Any, Any], shortname: str, rest: str) -> Response[str]:
     """Hande CORS preflight HTTP OPTIONS request, respond with appropriate CORS headers."""
     origin = request.headers.get("Origin", None)
     # block CORS preflight if Origin is not a known app - no auth headers yet but we can at least verify this,
