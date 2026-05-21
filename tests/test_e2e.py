@@ -527,7 +527,7 @@ class TestSelfHost:
         """Deploy MinIO from its public GitHub repo."""
         r = session.post(
             f"{router_url}/api/add_app",
-            data={"repo_url": "https://github.com/imbue-openhost/openhost-minio"},
+            json={"repo_url": "https://github.com/imbue-openhost/openhost-minio"},
             timeout=120,
         )
         assert r.status_code == 200, f"add_app minio failed: {r.status_code}: {r.text[:500]}"
@@ -547,7 +547,7 @@ class TestSelfHost:
         TestSelfHost._fb_was_preexisting = False
         r = session.post(
             f"{router_url}/api/add_app",
-            data={"repo_url": f"file:///home/host/openhost/apps/file_browser"},
+            json={"repo_url": "file:///home/host/openhost/apps/file_browser"},
             timeout=120,
         )
         assert r.status_code == 200, f"add_app file-browser failed: {r.status_code}: {r.text[:500]}"
@@ -621,12 +621,13 @@ class TestSelfHost:
         # Test connection first
         r = session.post(
             f"{router_url}/api/storage/archive_backend/test_connection",
-            data={
+            json={
                 "s3_bucket": bucket,
                 "s3_access_key_id": minio_user,
                 "s3_secret_access_key": minio_password,
                 "s3_endpoint": endpoint,
                 "s3_region": "us-east-1",
+                "s3_prefix": "",
             },
             timeout=30,
         )
@@ -637,7 +638,7 @@ class TestSelfHost:
         # Configure
         r = session.post(
             f"{router_url}/api/storage/archive_backend/configure",
-            data={
+            json={
                 "s3_bucket": bucket,
                 "s3_access_key_id": minio_user,
                 "s3_secret_access_key": minio_password,
