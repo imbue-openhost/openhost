@@ -164,5 +164,12 @@ def grant_app_scoped(
 
 api_permissions_v2_routes = Router(
     path="/",
-    route_handlers=[list_permissions_v2, grant_global_scoped, revoke_v2, list_pending_requests, dismiss_pending_request, grant_app_scoped],
+    route_handlers=[
+        list_permissions_v2,
+        grant_global_scoped,
+        revoke_v2,
+        list_pending_requests,
+        dismiss_pending_request,
+        grant_app_scoped,
+    ],
 )
