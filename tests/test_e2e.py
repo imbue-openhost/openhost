@@ -10,6 +10,7 @@ import secrets
 import socket
 import ssl
 import string
+import subprocess
 import time
 
 import pytest
@@ -519,6 +520,193 @@ class TestSelfHost:
         assert any(name == f"*.{domain}" for name in cert_names), (
             f"Cert SANs {cert_names} do not include wildcard *.{domain}"
         )
+
+    # -- 13c. S3 archive backend (MinIO) -----------------------------------
+
+    def test_13c_deploy_minio(self, session, router_url):
+        """Deploy MinIO from its public GitHub repo."""
+        r = session.post(
+            f"{router_url}/api/add_app",
+            json={"repo_url": "https://github.com/imbue-openhost/openhost-minio"},
+            timeout=120,
+        )
+        assert r.status_code == 200, f"add_app minio failed: {r.status_code}: {r.text[:500]}"
+        assert r.json().get("app_name") == "minio"
+        wait_app_running(session, router_url, "minio", timeout=APP_DEPLOY_TIMEOUT_S)
+
+    def test_13d_deploy_file_browser(self, session, router_url, domain):
+        """Deploy file-browser (built-in) to read MinIO credentials and archive files."""
+        # file-browser may already be deployed as a default app; skip if so
+        existing = app_id_for(session, router_url, "file-browser")
+        if existing:
+            TestSelfHost._fb_was_preexisting = True
+            # Verify it's running
+            r = session.get(f"{router_url}/api/app_status/{existing}", timeout=10)
+            assert r.json()["status"] == "running"
+            return
+        TestSelfHost._fb_was_preexisting = False
+        r = session.post(
+            f"{router_url}/api/add_app",
+            json={"repo_url": "file:///home/host/openhost/apps/file_browser"},
+            timeout=120,
+        )
+        assert r.status_code == 200, f"add_app file-browser failed: {r.status_code}: {r.text[:500]}"
+        wait_app_running(session, router_url, "file-browser", timeout=APP_DEPLOY_TIMEOUT_S)
+
+    def test_13e_read_minio_credentials(self, session, domain):
+        """Read MinIO root credentials via file-browser."""
+        fb_url = f"https://file-browser.{domain}"
+        # file-browser (dufs) serves files directly; credentials are at
+        # /app_data/minio/config/root-credentials.txt
+        r = poll_endpoint(
+            session,
+            f"{fb_url}/app_data/minio/config/root-credentials.txt",
+            timeout=60,
+            interval=5,
+            fail_msg="Could not read MinIO credentials via file-browser",
+        )
+        cred_text = r.text
+        # Parse: lines like "export MINIO_ROOT_USER='...'"
+        creds = {}
+        for line in cred_text.splitlines():
+            line = line.strip()
+            if line.startswith("export MINIO_ROOT_USER="):
+                creds["user"] = line.split("=", 1)[1].strip("'\"")
+            elif line.startswith("export MINIO_ROOT_PASSWORD="):
+                creds["password"] = line.split("=", 1)[1].strip("'\"")
+        assert "user" in creds, f"Could not parse MINIO_ROOT_USER from: {cred_text[:200]}"
+        assert "password" in creds, f"Could not parse MINIO_ROOT_PASSWORD from: {cred_text[:200]}"
+        TestSelfHost._minio_user = creds["user"]
+        TestSelfHost._minio_password = creds["password"]
+
+    def test_13f_create_minio_bucket(self, domain):
+        """Create a test bucket in MinIO using the mc CLI on the host via SSH."""
+        minio_user = getattr(TestSelfHost, "_minio_user", None)
+        minio_password = getattr(TestSelfHost, "_minio_password", None)
+        assert minio_user and minio_password, "MinIO credentials not available"
+
+        bucket = "openhost-e2e-archive"
+        # MinIO S3 API is on port 9106 (host-mapped), accessible as localhost on the host
+        endpoint = "http://localhost:9106"
+        ssh_key = os.environ.get("OPENHOST_SSH_KEY", "")
+        public_ip = os.environ.get("OPENHOST_PUBLIC_IP", "")
+        assert ssh_key and public_ip, "SSH credentials not available for bucket creation"
+
+        ssh_opts = f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i {ssh_key}"
+        # Install mc (MinIO client), configure alias, create bucket
+        commands = (
+            f"curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc && chmod +x /tmp/mc && "
+            f"/tmp/mc alias set e2e {endpoint} '{minio_user}' '{minio_password}' && "
+            f"/tmp/mc mb --ignore-existing e2e/{bucket}"
+        )
+        result = subprocess.run(
+            f"ssh {ssh_opts} host@{public_ip} {commands!r}",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, f"Bucket creation failed: {result.stderr}"
+        TestSelfHost._minio_bucket = bucket
+        TestSelfHost._minio_endpoint = endpoint
+
+    def test_13g_configure_archive_backend(self, session, router_url):
+        """Configure the archive backend to use the local MinIO instance."""
+        minio_user = getattr(TestSelfHost, "_minio_user", None)
+        minio_password = getattr(TestSelfHost, "_minio_password", None)
+        bucket = getattr(TestSelfHost, "_minio_bucket", None)
+        endpoint = getattr(TestSelfHost, "_minio_endpoint", None)
+        assert all([minio_user, minio_password, bucket, endpoint])
+
+        # Test connection first
+        r = session.post(
+            f"{router_url}/api/storage/archive_backend/test_connection",
+            json={
+                "s3_bucket": bucket,
+                "s3_access_key_id": minio_user,
+                "s3_secret_access_key": minio_password,
+                "s3_endpoint": endpoint,
+                "s3_region": "us-east-1",
+                "s3_prefix": "",
+            },
+            timeout=30,
+        )
+        assert r.status_code == 200, f"test_connection failed: {r.status_code}: {r.text[:500]}"
+        data = r.json()
+        assert data.get("ok"), f"test_connection not ok: {data}"
+
+        # Configure
+        r = session.post(
+            f"{router_url}/api/storage/archive_backend/configure",
+            json={
+                "s3_bucket": bucket,
+                "s3_access_key_id": minio_user,
+                "s3_secret_access_key": minio_password,
+                "s3_endpoint": endpoint,
+                "s3_region": "us-east-1",
+                "s3_prefix": "e2e-test",
+                "juicefs_volume_name": "e2e-vol",
+            },
+            timeout=120,
+        )
+        assert r.status_code == 200, f"configure failed: {r.status_code}: {r.text[:500]}"
+        data = r.json()
+        assert data.get("backend") == "s3", f"configure didn't set backend to s3: {data}"
+
+    def test_13h_verify_archive_backend_state(self, session, router_url):
+        """Verify the archive backend reports as configured."""
+        r = session.get(f"{router_url}/api/storage/archive_backend", timeout=10)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["backend"] == "s3"
+        assert data["s3_bucket"] == "openhost-e2e-archive"
+
+    def test_13i_archive_file_roundtrip(self, session, domain):
+        """Write, read, and delete a file in the archive via file-browser."""
+        fb_url = f"https://file-browser.{domain}"
+        test_content = "e2e archive backend test file"
+
+        # file-browser (dufs) supports PUT for uploads
+        r = session.put(
+            f"{fb_url}/app_archive/file-browser/e2e-test-file.txt",
+            data=test_content,
+            headers={"Content-Type": "text/plain"},
+            timeout=30,
+        )
+        # dufs returns 201 Created or 204 No Content on PUT
+        assert r.status_code in (200, 201, 204), f"PUT failed: {r.status_code}: {r.text[:200]}"
+
+        # Read back
+        r = session.get(f"{fb_url}/app_archive/file-browser/e2e-test-file.txt", timeout=10)
+        assert r.status_code == 200
+        assert r.text == test_content
+
+        # Delete
+        r = session.request(
+            "DELETE",
+            f"{fb_url}/app_archive/file-browser/e2e-test-file.txt",
+            timeout=10,
+        )
+        assert r.status_code in (200, 204), f"DELETE failed: {r.status_code}: {r.text[:200]}"
+
+        # Verify gone
+        r = session.get(f"{fb_url}/app_archive/file-browser/e2e-test-file.txt", timeout=10)
+        assert r.status_code == 404
+
+    def test_13j_cleanup_archive_test(self, session, router_url):
+        """Remove MinIO and optionally file-browser."""
+        # Remove minio
+        minio_id = app_id_for(session, router_url, "minio")
+        if minio_id:
+            session.post(f"{router_url}/remove_app/{minio_id}", timeout=30)
+            wait_app_removed(session, router_url, "minio")
+
+        # Only remove file-browser if we deployed it
+        if not getattr(TestSelfHost, "_fb_was_preexisting", True):
+            fb_id = app_id_for(session, router_url, "file-browser")
+            if fb_id:
+                session.post(f"{router_url}/remove_app/{fb_id}", timeout=30)
+                wait_app_removed(session, router_url, "file-browser")
 
     # -- 14. Cleanup -------------------------------------------------------
 
