@@ -83,8 +83,8 @@ def test_sqlite_provisioning():
         assert not os.path.exists(env_vars["OPENHOST_SQLITE_cache"])
 
 
-def test_pre_setup_security_audit(tmp_path):
-    """Security audit via /health returns valid results before owner setup."""
+def test_pre_setup_health(tmp_path):
+    """Health endpoint returns status ok and no security data before owner setup."""
     ROUTER_PORT = 18084
     base_url = f"http://127.0.0.1:{ROUTER_PORT}"
 
@@ -99,20 +99,7 @@ def test_pre_setup_security_audit(tmp_path):
 
         data = r.json()
         assert data["status"] == "ok"
-        assert "security" in data
-
-        security = data["security"]
-        assert isinstance(security["secure"], bool)
-        assert "checks" in security
-
-        expected_checks = {"ssh_password_disabled", "tls_active", "no_unexpected_ports"}
-        assert set(security["checks"].keys()) == expected_checks
-
-        for name, check in security["checks"].items():
-            assert "ok" in check, f"check {name} missing 'ok'"
-            assert "detail" in check, f"check {name} missing 'detail'"
-            assert isinstance(check["ok"], bool)
-            assert isinstance(check["detail"], str)
+        assert "security" not in data
     finally:
         if router is not None:
             _stop_router_process(router)
@@ -196,7 +183,7 @@ class TestRouterCore:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
-        assert "security" in data
+        assert "security" not in data
 
     def test_post_setup_security_audit(self, admin_session, config):
         """Post-setup audit returns valid structure from /api/security-audit."""

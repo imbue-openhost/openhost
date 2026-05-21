@@ -73,7 +73,6 @@ class OkResponse:
 @attr.s(auto_attribs=True, frozen=True)
 class HealthOk:
     status: str  # "ok"
-    security: AuditResult
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -191,10 +190,10 @@ def compute_space_logs() -> Response[str]:
 
 
 @get("/health", sync_to_thread=False)
-def health(db: sqlite3.Connection) -> Response[HealthRestarting] | HealthOk:
+def health() -> Response[HealthRestarting] | HealthOk:
     if is_shutdown_pending():
         return Response(content=HealthRestarting(status="restarting"), status_code=503)
-    return HealthOk(status="ok", security=run_audit(db=db))
+    return HealthOk(status="ok")
 
 
 @get("/api/security-audit", guards=[require_owner_auth], sync_to_thread=False)

@@ -89,7 +89,7 @@ class TestSelfHost:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
-        assert "security" in data
+        assert "security" not in data
 
     # -- 2. Setup (create owner) -------------------------------------------
 
