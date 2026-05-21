@@ -139,7 +139,7 @@ def test_get_meta_dumps_null_on_s3_list_failure(
 def test_configure_requires_creds(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     resp = client.post(
         "/api/storage/archive_backend/configure",
-        data={"s3_bucket": "b"},
+        json={"s3_bucket": "b"},
         cookies=cookies,
     )
     assert resp.status_code == 400
@@ -164,7 +164,7 @@ def test_configure_rejects_invalid_s3_prefix(client: TestClient[Litestar], cooki
     ):
         resp = client.post(
             "/api/storage/archive_backend/configure",
-            data={
+            json={
                 "s3_bucket": "b",
                 "s3_access_key_id": "a",
                 "s3_secret_access_key": "s",
@@ -191,7 +191,7 @@ def test_configure_rejects_when_already_configured(
         db.close()
     resp = client.post(
         "/api/storage/archive_backend/configure",
-        data={"s3_bucket": "b2", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
+        json={"s3_bucket": "b2", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
         cookies=cookies,
     )
     assert resp.status_code == 409
@@ -218,7 +218,7 @@ def test_configure_happy_path(client: TestClient[Litestar], cookies: dict[str, s
 
         resp = client.post(
             "/api/storage/archive_backend/configure",
-            data={
+            json={
                 "s3_bucket": "mybucket",
                 "s3_access_key_id": "AKIA",
                 "s3_secret_access_key": "secret",
@@ -239,7 +239,7 @@ def test_configure_happy_path(client: TestClient[Litestar], cookies: dict[str, s
 def test_test_connection_requires_fields(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     resp = client.post(
         "/api/storage/archive_backend/test_connection",
-        data={"s3_bucket": "b"},
+        json={"s3_bucket": "b"},
         cookies=cookies,
     )
     assert resp.status_code == 400
@@ -248,7 +248,7 @@ def test_test_connection_requires_fields(client: TestClient[Litestar], cookies: 
 def test_test_connection_rejects_invalid_s3_prefix(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     resp = client.post(
         "/api/storage/archive_backend/test_connection",
-        data={
+        json={
             "s3_bucket": "b",
             "s3_access_key_id": "a",
             "s3_secret_access_key": "s",
@@ -263,7 +263,7 @@ def test_test_connection_surfaces_errors(client: TestClient[Litestar], cookies: 
     with mock.patch.object(archive_backend, "test_s3_credentials", return_value="bucket not found"):
         resp = client.post(
             "/api/storage/archive_backend/test_connection",
-            data={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
+            json={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
             cookies=cookies,
         )
     assert resp.status_code == 400
@@ -274,7 +274,7 @@ def test_test_connection_succeeds(client: TestClient[Litestar], cookies: dict[st
     with mock.patch.object(archive_backend, "test_s3_credentials", return_value=None):
         resp = client.post(
             "/api/storage/archive_backend/test_connection",
-            data={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
+            json={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
             cookies=cookies,
         )
     assert resp.status_code == 200
