@@ -1,6 +1,7 @@
 import sqlite3
 
 import attr
+import bcrypt
 import git
 from litestar import Router
 from litestar import get
@@ -211,6 +212,48 @@ async def restart_compute_space() -> None:
     trigger_restart()
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class ChangePasswordRequest:
+    current_password: str = ""
+    new_password: str = ""
+    confirm_password: str = ""
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ChangePasswordResponse:
+    ok: bool = True
+
+
+@post("/api/settings/change_password", status_code=200, guards=[require_owner_auth])
+async def change_password(data: ChangePasswordRequest, db: sqlite3.Connection) -> ChangePasswordResponse:
+    current = (data.current_password or "").strip()
+    new_pw = (data.new_password or "").strip()
+    confirm = (data.confirm_password or "").strip()
+
+    if not current or not new_pw:
+        raise HTTPException(detail="All fields required", status_code=400)
+    if new_pw != confirm:
+        raise HTTPException(detail="Passwords do not match", status_code=400)
+    if len(new_pw) < 8:
+        raise HTTPException(detail="Password must be at least 8 characters", status_code=400)
+
+    row = db.execute("SELECT user_id, password_hash FROM users LIMIT 1").fetchone()
+    if not row:
+        raise HTTPException(detail="No owner found", status_code=404)
+
+    if not bcrypt.checkpw(current.encode(), row["password_hash"].encode()):
+        raise HTTPException(detail="Current password is incorrect", status_code=403)
+
+    new_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE user_id = ?",
+        (new_hash, row["user_id"]),
+    )
+    db.commit()
+
+    return ChangePasswordResponse(ok=True)
+
+
 @get("/api/settings/owner_username", guards=[require_owner_auth])
 async def get_owner_username(db: sqlite3.Connection) -> OwnerUsernameResponse:
     """Return the configured owner username for the dashboard form."""
@@ -249,6 +292,7 @@ api_settings_routes = Router(
         check_for_updates,
         update_repo_state,
         restart_compute_space,
+        change_password,
         get_owner_username,
         set_owner_username,
     ],
