@@ -164,7 +164,15 @@ async def proxy_http_request(
                 break
         elif msg["type"] == "http.disconnect":
             break
-    request_body = b"".join(body_parts) if body_parts else b""
+    request_body = b"".join(body_parts)
+
+    # Pass content=None for truly bodyless requests (e.g. GET with no
+    # Content-Length / Transfer-Encoding) so httpx omits body framing
+    # entirely.  For requests that explicitly declared a body -- even an
+    # empty one (Content-Length: 0) -- forward the bytes so the backend
+    # sees the same semantics the client intended.
+    has_declared_body = "content-length" in request.headers or "transfer-encoding" in request.headers
+    content = request_body if has_declared_body else None
 
     client = httpx.AsyncClient(timeout=timeout)
     try:
@@ -172,7 +180,7 @@ async def proxy_http_request(
             method=str(request.method),
             url=target_url,
             headers=new_request_headers,
-            content=request_body if request_body else None,
+            content=content,
         )
         try:
             upstream_response = await client.send(new_request, stream=True)
