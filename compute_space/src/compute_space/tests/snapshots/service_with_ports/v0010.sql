@@ -78,13 +78,6 @@ CREATE TABLE archive_backend (
     state_message TEXT
 );
 INSERT INTO "archive_backend" VALUES(1,'disabled',NULL,NULL,NULL,NULL,NULL,NULL,'openhost',NULL,NULL);
-CREATE TABLE "owner" (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-INSERT INTO "owner" VALUES(1,'admin','argon2-stub-owner-hash','2024-01-01T00:00:00');
 CREATE TABLE pending_permission_requests_v2 (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     consumer_app_id TEXT NOT NULL,
@@ -105,19 +98,11 @@ CREATE TABLE "permissions_v2" (
                 PRIMARY KEY (consumer_app_id, service_url, grant_payload, scope, provider_app_id),
                 FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
             );
-CREATE TABLE refresh_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash TEXT UNIQUE NOT NULL,
-    expires_at TEXT NOT NULL,
-    revoked INTEGER NOT NULL DEFAULT 0
-);
-INSERT INTO "refresh_tokens" VALUES(1,'refresh-hash-alpha','2099-01-01T00:00:00',0);
-INSERT INTO "refresh_tokens" VALUES(2,'refresh-hash-beta','2099-06-01T00:00:00',1);
 CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,9);
+INSERT INTO "schema_version" VALUES(1,10);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
@@ -131,8 +116,20 @@ CREATE TABLE "service_providers_v2" (
                 PRIMARY KEY (service_url, app_id, service_version),
                 FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
             );
-CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+CREATE TABLE sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL
+);
+CREATE TABLE users (
+    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO "users" VALUES(1,'admin','argon2-stub-owner-hash','2024-01-01T00:00:00');
 CREATE INDEX idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX idx_apps_app_id ON apps(app_id);
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
+CREATE INDEX sessions_user_id_idx ON sessions(user_id);
 COMMIT;

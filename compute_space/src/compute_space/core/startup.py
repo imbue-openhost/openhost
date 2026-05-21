@@ -116,15 +116,9 @@ def _restart_apps_sequential(app_ids: list[str], config: Config) -> None:
 
 
 def retry_pending_default_apps(config: Config) -> None:
-    """Retry failed default-app installs on each boot (no-op if no
-    owner row or no sentinel)."""
+    """Retry failed default-app installs on each boot."""
     db = sqlite3.connect(config.db_path)
     try:
-        owner = db.execute("SELECT 1 FROM owner WHERE id = 1").fetchone()
-        if owner is None:
-            return
-        if not os.path.isfile(config.default_apps_sentinel_path):
-            return
         try:
             deploy_default_apps(config, db)
         except Exception as exc:

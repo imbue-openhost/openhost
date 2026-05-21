@@ -4,13 +4,43 @@ The endpoint runs ``podman image prune --all --force`` via
 ``drop_docker_build_cache`` in compute_space.core.containers.
 """
 
+from __future__ import annotations
+
 import subprocess
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
-from quart import Quart
+from litestar import Litestar
+from litestar.testing import TestClient
 
 from compute_space.core.containers import drop_docker_build_cache
+from compute_space.db.connection import init_db
 from compute_space.web.routes.api import system as system_routes
+from compute_space.web.routes.api.system import system_routes as system_router
+
+from ._litestar_helpers import auth_cookie
+from ._litestar_helpers import make_test_app
+from .conftest import _make_test_config
+
+
+@pytest.fixture
+def cfg(tmp_path: Path) -> Any:
+    cfg = _make_test_config(tmp_path, port=20800)
+    init_db(cfg.db_path)
+    return cfg
+
+
+@pytest.fixture
+def client(cfg: Any) -> Iterator[TestClient[Litestar]]:
+    with TestClient(app=make_test_app(system_router)) as c:
+        yield c
+
+
+@pytest.fixture
+def cookies(cfg: Any) -> dict[str, str]:
+    return auth_cookie(cfg)
 
 
 def test_drop_docker_build_cache_runs_podman_image_prune(
@@ -58,39 +88,26 @@ def test_drop_docker_build_cache_raises_on_error(
         drop_docker_build_cache()
 
 
-@pytest.mark.asyncio
-async def test_drop_docker_cache_endpoint_success(
-    monkeypatch: pytest.MonkeyPatch,
+def test_drop_docker_cache_endpoint_success(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient[Litestar], cookies: dict[str, str]
 ) -> None:
-    app = Quart(__name__)
     monkeypatch.setattr(
         system_routes,
         "drop_docker_build_cache",
         lambda: "Total reclaimed space: 12.3MB",
     )
-
-    async with app.app_context():
-        response = system_routes.drop_docker_cache.__wrapped__()  # type: ignore[attr-defined]
-        assert response.status_code == 200
-        payload = await response.get_json()
-
-    assert payload == {"ok": True, "output": "Total reclaimed space: 12.3MB"}
+    resp = client.post("/api/drop-docker-cache", cookies=cookies)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "output": "Total reclaimed space: 12.3MB"}
 
 
-@pytest.mark.asyncio
-async def test_drop_docker_cache_endpoint_failure(
-    monkeypatch: pytest.MonkeyPatch,
+def test_drop_docker_cache_endpoint_failure(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient[Litestar], cookies: dict[str, str]
 ) -> None:
-    app = Quart(__name__)
-
     def _raise_error() -> str:
         raise RuntimeError("podman engine error")
 
     monkeypatch.setattr(system_routes, "drop_docker_build_cache", _raise_error)
-
-    async with app.app_context():
-        response, status_code = system_routes.drop_docker_cache.__wrapped__()  # type: ignore[attr-defined]
-        assert status_code == 500
-        payload = await response.get_json()
-
-    assert payload == {"ok": False, "error": "podman engine error"}
+    resp = client.post("/api/drop-docker-cache", cookies=cookies)
+    assert resp.status_code == 500
+    assert resp.json() == {"error": "podman engine error"}

@@ -1,47 +1,48 @@
 import json
+import sqlite3
 
-from quart import Blueprint
-from quart import Response
-from quart import render_template
-from quart import request
+from litestar import Router
+from litestar import get
+from litestar.exceptions import HTTPException
+from litestar.response import Template
 
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
-from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
-
-pages_permissions_v2_bp = Blueprint("pages_permissions_v2", __name__)
+from compute_space.web.auth.auth import require_owner_auth
 
 
-@pages_permissions_v2_bp.route("/approve-permissions-v2")
-@login_required
-async def approve_permissions_v2() -> str | Response:
+@get("/approve-permissions-v2", guards=[require_owner_auth])
+async def approve_permissions_v2(
+    db: sqlite3.Connection,
+    app: str,
+    service: str,
+    grant: str,
+    return_to: str | None = None,
+) -> Template:
     """Owner-facing page: grant or deny a V2 permission request."""
-    app_id = request.args.get("app")
-    service_url = request.args.get("service")
-    grant_json = request.args.get("grant")
-    if not app_id or not service_url or not grant_json:
-        return Response("app, service, and grant query params are required", status=400)
-
-    row = get_db().execute("SELECT name FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+    row = db.execute("SELECT name FROM apps WHERE app_id = ?", (app,)).fetchone()
     if not row:
-        return Response("App not found", status=404)
-    app_name = row["name"]
+        raise HTTPException(detail="App not found", status_code=404)
 
     try:
-        grant = json.loads(grant_json)
-    except json.JSONDecodeError:
-        return Response("Invalid grant JSON", status=400)
+        grant_parsed = json.loads(grant)
+    except json.JSONDecodeError as e:
+        raise HTTPException(detail="Invalid grant JSON", status_code=400) from e
 
-    existing = get_granted_permissions_v2(app_id, service_url)
-    already_granted = any(g.grant == grant and g.scope == "global" for g in existing)
+    existing = get_granted_permissions_v2(app, service)
+    already_granted = any(g.grant == grant_parsed and g.scope == "global" for g in existing)
 
-    return await render_template(
-        "approve_permissions_v2.html",
-        app_id=app_id,
-        app_name=app_name,
-        service_url=service_url,
-        grant=grant,
-        grant_json=grant_json,
-        already_granted=already_granted,
-        redirect_url=request.args.get("return_to"),
+    return Template(
+        template_name="approve_permissions_v2.html",
+        context={
+            "app_id": app,
+            "app_name": row["name"],
+            "service_url": service,
+            "grant": grant_parsed,
+            "grant_json": grant,
+            "already_granted": already_granted,
+            "redirect_url": return_to,
+        },
     )
+
+
+pages_permissions_v2_routes = Router(path="/", route_handlers=[approve_permissions_v2])

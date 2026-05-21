@@ -82,7 +82,7 @@ def provision_data(
     my_openhost_redirect_domain: str,
     zone_domain: str,
     port: int,
-    owner_username: str = "owner",
+    owner_username: str,
 ) -> dict[str, str]:
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.

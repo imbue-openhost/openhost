@@ -1,4 +1,4 @@
--- v9: persistent pending permission requests.
+-- v10: persistent pending permission requests.
 --
 -- When a provider returns a permission_required 403, the router
 -- records the request so the owner can review it from the

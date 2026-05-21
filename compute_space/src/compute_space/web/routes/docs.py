@@ -52,6 +52,12 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from jinja2 import Template as JinjaTemplate
+from litestar import MediaType
+from litestar import Response
+from litestar import Router
+from litestar import get
+from litestar.exceptions import NotFoundException
 from markdown_it import MarkdownIt
 from markupsafe import escape as html_escape
 from mdit_py_plugins.anchors import anchors_plugin
@@ -60,16 +66,8 @@ from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
-from quart import Blueprint
-from quart import abort
-from quart import redirect
-from quart import render_template_string
-from quart.typing import ResponseReturnValue
 
 from compute_space.config import get_config
-
-docs_bp = Blueprint("docs", __name__)
-
 
 # ─── Filesystem layout ──────────────────────────────────────────────
 
@@ -350,15 +348,15 @@ def _resolve_doc_path(slug: str) -> Path:
     defence in depth.
     """
     if not _SLUG_RE.match(slug):
-        abort(404)
+        raise NotFoundException()
     src = _docs_src_dir()
     candidate = (src / f"{slug}.md").resolve()
     try:
         candidate.relative_to(src.resolve())
-    except ValueError:
-        abort(404)
+    except ValueError as e:
+        raise NotFoundException() from e
     if not candidate.is_file():
-        abort(404)
+        raise NotFoundException()
     return candidate
 
 
@@ -557,6 +555,9 @@ _TEMPLATE = """<!DOCTYPE html>
 """
 
 
+_COMPILED_TEMPLATE = JinjaTemplate(_TEMPLATE)
+
+
 def _flatten_links(sections: tuple[_SidebarSection, ...]) -> list[_SidebarLink]:
     """Flatten the sidebar into a single ordered list — used for
     prev/next navigation at the bottom of each page."""
@@ -615,27 +616,23 @@ def _page_title(slug: str, path: Path) -> str:
 # ─── Routes ─────────────────────────────────────────────────────────
 
 
-@docs_bp.route("/docs")
-async def docs_index_no_slash() -> ResponseReturnValue:
-    """Redirect ``/docs`` to ``/docs/`` so relative links and
-    bookmarks behave consistently."""
-    return redirect("/docs/")
-
-
-@docs_bp.route("/docs/")
-async def docs_index() -> ResponseReturnValue:
+@get("/docs", sync_to_thread=False)
+def docs_index() -> Response[str]:
     """The docs landing page, served from ``introduction.md``.
+
+    Litestar normalises trailing slashes during routing, so this single
+    handler serves both ``/docs`` and ``/docs/``.
 
     Falls back to a 503 (with a clear, operator-actionable
     message) if the markdown source dir is missing — that
     shouldn't happen in production but is what tests use to
     verify the missing-dir path.
     """
-    return await _render_doc(_DEFAULT_INDEX)
+    return _render_doc(_DEFAULT_INDEX)
 
 
-@docs_bp.route("/docs/<slug>")
-async def docs_slug(slug: str) -> ResponseReturnValue:
+@get("/docs/{slug:str}", sync_to_thread=False)
+def docs_slug(slug: str) -> Response[str]:
     """Serve ``docs/src/<slug>.md`` rendered to HTML.
 
     ``slug`` is the markdown filename without extension.  Anything
@@ -643,17 +640,20 @@ async def docs_slug(slug: str) -> ResponseReturnValue:
     returns a 404 — protects against path traversal, weird unicode,
     and the implicit ``./``/``../`` shenanigans.
     """
-    return await _render_doc(slug)
+    return _render_doc(slug)
 
 
-async def _render_doc(slug: str) -> ResponseReturnValue:
+def _render_doc(slug: str) -> Response[str]:
     src = _docs_src_dir()
     if not src.is_dir():
-        return (
-            "The OpenHost docs source directory is missing on this installation. "
-            f"Expected: {src}.  This usually means the OpenHost code checkout is "
-            "incomplete; reinstalling the openhost service should fix it.",
-            503,
+        return Response(
+            content=(
+                "The OpenHost docs source directory is missing on this installation. "
+                f"Expected: {src}.  This usually means the OpenHost code checkout is "
+                "incomplete; reinstalling the openhost service should fix it."
+            ),
+            status_code=503,
+            media_type=MediaType.TEXT,
         )
     path = _resolve_doc_path(slug)
     sections = _read_summary()
@@ -661,8 +661,7 @@ async def _render_doc(slug: str) -> ResponseReturnValue:
     ordered = _flatten_links(sections)
     prev_l, next_l = _find_neighbors(slug, ordered)
     page_title = _page_title(slug, path)
-    return await render_template_string(
-        _TEMPLATE,
+    html = _COMPILED_TEMPLATE.render(
         sections=sections,
         current_slug=slug,
         content_html=content_html,
@@ -671,3 +670,7 @@ async def _render_doc(slug: str) -> ResponseReturnValue:
         next_link=next_l,
         pygments_css=PYGMENTS_CSS,
     )
+    return Response(content=html, media_type=MediaType.HTML)
+
+
+docs_routes = Router(path="/", route_handlers=[docs_index, docs_slug])

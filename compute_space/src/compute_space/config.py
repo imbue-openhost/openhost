@@ -8,24 +8,32 @@ import attr
 import cattrs
 import tomli_w
 import typed_settings
-from quart import current_app
+
+
+def _lowercase(s: str) -> str:
+    # mypy can't handle str.lower apparently
+    return s.lower()
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class Config:
-    # Server
-    zone_domain: str
+    ## Server
+    # zone_domain is where the compute space is hosted, eg `host.example.com`
+    # it can optionally include a non-80/443 port, if necessary.
+    zone_domain: str = attr.ib(converter=_lowercase)
+    # the local IP to bind the compute space web server to.
     host: str
+    # the local port to bind the compute space web server to.
     port: int
 
-    # TLS
+    ## TLS
     tls_enabled: bool
     acquire_tls_cert_if_missing: bool
     acme_email: str | None
     acme_account_key_path: str | None
     acme_directory_url: str | None
 
-    # coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
+    ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
     public_ip: str | None
 
@@ -33,14 +41,14 @@ class Config:
 
     my_openhost_redirect_domain: str
 
-    # Data
+    ## Data
     data_root_dir: str
     apps_dir_override: str | None
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int
 
-    # Ports
+    ## Ports
     port_range_start: int
     port_range_end: int
 
@@ -52,6 +60,10 @@ class Config:
     # Remote URLs are dispatched through the same clone path as
     # /api/add_app and do not need to be present on disk ahead of time.
     default_apps: list[str]
+
+    @property
+    def zone_domain_no_port(self) -> str:
+        return self.zone_domain.split(":")[0]
 
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
@@ -210,10 +222,36 @@ def load_config() -> Config:
         return typed_settings.load(DefaultConfig, appname="openhost")
 
 
-def get_config() -> Config:
-    """Get the Config object from the current Quart app context.
+_active_config: Config | None = None
 
-    This is just a helper to make type checking work,
-    vs accessing app.openhost_config directly which would be unytped.
+
+def set_active_config(config: Config) -> None:
+    """Register the active config for the running web app.
+
+    Called once at app-factory time so ``get_config()`` works framework-neutrally
+    (the previous Quart implementation read it from ``current_app``).
     """
-    return current_app.openhost_config  # type: ignore[attr-defined, no-any-return]
+    global _active_config
+    _active_config = config
+
+
+def get_config() -> Config:
+    """Return the active config registered via ``set_active_config``."""
+    if _active_config is None:
+        raise RuntimeError("set_active_config() must be called before get_config()")
+    return _active_config
+
+
+def provide_config() -> Config:
+    """Litestar dependency: hand the active config to a route or other dep.
+
+    Wraps ``get_config()`` so handlers can take ``config: Config`` instead of
+    calling the module-level accessor.  ``get_config()`` stays available for
+    non-DI callers (middleware, ``core/`` helpers).
+
+    litestar got confused by returning a DefaultConfig so we convert it back to plain Config.
+    """
+    active = get_config()
+    if type(active) is Config:
+        return active
+    return Config(**{f.name: getattr(active, f.name) for f in attr.fields(Config)})

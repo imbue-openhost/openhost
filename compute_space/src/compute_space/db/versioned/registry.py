@@ -15,8 +15,9 @@ from compute_space.db.versioned.migrations.v0005_archive_backend import Migratio
 from compute_space.db.versioned.migrations.v0006_apps_installed_by import Migration0006AppsInstalledBy
 from compute_space.db.versioned.migrations.v0007_app_ids import Migration0007AppIds
 from compute_space.db.versioned.migrations.v0008_drop_v1_service_tables import Migration0008DropV1ServiceTables
-from compute_space.db.versioned.migrations.v0009_pending_permission_requests import (
-    Migration0009PendingPermissionRequests,
+from compute_space.db.versioned.migrations.v0009_session_auth import Migration0009SessionAuth
+from compute_space.db.versioned.migrations.v0010_pending_permission_requests import (
+    Migration0010PendingPermissionRequests,
 )
 
 # Numbered migrations in apply order. Versions MUST start at 2 and be
@@ -30,5 +31,6 @@ REGISTRY: list[Migration] = [
     Migration0006AppsInstalledBy(),
     Migration0007AppIds(),
     Migration0008DropV1ServiceTables(),
-    Migration0009PendingPermissionRequests(),
+    Migration0009SessionAuth(),
+    Migration0010PendingPermissionRequests(),
 ]

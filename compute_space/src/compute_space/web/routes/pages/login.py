@@ -1,105 +1,76 @@
-import hashlib
-import secrets
-from datetime import UTC
-from datetime import datetime
-from datetime import timedelta
-from urllib.parse import quote
+import sqlite3
+from typing import Any
 from urllib.parse import urlparse
 
-import bcrypt
-from quart import Blueprint
-from quart import redirect
-from quart import render_template
-from quart import request
-from quart import url_for
-from quart.typing import ResponseReturnValue
+from litestar import Request
+from litestar import Response
+from litestar import Router
+from litestar import get
+from litestar import post
+from litestar.response import Redirect
+from litestar.response import Template
 
-from compute_space.config import get_config
-from compute_space.core.auth.tokens import REFRESH_TOKEN_EXPIRY
-from compute_space.core.auth.tokens import create_access_token
-from compute_space.db import get_db
-from compute_space.web.auth.auth import attach_refreshed_token
-from compute_space.web.auth.cookies import COOKIE_ACCESS
-from compute_space.web.auth.cookies import COOKIE_REFRESH
-from compute_space.web.auth.cookies import clear_auth_cookies
-from compute_space.web.auth.cookies import set_auth_cookies
-from compute_space.web.auth.middleware import get_current_user_from_request
-
-auth_bp = Blueprint("auth", __name__)
-auth_bp.after_app_request(attach_refreshed_token)
+from compute_space.config import Config
+from compute_space.core.auth.auth import SESSION_COOKIE_NAME
+from compute_space.core.auth.auth import create_session
+from compute_space.core.auth.auth import revoke_session
+from compute_space.core.auth.auth import validate_password
+from compute_space.web.auth.auth import authenticate
+from compute_space.web.auth.cookies import build_session_cookie
+from compute_space.web.auth.cookies import clear_session_cookie
 
 
-@auth_bp.route("/login", methods=["GET", "POST"])
-async def login() -> ResponseReturnValue:
-    if get_current_user_from_request(request):
-        return redirect(url_for("apps.dashboard"))
+def _validated_next(next_url: str, zone_domain: str) -> str | None:
+    """Return ``next_url`` if it's a safe post-login redirect target, else None.
 
-    # If stale auth cookies are present (invalid JWT, e.g. after key rotation on
-    # reboot or TLS mode change), clear them now so they don't conflict with the
-    # fresh cookies we'll set after successful login.
-    has_stale_cookies = request.cookies.get(COOKIE_ACCESS) is not None
+    Accepts either a same-zone absolute URL (router or app subdomain) or a path-relative URL.
+    Anything else is rejected so a hostile ``?next=`` can't bounce the operator off to a phishing page.
+    """
+    if not next_url:
+        return None
+    parsed = urlparse(next_url)
+    if not parsed.scheme and not parsed.netloc:
+        return next_url
+    if parsed.netloc == zone_domain or parsed.netloc.endswith("." + zone_domain):
+        return next_url
+    return None
 
-    db = get_db()
-    owner = db.execute("SELECT * FROM owner").fetchone()
-    if owner is None:
-        return redirect(url_for("setup.setup"))
 
-    if request.method == "GET":
-        if has_stale_cookies:
-            next_param = request.args.get("next", "")
-            login_url = url_for("auth.login")
-            if next_param:
-                login_url += f"?next={quote(next_param, safe='')}"
-            response = redirect(login_url)
-            clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
-            return response
-        return await render_template("login.html", next=request.args.get("next", ""))
+@get("/login")
+async def login_get(request: Request[Any, Any, Any], db: sqlite3.Connection) -> Response[Any]:
+    next_param = request.query_params.get("next", "")
+    if authenticate(request, db=db) is not None:
+        return Redirect(path=next_param or "/")
+    return Template(template_name="login.html", context={"next": next_param})
 
-    form = await request.form
-    password = form.get("password", "")
+
+@post("/login", status_code=200)
+async def login_post(request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config) -> Response[Any]:
+    form = await request.form()
+    password = form.get("password")
     next_url = form.get("next", "")
+    if password is None or not (user_id := validate_password(password, db)):
+        return Template(template_name="login.html", context={"error": "Invalid password", "next": next_url})
 
-    if not bcrypt.checkpw(password.encode(), owner["password_hash"].encode()):
-        return await render_template("login.html", error="Invalid password", next=next_url)
-
-    access_token = create_access_token(owner["username"])
-    refresh_token = secrets.token_urlsafe(48)
-    refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
-    expires_at = datetime.now(UTC) + timedelta(
-        seconds=REFRESH_TOKEN_EXPIRY,
-    )
-    db.execute(
-        "INSERT INTO refresh_tokens (token_hash, expires_at) VALUES (?, ?)",
-        (refresh_token_hash, expires_at.isoformat()),
-    )
+    session_token = create_session(user_id, db)
     db.commit()
 
-    dest = url_for("apps.dashboard")
-    if next_url:
-        parsed = urlparse(next_url)
-        zone = get_config().zone_domain
-        if parsed.scheme == "https" and (parsed.netloc == zone or parsed.netloc.endswith("." + zone)):
-            dest = next_url
-        elif not parsed.scheme and not parsed.netloc:
-            dest = next_url
-
-    response = redirect(dest)
-    set_auth_cookies(response, access_token, refresh_token, request=request)  # type: ignore[arg-type]
+    dest = _validated_next(next_url, config.zone_domain) or "/"
+    response = Redirect(path=dest)
+    # cookie domain is zone_domain_no_port, ie `host.example.com` (no port); this will cover also `app.host.example.com`
+    response.set_cookie(build_session_cookie(session_token, cookie_domain=config.zone_domain_no_port))
     return response
 
 
-@auth_bp.route("/logout", methods=["POST"])
-def logout() -> ResponseReturnValue:
-    refresh_tok = request.cookies.get(COOKIE_REFRESH)
-    if refresh_tok:
-        refresh_tok_hash = hashlib.sha256(refresh_tok.encode()).hexdigest()
-        db = get_db()
-        db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?",
-            (refresh_tok_hash,),
-        )
+@post("/logout", status_code=200)
+async def logout(request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config) -> Response[Any]:
+    if session_token := request.cookies.get(SESSION_COOKIE_NAME):
+        revoke_session(session_token, db)
         db.commit()
 
-    response = redirect(url_for("auth.login"))
-    clear_auth_cookies(response, request=request)  # type: ignore[arg-type]
+    response: Response[Any] = Redirect(path="/login")
+    response.set_cookie(clear_session_cookie(cookie_domain=config.zone_domain_no_port))
     return response
+
+
+pages_login_routes = Router(path="/", route_handlers=[login_get, login_post, logout])
