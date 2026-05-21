@@ -107,6 +107,35 @@
     dest: /etc/systemd/network/10-openhost0.network
     mode: "0644"
 
+# Pasta containers share the host's IP, so `*.zone_domain` resolves to the host's own public IP.  Connecting to
+# that IP from inside a pasta container hits the container's network namespace where Caddy isn't listening,
+# giving "connection refused".  These DNAT rules rewrite outbound packets aimed at public_ip:80/443 to
+# 127.0.0.1, where Caddy IS listening.  This lets containers curl other apps' public URLs and keeps
+# inter-container isolation intact (container ports still bind 127.0.0.1 only).
+- name: Add iptables hairpin NAT for container access to public ports
+  shell: |
+    set -e
+    PUBLIC_IP="{{ public_ip | default(inventory_hostname) }}"
+    for PORT in 80 443; do
+      RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
+      iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
+    done
+  changed_when: true
+
+- name: Persist iptables hairpin NAT rules across reboots
+  copy:
+    content: |
+      #!/bin/sh
+      # Managed by OpenHost; do not edit by hand.
+      # Hairpin NAT: let pasta containers reach Caddy via the public IP.
+      PUBLIC_IP="{{ public_ip | default(inventory_hostname) }}"
+      for PORT in 80 443; do
+        RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
+        iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
+      done
+    dest: /etc/networkd-dispatcher/routable.d/50-openhost-hairpin-nat
+    mode: "0755"
+
 - name: Ensure host user containers config dir exists
   file:
     path: /home/host/.config/containers
