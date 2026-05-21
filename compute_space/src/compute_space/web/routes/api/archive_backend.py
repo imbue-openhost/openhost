@@ -13,7 +13,6 @@ from litestar import Response
 from litestar import Router
 from litestar import get
 from litestar import post
-from litestar.enums import RequestEncodingType
 from litestar.params import Body
 
 from compute_space.config import Config
@@ -103,7 +102,7 @@ def _normalise_s3_prefix(raw: str | None) -> str | None:
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class TestConnectionForm:
+class TestConnectionRequest:
     s3_bucket: str
     s3_access_key_id: str
     s3_secret_access_key: str
@@ -113,7 +112,7 @@ class TestConnectionForm:
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class ConfigureArchiveForm:
+class ConfigureArchiveRequest:
     s3_bucket: str
     s3_access_key_id: str
     s3_secret_access_key: str
@@ -153,7 +152,7 @@ async def get_archive_backend(db: sqlite3.Connection, config: Config) -> Backend
 
 @post("/api/storage/archive_backend/test_connection", status_code=200, guards=[require_owner_auth])
 async def test_connection(
-    data: Annotated[TestConnectionForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
+    data: Annotated[TestConnectionRequest, Body(media_type=MediaType.JSON)],
 ) -> Response[TestConnectionOk] | Response[TestConnectionError]:
     """Pre-flight S3 reachability/credentials check; doesn't touch the DB or live mount."""
     try:
@@ -175,7 +174,7 @@ async def test_connection(
 
 @post("/api/storage/archive_backend/configure", status_code=200, guards=[require_owner_auth])
 async def configure_archive_backend(
-    data: Annotated[ConfigureArchiveForm, Body(media_type=RequestEncodingType.URL_ENCODED)],
+    data: Annotated[ConfigureArchiveRequest, Body(media_type=MediaType.JSON)],
     db: sqlite3.Connection,
     config: Config,
 ) -> Response[BackendStateResponse] | Response[ErrorResponse]:

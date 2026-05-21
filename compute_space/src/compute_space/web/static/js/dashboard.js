@@ -15,9 +15,12 @@ function refreshApps() {
     .catch(function() {});
 }
 
-function appAction(appId, action, formData) {
+function appAction(appId, action, body) {
   var opts = {method: 'POST', credentials: 'same-origin'};
-  if (formData) { opts.body = formData; }
+  if (body) {
+    opts.headers = {'Content-Type': 'application/json'};
+    opts.body = JSON.stringify(body);
+  }
   return fetch(action + '/' + appId, opts)
     .then(function(r) {
       return r.json().then(function(d) { return {ok: r.ok, data: d}; },
@@ -36,9 +39,7 @@ function appAction(appId, action, formData) {
 }
 
 function reloadAndUpdate(appId) {
-  var fd = new FormData();
-  fd.append('update', '1');
-  appAction(appId, 'reload_app', fd);
+  appAction(appId, 'reload_app', {update: true});
 }
 
 function updateApps(apps) {
