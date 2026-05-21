@@ -601,7 +601,45 @@ def test_stop_container_calls_podman(monkeypatch: pytest.MonkeyPatch) -> None:
 
     stop_container("abc123")
     assert calls == [
-        ["podman", "stop", "abc123"],
+        ["podman", "stop", "-t", "10", "abc123"],
+        ["podman", "rm", "-f", "abc123"],
+    ]
+
+
+def test_stop_container_escalates_to_kill_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_):  # type: ignore[no-untyped-def]
+        calls.append(list(cmd))
+        if cmd[:2] == ["podman", "stop"]:
+            return _FakeCompleted(125)
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    stop_container("abc123")
+    assert calls == [
+        ["podman", "stop", "-t", "10", "abc123"],
+        ["podman", "kill", "abc123"],
+        ["podman", "rm", "-f", "abc123"],
+    ]
+
+
+def test_stop_container_escalates_to_kill_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(list(cmd))
+        if cmd[:2] == ["podman", "stop"]:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 20))
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    stop_container("abc123")
+    assert calls == [
+        ["podman", "stop", "-t", "10", "abc123"],
+        ["podman", "kill", "abc123"],
         ["podman", "rm", "-f", "abc123"],
     ]
 
