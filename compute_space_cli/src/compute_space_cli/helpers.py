@@ -32,14 +32,18 @@ def make_api_request(
     timeout: float = 120,
     raw: bool = False,
 ) -> httpx.Response:
+    # Server endpoints expect JSON bodies (Litestar handlers are typed against
+    # request models). Passing ``data=`` form-encodes, which used to make the
+    # server respond ``400 JSON is malformed: invalid character (byte 0)``.
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
     resp = httpx.request(
         method,
         f"{domain}{path}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        },
-        data=data,
+        headers=headers,
+        json=data,
         timeout=timeout,
         follow_redirects=False,
     )
