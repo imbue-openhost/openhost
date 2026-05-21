@@ -541,29 +541,8 @@ class Curl:
         if not curl:
             print("curl not found on PATH", file=sys.stderr)
             raise SystemExit(1)
-        url_args = _rewrite_curl_args(self.args, cfg.url)
-        cmd = [curl, "-H", f"Authorization: Bearer {cfg.token}", *url_args]
+        cmd = [curl, "-H", f"Authorization: Bearer {cfg.token}", *self.args]
         raise SystemExit(subprocess.call(cmd))
-
-
-def _rewrite_curl_args(args: list[str], base_url: str) -> list[str]:
-    """Prefix path-only args with ``base_url`` so users can write
-    ``oh curl /api/foo`` and reach the configured instance.
-
-    Only args that are absolute paths (start with ``/``) or already full
-    URLs (contain ``://``) are treated as URLs. Bare words like ``POST``
-    after ``-X`` or header values after ``-H`` pass through unchanged —
-    the previous heuristic of "any non-dashed arg is a URL" mangled them
-    into nonsense like ``https://host/POST``.
-    """
-    out: list[str] = []
-    prefix = base_url.rstrip("/")
-    for arg in args:
-        if arg.startswith("/") and not arg.startswith("//"):
-            out.append(f"{prefix}{arg}")
-        else:
-            out.append(arg)
-    return out
 
 
 @cappa.command(name="oh", help="OpenHost compute space CLI — manage things in your compute space.")

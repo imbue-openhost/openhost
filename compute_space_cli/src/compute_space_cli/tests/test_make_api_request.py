@@ -16,9 +16,6 @@ def _ok_response() -> MagicMock:
 
 
 def test_post_with_data_sends_json_body() -> None:
-    # Regression: the function previously passed ``data=`` to httpx,
-    # which form-encodes — server endpoints typed against JSON models
-    # then rejected the body with HTTP 400.
     with patch(
         "compute_space_cli.helpers.httpx.request",
         return_value=_ok_response(),
@@ -36,7 +33,6 @@ def test_get_without_data_sends_no_body() -> None:
     ) as mock_req:
         make_api_request("https://x", "tok", "GET", "/api/foo")
         kwargs = mock_req.call_args.kwargs
-        # httpx treats json=None as "no body" — same outcome as omitting.
         assert kwargs.get("json") is None
         assert "data" not in kwargs
 
