@@ -58,6 +58,14 @@ def _claim_unauthorized() -> Response[str]:
     return Response(content="Invalid or missing claim token.", status_code=403, media_type=MediaType.TEXT)
 
 
+@get("/")
+async def root_redirect() -> Response[None]:
+    """Redirect to /setup before the owner is provisioned."""
+    from litestar.response import Redirect  # noqa: PLC0415
+
+    return Redirect(path="/setup")
+
+
 @get("/setup")
 async def setup_get(request: Request[Any, Any, Any], config: Config) -> Template | Response[str]:
     claim_token = request.query_params.get("claim", "")
@@ -170,7 +178,7 @@ def create_setup_app(config: Config) -> Litestar:
     static_router = create_static_files_router(path="/static", directories=[static_dir])
 
     return Litestar(
-        route_handlers=[setup_get, setup_post, health, static_router],
+        route_handlers=[root_redirect, setup_get, setup_post, health, static_router],
         template_config=template_config,
         dependencies={"config": Provide(provide_config, sync_to_thread=False)},
     )
