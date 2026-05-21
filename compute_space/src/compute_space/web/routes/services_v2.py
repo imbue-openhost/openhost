@@ -504,9 +504,9 @@ def _installer_permission_denied(
 
 services_v2_routes = Router(
     path="/",
-    # service_call_cors MUST come before service_call: Litestar v2.21.1 processes
-    # handlers in order and auto-generates an OPTIONS handler after the first
-    # handler that doesn't include OPTIONS, silently shadowing any explicit
-    # OPTIONS handler that appears later in the list.
+    # service_call_cors MUST come before service_call: Litestar v2.21.1 has a
+    # bug where registering a non-OPTIONS handler first causes an auto-generated
+    # OPTIONS handler to be appended, which then silently overwrites any explicit
+    # OPTIONS handler via last-writer-wins in route_handler_method_map.
     route_handlers=[service_call_cors, service_call, service_call_ws, oauth_callback_proxy_v2],
 )
