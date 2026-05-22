@@ -122,6 +122,11 @@ class AppManifest:
     # `--shm-size` (in MiB).  0 = use podman's default (64 MiB).
     # Apps doing serious browser work (jibri) need ~2 GiB minimum.
     shm_mb: int = 0
+    # Use the host's network namespace instead of pasta.  Required for apps
+    # that do IP forwarding (VPN servers like WireGuard).  Pasta proxies
+    # individual TCP/UDP connections but cannot forward routed packets from
+    # a tunnel interface.
+    network_host: bool = False
 
     # [routing]
     health_check: str | None = None
@@ -343,6 +348,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         port_mappings=_parse_ports(data.get("ports", [])),
         capabilities=_validate_capabilities(container.get("capabilities", [])),
         devices=_validate_devices(container.get("devices", [])),
+        network_host=container.get("network_host", False),
         shm_mb=shm_mb,
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
