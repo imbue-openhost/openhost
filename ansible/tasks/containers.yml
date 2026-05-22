@@ -138,10 +138,20 @@
 
 - name: Persist iptables rules across reboots
   copy:
+    # The public IP is detected at boot rather than baked in at ansible time
+    # because cloud instances (EC2 without Elastic IP, etc.) can get a new
+    # address after a reboot.
     content: |
       #!/bin/sh
       # Managed by OpenHost; do not edit by hand.
-      PUBLIC_IP="{{ public_ip | default(inventory_hostname) }}"
+
+      # Detect public IP (same logic as scripts/provision.sh).
+      PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+      case "$PUBLIC_IP" in
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*)
+          PUBLIC_IP=$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || true) ;;
+      esac
+      [ -z "$PUBLIC_IP" ] && exit 0  # no IP yet; networkd-dispatcher will re-fire
 
       # Hairpin NAT: let pasta containers reach Caddy via the public IP.
       for PORT in 80 443; do
