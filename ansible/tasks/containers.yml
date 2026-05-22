@@ -47,6 +47,10 @@
       # Managed by OpenHost; do not edit by hand.
       net.ipv4.ip_unprivileged_port_start = 25
       kernel.apparmor_restrict_unprivileged_userns = 0
+      # Required for network_host containers that do IP forwarding (VPN
+      # servers).  With --network=host, /proc/sys is read-only inside the
+      # container so the app can't set this itself.
+      net.ipv4.ip_forward = 1
     dest: /etc/sysctl.d/90-openhost-podman.conf
     mode: "0644"
 
