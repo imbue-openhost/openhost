@@ -67,17 +67,6 @@ CREATE TABLE archive_backend (
     state_message TEXT
 );
 INSERT INTO "archive_backend" VALUES(1,'disabled',NULL,NULL,NULL,NULL,NULL,NULL,'openhost',NULL,NULL);
-CREATE TABLE pending_permission_requests_v2 (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    consumer_app_id TEXT NOT NULL,
-    service_url TEXT NOT NULL,
-    grant_payload TEXT NOT NULL,
-    scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
-    reason TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(consumer_app_id, service_url, grant_payload, scope),
-    FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-);
 CREATE TABLE "permissions_v2" (
                 consumer_app_id TEXT NOT NULL,
                 service_url TEXT NOT NULL,
@@ -91,7 +80,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,10);
+INSERT INTO "schema_version" VALUES(1,9);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,

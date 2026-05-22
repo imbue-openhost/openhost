@@ -109,22 +109,6 @@ CREATE TABLE IF NOT EXISTS service_defaults (
     FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
 );
 
--- V2: pending permission requests.  Created when a provider returns a
--- permission_required 403 but the owner hasn't approved yet.  The
--- dashboard surfaces these so the owner can approve or dismiss them
--- without re-triggering the original flow.
-CREATE TABLE IF NOT EXISTS pending_permission_requests_v2 (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    consumer_app_id TEXT NOT NULL,
-    service_url TEXT NOT NULL,
-    grant_payload TEXT NOT NULL,
-    scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'app')),
-    reason TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(consumer_app_id, service_url, grant_payload, scope),
-    FOREIGN KEY (consumer_app_id) REFERENCES apps(app_id) ON DELETE CASCADE
-);
-
 -- Versioned-migrations metadata: single-row table recording the current
 -- schema version. The runner (compute_space/db/versioned/runner.py) owns
 -- the value; schema.sql only creates the table.

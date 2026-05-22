@@ -1,11 +1,8 @@
 import pytest
 
 from compute_space.core.app_id import new_app_id
-from compute_space.core.auth.permissions_v2 import create_pending_request_v2
-from compute_space.core.auth.permissions_v2 import dismiss_pending_request_v2
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.auth.permissions_v2 import get_granted_permissions_v2
-from compute_space.core.auth.permissions_v2 import get_pending_requests_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
 from compute_space.core.services_v2 import ServiceNotAvailable
@@ -299,51 +296,6 @@ class TestShortnameLookup:
         multi_id = _install_consumer(db, "multi", perms)
         assert lookup_shortname(multi_id, "secrets", db) == (SVC_SECRETS, ">=0.1.0")
         assert lookup_shortname(multi_id, "oauth", db) == (SVC_OAUTH, "==1.0.0")
-
-
-# ---------------------------------------------------------------------------
-# Pending permission requests
-# ---------------------------------------------------------------------------
-
-
-class TestPendingRequests:
-    def test_create_and_list(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
-        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "DB_URL"}, reason="needs DB access")
-
-        pending = get_pending_requests_v2()
-        assert len(pending) == 1
-        assert pending[0].consumer_app_id == "test-app"
-        assert pending[0].service_url == SVC_SECRETS
-        assert pending[0].grant == {"key": "DB_URL"}
-        assert pending[0].reason == "needs DB access"
-
-    def test_create_is_idempotent(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
-        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"})
-        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"})
-
-        pending = get_pending_requests_v2()
-        assert len(pending) == 1
-
-    def test_dismiss(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
-        create_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"})
-        assert dismiss_pending_request_v2("test-app", SVC_SECRETS, {"key": "X"}) is True
-        assert len(get_pending_requests_v2()) == 0
-
-    def test_dismiss_nonexistent_returns_false(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
-        assert dismiss_pending_request_v2("test-app", SVC_SECRETS, {"key": "NOPE"}) is False
-
-    def test_filter_by_consumer(self, db, monkeypatch):
-        monkeypatch.setattr("compute_space.core.auth.permissions_v2.get_db", lambda: db)
-        create_pending_request_v2("app-a", SVC_SECRETS, {"key": "X"})
-        create_pending_request_v2("app-b", SVC_OAUTH, {"provider": "google"})
-
-        assert len(get_pending_requests_v2("app-a")) == 1
-        assert len(get_pending_requests_v2("app-b")) == 1
-        assert len(get_pending_requests_v2()) == 2
 
 
 # ---------------------------------------------------------------------------

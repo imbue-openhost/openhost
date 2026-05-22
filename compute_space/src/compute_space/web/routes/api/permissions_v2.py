@@ -12,9 +12,7 @@ from litestar import get
 from litestar import post
 from litestar.params import Body
 
-from compute_space.core.auth.permissions_v2 import dismiss_pending_request_v2
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
-from compute_space.core.auth.permissions_v2 import get_pending_requests_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
 from compute_space.db import get_db
@@ -55,8 +53,6 @@ def grant_global_scoped(
         grant_payload=grant_payload,
         scope="global",
     )
-    # Clear the matching pending request now that it's been granted.
-    dismiss_pending_request_v2(app_id, service_url, grant_payload, scope="global")
     return Response(content={"ok": True})
 
 
@@ -85,34 +81,6 @@ def revoke_v2(
     )
     if not revoked:
         return _json_error("Permission not found", 404)
-    return Response(content={"ok": True})
-
-
-@get("/api/permissions/v2/pending", guards=[require_owner_auth], sync_to_thread=False)
-def list_pending_requests(app_id: str | None = None) -> list[dict[str, Any]]:
-    """List pending permission requests, optionally filtered by app_id."""
-    return [attr.asdict(r) for r in get_pending_requests_v2(app_id)]
-
-
-@post(
-    "/api/permissions/v2/pending/dismiss",
-    guards=[require_owner_auth],
-    status_code=200,
-    sync_to_thread=False,
-)
-def dismiss_pending_request(
-    data: Annotated[dict[str, Any], Body(media_type=MediaType.JSON)],
-) -> Response[dict[str, Any]]:
-    """Dismiss a pending permission request without granting it."""
-    app_id = data.get("app_id")
-    service_url = data.get("service_url")
-    grant_payload = data.get("grant")
-    if not app_id or not service_url or grant_payload is None:
-        return _json_error("app_id, service_url, and grant are required", 400)
-
-    dismissed = dismiss_pending_request_v2(app_id, service_url, grant_payload, scope=data.get("scope", "global"))
-    if not dismissed:
-        return _json_error("Pending request not found", 404)
     return Response(content={"ok": True})
 
 
@@ -168,8 +136,6 @@ api_permissions_v2_routes = Router(
         list_permissions_v2,
         grant_global_scoped,
         revoke_v2,
-        list_pending_requests,
-        dismiss_pending_request,
         grant_app_scoped,
     ],
 )

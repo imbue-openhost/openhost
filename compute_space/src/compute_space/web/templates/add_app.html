@@ -194,6 +194,17 @@ function renderManifest(m, url) {
     if (m.shm_mb) row('Shared memory', m.shm_mb + ' MB');
   }
 
+  if (m.consumes_services_v2 && m.consumes_services_v2.length) {
+    section('Service Permissions', '#fff3cd');
+    for (const svc of m.consumes_services_v2) {
+      const grantsHtml = svc.grants.length
+        ? svc.grants.map(g => `<code>${esc(typeof g === 'string' ? g : JSON.stringify(g))}</code>`).join(', ')
+        : '<em>no specific grants</em>';
+      row(esc(svc.shortname), `<code>${esc(svc.service)}</code> (${esc(svc.version)})<br>Grants: ${grantsHtml}`);
+    }
+    row('', '<em>These permissions will be granted when you deploy.</em>');
+  }
+
   document.getElementById('manifest-table').innerHTML = rows;
 
   // Render port mappings section
@@ -328,7 +339,7 @@ async function deployApp() {
     }
   });
 
-  const body = {repo_url: repoUrl, app_name: appName, port_overrides: portOverrides};
+  const body = {repo_url: repoUrl, app_name: appName, port_overrides: portOverrides, grant_permissions_v2: true};
   if (cloneDir) body.clone_dir = cloneDir;
 
   let resp;

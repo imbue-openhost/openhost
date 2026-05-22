@@ -65,6 +65,36 @@
 </table>
 {% endif %}
 
+{% if granted_permissions or ungranted_permissions %}
+<h3>Service Permissions</h3>
+{% if granted_permissions %}
+<table>
+  <tr><th>Service</th><th>Grant</th><th>Scope</th></tr>
+  {% for p in granted_permissions %}
+  <tr>
+    <td><code>{{ p.service_url }}</code></td>
+    <td><code>{{ p.grant | tojson }}</code></td>
+    <td>{{ p.scope }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% if ungranted_permissions %}
+<p style="margin-top:0.5em;">The following permissions are declared in the app manifest but not yet granted:</p>
+<table>
+  <tr><th>Service</th><th>Grant</th><th>Actions</th></tr>
+  {% for p in ungranted_permissions %}
+  <tr>
+    <td><code>{{ p.service_url }}</code></td>
+    <td><code>{{ p.grant | tojson }}</code></td>
+    <td><button class="btn btn-primary" style="padding:0.1em 0.5em;font-size:0.85em;"
+      onclick="grantPermission(this, {{ app.app_id | tojson }}, {{ p.service_url | tojson }}, {{ p.grant | tojson }})">Grant</button></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endif %}
+
 <h3>Logs</h3>
 <pre class="log-output" id="app-logs">{{ logs or "No log output available." }}</pre>
 
@@ -78,6 +108,26 @@
   <span id="app-action-msg" style="margin-left:0.5em;"></span>
 </div>
 
+<script>
+async function grantPermission(btn, appId, serviceUrl, grant) {
+  btn.disabled = true;
+  btn.textContent = 'Granting\u2026';
+  try {
+    const resp = await fetch('/api/permissions/v2/grant_global_scoped', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({app_id: appId, service_url: serviceUrl, grant: grant}),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    btn.textContent = 'Granted';
+    btn.closest('tr').style.opacity = '0.5';
+  } catch (e) {
+    btn.textContent = 'Error';
+    btn.disabled = false;
+    alert('Failed to grant: ' + e.message);
+  }
+}
+</script>
 <script id="page-config" type="application/json">
 {
   "renameAppUrl": "/rename_app/{{ app.app_id }}",
