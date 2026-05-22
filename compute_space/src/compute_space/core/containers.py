@@ -260,21 +260,25 @@ def run_container(
         # DNS are used directly).
         cmd.append("--network=host")
     else:
-        cmd.extend([
-            "-p",
-            f"127.0.0.1:{local_port}:{manifest.container_port}",
-            # host.docker.internal kept for compatibility with existing apps.
-            "--add-host=host.docker.internal:host-gateway",
-            "--add-host=host.containers.internal:host-gateway",
-        ])
+        cmd.extend(
+            [
+                "-p",
+                f"127.0.0.1:{local_port}:{manifest.container_port}",
+                # host.docker.internal kept for compatibility with existing apps.
+                "--add-host=host.docker.internal:host-gateway",
+                "--add-host=host.containers.internal:host-gateway",
+            ]
+        )
 
-    cmd.extend([
-        f"--memory={manifest.memory_mb}m",
-        f"--cpus={manifest.cpu_millicores / 1000.0}",
-        "--restart=unless-stopped",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges=true",
-    ])
+    cmd.extend(
+        [
+            f"--memory={manifest.memory_mb}m",
+            f"--cpus={manifest.cpu_millicores / 1000.0}",
+            "--restart=unless-stopped",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges=true",
+        ]
+    )
     if manifest.shm_mb > 0:
         cmd.append(f"--shm-size={manifest.shm_mb}m")
     for cap in sorted(DEFAULT_CAPABILITIES):
