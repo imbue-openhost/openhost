@@ -7,6 +7,7 @@ from typing import Annotated
 import attrs
 import cappa
 
+from openhost_system_agent.status import get_migration_status
 from openhost_system_agent.update import apply_update
 from openhost_system_agent.update import fetch_updates
 from openhost_system_agent.update import get_remote_info
@@ -70,13 +71,20 @@ class UpdateCmd:
         _output({"ok": True, **result})
 
 
+@cappa.command(name="status", help="Check system migration status.")
+@attrs.define
+class StatusCmd:
+    def __call__(self) -> None:
+        _output(get_migration_status())
+
+
 @cappa.command(
     name="openhost_system_agent",
     help="OpenHost system agent — host-level updates and migrations.",
 )
 @attrs.define
 class SystemAgent:
-    subcommand: cappa.Subcommands[UpdateCmd]
+    subcommand: cappa.Subcommands[UpdateCmd | StatusCmd]
 
 
 def main() -> None:

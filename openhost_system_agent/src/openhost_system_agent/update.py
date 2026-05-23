@@ -91,7 +91,7 @@ def show_diff() -> dict[str, object]:
         commits.append(
             {
                 "sha": commit.hexsha[:8],
-                "message": commit.message.strip().split("\n")[0],
+                "message": str(commit.message).strip().split("\n")[0],
             }
         )
 
@@ -167,7 +167,8 @@ def _run_migrations_reexec() -> list[int]:
         raise RuntimeError(f"System migrations failed:\n{result.stderr}")
 
     try:
-        return json.loads(result.stdout)
+        parsed: list[int] = json.loads(result.stdout)
+        return parsed
     except (json.JSONDecodeError, ValueError):
         return []
 

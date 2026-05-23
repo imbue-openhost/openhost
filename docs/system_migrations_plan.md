@@ -205,9 +205,8 @@ The runtime sentinel (`/etc/openhost/runtime`) and its
 `host_prep_status()` reads `migrations.jsonl` and compares the current
 version against `highest_registered_version(REGISTRY)`.
 
-The `runtime` field (checking for podman) is dropped — the
-authoritative check is the live `container_runtime_available()` probe,
-which the sentinel module's own docstring says is the real check.
+The `runtime` field (checking for podman) is dropped — the migration
+version subsumes it.
 
 The sentinel file at `/etc/openhost/runtime` can be removed from
 ansible once the migration system is in place. During the transition,

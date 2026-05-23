@@ -5,7 +5,9 @@ import fcntl
 import json
 import os
 import time
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -15,7 +17,7 @@ from openhost_system_agent.migrations.registry import REGISTRY
 MIGRATIONS_PATH = "/etc/openhost/migrations.jsonl"
 
 
-def validate_registry(registry: list[SystemMigration]) -> None:
+def validate_registry(registry: Sequence[SystemMigration]) -> None:
     if not registry:
         return
     versions = [m.version for m in registry]
@@ -27,18 +29,18 @@ def validate_registry(registry: list[SystemMigration]) -> None:
         )
 
 
-def highest_registered_version(registry: list[SystemMigration]) -> int:
+def highest_registered_version(registry: Sequence[SystemMigration]) -> int:
     if not registry:
         return 1
     return registry[-1].version
 
 
-def read_log(path: str) -> list[dict[str, object]]:
+def read_log(path: str) -> list[dict[str, Any]]:
     try:
         text = Path(path).read_text()
     except FileNotFoundError:
         return []
-    entries: list[dict[str, object]] = []
+    entries: list[dict[str, Any]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -50,14 +52,14 @@ def read_log(path: str) -> list[dict[str, object]]:
     return entries
 
 
-def current_version(entries: list[dict[str, object]]) -> int:
+def current_version(entries: list[dict[str, Any]]) -> int:
     for entry in reversed(entries):
         if entry.get("success"):
-            return int(entry["version"])  # type: ignore[arg-type]
+            return int(entry["version"])
     return 0
 
 
-def _append_entry(path: str, entry: dict[str, object]) -> None:
+def _append_entry(path: str, entry: dict[str, Any]) -> None:
     line = json.dumps(entry, separators=(",", ":")) + "\n"
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
@@ -66,7 +68,7 @@ def _append_entry(path: str, entry: dict[str, object]) -> None:
 
 def apply_system_migrations(
     migrations_path: str = MIGRATIONS_PATH,
-    registry: list[SystemMigration] | None = None,
+    registry: Sequence[SystemMigration] | None = None,
 ) -> list[int]:
     if registry is None:
         registry = REGISTRY
@@ -86,7 +88,7 @@ def apply_system_migrations(
 
 def _apply_under_lock(
     migrations_path: str,
-    registry: list[SystemMigration],
+    registry: Sequence[SystemMigration],
     highest: int,
 ) -> list[int]:
     entries = read_log(migrations_path)
