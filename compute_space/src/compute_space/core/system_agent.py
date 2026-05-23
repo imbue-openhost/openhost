@@ -2,59 +2,22 @@ from __future__ import annotations
 
 import json
 import subprocess
-from typing import Any
 
-import attr
 import cattrs
 
 from compute_space.core.util import async_wrap
+from openhost_system_agent.protocol import ApplyResult
+from openhost_system_agent.protocol import DiffResult
+from openhost_system_agent.protocol import FetchResult
+from openhost_system_agent.protocol import MigrationStatus
+from openhost_system_agent.protocol import RemoteInfo
 
 
 class SystemAgentError(Exception):
     pass
 
 
-@attr.s(auto_attribs=True, frozen=True)
-class FetchResult:
-    state: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class DiffCommit:
-    sha: str
-    message: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class DiffResult:
-    commits: list[DiffCommit]
-    current_ref: str
-    remote_ref: str | None
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class ApplyResult:
-    ref: str
-    system_migrations_applied: list[int]
-    already_up_to_date: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class RemoteInfo:
-    url: str | None
-    ref: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class MigrationStatus:
-    ok: bool
-    reason: str
-    message: str
-    current_version: int
-    expected_version: int
-
-
-def _call_system_agent_sync(*args: str, timeout: int = 300) -> dict[str, Any]:
+def _call_system_agent_sync[ResultT](result_type: type[ResultT], *args: str, timeout: int = 300) -> ResultT:
     try:
         result = subprocess.run(
             ["sudo", "openhost_system_agent", *args],
@@ -76,37 +39,38 @@ def _call_system_agent_sync(*args: str, timeout: int = 300) -> dict[str, Any]:
         raise SystemAgentError(str(error))
 
     try:
-        parsed: dict[str, Any] = json.loads(result.stdout)
-        return parsed
+        raw = json.loads(result.stdout)
     except (json.JSONDecodeError, ValueError) as e:
         raise SystemAgentError(f"Invalid JSON from system agent: {result.stdout}") from e
+
+    return cattrs.structure(raw, result_type)
 
 
 @async_wrap
 def system_agent_fetch() -> FetchResult:
-    return cattrs.structure(_call_system_agent_sync("update", "fetch"), FetchResult)
+    return _call_system_agent_sync(FetchResult, "update", "fetch")
 
 
 @async_wrap
 def system_agent_show_diff() -> DiffResult:
-    return cattrs.structure(_call_system_agent_sync("update", "show_diff"), DiffResult)
+    return _call_system_agent_sync(DiffResult, "update", "show_diff")
 
 
 @async_wrap
 def system_agent_apply() -> ApplyResult:
-    return cattrs.structure(_call_system_agent_sync("update", "apply", timeout=600), ApplyResult)
+    return _call_system_agent_sync(ApplyResult, "update", "apply", timeout=600)
 
 
 @async_wrap
 def system_agent_set_remote(url: str) -> RemoteInfo:
-    return cattrs.structure(_call_system_agent_sync("update", "set_remote", url, timeout=120), RemoteInfo)
+    return _call_system_agent_sync(RemoteInfo, "update", "set_remote", url, timeout=120)
 
 
 @async_wrap
 def system_agent_get_remote() -> RemoteInfo:
-    return cattrs.structure(_call_system_agent_sync("update", "get_remote"), RemoteInfo)
+    return _call_system_agent_sync(RemoteInfo, "update", "get_remote")
 
 
 @async_wrap
 def system_agent_status() -> MigrationStatus:
-    return cattrs.structure(_call_system_agent_sync("status"), MigrationStatus)
+    return _call_system_agent_sync(MigrationStatus, "status")

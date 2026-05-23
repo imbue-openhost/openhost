@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-openhost_system_agent = "openhost_system_agent.main:main"
+openhost_system_agent = "openhost_system_agent.cli:main"
 
 [build-system]
 requires = ["hatchling"]

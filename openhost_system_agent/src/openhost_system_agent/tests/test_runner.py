@@ -8,11 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from openhost_system_agent.migrations.base import SystemMigration
+from openhost_system_agent.migrations.migration_log import MigrationLogEntry
+from openhost_system_agent.migrations.migration_log import current_host_version
+from openhost_system_agent.migrations.migration_log import read_log
+from openhost_system_agent.migrations.registry import latest_registry_version
+from openhost_system_agent.migrations.registry import validate_registry
 from openhost_system_agent.migrations.runner import apply_system_migrations
-from openhost_system_agent.migrations.runner import current_version
-from openhost_system_agent.migrations.runner import highest_registered_version
-from openhost_system_agent.migrations.runner import read_log
-from openhost_system_agent.migrations.runner import validate_registry
 
 
 class MigrationV2(SystemMigration):
@@ -64,10 +65,10 @@ class TestValidateRegistry:
 
 class TestHighestRegisteredVersion:
     def test_empty_registry(self) -> None:
-        assert highest_registered_version([]) == 1
+        assert latest_registry_version([]) == 1
 
     def test_with_migrations(self) -> None:
-        assert highest_registered_version([MigrationV2(), MigrationV3()]) == 3
+        assert latest_registry_version([MigrationV2(), MigrationV3()]) == 3
 
 
 class TestReadLog:
@@ -84,7 +85,8 @@ class TestReadLog:
         _write_jsonl(f, [{"version": 1, "success": True}])
         entries = read_log(str(f))
         assert len(entries) == 1
-        assert entries[0]["version"] == 1
+        assert entries[0].version == 1
+        assert entries[0].success is True
 
     def test_skips_malformed_lines(self, tmp_path: Path) -> None:
         f = tmp_path / "m.jsonl"
@@ -95,29 +97,29 @@ class TestReadLog:
 
 class TestCurrentVersion:
     def test_empty_entries(self) -> None:
-        assert current_version([]) == 0
+        assert current_host_version([]) == 0
 
     def test_last_successful(self) -> None:
-        entries: list[dict[str, object]] = [
-            {"version": 1, "success": True},
-            {"version": 2, "success": True},
+        entries = [
+            MigrationLogEntry(version=1, timestamp="", success=True, error=None),
+            MigrationLogEntry(version=2, timestamp="", success=True, error=None),
         ]
-        assert current_version(entries) == 2
+        assert current_host_version(entries) == 2
 
     def test_ignores_failures(self) -> None:
-        entries: list[dict[str, object]] = [
-            {"version": 1, "success": True},
-            {"version": 2, "success": False},
+        entries = [
+            MigrationLogEntry(version=1, timestamp="", success=True, error=None),
+            MigrationLogEntry(version=2, timestamp="", success=False, error="boom"),
         ]
-        assert current_version(entries) == 1
+        assert current_host_version(entries) == 1
 
     def test_retried_success(self) -> None:
-        entries: list[dict[str, object]] = [
-            {"version": 1, "success": True},
-            {"version": 2, "success": False},
-            {"version": 2, "success": True},
+        entries = [
+            MigrationLogEntry(version=1, timestamp="", success=True, error=None),
+            MigrationLogEntry(version=2, timestamp="", success=False, error="first try"),
+            MigrationLogEntry(version=2, timestamp="", success=True, error=None),
         ]
-        assert current_version(entries) == 2
+        assert current_host_version(entries) == 2
 
 
 class TestApplySystemMigrations:
@@ -158,10 +160,10 @@ class TestApplySystemMigrations:
 
         entries = read_log(str(path))
         assert len(entries) == 3
-        assert entries[1]["version"] == 2
-        assert entries[1]["success"] is True
-        assert entries[2]["version"] == 3
-        assert entries[2]["success"] is True
+        assert entries[1].version == 2
+        assert entries[1].success is True
+        assert entries[2].version == 3
+        assert entries[2].success is True
 
     def test_skips_already_applied(self, tmp_path: Path) -> None:
         path = tmp_path / "migrations.jsonl"
@@ -187,9 +189,9 @@ class TestApplySystemMigrations:
 
         entries = read_log(str(path))
         assert len(entries) == 2
-        assert entries[1]["version"] == 2
-        assert entries[1]["success"] is False
-        assert "intentional failure" in str(entries[1]["error"])
+        assert entries[1].version == 2
+        assert entries[1].success is False
+        assert "intentional failure" in (entries[1].error or "")
 
     def test_replay_after_failure(self, tmp_path: Path) -> None:
         path = tmp_path / "migrations.jsonl"
@@ -206,6 +208,5 @@ class TestApplySystemMigrations:
         assert applied == [2]
 
         entries = read_log(str(path))
-        last = entries[-1]
-        assert last["version"] == 2
-        assert last["success"] is True
+        assert entries[-1].version == 2
+        assert entries[-1].success is True

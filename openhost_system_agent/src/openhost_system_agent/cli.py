@@ -4,6 +4,7 @@ import json
 import sys
 from typing import Annotated
 
+import attr
 import attrs
 import cappa
 
@@ -15,12 +16,12 @@ from openhost_system_agent.update import set_remote_url
 from openhost_system_agent.update import show_diff
 
 
-def _output(data: dict[str, object]) -> None:
-    print(json.dumps(data))
+def _output(obj: object) -> None:
+    print(json.dumps(attr.asdict(obj)))  # type: ignore[arg-type]
 
 
 def _error(msg: str) -> None:
-    _output({"ok": False, "error": msg})
+    print(json.dumps({"ok": False, "error": msg}))
     raise SystemExit(1)
 
 
@@ -30,26 +31,23 @@ class UpdateCmd:
     @cappa.command(name="fetch", help="Fetch latest code from remote.")
     def fetch(self) -> None:
         try:
-            result = fetch_updates()
+            _output(fetch_updates())
         except Exception as e:
             _error(str(e))
-        _output({"ok": True, **result})
 
     @cappa.command(name="show_diff", help="Show pending changes between HEAD and remote.")
     def show_diff(self) -> None:
         try:
-            result = show_diff()
+            _output(show_diff())
         except Exception as e:
             _error(str(e))
-        _output({"ok": True, **result})
 
     @cappa.command(name="apply", help="Apply pending update: checkout, install deps, run system migrations.")
     def apply(self) -> None:
         try:
-            result = apply_update()
+            _output(apply_update())
         except Exception as e:
             _error(str(e))
-        _output({"ok": True, **result})
 
     @cappa.command(name="set_remote", help="Set the git remote URL.")
     def set_remote(
@@ -57,18 +55,16 @@ class UpdateCmd:
         url: Annotated[str, cappa.Arg(help="Git remote URL")],
     ) -> None:
         try:
-            result = set_remote_url(url)
+            _output(set_remote_url(url))
         except Exception as e:
             _error(str(e))
-        _output({"ok": True, **result})
 
     @cappa.command(name="get_remote", help="Get the current git remote URL and ref.")
     def get_remote(self) -> None:
         try:
-            result = get_remote_info()
+            _output(get_remote_info())
         except Exception as e:
             _error(str(e))
-        _output({"ok": True, **result})
 
 
 @cappa.command(name="status", help="Check system migration status.")

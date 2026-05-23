@@ -2,68 +2,23 @@ from __future__ import annotations
 
 import datetime
 import fcntl
-import json
 import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
 from openhost_system_agent.migrations.base import SystemMigration
+from openhost_system_agent.migrations.migration_log import MIGRATIONS_LOCK_PATH
+from openhost_system_agent.migrations.migration_log import MIGRATIONS_PATH
+from openhost_system_agent.migrations.migration_log import MigrationLogEntry
+from openhost_system_agent.migrations.migration_log import append_entry
+from openhost_system_agent.migrations.migration_log import current_host_version
+from openhost_system_agent.migrations.migration_log import read_log
 from openhost_system_agent.migrations.registry import REGISTRY
-
-MIGRATIONS_PATH = "/etc/openhost/migrations.jsonl"
-
-
-def validate_registry(registry: Sequence[SystemMigration]) -> None:
-    if not registry:
-        return
-    versions = [m.version for m in registry]
-    expected = list(range(2, 2 + len(versions)))
-    if versions != expected:
-        raise RuntimeError(
-            f"Migration registry is not strictly increasing and contiguous starting at 2: "
-            f"got {versions}, expected {expected}"
-        )
-
-
-def highest_registered_version(registry: Sequence[SystemMigration]) -> int:
-    if not registry:
-        return 1
-    return registry[-1].version
-
-
-def read_log(path: str) -> list[dict[str, Any]]:
-    try:
-        text = Path(path).read_text()
-    except FileNotFoundError:
-        return []
-    entries: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return entries
-
-
-def current_version(entries: list[dict[str, Any]]) -> int:
-    for entry in reversed(entries):
-        if entry.get("success"):
-            return int(entry["version"])
-    return 0
-
-
-def _append_entry(path: str, entry: dict[str, Any]) -> None:
-    line = json.dumps(entry, separators=(",", ":")) + "\n"
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
-        f.write(line)
+from openhost_system_agent.migrations.registry import latest_registry_version
+from openhost_system_agent.migrations.registry import validate_registry
 
 
 def apply_system_migrations(
@@ -73,15 +28,14 @@ def apply_system_migrations(
     if registry is None:
         registry = REGISTRY
     validate_registry(registry)
-    highest = highest_registered_version(registry)
+    highest = latest_registry_version(registry)
 
     if os.geteuid() != 0:
         raise RuntimeError("System migrations must be run as root")
 
     Path(migrations_path).parent.mkdir(parents=True, exist_ok=True)
-    lock_path = f"{migrations_path}.lock"
 
-    with open(lock_path, "w") as lock_fd:
+    with open(MIGRATIONS_LOCK_PATH, "w") as lock_fd:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
         return _apply_under_lock(migrations_path, registry, highest)
 
@@ -92,7 +46,7 @@ def _apply_under_lock(
     highest: int,
 ) -> list[int]:
     entries = read_log(migrations_path)
-    current = current_version(entries)
+    current = current_host_version(entries)
 
     if current == 0:
         raise RuntimeError(
@@ -116,25 +70,25 @@ def _apply_under_lock(
             migration.up()
         except Exception as e:
             logger.error(f"System migration v{source} → v{migration.version} ({type(migration).__name__}) failed")
-            _append_entry(
+            append_entry(
                 migrations_path,
-                {
-                    "version": migration.version,
-                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
-                    "success": False,
-                    "error": str(e),
-                },
+                MigrationLogEntry(
+                    version=migration.version,
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+                    success=False,
+                    error=str(e),
+                ),
             )
             raise
         duration = time.perf_counter() - t0
-        _append_entry(
+        append_entry(
             migrations_path,
-            {
-                "version": migration.version,
-                "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
-                "success": True,
-                "error": None,
-            },
+            MigrationLogEntry(
+                version=migration.version,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+                success=True,
+                error=None,
+            ),
         )
         logger.info(
             f"Applied system migration v{source} → v{migration.version} "
@@ -147,16 +101,3 @@ def _apply_under_lock(
         logger.info(f"System is at version {current} (up to date)")
 
     return applied
-
-
-if __name__ == "__main__":
-    import sys
-
-    logger.remove()
-    logger.add(sys.stderr)
-    try:
-        applied = apply_system_migrations()
-    except Exception as e:
-        logger.error(str(e))
-        sys.exit(1)
-    print(json.dumps(applied))

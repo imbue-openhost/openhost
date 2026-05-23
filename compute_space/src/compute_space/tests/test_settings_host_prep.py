@@ -13,10 +13,10 @@ import pytest
 from litestar.exceptions import HTTPException
 
 import compute_space.web.routes.api.settings as settings_mod
-from compute_space.core.system_agent import ApplyResult
-from compute_space.core.system_agent import FetchResult
-from compute_space.core.system_agent import MigrationStatus
 from compute_space.core.system_agent import SystemAgentError
+from openhost_system_agent.protocol import ApplyResult
+from openhost_system_agent.protocol import FetchResult
+from openhost_system_agent.protocol import MigrationStatus
 
 
 @pytest.mark.asyncio
@@ -25,7 +25,7 @@ async def test_check_for_updates_up_to_date(monkeypatch: pytest.MonkeyPatch) -> 
         return FetchResult(state="UP_TO_DATE")
 
     async def fake_status() -> MigrationStatus:
-        return MigrationStatus(ok=True, reason="", message="ok", current_version=1, expected_version=1)
+        return MigrationStatus(ok=True, reason="", message="ok", current_host_version=1, expected_version=1)
 
     monkeypatch.setattr(settings_mod, "system_agent_fetch", fake_fetch)
     monkeypatch.setattr(settings_mod, "system_agent_status", fake_status)
@@ -42,7 +42,7 @@ async def test_check_for_updates_update_available(monkeypatch: pytest.MonkeyPatc
         return FetchResult(state="BEHIND_REMOTE")
 
     async def fake_status() -> MigrationStatus:
-        return MigrationStatus(ok=True, reason="", message="ok", current_version=1, expected_version=1)
+        return MigrationStatus(ok=True, reason="", message="ok", current_host_version=1, expected_version=1)
 
     monkeypatch.setattr(settings_mod, "system_agent_fetch", fake_fetch)
     monkeypatch.setattr(settings_mod, "system_agent_status", fake_status)
@@ -60,7 +60,7 @@ async def test_check_for_updates_migration_error(monkeypatch: pytest.MonkeyPatch
 
     async def fake_status() -> MigrationStatus:
         return MigrationStatus(
-            ok=False, reason="behind", message="run system migrations", current_version=1, expected_version=2
+            ok=False, reason="behind", message="run system migrations", current_host_version=1, expected_version=2
         )
 
     monkeypatch.setattr(settings_mod, "system_agent_fetch", fake_fetch)
@@ -92,7 +92,7 @@ async def test_apply_update_refuses_with_409_when_not_prepared(monkeypatch: pyte
 
     async def fake_status() -> MigrationStatus:
         return MigrationStatus(
-            ok=False, reason="behind", message="migrations needed", current_version=1, expected_version=2
+            ok=False, reason="behind", message="migrations needed", current_host_version=1, expected_version=2
         )
 
     monkeypatch.setattr(settings_mod, "system_agent_apply", boom)
@@ -112,7 +112,7 @@ async def test_apply_update_proceeds_when_prepared(monkeypatch: pytest.MonkeyPat
         return ApplyResult(ref="abc1234", system_migrations_applied=[], already_up_to_date=False)
 
     async def fake_status() -> MigrationStatus:
-        return MigrationStatus(ok=True, reason="", message="ok", current_version=1, expected_version=1)
+        return MigrationStatus(ok=True, reason="", message="ok", current_host_version=1, expected_version=1)
 
     monkeypatch.setattr(settings_mod, "system_agent_apply", fake_apply)
     monkeypatch.setattr(settings_mod, "system_agent_status", fake_status)

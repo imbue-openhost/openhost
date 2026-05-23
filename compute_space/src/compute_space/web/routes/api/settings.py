@@ -13,7 +13,6 @@ from litestar.exceptions import HTTPException
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.auth import update_owner_username
 from compute_space.core.auth.auth import validate_owner_username
-from compute_space.core.system_agent import RemoteInfo
 from compute_space.core.system_agent import SystemAgentError
 from compute_space.core.system_agent import system_agent_apply
 from compute_space.core.system_agent import system_agent_fetch
@@ -23,6 +22,7 @@ from compute_space.core.system_agent import system_agent_status
 from compute_space.core.updates import trigger_restart
 from compute_space.core.util import _not_blank
 from compute_space.web.auth.auth import require_owner_auth
+from openhost_system_agent.protocol import RemoteInfo
 
 # --- request / response types -----------------------------------------------
 

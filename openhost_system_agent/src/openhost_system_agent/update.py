@@ -9,8 +9,12 @@ from pathlib import Path
 import git
 from loguru import logger
 
-# __init__.py lives at openhost_system_agent/src/openhost_system_agent/__init__.py
-# Walk up to the repo root: __init__.py -> openhost_system_agent -> src -> openhost_system_agent -> <repo root>
+from openhost_system_agent.protocol import ApplyResult
+from openhost_system_agent.protocol import DiffCommit
+from openhost_system_agent.protocol import DiffResult
+from openhost_system_agent.protocol import FetchResult
+from openhost_system_agent.protocol import RemoteInfo
+
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _PACKAGE_DIR.parent.parent.parent
 
@@ -46,34 +50,34 @@ def _strip_credentials(url: str) -> str:
     return url
 
 
-def fetch_updates() -> dict[str, object]:
+def fetch_updates() -> FetchResult:
     repo = _repo()
     remote = _get_remote(repo)
     remote.fetch()
 
     if repo.is_dirty(untracked_files=True):
-        return {"state": "DIRTY"}
+        return FetchResult(state="DIRTY")
 
     try:
         branch = repo.active_branch
     except TypeError:
-        return {"state": "UP_TO_DATE"}
+        return FetchResult(state="UP_TO_DATE")
 
     tracking = branch.tracking_branch()
     if tracking is None:
-        return {"state": "NO_REMOTE"}
+        return FetchResult(state="NO_REMOTE")
 
     ahead = int(repo.git.rev_list("--count", f"{tracking}..{branch}"))
     behind = int(repo.git.rev_list("--count", f"{branch}..{tracking}"))
 
     if ahead > 0:
-        return {"state": "AHEAD_OF_REMOTE"}
+        return FetchResult(state="AHEAD_OF_REMOTE")
     if behind > 0:
-        return {"state": "BEHIND_REMOTE"}
-    return {"state": "UP_TO_DATE"}
+        return FetchResult(state="BEHIND_REMOTE")
+    return FetchResult(state="UP_TO_DATE")
 
 
-def show_diff() -> dict[str, object]:
+def show_diff() -> DiffResult:
     repo = _repo()
     branch = _branch_name(repo)
     remote_ref = f"origin/{branch}"
@@ -81,7 +85,7 @@ def show_diff() -> dict[str, object]:
     try:
         repo.refs[remote_ref]
     except IndexError:
-        return {"commits": [], "current_ref": repo.head.commit.hexsha[:8], "remote_ref": None}
+        return DiffResult(commits=[], current_ref=repo.head.commit.hexsha[:8], remote_ref=None)
 
     current_sha = repo.head.commit.hexsha[:8]
     remote_sha = repo.refs[remote_ref].commit.hexsha[:8]
@@ -89,20 +93,16 @@ def show_diff() -> dict[str, object]:
     commits = []
     for commit in repo.iter_commits(f"HEAD..{remote_ref}"):
         commits.append(
-            {
-                "sha": commit.hexsha[:8],
-                "message": str(commit.message).strip().split("\n")[0],
-            }
+            DiffCommit(
+                sha=commit.hexsha[:8],
+                message=str(commit.message).strip().split("\n")[0],
+            )
         )
 
-    return {
-        "commits": commits,
-        "current_ref": current_sha,
-        "remote_ref": remote_sha,
-    }
+    return DiffResult(commits=commits, current_ref=current_sha, remote_ref=remote_sha)
 
 
-def apply_update() -> dict[str, object]:
+def apply_update() -> ApplyResult:
     repo = _repo()
 
     if repo.is_dirty(untracked_files=True):
@@ -120,7 +120,7 @@ def apply_update() -> dict[str, object]:
     remote_sha = repo.refs[remote_ref].commit.hexsha
 
     if local_sha == remote_sha:
-        return {"ref": local_sha[:8], "system_migrations_applied": [], "already_up_to_date": True}
+        return ApplyResult(ref=local_sha[:8], system_migrations_applied=[], already_up_to_date=True)
 
     logger.info(f"Checking out {remote_ref}...")
     try:
@@ -136,11 +136,7 @@ def apply_update() -> dict[str, object]:
     logger.info("Running system migrations...")
     applied = _run_migrations_reexec()
 
-    return {
-        "ref": repo.head.commit.hexsha[:8],
-        "system_migrations_applied": applied,
-        "already_up_to_date": False,
-    }
+    return ApplyResult(ref=repo.head.commit.hexsha[:8], system_migrations_applied=applied, already_up_to_date=False)
 
 
 def _run_pixi_install() -> None:
@@ -155,10 +151,17 @@ def _run_pixi_install() -> None:
         raise RuntimeError(f"pixi install failed (exit {result.returncode}):\n{result.stderr}")
 
 
+_MIGRATE_SCRIPT = (
+    "import json; "
+    "from openhost_system_agent.migrations.runner import apply_system_migrations; "
+    "print(json.dumps(apply_system_migrations()))"
+)
+
+
 def _run_migrations_reexec() -> list[int]:
-    """Re-exec the agent to run migrations with the newly-installed code."""
+    """Run migrations in a subprocess so the freshly-installed code is imported."""
     result = subprocess.run(
-        [sys.executable, "-m", "openhost_system_agent.migrations.runner"],
+        [sys.executable, "-c", _MIGRATE_SCRIPT],
         cwd=_PROJECT_DIR,
         capture_output=True,
         text=True,
@@ -174,7 +177,7 @@ def _run_migrations_reexec() -> list[int]:
         return []
 
 
-def set_remote_url(url: str) -> dict[str, object]:
+def set_remote_url(url: str) -> RemoteInfo:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in _KNOWN_SCHEMES:
         url = "https://" + url
@@ -202,11 +205,11 @@ def set_remote_url(url: str) -> dict[str, object]:
             repo.git.checkout("-f", ref)
         repo.git.clean("-fd")
 
-    return {"url": _strip_credentials(url), "ref": ref or _branch_name(repo)}
+    return RemoteInfo(url=_strip_credentials(url), ref=ref or _branch_name(repo))
 
 
-def get_remote_info() -> dict[str, object]:
+def get_remote_info() -> RemoteInfo:
     repo = _repo()
     remote = _get_remote(repo)
     url = _strip_credentials(remote.url) if remote.url else None
-    return {"url": url, "ref": _branch_name(repo)}
+    return RemoteInfo(url=url, ref=_branch_name(repo))
