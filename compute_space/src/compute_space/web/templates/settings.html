@@ -68,7 +68,7 @@ async function checkForUpdates() {
   el.innerHTML = '<p>Checking for updates&hellip;</p>';
 
   try {
-    const resp = await fetch('/api/settings/check_for_updates', {method: 'POST'});
+    const resp = await fetch('/api/settings/update');
     if (!resp.ok) {
       const err = await resp.json();
       el.innerHTML = '<p class="error">Repo is in an invalid state for updating (no .git perhaps?): ' + esc(err.detail || '') + '</p>'
@@ -79,38 +79,14 @@ async function checkForUpdates() {
 
     const checkAgainBtn = '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Check again</button>';
 
-    // Banner when host prep is needed; Update button is disabled below.
-    let hostPrepBanner = '';
-    if (data.host_prep_ok === false) {
-      hostPrepBanner = '<div class="error" style="margin-bottom:0.75em;padding:0.5em;border:1px solid #c00;">'
-        + '<strong>Host not prepared for this router version.</strong> '
-        + 'Updating now would leave the router unable to start.  '
-        + esc(data.host_prep_message || '')
-        + '</div>';
-    }
-
     if (data.state === 'UP_TO_DATE') {
-      el.innerHTML = hostPrepBanner + '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
-    } else if (data.state === 'NO_REMOTE') {
-      el.innerHTML = hostPrepBanner + '<p>No git remote configured. Set a remote URL above to enable updates.</p>' + checkAgainBtn;
-    } else if (data.state === 'BEHIND_REMOTE') {
-      const updateBtn = (data.host_prep_ok === false)
-        ? '<button class="btn btn-primary" disabled title="Host prep required before updating">Update &amp; restart</button> '
-        : '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> ';
-      el.innerHTML = hostPrepBanner + '<p>Updates available. Reset local repo to match remote?</p>'
-        + updateBtn + checkAgainBtn;
-    } else if (data.state === 'DIRTY') {
-      const resetBtn = (data.host_prep_ok === false)
-        ? '<button class="btn btn-primary" disabled title="Host prep required before updating">Reset &amp; restart</button> '
-        : '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> ';
-      el.innerHTML = hostPrepBanner + '<p>Local repo has uncommitted changes. Reset to remote head?</p>'
-        + resetBtn + checkAgainBtn;
-    } else if (data.state === 'AHEAD_OF_REMOTE') {
-      const resetBtn = (data.host_prep_ok === false)
-        ? '<button class="btn btn-primary" disabled title="Host prep required before updating">Reset &amp; restart</button> '
-        : '<button onclick="applyUpdate()" class="btn btn-primary">Reset &amp; restart</button> ';
-      el.innerHTML = hostPrepBanner + '<p>Local repo is ahead of remote (unpushed commits). Reset to remote head?</p>'
-        + resetBtn + checkAgainBtn;
+      el.innerHTML = '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
+    } else if (data.state === 'UPDATE_AVAILABLE') {
+      el.innerHTML = '<p>Updates available.</p>'
+        + '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> '
+        + checkAgainBtn;
+    } else if (data.state === 'ERROR') {
+      el.innerHTML = '<p class="error">' + esc(data.error || 'Unknown error') + '</p>' + checkAgainBtn;
     }
   } catch (e) {
     showError('Failed to check for updates: ' + e.message);
@@ -124,7 +100,7 @@ async function applyUpdate() {
   el.innerHTML = '<p>Updating&hellip;</p>';
 
   try {
-    const resp = await fetch('/api/settings/update_repo_state', {method: 'POST'});
+    const resp = await fetch('/api/settings/update', {method: 'POST'});
     if (!resp.ok) {
       const err = await resp.json();
       el.innerHTML = '<p class="error">' + esc(err.detail || '') + '</p>'

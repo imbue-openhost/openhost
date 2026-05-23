@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import sqlite3
+from enum import StrEnum
 
 import attr
 import bcrypt
@@ -7,60 +10,51 @@ from litestar import get
 from litestar import post
 from litestar.exceptions import HTTPException
 
-from compute_space.core.apps import inject_github_token_in_url
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.auth import update_owner_username
 from compute_space.core.auth.auth import validate_owner_username
-from compute_space.core.git_ops import parse_repo_url
-from compute_space.core.oauth import OAuthAuthorizationRequired
-from compute_space.core.oauth import get_oauth_token
-from compute_space.core.services_v2 import ServiceNotAvailable
-from compute_space.core.system_agent import MigrationStatus
+from compute_space.core.system_agent import RemoteInfo
 from compute_space.core.system_agent import SystemAgentError
-from compute_space.core.system_agent import agent_apply
-from compute_space.core.system_agent import agent_fetch
-from compute_space.core.system_agent import agent_get_remote
-from compute_space.core.system_agent import agent_set_remote
-from compute_space.core.system_agent import agent_status
+from compute_space.core.system_agent import system_agent_apply
+from compute_space.core.system_agent import system_agent_fetch
+from compute_space.core.system_agent import system_agent_get_remote
+from compute_space.core.system_agent import system_agent_set_remote
+from compute_space.core.system_agent import system_agent_status
 from compute_space.core.updates import trigger_restart
+from compute_space.core.util import _not_blank
 from compute_space.web.auth.auth import require_owner_auth
 
 # --- request / response types -----------------------------------------------
 
 
+class UpdateState(StrEnum):
+    UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
+    UP_TO_DATE = "UP_TO_DATE"
+    ERROR = "ERROR"
+
+
+_GIT_STATE_TO_UPDATE_STATE = {
+    "UP_TO_DATE": UpdateState.UP_TO_DATE,
+    "BEHIND_REMOTE": UpdateState.UPDATE_AVAILABLE,
+    "AHEAD_OF_REMOTE": UpdateState.UPDATE_AVAILABLE,
+    "DIRTY": UpdateState.UPDATE_AVAILABLE,
+}
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class SetRemoteRequest:
-    url: str = ""
+    url: str = attr.ib(validator=_not_blank)
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class SetOwnerUsernameRequest:
-    username: str = ""
+    username: str = attr.ib(validator=_not_blank)
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class GetRemoteResponse:
-    url: str | None = None
-    ref: str | None = None
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class SetRemoteResponse:
-    token_applied: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CheckUpdatesOk:
+class CheckUpdatesResponse:
     state: str
-    host_prep_ok: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CheckUpdatesBlocked:
-    state: str
-    host_prep_ok: bool
-    host_prep_reason: str
-    host_prep_message: str
+    error: str | None = None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -68,84 +62,59 @@ class OwnerUsernameResponse:
     username: str | None
 
 
-async def _get_migration_status() -> MigrationStatus:
-    try:
-        return await agent_status()
-    except SystemAgentError:
-        return MigrationStatus(
-            ok=False,
-            reason="agent_error",
-            message="System agent unavailable",
-            current_version=0,
-            expected_version=0,
-        )
-
-
 # --- routes -----------------------------------------------------------------
 
 
 @get("/api/settings/get_remote", guards=[require_owner_auth])
-async def get_remote() -> GetRemoteResponse:
+async def get_remote() -> RemoteInfo:
     try:
-        result = await agent_get_remote()
+        return await system_agent_get_remote()
     except SystemAgentError as e:
         raise HTTPException(detail=str(e), status_code=500) from e
-    return GetRemoteResponse(url=result.url, ref=result.ref)
 
 
 @post("/api/settings/set_remote", status_code=200, guards=[require_owner_auth])
-async def set_remote(data: SetRemoteRequest) -> SetRemoteResponse:
-    url = (data.url or "").strip()
-    if not url:
-        raise HTTPException(detail="url is required", status_code=400)
-
-    base_url, _ref = parse_repo_url(url)
-
-    token_applied = False
+async def set_remote(data: SetRemoteRequest) -> RemoteInfo:
     try:
-        token = await get_oauth_token("github", ["repo"], return_to="/settings")
-        base_url = inject_github_token_in_url(base_url, token)
-        token_applied = True
-    except (ServiceNotAvailable, OAuthAuthorizationRequired):
-        pass
-
-    try:
-        await agent_set_remote(base_url)
-    except SystemAgentError as e:
-        raise HTTPException(detail=str(e), status_code=500) from e
-    return SetRemoteResponse(token_applied=token_applied)
-
-
-@post("/api/settings/check_for_updates", status_code=200, guards=[require_owner_auth])
-async def check_for_updates() -> CheckUpdatesOk | CheckUpdatesBlocked:
-    try:
-        result = await agent_fetch()
+        return await system_agent_set_remote(data.url.strip())
     except SystemAgentError as e:
         raise HTTPException(detail=str(e), status_code=500) from e
 
-    status = await _get_migration_status()
-    if not status.ok:
-        return CheckUpdatesBlocked(
-            state=result.state,
-            host_prep_ok=False,
-            host_prep_reason=status.reason,
-            host_prep_message=status.message,
-        )
-    return CheckUpdatesOk(state=result.state, host_prep_ok=True)
 
-
-@post("/api/settings/update_repo_state", status_code=204, guards=[require_owner_auth])
-async def update_repo_state() -> None:
-    status = await _get_migration_status()
-    if not status.ok:
-        raise HTTPException(
-            detail=status.message,
-            status_code=409,
-            extra={"host_prep_ok": False, "host_prep_reason": status.reason, "host_prep_message": status.message},
-        )
+@get("/api/settings/update", guards=[require_owner_auth])
+async def check_for_updates() -> CheckUpdatesResponse:
+    try:
+        fetch_result = await system_agent_fetch()
+    except SystemAgentError as e:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=str(e))
 
     try:
-        await agent_apply()
+        migration_status = await system_agent_status()
+    except SystemAgentError as e:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=str(e))
+
+    if not migration_status.ok:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=migration_status.message)
+
+    state = _GIT_STATE_TO_UPDATE_STATE.get(fetch_result.state)
+    if state is None:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=f"Unknown git state: {fetch_result.state}")
+
+    return CheckUpdatesResponse(state=state)
+
+
+@post("/api/settings/update", status_code=204, guards=[require_owner_auth])
+async def apply_update() -> None:
+    try:
+        migration_status = await system_agent_status()
+    except SystemAgentError as e:
+        raise HTTPException(detail=str(e), status_code=500) from e
+
+    if not migration_status.ok:
+        raise HTTPException(detail=migration_status.message, status_code=409)
+
+    try:
+        await system_agent_apply()
     except SystemAgentError as e:
         raise HTTPException(detail=str(e), status_code=500) from e
 
@@ -157,21 +126,21 @@ async def restart_compute_space() -> None:
 
 @attr.s(auto_attribs=True, frozen=True)
 class ChangePasswordRequest:
-    current_password: str = ""
-    new_password: str = ""
-    confirm_password: str = ""
+    current_password: str
+    new_password: str
+    confirm_password: str
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class ChangePasswordResponse:
-    ok: bool = True
+    ok: bool
 
 
 @post("/api/settings/change_password", status_code=200, guards=[require_owner_auth])
 async def change_password(data: ChangePasswordRequest, db: sqlite3.Connection) -> ChangePasswordResponse:
-    current = (data.current_password or "").strip()
-    new_pw = (data.new_password or "").strip()
-    confirm = (data.confirm_password or "").strip()
+    current = data.current_password.strip()
+    new_pw = data.new_password.strip()
+    confirm = data.confirm_password.strip()
 
     if not current or not new_pw:
         raise HTTPException(detail="All fields required", status_code=400)
@@ -203,21 +172,20 @@ async def get_owner_username(db: sqlite3.Connection) -> OwnerUsernameResponse:
 
 
 @post("/api/settings/owner_username", status_code=200, guards=[require_owner_auth])
-async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
-    candidate = (data.username or "").strip()
-    error = validate_owner_username(candidate)
+async def set_owner_username(request: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
+    error = validate_owner_username(request.username)
     if error is not None:
         raise HTTPException(detail=error, status_code=400)
 
     try:
-        update_owner_username(db, candidate)
+        update_owner_username(db, request.username)
         db.commit()
     except ValueError as e:
         raise HTTPException(detail=str(e), status_code=400) from e
     except sqlite3.Error as e:
         raise HTTPException(detail=f"database error: {e}", status_code=500) from e
 
-    return OwnerUsernameResponse(username=candidate)
+    return OwnerUsernameResponse(username=request.username)
 
 
 api_settings_routes = Router(
@@ -226,7 +194,7 @@ api_settings_routes = Router(
         get_remote,
         set_remote,
         check_for_updates,
-        update_repo_state,
+        apply_update,
         restart_compute_space,
         change_password,
         get_owner_username,

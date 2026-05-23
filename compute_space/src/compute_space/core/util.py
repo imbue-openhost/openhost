@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import functools
 import os
@@ -5,6 +7,8 @@ from collections.abc import Callable
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
+
+import attr
 
 
 def write_restricted(path: Path, content: str) -> None:
@@ -34,3 +38,8 @@ def async_wrap[T, **P](func: Callable[P, T]) -> Callable[P, Coroutine[Any, Any, 
         return await asyncio.to_thread(func, *args, **kwargs)
 
     return wrapper
+
+
+def _not_blank(instance: object, attribute: attr.Attribute[str], value: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{attribute.name} must not be blank")

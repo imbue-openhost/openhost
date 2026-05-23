@@ -5,6 +5,7 @@ import subprocess
 from typing import Any
 
 import attr
+import cattrs
 
 from compute_space.core.util import async_wrap
 
@@ -35,7 +36,7 @@ class DiffResult:
 class ApplyResult:
     ref: str
     system_migrations_applied: list[int]
-    already_up_to_date: bool = False
+    already_up_to_date: bool
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -82,51 +83,30 @@ def _call_system_agent_sync(*args: str, timeout: int = 300) -> dict[str, Any]:
 
 
 @async_wrap
-def agent_fetch() -> FetchResult:
-    data = _call_system_agent_sync("update", "fetch")
-    return FetchResult(state=str(data.get("state", "UNKNOWN")))
+def system_agent_fetch() -> FetchResult:
+    return cattrs.structure(_call_system_agent_sync("update", "fetch"), FetchResult)
 
 
 @async_wrap
-def agent_show_diff() -> DiffResult:
-    data = _call_system_agent_sync("update", "show_diff")
-    commits = [DiffCommit(sha=c["sha"], message=c["message"]) for c in data.get("commits", [])]
-    return DiffResult(
-        commits=commits,
-        current_ref=str(data.get("current_ref", "")),
-        remote_ref=data.get("remote_ref"),
-    )
+def system_agent_show_diff() -> DiffResult:
+    return cattrs.structure(_call_system_agent_sync("update", "show_diff"), DiffResult)
 
 
 @async_wrap
-def agent_apply() -> ApplyResult:
-    data = _call_system_agent_sync("update", "apply", timeout=600)
-    return ApplyResult(
-        ref=str(data.get("ref", "")),
-        system_migrations_applied=data.get("system_migrations_applied", []),
-        already_up_to_date=bool(data.get("already_up_to_date", False)),
-    )
+def system_agent_apply() -> ApplyResult:
+    return cattrs.structure(_call_system_agent_sync("update", "apply", timeout=600), ApplyResult)
 
 
 @async_wrap
-def agent_set_remote(url: str) -> RemoteInfo:
-    data = _call_system_agent_sync("update", "set_remote", url, timeout=120)
-    return RemoteInfo(url=data.get("url"), ref=str(data.get("ref", "")))
+def system_agent_set_remote(url: str) -> RemoteInfo:
+    return cattrs.structure(_call_system_agent_sync("update", "set_remote", url, timeout=120), RemoteInfo)
 
 
 @async_wrap
-def agent_get_remote() -> RemoteInfo:
-    data = _call_system_agent_sync("update", "get_remote")
-    return RemoteInfo(url=data.get("url"), ref=str(data.get("ref", "")))
+def system_agent_get_remote() -> RemoteInfo:
+    return cattrs.structure(_call_system_agent_sync("update", "get_remote"), RemoteInfo)
 
 
 @async_wrap
-def agent_status() -> MigrationStatus:
-    data = _call_system_agent_sync("status")
-    return MigrationStatus(
-        ok=bool(data.get("ok")),
-        reason=str(data.get("reason", "")),
-        message=str(data.get("message", "")),
-        current_version=int(data.get("current_version", 0)),
-        expected_version=int(data.get("expected_version", 0)),
-    )
+def system_agent_status() -> MigrationStatus:
+    return cattrs.structure(_call_system_agent_sync("status"), MigrationStatus)

@@ -139,6 +139,7 @@ def apply_update() -> dict[str, object]:
     return {
         "ref": repo.head.commit.hexsha[:8],
         "system_migrations_applied": applied,
+        "already_up_to_date": False,
     }
 
 
