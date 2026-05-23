@@ -65,7 +65,7 @@ def fetch_updates() -> FetchResult:
 
     tracking = branch.tracking_branch()
     if tracking is None:
-        return FetchResult(state="NO_REMOTE")
+        raise RuntimeError(f"Branch {branch.name} has no tracking branch set")
 
     ahead = int(repo.git.rev_list("--count", f"{tracking}..{branch}"))
     behind = int(repo.git.rev_list("--count", f"{branch}..{tracking}"))
