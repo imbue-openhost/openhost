@@ -1,114 +1,155 @@
-from quart import Blueprint
-from quart import Response
-from quart import jsonify
-from quart import request
+import sqlite3
 
-from compute_space.db import get_db
-from compute_space.web.auth.middleware import login_required
+import attr
+from litestar import Router
+from litestar import delete
+from litestar import get
+from litestar import post
+from litestar.exceptions import HTTPException
 
-api_services_v2_bp = Blueprint("api_services_v2", __name__)
+from compute_space.web.auth.auth import require_owner_auth
 
 
-@api_services_v2_bp.route("/api/services/v2", methods=["GET"])
-@login_required
-async def list_services_v2() -> Response:
+@attr.s(auto_attribs=True, frozen=True)
+class ProviderV2:
+    service_url: str
+    app_id: str
+    app_name: str
+    service_version: str
+    endpoint: str
+    status: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class DiscoveredProvider:
+    app_id: str
+    app_name: str
+    service_version: str
+    endpoint: str
+    status: str
+    is_default: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class DiscoverProvidersResponse:
+    providers: list[DiscoveredProvider]
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class DefaultEntry:
+    service_url: str
+    app_id: str
+    app_name: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class OkResponse:
+    ok: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetDefaultRequest:
+    service_url: str
+    app_id: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class RemoveDefaultRequest:
+    service_url: str
+
+
+@get("/api/services/v2", guards=[require_owner_auth])
+async def list_services_v2(db: sqlite3.Connection) -> list[ProviderV2]:
     """List all registered V2 service providers."""
-    db = get_db()
     rows = db.execute(
         """SELECT sp.service_url, sp.app_id, a.name AS app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
            JOIN apps a ON a.app_id = sp.app_id"""
     ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    return [
+        ProviderV2(
+            service_url=r["service_url"],
+            app_id=r["app_id"],
+            app_name=r["app_name"],
+            service_version=r["service_version"],
+            endpoint=r["endpoint"],
+            status=r["status"],
+        )
+        for r in rows
+    ]
 
 
-@api_services_v2_bp.route("/api/services/v2/providers", methods=["GET"])
-@login_required
-async def discover_providers() -> Response | tuple[Response, int]:
+@get("/api/services/v2/providers", guards=[require_owner_auth])
+async def discover_providers(db: sqlite3.Connection, service: str) -> DiscoverProvidersResponse:
     """Discover providers for a service, optionally filtered by version specifier."""
-    service_url = request.args.get("service")
-    if not service_url:
-        return jsonify({"error": "service query param is required"}), 400
 
-    db = get_db()
     rows = db.execute(
         """SELECT sp.app_id, a.name AS app_name, sp.service_version, sp.endpoint, a.status
            FROM service_providers_v2 sp
            JOIN apps a ON a.app_id = sp.app_id
            WHERE sp.service_url = ?""",
-        (service_url,),
+        (service,),
     ).fetchall()
 
     default = db.execute(
         "SELECT app_id FROM service_defaults WHERE service_url = ?",
-        (service_url,),
+        (service,),
     ).fetchone()
     default_app_id = default["app_id"] if default else None
 
-    return jsonify(
-        {
-            "providers": [
-                {
-                    "app_id": r["app_id"],
-                    "app_name": r["app_name"],
-                    "service_version": r["service_version"],
-                    "endpoint": r["endpoint"],
-                    "status": r["status"],
-                    "is_default": r["app_id"] == default_app_id,
-                }
-                for r in rows
-            ]
-        }
+    return DiscoverProvidersResponse(
+        providers=[
+            DiscoveredProvider(
+                app_id=r["app_id"],
+                app_name=r["app_name"],
+                service_version=r["service_version"],
+                endpoint=r["endpoint"],
+                status=r["status"],
+                is_default=r["app_id"] == default_app_id,
+            )
+            for r in rows
+        ]
     )
 
 
-@api_services_v2_bp.route("/api/services/v2/defaults", methods=["GET"])
-@login_required
-async def list_defaults() -> Response:
+@get("/api/services/v2/defaults", guards=[require_owner_auth])
+async def list_defaults(db: sqlite3.Connection) -> list[DefaultEntry]:
     """List all default provider settings."""
-    db = get_db()
     rows = db.execute(
         """SELECT sd.service_url, sd.app_id, a.name AS app_name
            FROM service_defaults sd
            JOIN apps a ON a.app_id = sd.app_id"""
     ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    return [DefaultEntry(service_url=r["service_url"], app_id=r["app_id"], app_name=r["app_name"]) for r in rows]
 
 
-@api_services_v2_bp.route("/api/services/v2/defaults", methods=["POST"])
-@login_required
-async def set_default() -> Response | tuple[Response, int]:
+@post("/api/services/v2/defaults", status_code=200, guards=[require_owner_auth])
+async def set_default(data: SetDefaultRequest, db: sqlite3.Connection) -> OkResponse:
     """Set the default provider for a service."""
-    data = await request.get_json()
-    if not data or not data.get("service_url") or not data.get("app_id"):
-        return jsonify({"error": "service_url and app_id are required"}), 400
-
-    db = get_db()
-    # Verify the provider actually exists
     row = db.execute(
         "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_id = ?",
-        (data["service_url"], data["app_id"]),
+        (data.service_url, data.app_id),
     ).fetchone()
     if not row:
-        return jsonify({"error": "No such provider"}), 404
+        raise HTTPException(detail="No such provider", status_code=404)
 
     db.execute(
         "INSERT OR REPLACE INTO service_defaults (service_url, app_id) VALUES (?, ?)",
-        (data["service_url"], data["app_id"]),
+        (data.service_url, data.app_id),
     )
     db.commit()
-    return jsonify({"ok": True})
+    return OkResponse(ok=True)
 
 
-@api_services_v2_bp.route("/api/services/v2/defaults", methods=["DELETE"])
-@login_required
-async def remove_default() -> Response | tuple[Response, int]:
+@delete("/api/services/v2/defaults", status_code=200, guards=[require_owner_auth])
+async def remove_default(data: RemoveDefaultRequest, db: sqlite3.Connection) -> OkResponse:
     """Remove the default provider for a service (falls back to highest version)."""
-    data = await request.get_json()
-    if not data or not data.get("service_url"):
-        return jsonify({"error": "service_url is required"}), 400
-
-    db = get_db()
-    db.execute("DELETE FROM service_defaults WHERE service_url = ?", (data["service_url"],))
+    db.execute("DELETE FROM service_defaults WHERE service_url = ?", (data.service_url,))
     db.commit()
-    return jsonify({"ok": True})
+    return OkResponse(ok=True)
+
+
+api_services_v2_routes = Router(
+    path="/",
+    route_handlers=[list_services_v2, discover_providers, list_defaults, set_default, remove_default],
+)

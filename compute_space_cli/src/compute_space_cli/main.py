@@ -541,18 +541,7 @@ class Curl:
         if not curl:
             print("curl not found on PATH", file=sys.stderr)
             raise SystemExit(1)
-
-        url_args = []
-        remaining = list(self.args)
-        for arg in remaining:
-            if not arg.startswith("-"):
-                if "://" not in arg:
-                    arg = f"{cfg.url.rstrip('/')}/{arg.lstrip('/')}"
-                url_args.append(arg)
-            else:
-                url_args.append(arg)
-
-        cmd = [curl, "-H", f"Authorization: Bearer {cfg.token}", *url_args]
+        cmd = [curl, "-H", f"Authorization: Bearer {cfg.token}", *self.args]
         raise SystemExit(subprocess.call(cmd))
 
 

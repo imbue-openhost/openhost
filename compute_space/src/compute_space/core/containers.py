@@ -310,8 +310,24 @@ def run_container(
 
 
 def stop_container(container_id: str) -> None:
-    """Stop and remove a container by ID or name.  Idempotent."""
-    subprocess.run(["podman", "stop", container_id], capture_output=True, timeout=30)
+    """Stop and remove a container by ID or name.  Idempotent.
+
+    Gives the container 10s to exit gracefully (SIGTERM via ``podman stop
+    -t 10``).  If that times out or fails, escalates to ``podman kill``
+    (SIGKILL) before removing.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "stop", "-t", "10", container_id],
+            capture_output=True,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            logger.warning("podman stop %s exited %d, escalating to kill", container_id, result.returncode)
+            subprocess.run(["podman", "kill", container_id], capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        logger.warning("podman stop %s timed out, escalating to kill", container_id)
+        subprocess.run(["podman", "kill", container_id], capture_output=True, timeout=10)
     subprocess.run(["podman", "rm", "-f", container_id], capture_output=True, timeout=30)
 
 

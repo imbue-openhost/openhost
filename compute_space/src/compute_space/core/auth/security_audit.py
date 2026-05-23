@@ -3,7 +3,7 @@
 Checks actual security posture regardless of config settings: TLS active,
 SSH password auth disabled, no unexpected ports.
 
-Results are exposed via /health and /api/security-audit endpoints.
+Results are exposed via the authenticated /api/security-audit endpoint.
 """
 
 import shutil

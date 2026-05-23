@@ -1,0 +1,142 @@
+name: e2e-cleanup
+
+# Sweep for orphaned e2e instances that were not torn down by CI.
+# This can happen when cancel-in-progress kills a run after instance
+# creation but before the env file is written for teardown.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  MAX_AGE_HOURS: 3
+
+jobs:
+  cleanup-gcp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete orphaned GCP instances
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%S)
+          echo "Deleting openhost-e2e-* instances created before $CUTOFF"
+
+          INSTANCES=$(gcloud compute instances list \
+            --project="$GCP_PROJECT" \
+            --filter="name~'^openhost-e2e-' AND creationTimestamp<'${CUTOFF}'" \
+            --format="csv[no-heading](name,zone)")
+
+          if [ -z "$INSTANCES" ]; then
+            echo "No orphaned instances found"
+            exit 0
+          fi
+
+          echo "$INSTANCES" | while IFS=, read -r name zone; do
+            echo "Deleting $name ($zone)..."
+            gcloud compute instances delete "$name" \
+              --project="$GCP_PROJECT" \
+              --zone="$zone" \
+              --quiet || echo "  Failed to delete $name"
+          done
+
+  cleanup-ec2:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Delete orphaned EC2 instances
+        run: |
+          CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting openhost-e2e-* instances launched before $CUTOFF"
+
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=openhost-e2e-*" \
+              "Name=instance-state-name,Values=running,stopped" \
+            --query "Reservations[].Instances[?LaunchTime<'${CUTOFF}'].InstanceId" \
+            --output text)
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No orphaned instances found"
+            exit 0
+          fi
+
+          for id in $INSTANCE_IDS; do
+            echo "Terminating $id..."
+            aws ec2 terminate-instances --instance-ids "$id" || echo "  Failed to terminate $id"
+          done
+
+  cleanup-dns:
+    runs-on: ubuntu-latest
+    needs: [cleanup-gcp, cleanup-ec2]
+    if: always()
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Delete orphaned Route53 DNS records
+        env:
+          HOSTED_ZONE_ID: ${{ secrets.ROUTE53_HOSTED_ZONE_ID }}
+          BASE_DOMAIN: ${{ secrets.ROUTE53_BASE_DOMAIN }}
+        run: |
+          if [ -z "$HOSTED_ZONE_ID" ] || [ -z "$BASE_DOMAIN" ]; then
+            echo "Route53 secrets not configured, skipping DNS cleanup"
+            exit 0
+          fi
+
+          echo "Scanning for orphaned openhost-e2e-* DNS records in $BASE_DOMAIN"
+
+          RECORDS=$(aws route53 list-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --query "ResourceRecordSets[?contains(Name, 'openhost-e2e-')].[Name,Type]" \
+            --output text)
+
+          if [ -z "$RECORDS" ]; then
+            echo "No orphaned DNS records found"
+            exit 0
+          fi
+
+          echo "$RECORDS" | while read -r name type; do
+            # Only clean up NS and A records we created
+            if [ "$type" != "NS" ] && [ "$type" != "A" ]; then
+              continue
+            fi
+
+            RRSET=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id "$HOSTED_ZONE_ID" \
+              --start-record-name "$name" \
+              --start-record-type "$type" \
+              --max-items 1 \
+              --query "ResourceRecordSets[0]" \
+              --output json)
+
+            RRSET_NAME=$(echo "$RRSET" | jq -r '.Name')
+            RRSET_TYPE=$(echo "$RRSET" | jq -r '.Type')
+
+            # Verify it still matches (pagination guard)
+            if [ "$RRSET_NAME" != "$name" ] || [ "$RRSET_TYPE" != "$type" ]; then
+              continue
+            fi
+
+            echo "Deleting $type record: $name"
+            CHANGE_BATCH=$(echo "$RRSET" | jq -c '{Changes: [{Action: "DELETE", ResourceRecordSet: .}]}')
+            aws route53 change-resource-record-sets \
+              --hosted-zone-id "$HOSTED_ZONE_ID" \
+              --change-batch "$CHANGE_BATCH" 2>/dev/null \
+              && echo "  Deleted $name ($type)" \
+              || echo "  Failed to delete $name ($type)"
+          done

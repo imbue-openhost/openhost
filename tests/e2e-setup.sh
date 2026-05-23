@@ -60,8 +60,12 @@ PUBLIC_IP="$PROVIDER_PUBLIC_IP"
 echo "  Public IP: $PUBLIC_IP"
 
 # ── 2. Write env file (early, so teardown works if later steps fail) ─────
+# Write base vars and provider-specific vars in a single atomic operation
+# so that cancellation cannot leave a partial env file missing the instance
+# name/zone needed for teardown.
 
-cat > "$ENV_FILE" <<EOF
+{
+cat <<EOF
 export PROVIDER="$PROVIDER"
 export OPENHOST_DOMAIN="${DOMAIN}"
 export OPENHOST_PUBLIC_IP="$PUBLIC_IP"
@@ -71,8 +75,8 @@ export OPENHOST_SSH_USER="host"
 export E2E_HOSTED_ZONE_ID="${E2E_HOSTED_ZONE_ID:-}"
 export E2E_BASE_DOMAIN="${E2E_BASE_DOMAIN:-}"
 EOF
-# Append provider-specific vars (instance ID, zone, region, etc.)
-provider_env_vars >> "$ENV_FILE"
+provider_env_vars
+} > "$ENV_FILE"
 
 # ── 3. Wait for SSH ──────────────────────────────────────────────────────
 

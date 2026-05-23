@@ -32,14 +32,15 @@ def make_api_request(
     timeout: float = 120,
     raw: bool = False,
 ) -> httpx.Response:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
     resp = httpx.request(
         method,
         f"{domain}{path}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        },
-        data=data,
+        headers=headers,
+        json=data,
         timeout=timeout,
         follow_redirects=False,
     )
