@@ -81,6 +81,7 @@
 {% endif %}
 {% if ungranted_permissions %}
 <p style="margin-top:0.5em;">The following permissions are declared in the app manifest but not yet granted:</p>
+<script id="ungranted-perms-data" type="application/json">{{ ungranted_permissions | tojson }}</script>
 <table>
   <tr><th>Service</th><th>Grant</th><th>Actions</th></tr>
   {% for p in ungranted_permissions %}
@@ -88,9 +89,7 @@
     <td><code>{{ p.service_url }}</code></td>
     <td><code>{{ p.grant | tojson }}</code></td>
     <td><button class="btn btn-primary" style="padding:0.1em 0.5em;font-size:0.85em;"
-      data-app-id="{{ app.app_id }}"
-      data-service-url="{{ p.service_url }}"
-      data-grant="{{ p.grant | tojson }}"
+      data-perm-idx="{{ loop.index0 }}"
       onclick="grantPermission(this)">Grant</button></td>
   </tr>
   {% endfor %}
@@ -113,9 +112,11 @@
 
 <script>
 async function grantPermission(btn) {
-  const appId = btn.dataset.appId;
-  const serviceUrl = btn.dataset.serviceUrl;
-  const grant = JSON.parse(btn.dataset.grant);
+  const perms = JSON.parse(document.getElementById('ungranted-perms-data').textContent);
+  const perm = perms[parseInt(btn.dataset.permIdx, 10)];
+  const appId = '{{ app.app_id }}';
+  const serviceUrl = perm.service_url;
+  const grant = perm.grant;
   btn.disabled = true;
   btn.textContent = 'Granting\u2026';
   try {
