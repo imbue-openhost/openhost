@@ -1,6 +1,8 @@
 import json
 import sqlite3
 
+from compute_space.core.logging import logger
+
 from litestar import Router
 from litestar import get
 from litestar.exceptions import HTTPException
@@ -59,7 +61,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
                             }
                         )
         except Exception:
-            pass
+            logger.opt(exception=True).warning("Failed to parse manifest for permission display (app %s)", app_id)
 
     return Template(
         template_name="app_detail.html",
