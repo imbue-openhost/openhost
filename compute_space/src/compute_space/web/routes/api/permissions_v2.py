@@ -1,5 +1,6 @@
 """Owner-facing CRUD + provider-app grant endpoint for v2 permissions."""
 
+import sqlite3
 from typing import Annotated
 from typing import Any
 
@@ -92,6 +93,7 @@ def revoke_v2(
 def grant_app_scoped(
     request: Request[Any, Any, Any],
     data: Annotated[dict[str, Any], Body(media_type=MediaType.JSON)],
+    db: sqlite3.Connection,
 ) -> Response[dict[str, Any]]:
     """Grant an app-scoped V2 permission, authenticated with the provider app's token.
 
@@ -108,6 +110,16 @@ def grant_app_scoped(
     if not consumer_app_id or not service_url or grant_payload is None:
         return _json_error("consumer_app_id, service_url, and grant are required", 400)
 
+    # Verify the calling app is actually a registered provider for this
+    # service.  Without this check any app with a token could grant
+    # permissions for services it doesn't provide.
+    is_provider = db.execute(
+        "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_id = ?",
+        (service_url, provider_app_id),
+    ).fetchone()
+    if not is_provider:
+        return _json_error(f"App {provider_app_id} is not a registered provider for {service_url}", 403)
+
     grant_permission_v2(
         consumer_app_id=consumer_app_id,
         service_url=service_url,
@@ -120,5 +132,10 @@ def grant_app_scoped(
 
 api_permissions_v2_routes = Router(
     path="/",
-    route_handlers=[list_permissions_v2, grant_global_scoped, revoke_v2, grant_app_scoped],
+    route_handlers=[
+        list_permissions_v2,
+        grant_global_scoped,
+        revoke_v2,
+        grant_app_scoped,
+    ],
 )
