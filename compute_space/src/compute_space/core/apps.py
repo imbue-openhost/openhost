@@ -238,12 +238,13 @@ async def clone_with_github_fallback(
     manifest, tmp_dir, error = await clone_and_read_manifest(repo_url)
 
     if error and "github.com" in repo_url:
+        clone_error = error
         try:
             token = await get_oauth_token("github", ["repo"], return_to=return_to)
         except ServiceNotAvailable as e:
-            return None, None, e.message, None
+            return None, None, f"{clone_error} (also failed to fetch GitHub OAuth token: {e.message})", None
         except OAuthAuthorizationRequired as e:
-            return None, None, error, e.authorize_url
+            return None, None, f"{clone_error} (GitHub OAuth not configured: {e.authorize_url})", e.authorize_url
         manifest, tmp_dir, error = await clone_and_read_manifest(repo_url, github_token=token)
 
     return manifest, tmp_dir, error, None

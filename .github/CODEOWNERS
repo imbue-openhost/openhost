@@ -6,6 +6,15 @@
 /compute_space/src/compute_space/core/auth/    @zplizzi
 /compute_space/src/compute_space/web/auth/     @zplizzi
 
-# Proxy code that handles auth cookies and identity headers — same review requirement.
+# Proxy code that handles auth cookies and identity headers
 /compute_space/src/compute_space/web/proxy.py           @zplizzi
-/compute_space/src/compute_space/web/routes/proxy.py    @zplizzi
+/compute_space/src/compute_space/web/helpers/proxy.py    @zplizzi
+/compute_space/src/compute_space/web/middleware/subdomain_proxy.py    @zplizzi
+
+# service interface
+/compute_space/src/compute_space/web/routes/api/services_v2.py    @zplizzi
+/compute_space/src/compute_space/web/routes/services_v2.py    @zplizzi
+
+# core web stuff
+/compute_space/src/compute_space/web/app.py    @zplizzi
+/compute_space/src/compute_space/web/start.py    @zplizzi
