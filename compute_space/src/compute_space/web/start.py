@@ -107,7 +107,15 @@ def main() -> None:
             raise RuntimeError("TLS is enabled but start_caddy is False. Caddy is required for TLS termination.")
 
     hypercorn_config = hypercorn.config.Config()
-    hypercorn_config.bind = [f"{config.host}:{config.port}"]
+    # Bind the primary address (127.0.0.1 in production) plus the container
+    # gateway (10.200.0.1) so podman containers can reach the router via
+    # host.containers.internal.  No need for 0.0.0.0 — Caddy handles
+    # external traffic on 80/443 and proxies to us on loopback.
+    binds = [f"{config.host}:{config.port}"]
+    container_gateway = "10.200.0.1"
+    if config.host != "0.0.0.0" and config.host != container_gateway:
+        binds.append(f"{container_gateway}:{config.port}")
+    hypercorn_config.bind = binds
     hypercorn_config.graceful_timeout = 3
     hypercorn_config.shutdown_timeout = 5
 

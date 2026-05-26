@@ -36,7 +36,7 @@
   when: not _linger_sentinel.stat.exists
   changed_when: true
 
-# net.ipv4.ip_unprivileged_port_start = 25: the router binds rootless on 0.0.0.0:<host_port>, including 25 for SMTP
+# net.ipv4.ip_unprivileged_port_start = 25: apps bind rootless on 0.0.0.0:<host_port>, including 25 for SMTP
 # apps.  Must match compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
 #
 # kernel.apparmor_restrict_unprivileged_userns = 0: Ubuntu 24.04 blocks unprivileged user namespaces unless the
@@ -80,7 +80,7 @@
 
 # Pasta (rootless podman's default network backend) shares the host's IP with containers.  This means host-gateway
 # resolves to the container's own IP, breaking container→host communication.  We create a dummy interface with a
-# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 0.0.0.0:8080)
+# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 10.200.0.1:8080)
 # via this IP.  Container ports are bound on 127.0.0.1, so they're NOT reachable via the dummy interface — containers
 # are isolated from each other.
 - name: Create openhost0 dummy interface for container→host gateway
@@ -116,7 +116,7 @@
 # giving "connection refused".  These DNAT rules rewrite outbound packets aimed at public_ip:80/443 to
 # 127.0.0.1, where Caddy IS listening.  This lets containers curl other apps' public URLs and keeps
 # inter-container isolation intact (container ports still bind 127.0.0.1 only).
-- name: Add iptables hairpin NAT and firewall rules
+- name: Add iptables hairpin NAT rules
   shell: |
     set -e
     PUBLIC_IP="{{ public_ip | default(inventory_hostname) }}"
@@ -126,13 +126,6 @@
       RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
       iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
     done
-
-    # Block external access to the router port (8080).  Caddy and containers
-    # reach it via loopback; nobody on the internet should hit it directly.
-    ACCEPT="-p tcp --dport 8080 -i lo -j ACCEPT"
-    DROP="-p tcp --dport 8080 -j DROP"
-    iptables -C INPUT ${ACCEPT} 2>/dev/null || iptables -A INPUT ${ACCEPT}
-    iptables -C INPUT ${DROP} 2>/dev/null || iptables -A INPUT ${DROP}
   changed_when: true
 
 - name: Remove old hairpin-only persistence script (renamed)
@@ -140,7 +133,7 @@
     path: /etc/networkd-dispatcher/routable.d/50-openhost-hairpin-nat
     state: absent
 
-- name: Persist iptables rules across reboots
+- name: Persist iptables hairpin NAT rules across reboots
   copy:
     # The public IP is detected at boot rather than baked in at ansible time
     # because cloud instances (EC2 without Elastic IP, etc.) can get a new
@@ -162,12 +155,6 @@
         RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
         iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
       done
-
-      # Block external access to the router port (8080).
-      ACCEPT="-p tcp --dport 8080 -i lo -j ACCEPT"
-      DROP="-p tcp --dport 8080 -j DROP"
-      iptables -C INPUT ${ACCEPT} 2>/dev/null || iptables -A INPUT ${ACCEPT}
-      iptables -C INPUT ${DROP} 2>/dev/null || iptables -A INPUT ${DROP}
     dest: /etc/networkd-dispatcher/routable.d/50-openhost-firewall
     mode: "0755"
 
