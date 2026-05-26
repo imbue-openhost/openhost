@@ -88,7 +88,10 @@
     <td><code>{{ p.service_url }}</code></td>
     <td><code>{{ p.grant | tojson }}</code></td>
     <td><button class="btn btn-primary" style="padding:0.1em 0.5em;font-size:0.85em;"
-      onclick="grantPermission(this, {{ app.app_id | tojson }}, {{ p.service_url | tojson }}, {{ p.grant | tojson }})">Grant</button></td>
+      data-app-id="{{ app.app_id }}"
+      data-service-url="{{ p.service_url }}"
+      data-grant="{{ p.grant | tojson }}"
+      onclick="grantPermission(this)">Grant</button></td>
   </tr>
   {% endfor %}
 </table>
@@ -109,7 +112,10 @@
 </div>
 
 <script>
-async function grantPermission(btn, appId, serviceUrl, grant) {
+async function grantPermission(btn) {
+  const appId = btn.dataset.appId;
+  const serviceUrl = btn.dataset.serviceUrl;
+  const grant = JSON.parse(btn.dataset.grant);
   btn.disabled = true;
   btn.textContent = 'Granting\u2026';
   try {
