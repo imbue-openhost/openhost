@@ -10,7 +10,6 @@ import tempfile
 import threading
 import time
 import urllib.parse
-from typing import Any
 
 import attr
 import httpx
@@ -21,6 +20,7 @@ from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import read_owner_username
+from compute_space.core.auth.permissions_v2 import Grant
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
@@ -50,7 +50,7 @@ class PermissionGrant:
     """A single permission grant: which service and what payload."""
 
     service_url: str
-    grant: dict[str, Any]
+    grant: Grant
 
 
 RESERVED_PATHS = {
