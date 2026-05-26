@@ -63,7 +63,7 @@ When an app calls the OAuth service without the needed permissions:
 4. For global-scoped grants, the router injects a `grant_url` pointing to `/approve-permissions-v2` where the owner can approve
 5. Pending requests are persisted so the owner can review them from the dashboard without needing to re-trigger the flow
 
-Permissions auto-granted at install time (when `grant_permissions_v2=True`) skip this flow entirely.
+Permissions approved by the owner on the deploy page are granted at install time and skip this flow entirely.
 
 ### Browser auth (CORS)
 
