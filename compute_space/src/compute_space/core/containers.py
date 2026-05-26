@@ -258,6 +258,10 @@ def run_container(
         # Port publishing is unnecessary (the container binds directly on
         # the host), as are --add-host entries (the host's /etc/hosts and
         # DNS are used directly).
+        #
+        # WARNING: this disables ALL network isolation.  The container can
+        # reach any port on the host including other apps' loopback ports.
+        logger.warning("App %s uses network_host — all network isolation is disabled", app_name)
         cmd.append("--network=host")
     else:
         cmd.extend(

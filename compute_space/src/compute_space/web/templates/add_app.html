@@ -187,6 +187,14 @@ function renderManifest(m, url) {
     row('Accessible without login', m.public_paths.map(p => `<code>${esc(p)}</code>`).join(', '));
   }
 
+  if (m.network_host) {
+    section('Host Networking', '#f8d7da');
+    row('<strong>WARNING</strong>',
+      '<strong>This app uses host networking, which disables all network isolation. ' +
+      'It can access any port on the host, including other apps. ' +
+      'Only install if you trust this app completely.</strong>');
+  }
+
   if (m.capabilities.length || m.devices.length || m.shm_mb) {
     section('Container Permissions', '#fff3cd');
     if (m.capabilities.length) row('Linux capabilities', m.capabilities.join(', '));

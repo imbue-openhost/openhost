@@ -126,6 +126,11 @@ class AppManifest:
     # that do IP forwarding (VPN servers like WireGuard).  Pasta proxies
     # individual TCP/UDP connections but cannot forward routed packets from
     # a tunnel interface.
+    #
+    # WARNING: this disables ALL network isolation.  The container can
+    # connect to any port on the host, including other apps' loopback-bound
+    # ports, the router, and local services.  Only use for apps that
+    # genuinely need raw network access (VPNs, transparent proxies).
     network_host: bool = False
 
     # [routing]
