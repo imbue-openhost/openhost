@@ -792,9 +792,15 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 register_v2_service_providers(app_id, manifest, db)
 
                 db.commit()
+            except ValueError:
+                logger.warning("Failed to re-read manifest for %s during reload", app_id)
 
-                # Auto-grant any newly declared service consumption
-                # permissions so the app boots with what it needs.
+            # Re-grant manifest-declared service consumption permissions.
+            # Uses INSERT OR IGNORE so already-granted permissions are
+            # unchanged and intentionally revoked ones stay revoked (revoke
+            # does a DELETE; re-granting only re-inserts if the row is gone).
+            # Runs outside the manifest try/except so errors surface.
+            try:
                 if manifest.consumes_services_v2:
                     for perm in manifest.consumes_services_v2:
                         for grant_payload in perm.grants:
@@ -803,8 +809,8 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                                 service_url=perm.service,
                                 grant_payload=grant_payload,
                             )
-            except ValueError:
-                pass
+            except Exception:
+                logger.opt(exception=True).warning("Failed to auto-grant permissions for %s", app_id)
 
         start_app_process(app_id, db, config)
     except Exception as e:

@@ -1,8 +1,6 @@
 import json
 import sqlite3
 
-from compute_space.core.logging import logger
-
 from litestar import Router
 from litestar import get
 from litestar.exceptions import HTTPException
@@ -13,6 +11,7 @@ from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.web.auth.auth import require_owner_auth
 

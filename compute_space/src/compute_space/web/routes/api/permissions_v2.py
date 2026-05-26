@@ -1,5 +1,6 @@
 """Owner-facing CRUD + provider-app grant endpoint for v2 permissions."""
 
+import sqlite3
 from typing import Annotated
 from typing import Any
 
@@ -15,7 +16,6 @@ from litestar.params import Body
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.auth.permissions_v2 import revoke_permission_v2
-from compute_space.db import get_db
 from compute_space.web.auth.auth import require_app_auth
 from compute_space.web.auth.auth import require_owner_auth
 from compute_space.web.auth.auth import verify_app_auth
@@ -93,6 +93,7 @@ def revoke_v2(
 def grant_app_scoped(
     request: Request[Any, Any, Any],
     data: Annotated[dict[str, Any], Body(media_type=MediaType.JSON)],
+    db: sqlite3.Connection,
 ) -> Response[dict[str, Any]]:
     """Grant an app-scoped V2 permission, authenticated with the provider app's token.
 
@@ -112,7 +113,6 @@ def grant_app_scoped(
     # Verify the calling app is actually a registered provider for this
     # service.  Without this check any app with a token could grant
     # permissions for services it doesn't provide.
-    db = get_db()
     is_provider = db.execute(
         "SELECT 1 FROM service_providers_v2 WHERE service_url = ? AND app_id = ?",
         (service_url, provider_app_id),
