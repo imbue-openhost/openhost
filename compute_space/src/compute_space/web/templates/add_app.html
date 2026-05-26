@@ -212,9 +212,7 @@ function renderManifest(m, url) {
         permIdx++;
       }
     }
-    if (permIdx > 0) {
-      row('', '<em>Uncheck to deny a permission. The app may not function fully without it.</em>');
-    }
+
   }
 
   document.getElementById('manifest-table').innerHTML = rows;
