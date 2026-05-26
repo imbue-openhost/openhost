@@ -90,7 +90,9 @@ class AddAppRequest:
     repo_url: str
     app_name: str | None = None
     clone_dir: str | None = None
-    grant_permissions_v2: bool = False
+    # List of {service_url, grant} dicts the owner approved on the deploy page.
+    # Only these permissions are granted at install time.
+    permissions_v2_grants: list[dict[str, Any]] = attr.Factory(list)
     port_overrides: dict[str, int] = attr.Factory(dict)
 
 
@@ -308,7 +310,7 @@ async def api_add_app(
             final_dir,
             config,
             db,
-            grant_permissions_v2=data.grant_permissions_v2,
+            permissions_v2_grants=data.permissions_v2_grants,
             app_name=app_name,
             repo_url=repo_url,
             port_overrides=port_overrides,

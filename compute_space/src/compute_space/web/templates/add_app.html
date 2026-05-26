@@ -196,13 +196,25 @@ function renderManifest(m, url) {
 
   if (m.consumes_services_v2 && m.consumes_services_v2.length) {
     section('Service Permissions', '#fff3cd');
+    let permIdx = 0;
     for (const svc of m.consumes_services_v2) {
-      const grantsHtml = svc.grants.length
-        ? svc.grants.map(g => `<code>${esc(typeof g === 'string' ? g : JSON.stringify(g))}</code>`).join(', ')
-        : '<em>no specific grants</em>';
-      row(esc(svc.shortname), `<code>${esc(svc.service)}</code> (${esc(svc.version)})<br>Grants: ${grantsHtml}`);
+      for (const g of svc.grants) {
+        const grantStr = typeof g === 'string' ? g : JSON.stringify(g);
+        const id = 'perm-grant-' + permIdx;
+        row(
+          `<label style="display:flex;align-items:center;gap:0.4em;cursor:pointer">
+            <input type="checkbox" checked class="perm-v2-checkbox" id="${id}"
+              data-service="${esc(svc.service)}" data-grant='${esc(JSON.stringify(g))}'>
+            ${esc(svc.shortname)}
+          </label>`,
+          `<code>${esc(svc.service)}</code> (${esc(svc.version)})<br>Grant: <code>${esc(grantStr)}</code>`
+        );
+        permIdx++;
+      }
     }
-    row('', '<em>These permissions will be granted when you deploy.</em>');
+    if (permIdx > 0) {
+      row('', '<em>Uncheck to deny a permission. The app may not function fully without it.</em>');
+    }
   }
 
   document.getElementById('manifest-table').innerHTML = rows;
@@ -339,7 +351,13 @@ async function deployApp() {
     }
   });
 
-  const body = {repo_url: repoUrl, app_name: appName, port_overrides: portOverrides, grant_permissions_v2: true};
+  // Collect permissions the owner approved (checked checkboxes).
+  const permGrants = [];
+  document.querySelectorAll('.perm-v2-checkbox:checked').forEach(cb => {
+    permGrants.push({service_url: cb.dataset.service, grant: JSON.parse(cb.dataset.grant)});
+  });
+
+  const body = {repo_url: repoUrl, app_name: appName, port_overrides: portOverrides, permissions_v2_grants: permGrants};
   if (cloneDir) body.clone_dir = cloneDir;
 
   let resp;

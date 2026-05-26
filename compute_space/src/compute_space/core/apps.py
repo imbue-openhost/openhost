@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from typing import Any
 
 import attr
 import httpx
@@ -279,12 +280,21 @@ def _mint_unique_app_id(db: sqlite3.Connection) -> str:
             return candidate
 
 
+def all_manifest_permissions_v2(manifest: "AppManifest") -> list[dict[str, Any]]:
+    """Build a permissions_v2_grants list that approves every permission declared in the manifest."""
+    grants: list[dict[str, Any]] = []
+    for perm in manifest.consumes_services_v2:
+        for grant_payload in perm.grants:
+            grants.append({"service_url": perm.service, "grant": grant_payload})
+    return grants
+
+
 def insert_and_deploy(
     manifest: AppManifest,
     repo_path: str,
     config: Config,
     db: sqlite3.Connection,
-    grant_permissions_v2: bool = False,
+    permissions_v2_grants: list[dict[str, Any]] | None = None,
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
@@ -295,8 +305,9 @@ def insert_and_deploy(
     Returns app_id. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
-    grant_permissions_v2: if True, grant all [[services.v2.consumes]] entries
-        from the manifest at install time.
+    permissions_v2_grants: list of {service_url, grant} dicts the owner
+        approved on the deploy page.  Only these are granted at install
+        time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     installed_by: consumer app name when the install came in via the
         installer v2 service.  Stored on the apps row in the same
@@ -386,14 +397,13 @@ def insert_and_deploy(
 
     db.commit()
 
-    if grant_permissions_v2 and manifest.consumes_services_v2:
-        for perm in manifest.consumes_services_v2:
-            for grant_payload in perm.grants:
-                grant_permission_v2(
-                    consumer_app_id=app_id,
-                    service_url=perm.service,
-                    grant_payload=grant_payload,
-                )
+    if permissions_v2_grants:
+        for entry in permissions_v2_grants:
+            grant_permission_v2(
+                consumer_app_id=app_id,
+                service_url=entry["service_url"],
+                grant_payload=entry["grant"],
+            )
 
     threading.Thread(
         target=deploy_app_background,
@@ -795,21 +805,10 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 db.commit()
             except ValueError:
                 logger.warning("Failed to re-read manifest for %s during reload", app_id)
-
-            # Re-grant manifest-declared service consumption permissions.
-            # Runs outside the manifest try/except so grant errors don't
-            # prevent the app from starting.
-            if manifest and manifest.consumes_services_v2:
-                try:
-                    for perm in manifest.consumes_services_v2:
-                        for grant_payload in perm.grants:
-                            grant_permission_v2(
-                                consumer_app_id=app_id,
-                                service_url=perm.service,
-                                grant_payload=grant_payload,
-                            )
-                except Exception:
-                    logger.opt(exception=True).warning("Failed to auto-grant permissions for %s", app_id)
+            # New permissions declared in the updated manifest are NOT
+            # auto-granted on reload.  They show up as "ungranted" on the
+            # app detail page where the owner can approve them, or the
+            # in-app grant_url flow handles them at runtime.
 
         start_app_process(app_id, db, config)
     except Exception as e:
