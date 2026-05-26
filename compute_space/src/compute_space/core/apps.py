@@ -772,6 +772,7 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 shutil.copytree(source_dir, repo_path)
                 logger.info("Re-copied %s from %s", app_name, source_dir)
 
+        manifest = None
         if repo_path and os.path.isdir(repo_path):
             try:
                 manifest = parse_manifest(repo_path)
@@ -796,12 +797,10 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 logger.warning("Failed to re-read manifest for %s during reload", app_id)
 
             # Re-grant manifest-declared service consumption permissions.
-            # Uses INSERT OR IGNORE so already-granted permissions are
-            # unchanged and intentionally revoked ones stay revoked (revoke
-            # does a DELETE; re-granting only re-inserts if the row is gone).
-            # Runs outside the manifest try/except so errors surface.
-            try:
-                if manifest.consumes_services_v2:
+            # Runs outside the manifest try/except so grant errors don't
+            # prevent the app from starting.
+            if manifest and manifest.consumes_services_v2:
+                try:
                     for perm in manifest.consumes_services_v2:
                         for grant_payload in perm.grants:
                             grant_permission_v2(
@@ -809,8 +808,8 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                                 service_url=perm.service,
                                 grant_payload=grant_payload,
                             )
-            except Exception:
-                logger.opt(exception=True).warning("Failed to auto-grant permissions for %s", app_id)
+                except Exception:
+                    logger.opt(exception=True).warning("Failed to auto-grant permissions for %s", app_id)
 
         start_app_process(app_id, db, config)
     except Exception as e:
