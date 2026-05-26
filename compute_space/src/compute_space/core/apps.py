@@ -44,6 +44,15 @@ from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import register_v2_service_providers
 from compute_space.db import get_db
 
+
+@attr.s(auto_attribs=True, frozen=True)
+class PermissionGrant:
+    """A single permission grant: which service and what payload."""
+
+    service_url: str
+    grant: dict[str, Any]
+
+
 RESERVED_PATHS = {
     "/",
     "/dashboard",
@@ -280,12 +289,12 @@ def _mint_unique_app_id(db: sqlite3.Connection) -> str:
             return candidate
 
 
-def all_manifest_permissions_v2(manifest: "AppManifest") -> list[dict[str, Any]]:
+def all_manifest_permissions_v2(manifest: AppManifest) -> list[PermissionGrant]:
     """Build a permissions_v2_grants list that approves every permission declared in the manifest."""
-    grants: list[dict[str, Any]] = []
+    grants: list[PermissionGrant] = []
     for perm in manifest.consumes_services_v2:
         for grant_payload in perm.grants:
-            grants.append({"service_url": perm.service, "grant": grant_payload})
+            grants.append(PermissionGrant(service_url=perm.service, grant=grant_payload))
     return grants
 
 
@@ -294,7 +303,7 @@ def insert_and_deploy(
     repo_path: str,
     config: Config,
     db: sqlite3.Connection,
-    permissions_v2_grants: list[dict[str, Any]] | None = None,
+    permissions_v2_grants: list[PermissionGrant] | None = None,
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
@@ -305,7 +314,7 @@ def insert_and_deploy(
     Returns app_id. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
-    permissions_v2_grants: list of {service_url, grant} dicts the owner
+    permissions_v2_grants: list of PermissionGrant objects the owner
         approved on the deploy page.  Only these are granted at install
         time.
     port_overrides: optional dict of label -> host_port from CLI/API.
@@ -401,8 +410,8 @@ def insert_and_deploy(
         for entry in permissions_v2_grants:
             grant_permission_v2(
                 consumer_app_id=app_id,
-                service_url=entry["service_url"],
-                grant_payload=entry["grant"],
+                service_url=entry.service_url,
+                grant_payload=entry.grant,
             )
 
     threading.Thread(

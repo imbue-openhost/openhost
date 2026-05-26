@@ -42,7 +42,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
         {"service_url": p.service_url, "grant": p.grant, "scope": p.scope}
         for p in get_all_permissions_v2(consumer_app_id=app_id)
     ]
-    manifest_perms: list[dict[str, object]] = []
+    ungranted_perms: list[dict[str, object]] = []
     manifest_raw = app_row["manifest_raw"]
     if manifest_raw:
         try:
@@ -52,7 +52,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
                 for grant_payload in consume.grants:
                     key = (consume.service, json.dumps(grant_payload, sort_keys=True))
                     if key not in granted_set:
-                        manifest_perms.append(
+                        ungranted_perms.append(
                             {
                                 "service_url": consume.service,
                                 "grant": grant_payload,
@@ -71,7 +71,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
             "logs": logs,
             "next_url": next,
             "granted_permissions": granted_perms,
-            "ungranted_permissions": manifest_perms,
+            "ungranted_permissions": ungranted_perms,
         },
     )
 

@@ -20,6 +20,7 @@ from compute_space.config import Config
 from compute_space.core import archive_backend
 from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import RESERVED_PATHS
+from compute_space.core.apps import PermissionGrant
 from compute_space.core.apps import all_manifest_permissions_v2
 from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
@@ -310,7 +311,9 @@ async def api_add_app(
 
     # Resolve permissions to grant: explicit list from the deploy page,
     # or all manifest permissions if the CLI's --grant-permissions-v2 flag is set.
-    grants = data.permissions_v2_grants
+    grants: list[PermissionGrant] = [
+        PermissionGrant(service_url=g["service_url"], grant=g["grant"]) for g in data.permissions_v2_grants
+    ]
     if not grants and data.grant_permissions_v2:
         grants = all_manifest_permissions_v2(manifest)
 
