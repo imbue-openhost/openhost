@@ -114,7 +114,17 @@ def main() -> None:
     binds = [f"{config.host}:{config.port}"]
     container_gateway = "10.200.0.1"
     if config.host != "0.0.0.0" and config.host != container_gateway:
-        binds.append(f"{container_gateway}:{config.port}")
+        # Only add the gateway bind if the interface actually exists (it won't
+        # in dev mode or CI where openhost0 hasn't been created by ansible).
+        try:
+            import socket as _sock
+
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            s.bind((container_gateway, 0))
+            s.close()
+            binds.append(f"{container_gateway}:{config.port}")
+        except OSError:
+            pass
     hypercorn_config.bind = binds
     hypercorn_config.graceful_timeout = 3
     hypercorn_config.shutdown_timeout = 5
