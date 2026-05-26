@@ -1,6 +1,7 @@
 import asyncio
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import time
@@ -117,11 +118,9 @@ def main() -> None:
         # Only add the gateway bind if the interface actually exists (it won't
         # in dev mode or CI where openhost0 hasn't been created by ansible).
         try:
-            import socket as _sock
-
-            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-            s.bind((container_gateway, 0))
-            s.close()
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.bind((container_gateway, 0))
+            probe.close()
             binds.append(f"{container_gateway}:{config.port}")
         except OSError:
             pass
