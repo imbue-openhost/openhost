@@ -73,6 +73,22 @@ Each service URL has a configured default provider - by default it's first app i
 
 If the resolved default's version doesn't satisfy the consumer's version specifier, the router returns 503 `service_not_available`.
 
+#### Calling a specific provider
+
+To call a non-default provider, include the `X-OpenHost-Provider` header with the target app's `app_id`:
+
+```
+GET [OPENHOST_ROUTER_URL]/api/services/v2/call/<shortname>/<rest>
+Authorization: Bearer $OPENHOST_APP_TOKEN
+X-OpenHost-Provider: <provider_app_id>
+```
+
+If the specified provider doesn't exist for that service, or its version doesn't match the consumer's version specifier, the router returns 503 `service_not_available`. Omitting the header uses the default provider as before.
+
+#### Discovering providers
+
+Apps can list all providers for a service using the discovery endpoint (see Management API below). This is useful when aggregating data across multiple providers of the same service.
+
 ### Permissions
 
 Permissions are **opaque grant payloads** (strings or JSON objects), scoped per `(consumer_app, service_url)`. The router stores grants and forwards the granted set (those that apply to the calling app and service URL) to the provider on every call — but **the provider is what enforces access**, not the router. This lets services define whatever permission shape they need.
@@ -171,7 +187,7 @@ The `grant` field on these endpoints is whatever shape the service defines — p
 Each service URL has at most one default provider (set automatically to the first app to register; the owner can change it). Calls without an explicit provider use this default.
 
 - `GET /api/services/v2/defaults` — list all `(service_url, app_name)` defaults.
-- `GET /api/services/v2/providers?service=<url>` — list every registered provider for a service, with `is_default`, `service_version`, `endpoint`, and app `status`.
+- `GET /api/services/v2/providers?service=<url>` — list every registered provider for a service, with `is_default`, `service_version`, `endpoint`, and app `status`. Accepts both owner auth and app bearer tokens, so consumer apps can discover providers at runtime.
 - `POST /api/services/v2/defaults` — set the default. Body: `{service_url, app_name}`. 404 if `app_name` doesn't actually provide that service.
 - `DELETE /api/services/v2/defaults` — clear the default. Body: `{service_url}`. After this, calls to the service return 503 until a new default is set (or another provider is installed).
 
