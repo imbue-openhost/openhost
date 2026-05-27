@@ -35,13 +35,17 @@ def _cleanup() -> None:
 
 def _wait_for_systemd(timeout: int = 60) -> None:
     deadline = time.time() + timeout
+    state = ""
     while time.time() < deadline:
-        result = _exec("systemctl", "is-system-running", timeout=10)
+        result = _podman(
+            "exec", _CONTAINER_NAME, "systemctl", "is-system-running",
+            timeout=10, check=False,
+        )
         state = result.stdout.strip()
         if state in ("running", "degraded"):
             return
         time.sleep(1)
-    raise RuntimeError(f"systemd did not reach running state within {timeout}s (last: {state})")
+    raise RuntimeError(f"systemd did not reach running state within {timeout}s (last: {state!r}, stderr: {result.stderr.strip()!r})")
 
 
 def _wait_for_health(timeout: int = 60) -> str:
@@ -74,6 +78,8 @@ class TestMigrationContainer:
             "run",
             "-d",
             "--systemd=always",
+            "--tmpfs=/run",
+            "--tmpfs=/run/lock",
             "--name",
             _CONTAINER_NAME,
             _IMAGE_NAME,
