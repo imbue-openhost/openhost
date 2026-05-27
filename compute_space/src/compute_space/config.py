@@ -168,7 +168,7 @@ class DefaultConfig(Config):
     # zone_domain: str
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8080
 
     # coredns (only truly needed if tls_enabled)

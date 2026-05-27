@@ -145,6 +145,7 @@ def _inject_grant_url_if_global(
         return response
 
     required_grant["grant_url"] = _approve_grant_url(config, consumer_app_id, service_url, grant)
+
     return ASGIResponse(
         body=json.dumps(body).encode(),
         status_code=403,

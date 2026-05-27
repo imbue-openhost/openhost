@@ -96,7 +96,7 @@ async def grant_app_scoped_permission(consumer_app: str, service_url: str, grant
         resp = await client.post(
             f"{ROUTER_URL}/api/permissions/v2/grant_app_scoped",
             json={
-                "consumer_app": consumer_app,
+                "consumer_app_id": consumer_app,
                 "service_url": service_url,
                 "grant": grant,
             },
