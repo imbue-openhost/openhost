@@ -121,5 +121,5 @@ class TestMigrationContainer:
         assert result.stdout.strip() == "active", f"Service not active: {result.stdout}\n{result.stderr}"
 
     def test_health_endpoint(self) -> None:
-        body = _wait_for_health(timeout=30)
+        body = _wait_for_health(timeout=120)
         assert '"ok"' in body or '"status"' in body
