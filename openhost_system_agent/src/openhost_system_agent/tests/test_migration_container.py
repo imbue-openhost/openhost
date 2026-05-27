@@ -86,6 +86,7 @@ class TestMigrationContainer:
             "--systemd=always",
             "--tmpfs=/run",
             "--tmpfs=/run/lock",
+            "--cap-add=NET_ADMIN",
             "--name",
             _CONTAINER_NAME,
             _IMAGE_NAME,
