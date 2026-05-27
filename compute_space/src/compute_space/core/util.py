@@ -40,6 +40,6 @@ def async_wrap[T, **P](func: Callable[P, T]) -> Callable[P, Coroutine[Any, Any, 
     return wrapper
 
 
-def _not_blank(instance: object, attribute: attr.Attribute[str], value: str) -> None:
+def not_blank(instance: object, attribute: attr.Attribute[str], value: str) -> None:
     if not value.strip():
         raise ValueError(f"{attribute.name} must not be blank")

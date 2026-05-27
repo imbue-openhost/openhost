@@ -20,7 +20,7 @@ from compute_space.core.system_agent import system_agent_get_remote
 from compute_space.core.system_agent import system_agent_set_remote
 from compute_space.core.system_agent import system_agent_status
 from compute_space.core.updates import trigger_restart
-from compute_space.core.util import _not_blank
+from compute_space.core.util import not_blank
 from compute_space.web.auth.auth import require_owner_auth
 from openhost_system_agent.protocol import RemoteInfo
 
@@ -43,12 +43,12 @@ _GIT_STATE_TO_UPDATE_STATE = {
 
 @attr.s(auto_attribs=True, frozen=True)
 class SetRemoteRequest:
-    url: str = attr.ib(validator=_not_blank)
+    url: str = attr.ib(validator=not_blank)
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class SetOwnerUsernameRequest:
-    username: str = attr.ib(validator=_not_blank)
+    username: str = attr.ib(validator=not_blank)
 
 
 @attr.s(auto_attribs=True, frozen=True)

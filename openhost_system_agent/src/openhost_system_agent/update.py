@@ -16,7 +16,7 @@ from openhost_system_agent.protocol import FetchResult
 from openhost_system_agent.protocol import RemoteInfo
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
-_PROJECT_DIR = _PACKAGE_DIR.parent.parent.parent
+_PROJECT_DIR = _PACKAGE_DIR.parent.parent.parent.parent
 
 
 def _repo() -> git.Repo:

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import attr
+from loguru import logger
 
 MIGRATIONS_PATH = "/etc/openhost/migrations.jsonl"
 MIGRATIONS_LOCK_PATH = "/etc/openhost/migrations.jsonl.lock"
@@ -38,6 +39,7 @@ def read_log(path: str) -> list[MigrationLogEntry]:
                 )
             )
         except (json.JSONDecodeError, KeyError):
+            logger.warning(f"Skipping malformed migration log line: {line!r}")
             continue
     return entries
 
