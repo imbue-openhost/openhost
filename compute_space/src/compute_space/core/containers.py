@@ -248,17 +248,41 @@ def run_container(
         container_name,
         "--hostname",
         container_name,
-        "-p",
-        f"127.0.0.1:{local_port}:{manifest.container_port}",
-        f"--memory={manifest.memory_mb}m",
-        f"--cpus={manifest.cpu_millicores / 1000.0}",
-        "--restart=unless-stopped",
-        # host.docker.internal kept for compatibility with existing apps.
-        "--add-host=host.docker.internal:host-gateway",
-        "--add-host=host.containers.internal:host-gateway",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges=true",
     ]
+
+    if manifest.network_host:
+        # Host networking: the container shares the host's full network
+        # namespace.  Required for apps that do IP forwarding (VPN servers
+        # like WireGuard) because pasta can only proxy individual TCP/UDP
+        # connections, not forwarded/routed packets from a tunnel interface.
+        # Port publishing is unnecessary (the container binds directly on
+        # the host), as are --add-host entries (the host's /etc/hosts and
+        # DNS are used directly).
+        #
+        # WARNING: this disables ALL network isolation.  The container can
+        # reach any port on the host including other apps' loopback ports.
+        logger.warning("App %s uses network_host — all network isolation is disabled", app_name)
+        cmd.append("--network=host")
+    else:
+        cmd.extend(
+            [
+                "-p",
+                f"127.0.0.1:{local_port}:{manifest.container_port}",
+                # host.docker.internal kept for compatibility with existing apps.
+                "--add-host=host.docker.internal:host-gateway",
+                "--add-host=host.containers.internal:host-gateway",
+            ]
+        )
+
+    cmd.extend(
+        [
+            f"--memory={manifest.memory_mb}m",
+            f"--cpus={manifest.cpu_millicores / 1000.0}",
+            "--restart=unless-stopped",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges=true",
+        ]
+    )
     if manifest.shm_mb > 0:
         cmd.append(f"--shm-size={manifest.shm_mb}m")
     for cap in sorted(DEFAULT_CAPABILITIES):
@@ -296,7 +320,9 @@ def run_container(
     # Structured port mappings: bind TCP+UDP on 0.0.0.0.  host_port
     # values below UNPRIVILEGED_PORT_FLOOR are rejected at manifest
     # parse time so these binds always succeed.
-    if port_mappings:
+    # With --network=host, port publishing is skipped (container binds
+    # directly on the host's interfaces).
+    if port_mappings and not manifest.network_host:
         for pm in port_mappings:
             cmd.extend(["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/tcp"])
             cmd.extend(["-p", f"0.0.0.0:{pm.host_port}:{pm.container_port}/udp"])
@@ -308,6 +334,13 @@ def run_container(
 
     for device in manifest.devices:
         cmd.extend(["--device", device])
+
+    if manifest.network_host:
+        # Tell the app which port the router expects it on.  With host
+        # networking the container can't use its manifest port if it
+        # conflicts with other host services, so it should bind on this
+        # allocated port instead.
+        container_env["OPENHOST_LOCAL_PORT"] = str(local_port)
 
     for key, value in container_env.items():
         cmd.extend(["-e", f"{key}={value}"])

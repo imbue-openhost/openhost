@@ -20,6 +20,7 @@ from compute_space.config import get_config
 from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import read_owner_username
+from compute_space.core.auth.permissions_v2 import Grant
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
@@ -42,6 +43,15 @@ from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import register_v2_service_providers
 from compute_space.db import get_db
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class PermissionGrant:
+    """A single permission grant: which service and what payload."""
+
+    service_url: str
+    grant: Grant
+
 
 RESERVED_PATHS = {
     "/",
@@ -279,12 +289,21 @@ def _mint_unique_app_id(db: sqlite3.Connection) -> str:
             return candidate
 
 
+def all_manifest_permissions_v2(manifest: AppManifest) -> list[PermissionGrant]:
+    """Build a permissions_v2_grants list that approves every permission declared in the manifest."""
+    grants: list[PermissionGrant] = []
+    for perm in manifest.consumes_services_v2:
+        for grant_payload in perm.grants:
+            grants.append(PermissionGrant(service_url=perm.service, grant=grant_payload))
+    return grants
+
+
 def insert_and_deploy(
     manifest: AppManifest,
     repo_path: str,
     config: Config,
     db: sqlite3.Connection,
-    grant_permissions_v2: bool = False,
+    permissions_v2_grants: list[PermissionGrant] | None = None,
     app_name: str | None = None,
     repo_url: str | None = None,
     port_overrides: dict[str, int] | None = None,
@@ -295,8 +314,9 @@ def insert_and_deploy(
     Returns app_id. Raises RuntimeError if no port available or
     storage limit is exceeded.
 
-    grant_permissions_v2: if True, grant all [[services.v2.consumes]] entries
-        from the manifest at install time.
+    permissions_v2_grants: list of PermissionGrant objects the owner
+        approved on the deploy page.  Only these are granted at install
+        time.
     port_overrides: optional dict of label -> host_port from CLI/API.
     installed_by: consumer app name when the install came in via the
         installer v2 service.  Stored on the apps row in the same
@@ -386,14 +406,13 @@ def insert_and_deploy(
 
     db.commit()
 
-    if grant_permissions_v2 and manifest.consumes_services_v2:
-        for perm in manifest.consumes_services_v2:
-            for grant_payload in perm.grants:
-                grant_permission_v2(
-                    consumer_app_id=app_id,
-                    service_url=perm.service,
-                    grant_payload=grant_payload,
-                )
+    if permissions_v2_grants:
+        for entry in permissions_v2_grants:
+            grant_permission_v2(
+                consumer_app_id=app_id,
+                service_url=entry.service_url,
+                grant_payload=entry.grant,
+            )
 
     threading.Thread(
         target=deploy_app_background,
@@ -772,6 +791,7 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 shutil.copytree(source_dir, repo_path)
                 logger.info("Re-copied %s from %s", app_name, source_dir)
 
+        manifest = None
         if repo_path and os.path.isdir(repo_path):
             try:
                 manifest = parse_manifest(repo_path)
@@ -788,9 +808,16 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 # Diff port mappings: preserve existing host_port for unchanged labels
                 _sync_port_mappings(app_id, manifest.port_mappings, db, config)
 
+                # Re-register v2 service providers from the new manifest.
+                register_v2_service_providers(app_id, manifest, db)
+
                 db.commit()
             except ValueError:
-                pass
+                logger.warning("Failed to re-read manifest for %s during reload", app_id)
+            # New permissions declared in the updated manifest are NOT
+            # auto-granted on reload.  They show up as "ungranted" on the
+            # app detail page where the owner can approve them, or the
+            # in-app grant_url flow handles them at runtime.
 
         start_app_process(app_id, db, config)
     except Exception as e:

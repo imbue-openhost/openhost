@@ -36,7 +36,7 @@
   when: not _linger_sentinel.stat.exists
   changed_when: true
 
-# net.ipv4.ip_unprivileged_port_start = 25: the router binds rootless on 0.0.0.0:<host_port>, including 25 for SMTP
+# net.ipv4.ip_unprivileged_port_start = 25: apps bind rootless on 0.0.0.0:<host_port>, including 25 for SMTP
 # apps.  Must match compute_space.core.manifest.UNPRIVILEGED_PORT_FLOOR.
 #
 # kernel.apparmor_restrict_unprivileged_userns = 0: Ubuntu 24.04 blocks unprivileged user namespaces unless the
@@ -47,6 +47,10 @@
       # Managed by OpenHost; do not edit by hand.
       net.ipv4.ip_unprivileged_port_start = 25
       kernel.apparmor_restrict_unprivileged_userns = 0
+      # Required for network_host containers that do IP forwarding (VPN
+      # servers).  With --network=host, /proc/sys is read-only inside the
+      # container so the app can't set this itself.
+      net.ipv4.ip_forward = 1
     dest: /etc/sysctl.d/90-openhost-podman.conf
     mode: "0644"
 
@@ -76,7 +80,7 @@
 
 # Pasta (rootless podman's default network backend) shares the host's IP with containers.  This means host-gateway
 # resolves to the container's own IP, breaking container→host communication.  We create a dummy interface with a
-# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 0.0.0.0:8080)
+# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 10.200.0.1:8080)
 # via this IP.  Container ports are bound on 127.0.0.1, so they're NOT reachable via the dummy interface — containers
 # are isolated from each other.
 - name: Create openhost0 dummy interface for container→host gateway
@@ -106,6 +110,53 @@
       Address=10.200.0.1/32
     dest: /etc/systemd/network/10-openhost0.network
     mode: "0644"
+
+# Pasta containers share the host's IP, so `*.zone_domain` resolves to the host's own public IP.  Connecting to
+# that IP from inside a pasta container hits the container's network namespace where Caddy isn't listening,
+# giving "connection refused".  These DNAT rules rewrite outbound packets aimed at public_ip:80/443 to
+# 127.0.0.1, where Caddy IS listening.  This lets containers curl other apps' public URLs and keeps
+# inter-container isolation intact (container ports still bind 127.0.0.1 only).
+- name: Add iptables hairpin NAT rules
+  shell: |
+    set -e
+    PUBLIC_IP="{{ public_ip | default(inventory_hostname) }}"
+
+    # Hairpin NAT: let pasta containers reach Caddy via the public IP.
+    for PORT in 80 443; do
+      RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
+      iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
+    done
+  changed_when: true
+
+- name: Remove old hairpin-only persistence script (renamed)
+  file:
+    path: /etc/networkd-dispatcher/routable.d/50-openhost-hairpin-nat
+    state: absent
+
+- name: Persist iptables hairpin NAT rules across reboots
+  copy:
+    # The public IP is detected at boot rather than baked in at ansible time
+    # because cloud instances (EC2 without Elastic IP, etc.) can get a new
+    # address after a reboot.
+    content: |
+      #!/bin/sh
+      # Managed by OpenHost; do not edit by hand.
+
+      # Detect public IP (same logic as scripts/provision.sh).
+      PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+      case "$PUBLIC_IP" in
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*)
+          PUBLIC_IP=$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || true) ;;
+      esac
+      [ -z "$PUBLIC_IP" ] && exit 0  # no IP yet; networkd-dispatcher will re-fire
+
+      # Hairpin NAT: let pasta containers reach Caddy via the public IP.
+      for PORT in 80 443; do
+        RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
+        iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
+      done
+    dest: /etc/networkd-dispatcher/routable.d/50-openhost-firewall
+    mode: "0755"
 
 - name: Ensure host user containers config dir exists
   file:

@@ -25,6 +25,7 @@ from typing import Any
 import attr
 
 from compute_space.config import Config
+from compute_space.core.apps import all_manifest_permissions_v2
 from compute_space.core.apps import clone_and_read_manifest
 from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import move_clone_to_app_temp_dir
@@ -198,7 +199,7 @@ def _finalize_install(
             final_dir,
             config,
             db,
-            grant_permissions_v2=True,
+            permissions_v2_grants=all_manifest_permissions_v2(manifest),
             repo_url=repo_url,
         )
     except Exception as exc:

@@ -151,9 +151,9 @@ def _check_tls_active() -> CheckResult:
 def _secure_ports() -> dict[int, str]:
     """Return the static-secure-port → label map, including the configured router port.
 
-    The router's HTTP listener (``Config.port``, default 8080) is loopback to
-    Caddy in production but binds ``0.0.0.0`` for simplicity — it should
-    therefore be reported as expected, not flagged.
+    The router's HTTP listener (``Config.port``, default 8080) binds to
+    ``127.0.0.1`` and ``10.200.0.1`` (container gateway) — it should
+    be reported as expected, not flagged.
     """
     secure: dict[int, str] = dict(_PUBLIC_SECURE_PORTS)
     try:

@@ -16,6 +16,7 @@ import sqlite3
 import attr
 
 from compute_space.config import Config
+from compute_space.core.apps import all_manifest_permissions_v2
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import move_clone_to_app_temp_dir
@@ -132,7 +133,7 @@ async def install_from_repo_url(
             final_dir,
             config,
             db,
-            grant_permissions_v2=True,
+            permissions_v2_grants=all_manifest_permissions_v2(manifest),
             app_name=effective_name,
             repo_url=repo_url,
             installed_by=installed_by,

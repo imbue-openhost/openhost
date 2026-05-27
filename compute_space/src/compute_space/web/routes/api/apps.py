@@ -20,6 +20,8 @@ from compute_space.config import Config
 from compute_space.core import archive_backend
 from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import RESERVED_PATHS
+from compute_space.core.apps import PermissionGrant
+from compute_space.core.apps import all_manifest_permissions_v2
 from compute_space.core.apps import app_log_path
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
@@ -90,6 +92,11 @@ class AddAppRequest:
     repo_url: str
     app_name: str | None = None
     clone_dir: str | None = None
+    # List of {service_url, grant} dicts the owner approved on the deploy page.
+    # Only these permissions are granted at install time.
+    permissions_v2_grants: list[dict[str, Any]] = attr.Factory(list)
+    # Back-compat: CLI sends this boolean. When True and permissions_v2_grants
+    # is empty, all manifest permissions are auto-granted.
     grant_permissions_v2: bool = False
     port_overrides: dict[str, int] = attr.Factory(dict)
 
@@ -302,13 +309,21 @@ async def api_add_app(
 
     port_overrides: dict[str, int] | None = dict(data.port_overrides) if data.port_overrides else None
 
+    # Resolve permissions to grant: explicit list from the deploy page,
+    # or all manifest permissions if the CLI's --grant-permissions-v2 flag is set.
+    grants: list[PermissionGrant] = [
+        PermissionGrant(service_url=g["service_url"], grant=g["grant"]) for g in data.permissions_v2_grants
+    ]
+    if not grants and data.grant_permissions_v2:
+        grants = all_manifest_permissions_v2(manifest)
+
     try:
         app_id = insert_and_deploy(
             manifest,
             final_dir,
             config,
             db,
-            grant_permissions_v2=data.grant_permissions_v2,
+            permissions_v2_grants=grants,
             app_name=app_name,
             repo_url=repo_url,
             port_overrides=port_overrides,

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 from litestar import Router
@@ -8,7 +9,10 @@ from litestar.response import Template
 from compute_space.config import Config
 from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import list_builtin_apps
+from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.logging import logger
+from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.web.auth.auth import require_owner_auth
 
 
@@ -31,7 +35,36 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
         "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_id = ? ORDER BY label",
         (app_id,),
     ).fetchall()
+    services_provided = db.execute(
+        "SELECT service_url, service_version FROM service_providers_v2 WHERE app_id = ? ORDER BY service_url",
+        (app_id,),
+    ).fetchall()
     logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
+
+    # Permissions: granted + manifest-declared but not yet granted
+    granted_perms = [
+        {"service_url": p.service_url, "grant": p.grant, "scope": p.scope}
+        for p in get_all_permissions_v2(consumer_app_id=app_id)
+    ]
+    ungranted_perms: list[dict[str, object]] = []
+    manifest_raw = app_row["manifest_raw"]
+    if manifest_raw:
+        try:
+            manifest = parse_manifest_from_string(manifest_raw)
+            granted_set = {(p["service_url"], json.dumps(p["grant"], sort_keys=True)) for p in granted_perms}
+            for consume in manifest.consumes_services_v2:
+                for grant_payload in consume.grants:
+                    key = (consume.service, json.dumps(grant_payload, sort_keys=True))
+                    if key not in granted_set:
+                        ungranted_perms.append(
+                            {
+                                "service_url": consume.service,
+                                "grant": grant_payload,
+                                "shortname": consume.shortname,
+                            }
+                        )
+        except Exception:
+            logger.opt(exception=True).warning("Failed to parse manifest for permission display (app %s)", app_id)
 
     return Template(
         template_name="app_detail.html",
@@ -39,8 +72,11 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
             "app": app_row,
             "databases": databases,
             "port_mappings": port_mappings,
+            "services_provided": services_provided,
             "logs": logs,
             "next_url": next,
+            "granted_permissions": granted_perms,
+            "ungranted_permissions": ungranted_perms,
         },
     )
 
