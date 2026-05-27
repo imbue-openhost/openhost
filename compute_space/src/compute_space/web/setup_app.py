@@ -35,7 +35,6 @@ from compute_space.core.updates import trigger_restart
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import build_session_cookie
 
-
 # Set when setup_post succeeds. /health flips to 503 immediately so clients
 # polling for the post-restart main app don't see a stale 200 from the setup
 # app during the brief window before hypercorn actually drops the listener.
