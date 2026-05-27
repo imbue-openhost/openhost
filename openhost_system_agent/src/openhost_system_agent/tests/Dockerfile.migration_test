@@ -31,11 +31,11 @@ RUN mkdir -p /etc/openhost && \
     > /etc/openhost/migrations.jsonl
 
 # Create minimal router config and data dirs (normally created by ansible)
-RUN mkdir -p /home/host/.openhost/local_compute_space/persistent_data \
-             /home/host/.openhost/local_compute_space/temporary_data && \
+RUN mkdir -p /home/host/.openhost/local_compute_space \
+             /opt/openhost && \
     printf '[openhost]\nzone_domain = "test.local"\nhost = "127.0.0.1"\n' \
     > /home/host/.openhost/local_compute_space/config.toml && \
-    chown -R host:host /home/host/.openhost
+    chown -R host:host /home/host/.openhost /opt/openhost
 
 # systemd as init
 CMD ["/sbin/init"]
