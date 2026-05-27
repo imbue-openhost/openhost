@@ -30,8 +30,9 @@ RUN mkdir -p /etc/openhost && \
     echo '{"version":1,"timestamp":"2025-01-01T00:00:00Z","success":true,"error":null}' \
     > /etc/openhost/migrations.jsonl
 
-# Create minimal router config (normally created by ansible)
-RUN mkdir -p /home/host/.openhost/local_compute_space && \
+# Create minimal router config and data dirs (normally created by ansible)
+RUN mkdir -p /home/host/.openhost/local_compute_space/persistent_data \
+             /home/host/.openhost/local_compute_space/temporary_data && \
     printf '[openhost]\nzone_domain = "test.local"\nhost = "127.0.0.1"\n' \
     > /home/host/.openhost/local_compute_space/config.toml && \
     chown -R host:host /home/host/.openhost
