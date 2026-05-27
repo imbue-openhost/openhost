@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% block title_suffix %} - System{% endblock %}
+{% block title_suffix %} - System Info{% endblock %}
 {% block content %}
 <h2>Security Audit</h2>
 <table id="security-table">
@@ -25,50 +25,15 @@
 </table>
 <div id="storage-guard-row"></div>
 
-<h2>Archive Backend</h2>
-<p class="hint">Where the <code>app_archive</code> data tier lives. Disabled by default; configure an S3 bucket here once and apps with <code>app_archive = true</code> get a JuiceFS-backed mount whose contents survive a zone reinstall. The prefix lets multiple zones share one bucket. Configuration is one-shot per zone.</p>
-<div id="archive-backend-status">
-  <div class="muted">Loading&hellip;</div>
-</div>
-
-<h2>Maintenance</h2>
-<table>
-  <tr>
-    <th class="label-col">Restart router</th>
-    <td>
-      <button class="btn" onclick="restartRouter()">Restart Router</button>
-      <span id="restart-msg" class="muted"></span>
-    </td>
-  </tr>
-  <tr>
-    <th class="label-col">Build cache</th>
-    <td>
-      <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
-      <span id="drop-build-cache-msg" class="muted"></span>
-    </td>
-  </tr>
-  <tr>
-    <th class="label-col">SSH</th>
-    <td>
-      <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
-      <span id="ssh-status" class="muted"></span>
-    </td>
-  </tr>
-</table>
+<h2>Logs</h2>
+<pre class="log-output" id="cs-logs" style="max-height: 30em; white-space: pre-wrap; word-break: break-all;">Loading...</pre>
 
 <script id="page-config" type="application/json">
 {
   "securityAuditUrl": "/api/security-audit",
   "listeningPortsUrl": "/api/listening-ports",
   "storageStatusUrl": "/api/storage-status",
-  "restartRouterUrl": "/restart_router",
-  "dropBuildCacheUrl": "/api/drop-docker-cache",
-  "sshStatusUrl": "/api/ssh-status",
-  "toggleSshUrl": "/toggle-ssh",
-  "toggleStorageGuardUrl": "/api/storage-guard",
-  "archiveBackendUrl": "/api/storage/archive_backend",
-  "archiveBackendTestUrl": "/api/storage/archive_backend/test_connection",
-  "archiveBackendConfigureUrl": "/api/storage/archive_backend/configure"
+  "toggleStorageGuardUrl": "/api/storage-guard"
 }
 </script>
 <script src="{{ static_url('js/system.js') }}"></script>
