@@ -35,6 +35,10 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
         "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_id = ? ORDER BY label",
         (app_id,),
     ).fetchall()
+    services_provided = db.execute(
+        "SELECT service_url, service_version FROM service_providers_v2 WHERE app_id = ? ORDER BY service_url",
+        (app_id,),
+    ).fetchall()
     logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
 
     # Permissions: granted + manifest-declared but not yet granted
@@ -68,6 +72,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
             "app": app_row,
             "databases": databases,
             "port_mappings": port_mappings,
+            "services_provided": services_provided,
             "logs": logs,
             "next_url": next,
             "granted_permissions": granted_perms,
