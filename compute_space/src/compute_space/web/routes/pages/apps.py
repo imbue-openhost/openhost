@@ -31,7 +31,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
         "SELECT label, container_port, host_port FROM app_port_mappings WHERE app_id = ? ORDER BY label",
         (app_id,),
     ).fetchall()
-    services = db.execute(
+    services_provided = db.execute(
         "SELECT service_url, service_version FROM service_providers_v2 WHERE app_id = ? ORDER BY service_url",
         (app_id,),
     ).fetchall()
@@ -43,7 +43,7 @@ async def app_detail(app_id: str, db: sqlite3.Connection, config: Config, next: 
             "app": app_row,
             "databases": databases,
             "port_mappings": port_mappings,
-            "services": services,
+            "services_provided": services_provided,
             "logs": logs,
             "next_url": next,
         },
