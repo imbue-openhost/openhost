@@ -145,6 +145,7 @@ def _inject_grant_url_if_global(
         return response
 
     required_grant["grant_url"] = _approve_grant_url(config, consumer_app_id, service_url, grant)
+
     return ASGIResponse(
         body=json.dumps(body).encode(),
         status_code=403,
@@ -213,7 +214,11 @@ class ServiceRequest:
 
 
 def _service_call_common(
-    consumer_app_id: str, shortname: str, rest: str, db: sqlite3.Connection
+    consumer_app_id: str,
+    shortname: str,
+    rest: str,
+    db: sqlite3.Connection,
+    provider_app_id: str | None = None,
 ) -> ServiceRequest | InstallerServiceRequest:
     service_url, version_spec = lookup_shortname(consumer_app_id, shortname, db)
 
@@ -223,7 +228,9 @@ def _service_call_common(
             version_spec=version_spec,
         )
     else:
-        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(service_url, version_spec, db)
+        provider_app_id, provider_port, _, provider_endpoint = resolve_provider(
+            service_url, version_spec, db, provider_app_id=provider_app_id
+        )
         # `rest` is captured as "/sub/path" (leading slash); fold into the
         # provider's endpoint.
         target_path = provider_endpoint.rstrip("/") + "/" + rest.lstrip("/")
@@ -253,9 +260,10 @@ async def service_call(
     consumer's manifest.
     """
     consumer_app_id = verify_app_auth(request)
+    provider_override = request.headers.get("X-OpenHost-Provider") or None
 
     try:
-        resolved = _service_call_common(consumer_app_id, shortname, rest, db)
+        resolved = _service_call_common(consumer_app_id, shortname, rest, db, provider_app_id=provider_override)
     except ShortnameNotDeclared as e:
         return _asgi_json_error("shortname_not_declared", e.message, 404)
     except ServiceNotAvailable as e:
@@ -292,8 +300,10 @@ async def service_call_ws(socket: WebSocket[Any, Any, Any], shortname: str, rest
         await socket.close(code=4401, reason="Missing or invalid authorization")
         return
 
+    provider_override = socket.headers.get("X-OpenHost-Provider") or None
+
     try:
-        resolved = _service_call_common(consumer_app_id, shortname, rest, db)
+        resolved = _service_call_common(consumer_app_id, shortname, rest, db, provider_app_id=provider_override)
     except ShortnameNotDeclared as e:
         await socket.accept()
         await socket.close(code=4404, reason=e.message)

@@ -151,11 +151,14 @@ def provision_data(
     # Generate app token for cross-app service calls
     env_vars["OPENHOST_APP_TOKEN"] = secrets_mod.token_urlsafe(32)
 
-    # Apps run in bridge-mode containers where 127.0.0.1 is the container
-    # itself, not the host.  host.containers.internal (podman's host-gateway
-    # alias) and the host.docker.internal back-compat alias are both
-    # registered by run_container; we advertise the podman-native one.
-    env_vars["OPENHOST_ROUTER_URL"] = f"http://host.containers.internal:{port}"
+    if manifest.network_host:
+        # network_host containers share the host's network namespace, so
+        # localhost IS the host.  host.containers.internal doesn't exist.
+        env_vars["OPENHOST_ROUTER_URL"] = f"http://127.0.0.1:{port}"
+    else:
+        # Pasta containers: 127.0.0.1 is the container itself, not the host.
+        # host.containers.internal (podman's host-gateway alias) reaches the host.
+        env_vars["OPENHOST_ROUTER_URL"] = f"http://host.containers.internal:{port}"
 
     # Zone identity info so apps can build federated auth flows
     env_vars["OPENHOST_ZONE_DOMAIN"] = zone_domain

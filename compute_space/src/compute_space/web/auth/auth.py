@@ -132,6 +132,16 @@ def require_app_auth(connection: AnyConnection, _route_handler: BaseRouteHandler
     verify_app_auth(connection)
 
 
+def require_owner_or_app_auth(connection: AnyConnection, _route_handler: BaseRouteHandler) -> None:
+    """Guard that passes if the caller is either an owner (user/API key) or an app."""
+    try:
+        verify_owner_auth(connection)
+        return
+    except NotAuthorizedException:
+        pass
+    verify_app_auth(connection)
+
+
 def build_login_url(netloc: str, path: str, query: str) -> str:
     """Build an absolute ``/login?next=<original>`` URL on the zone domain.
 
