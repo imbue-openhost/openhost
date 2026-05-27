@@ -131,5 +131,21 @@ class TestMigrationContainer:
         assert result.stdout.strip() == "active", f"Service not active: {result.stdout}\n{result.stderr}"
 
     def test_health_endpoint(self) -> None:
-        body = _wait_for_health(timeout=120)
+        try:
+            body = _wait_for_health(timeout=120)
+        except RuntimeError:
+            # Dump journal for debugging
+            journal = _podman(
+                "exec",
+                _CONTAINER_NAME,
+                "journalctl",
+                "-u",
+                "openhost",
+                "--no-pager",
+                "-n",
+                "50",
+                timeout=10,
+                check=False,
+            )
+            raise RuntimeError(f"Health check failed. Journal:\n{journal.stdout}\n{journal.stderr}") from None
         assert '"ok"' in body or '"status"' in body
