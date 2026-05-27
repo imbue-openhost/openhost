@@ -38,14 +38,20 @@ def _wait_for_systemd(timeout: int = 60) -> None:
     state = ""
     while time.time() < deadline:
         result = _podman(
-            "exec", _CONTAINER_NAME, "systemctl", "is-system-running",
-            timeout=10, check=False,
+            "exec",
+            _CONTAINER_NAME,
+            "systemctl",
+            "is-system-running",
+            timeout=10,
+            check=False,
         )
         state = result.stdout.strip()
         if state in ("running", "degraded"):
             return
         time.sleep(1)
-    raise RuntimeError(f"systemd did not reach running state within {timeout}s (last: {state!r}, stderr: {result.stderr.strip()!r})")
+    raise RuntimeError(
+        f"systemd did not reach running state within {timeout}s (last: {state!r}, stderr: {result.stderr.strip()!r})"
+    )
 
 
 def _wait_for_health(timeout: int = 60) -> str:
