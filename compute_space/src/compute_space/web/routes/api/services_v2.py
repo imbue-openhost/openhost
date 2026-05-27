@@ -8,6 +8,7 @@ from litestar import post
 from litestar.exceptions import HTTPException
 
 from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.auth.auth import require_owner_or_app_auth
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -79,7 +80,7 @@ async def list_services_v2(db: sqlite3.Connection) -> list[ProviderV2]:
     ]
 
 
-@get("/api/services/v2/providers", guards=[require_owner_auth])
+@get("/api/services/v2/providers", guards=[require_owner_or_app_auth])
 async def discover_providers(db: sqlite3.Connection, service: str) -> DiscoverProvidersResponse:
     """Discover providers for a service, optionally filtered by version specifier."""
 
