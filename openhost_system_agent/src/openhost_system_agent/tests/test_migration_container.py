@@ -59,8 +59,13 @@ def _wait_for_health(timeout: int = 60) -> str:
     last_stderr = ""
     while time.time() < deadline:
         result = _podman(
-            "exec", _CONTAINER_NAME, "curl", "-sf", "http://localhost:8080/health",
-            timeout=10, check=False,
+            "exec",
+            _CONTAINER_NAME,
+            "curl",
+            "-sf",
+            "http://localhost:8080/health",
+            timeout=10,
+            check=False,
         )
         if result.returncode == 0:
             return result.stdout
