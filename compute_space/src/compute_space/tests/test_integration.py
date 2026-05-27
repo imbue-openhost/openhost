@@ -252,12 +252,10 @@ class TestRouterCore:
         base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/system/")
         assert r.status_code == 200
-        # The System page hosts the security audit, listening ports, storage,
-        # and SSH controls.
         assert 'id="security-table"' in r.text
         assert 'id="ports-table"' in r.text
         assert 'id="storage-table"' in r.text
-        assert 'id="ssh-btn"' in r.text
+        assert 'id="cs-logs"' in r.text
 
     def test_listening_ports_endpoint(self, admin_session, config):
         """GET /api/listening-ports returns a list of classified ports."""
