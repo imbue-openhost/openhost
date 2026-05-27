@@ -46,9 +46,6 @@
   <p id="pw-msg" style="display:none; margin-top:0.3em;"></p>
 </div>
 
-<h3>Restart</h3>
-<button onclick="restartComputeSpace()" class="btn btn-danger">Restart compute space</button>
-
 <div id="restart-overlay" style="display:none;">
   <p id="restart-status"><strong>Waiting for shutdown&hellip;</strong></p>
 </div>
@@ -62,9 +59,9 @@
 <h2>Maintenance</h2>
 <table>
   <tr>
-    <th class="label-col">Restart router</th>
+    <th class="label-col">Restart compute space</th>
     <td>
-      <button class="btn" onclick="restartRouter()">Restart Router</button>
+      <button class="btn btn-danger" onclick="restartComputeSpace()">Restart Compute Space</button>
       <span id="restart-msg" class="muted"></span>
     </td>
   </tr>
@@ -397,15 +394,7 @@ function formatBytes(bytes) {
   return bytes + ' B';
 }
 
-// ─── Router restart / build cache ───
-
-function restartRouter() {
-  if (confirm('Restart the router service? All apps will briefly go offline.')) {
-    fetch('/restart_router', {method: 'POST', credentials: 'same-origin'}).then(function() {
-      document.getElementById('restart-msg').textContent = 'Restarting...';
-    });
-  }
-}
+// ─── Build cache ───
 
 function dropBuildCache() {
   if (!confirm(
