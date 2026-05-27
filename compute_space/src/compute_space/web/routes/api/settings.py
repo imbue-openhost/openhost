@@ -172,20 +172,20 @@ async def get_owner_username(db: sqlite3.Connection) -> OwnerUsernameResponse:
 
 
 @post("/api/settings/owner_username", status_code=200, guards=[require_owner_auth])
-async def set_owner_username(request: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
-    error = validate_owner_username(request.username)
+async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
+    error = validate_owner_username(data.username)
     if error is not None:
         raise HTTPException(detail=error, status_code=400)
 
     try:
-        update_owner_username(db, request.username)
+        update_owner_username(db, data.username)
         db.commit()
     except ValueError as e:
         raise HTTPException(detail=str(e), status_code=400) from e
     except sqlite3.Error as e:
         raise HTTPException(detail=f"database error: {e}", status_code=500) from e
 
-    return OwnerUsernameResponse(username=request.username)
+    return OwnerUsernameResponse(username=data.username)
 
 
 api_settings_routes = Router(

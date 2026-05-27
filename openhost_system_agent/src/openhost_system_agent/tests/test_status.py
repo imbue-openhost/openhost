@@ -14,7 +14,8 @@ def _write_jsonl(path: Path, entries: list[dict[str, object]]) -> None:
     path.write_text("".join(json.dumps(e) + "\n" for e in entries))
 
 
-def test_matching_version_is_ok(tmp_path: Path) -> None:
+def test_matching_version_is_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status_mod, "REGISTRY", [])
     migrations = tmp_path / "migrations.jsonl"
     _write_jsonl(migrations, [{"version": 1, "success": True, "error": None}])
     result = get_migration_status(str(migrations))
@@ -68,7 +69,8 @@ def test_ahead_version(tmp_path: Path) -> None:
     assert result.reason == "ahead"
 
 
-def test_failed_entries_are_ignored(tmp_path: Path) -> None:
+def test_failed_entries_are_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status_mod, "REGISTRY", [])
     migrations = tmp_path / "migrations.jsonl"
     _write_jsonl(
         migrations,
@@ -81,7 +83,8 @@ def test_failed_entries_are_ignored(tmp_path: Path) -> None:
     assert result.ok is True
 
 
-def test_malformed_lines_are_skipped(tmp_path: Path) -> None:
+def test_malformed_lines_are_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status_mod, "REGISTRY", [])
     migrations = tmp_path / "migrations.jsonl"
     migrations.write_text('not json\n{"version": 1, "success": true, "error": null}\n\n')
     result = get_migration_status(str(migrations))

@@ -10,7 +10,6 @@ from pathlib import Path
 from loguru import logger
 
 from openhost_system_agent.migrations.base import SystemMigration
-from openhost_system_agent.migrations.migration_log import MIGRATIONS_LOCK_PATH
 from openhost_system_agent.migrations.migration_log import MIGRATIONS_PATH
 from openhost_system_agent.migrations.migration_log import MigrationLogEntry
 from openhost_system_agent.migrations.migration_log import append_entry
@@ -35,7 +34,8 @@ def apply_system_migrations(
 
     Path(migrations_path).parent.mkdir(parents=True, exist_ok=True)
 
-    with open(MIGRATIONS_LOCK_PATH, "w") as lock_fd:
+    lock_path = migrations_path + ".lock"
+    with open(lock_path, "w") as lock_fd:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
         return _apply_under_lock(migrations_path, registry, highest)
 
