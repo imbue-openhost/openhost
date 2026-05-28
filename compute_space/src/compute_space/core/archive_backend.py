@@ -287,14 +287,15 @@ def mount(
     _systemctl("daemon-reload")
     _systemctl("enable", "--now", JUICEFS_SERVICE)
 
-    # Wait for the mount to appear (systemd starts the process
-    # asynchronously; the FUSE handshake takes a moment).
-    deadline = time.time() + 15
+    # Wait for the mount to appear.  systemd starts the process
+    # asynchronously; the FUSE handshake + initial S3 connection
+    # can take 15-30s on high-latency links (e.g. Hetzner -> us-west-2).
+    deadline = time.time() + 30
     while time.time() < deadline:
         if is_mounted(mount_point):
             logger.info("juicefs mount ready at %s (via systemd)", mount_point)
             return
-        time.sleep(0.2)
+        time.sleep(0.5)
 
     # Check if the service failed to start.
     try:
@@ -307,7 +308,7 @@ def mount(
         svc_state = "unknown"
 
     raise RuntimeError(
-        f"juicefs mount did not become ready within 15s at {mount_point} "
+        f"juicefs mount did not become ready within 30s at {mount_point} "
         f"(service state: {svc_state}); check journalctl -u {JUICEFS_SERVICE}"
     )
 
