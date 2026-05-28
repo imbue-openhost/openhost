@@ -402,10 +402,16 @@ def manifest_uses_archive(manifest_raw: str) -> bool:
 
 
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
-    """True iff the configured archive backing is live on the host."""
+    """True iff the archive backend is either unconfigured or live on the host.
+
+    When ``backend == "disabled"`` (S3 never configured) there is no archive
+    data to protect, so the check passes.  When ``backend == "s3"`` the
+    JuiceFS mount must be live — otherwise operations that would silently
+    orphan or skip S3-side data are blocked.
+    """
     state = read_state(db)
     if state.backend != "s3":
-        return False
+        return True
     return is_mounted(juicefs_mount_dir(config))
 
 
