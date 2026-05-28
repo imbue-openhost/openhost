@@ -16,11 +16,20 @@
 - name: Install NVIDIA driver and container toolkit
   when: _has_nvidia.rc == 0
   block:
+    # Kernel headers are required for DKMS to build the NVIDIA kernel module
+    # against the running kernel (especially on cloud kernels like linux-aws).
+    - name: Install kernel headers and DKMS
+      apt:
+        name:
+          - "linux-headers-{{ ansible_kernel }}"
+          - dkms
+        state: present
+        update_cache: yes
+
     - name: Install ubuntu-drivers-common
       apt:
         name: ubuntu-drivers-common
         state: present
-        update_cache: yes
 
     - name: Auto-install recommended NVIDIA driver
       command: ubuntu-drivers install --gpgpu
@@ -33,18 +42,12 @@
       ignore_errors: true
       changed_when: false
 
-    - name: Check if NVIDIA driver is loaded
-      command: nvidia-smi
-      register: _nvidia_smi
-      ignore_errors: true
-      changed_when: false
-
-    - name: Reboot to load NVIDIA driver (if not loaded)
+    - name: Reboot to load NVIDIA driver (if modprobe failed)
       reboot:
         reboot_timeout: 300
-      when: _nvidia_smi.rc != 0
+      when: _modprobe.rc != 0
 
-    - name: Verify NVIDIA driver after reboot
+    - name: Verify NVIDIA driver is loaded
       command: nvidia-smi
       changed_when: false
 
