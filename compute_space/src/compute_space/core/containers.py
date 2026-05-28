@@ -335,6 +335,12 @@ def run_container(
     for device in manifest.devices:
         cmd.extend(["--device", device])
 
+    # GPU passthrough via CDI (Container Device Interface).  When `gpu = true`
+    # in the manifest, request all NVIDIA GPUs.  Requires the NVIDIA Container
+    # Toolkit and a generated CDI spec on the host (see ansible/tasks/gpu.yml).
+    if manifest.gpu:
+        cmd.extend(["--device", "nvidia.com/gpu=all"])
+
     if manifest.network_host:
         # Tell the app which port the router expects it on.  With host
         # networking the container can't use its manifest port if it

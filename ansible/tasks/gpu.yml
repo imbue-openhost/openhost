@@ -1,0 +1,62 @@
+---
+# NVIDIA GPU support for containerized apps.
+#
+# Installs the NVIDIA driver and container toolkit, then generates a CDI
+# (Container Device Interface) spec so rootless podman can pass GPUs into
+# containers with `--device nvidia.com/gpu=all`.
+#
+# Skipped entirely when no NVIDIA GPU is detected on the host.
+
+- name: Check for NVIDIA GPU
+  shell: lspci | grep -qi nvidia
+  register: _has_nvidia
+  ignore_errors: true
+  changed_when: false
+
+- name: Install NVIDIA driver and container toolkit
+  when: _has_nvidia.rc == 0
+  block:
+    - name: Install NVIDIA driver
+      apt:
+        name:
+          - nvidia-driver-560
+          - nvidia-utils-560
+        state: present
+        update_cache: yes
+
+    - name: Add NVIDIA container toolkit GPG key
+      shell: |
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+          gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+    - name: Add NVIDIA container toolkit repository
+      shell: |
+        curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+          sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+          tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      args:
+        creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+    - name: Install NVIDIA container toolkit
+      apt:
+        name: nvidia-container-toolkit
+        state: present
+        update_cache: yes
+
+    - name: Generate CDI spec for rootless podman
+      shell: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+      args:
+        creates: /etc/cdi/nvidia.yaml
+
+    - name: Ensure CDI spec directory is readable
+      file:
+        path: /etc/cdi
+        state: directory
+        mode: "0755"
+
+    - name: Ensure CDI spec is readable
+      file:
+        path: /etc/cdi/nvidia.yaml
+        mode: "0644"
