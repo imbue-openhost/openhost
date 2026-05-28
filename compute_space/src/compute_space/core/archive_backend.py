@@ -301,7 +301,9 @@ def mount(
     try:
         status = subprocess.run(
             ["systemctl", "is-active", JUICEFS_SERVICE],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         svc_state = status.stdout.strip()
     except Exception:
