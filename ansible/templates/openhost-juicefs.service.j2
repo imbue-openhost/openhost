@@ -1,0 +1,28 @@
+[Unit]
+Description=OpenHost JuiceFS Archive Mount
+After=network-online.target
+Wants=network-online.target
+# Start before the main service so the FUSE mount is ready when
+# compute_space boots and calls attach_on_startup.
+Before=openhost.service
+
+[Service]
+Type=simple
+User=host
+# All dynamic values (binary path, meta DSN, mount point, S3 creds)
+# live in the env file written by compute_space at configure time.
+# The service stays installed-but-disabled until the operator
+# configures the archive backend; compute_space then writes the env
+# file and enables/starts this unit.
+EnvironmentFile={{ juicefs_env_file }}
+ExecStart=$JUICEFS_BINARY --no-agent mount --no-usage-report -o allow_other $JUICEFS_META_DSN $JUICEFS_MOUNT_DIR
+ExecStop=$JUICEFS_BINARY umount $JUICEFS_MOUNT_DIR
+Restart=always
+RestartSec=5
+# JuiceFS logs to ~/.juicefs/juicefs.log; keep stdout/stderr quiet
+# so journald doesn't duplicate everything.
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -136,81 +136,46 @@ def test_format_volume_creates_state_dir_for_meta_db(cfg):
     assert captured["state_dir_exists"] is True
 
 
-def test_mount_passes_no_agent_flag(cfg):
-    captured = {}
+def test_mount_writes_env_file_and_starts_service(cfg):
+    """mount() must write the env file with the correct binary, meta DSN,
+    mount dir, and S3 creds, then enable+start the systemd service."""
+    systemctl_calls: list[tuple[str, ...]] = []
 
-    class _FakeProc:
-        def __init__(self):
-            self.returncode = None
+    def fake_systemctl(*args, timeout=30):
+        systemctl_calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        def poll(self):
-            return None
-
-        def terminate(self):
-            self.returncode = -15
-
-        def wait(self, timeout=None):
-            self.returncode = self.returncode or 0
-            return self.returncode
-
-        def kill(self):
-            self.returncode = -9
-
-    def fake_popen(cmd, env, stdout, stderr):
-        captured["cmd"] = cmd
-        return _FakeProc()
-
-    # is_mounted: False before Popen (so we actually start the process),
-    # True after (so the readiness loop sees it succeed immediately).
+    # is_mounted: False initially, True after systemctl start.
     is_mounted_calls = [False, True]
     with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
         with mock.patch.object(
             archive_backend, "is_mounted", side_effect=lambda mp: is_mounted_calls.pop(0) if is_mounted_calls else True
         ):
-            with mock.patch.object(subprocess, "Popen", side_effect=fake_popen):
+            with mock.patch.object(archive_backend, "_systemctl", side_effect=fake_systemctl):
                 archive_backend.mount(cfg, "ak", "sk")
-    cmd = captured["cmd"]
-    assert "--no-agent" in cmd
-    assert cmd.index("--no-agent") < cmd.index("mount")
+
+    # Verify env file was written with correct content.
+    env_path = archive_backend._juicefs_env_file(cfg)
+    assert os.path.isfile(env_path)
+    content = open(env_path).read()
+    assert "JUICEFS_BINARY=/usr/local/bin/juicefs" in content
+    assert "ACCESS_KEY=ak" in content
+    assert "SECRET_KEY=sk" in content
+    assert f"JUICEFS_MOUNT_DIR={cfg.app_archive_dir}" in content
+    # Mode must be 0600 (owner-only).
+    assert oct(os.stat(env_path).st_mode & 0o777) == "0o600"
+
+    # Verify systemctl calls: daemon-reload, then enable --now.
+    assert ("daemon-reload",) in systemctl_calls
+    assert ("enable", "--now", archive_backend.JUICEFS_SERVICE) in systemctl_calls
 
 
-def test_mount_passes_allow_other(cfg):
-    """Without -o allow_other the FUSE handler rejects requests from any
-    uid except the mount owner; rootless-podman remaps container uids into
-    a host subuid range, so app containers would all get EACCES on
-    /data/app_archive.  Regression test."""
-    captured: dict[str, list[str]] = {}
-
-    class _FakeProc:
-        returncode = None
-
-        def poll(self):
-            return None
-
-        def terminate(self):
-            self.returncode = -15
-
-        def wait(self, timeout=None):
-            self.returncode = self.returncode or 0
-            return self.returncode
-
-        def kill(self):
-            self.returncode = -9
-
-    def fake_popen(cmd, env, stdout, stderr):
-        captured["cmd"] = cmd
-        return _FakeProc()
-
-    is_mounted_calls = [False, True]
-    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
-        with mock.patch.object(
-            archive_backend, "is_mounted", side_effect=lambda mp: is_mounted_calls.pop(0) if is_mounted_calls else True
-        ):
-            with mock.patch.object(subprocess, "Popen", side_effect=fake_popen):
-                archive_backend.mount(cfg, "ak", "sk")
-    cmd = captured["cmd"]
-    o_idx = cmd.index("-o")
-    assert cmd[o_idx + 1] == "allow_other"
+def test_mount_idempotent_when_already_mounted(cfg):
+    """mount() must be a no-op if the mount is already active."""
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        with mock.patch.object(archive_backend, "_systemctl") as sctl:
+            archive_backend.mount(cfg, "ak", "sk")
+    sctl.assert_not_called()
 
 
 # --- on-disk layout helpers ----------------------------------------------
