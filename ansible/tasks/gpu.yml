@@ -16,13 +16,16 @@
 - name: Install NVIDIA driver and container toolkit
   when: _has_nvidia.rc == 0
   block:
-    - name: Install NVIDIA driver
+    - name: Install ubuntu-drivers-common
       apt:
-        name:
-          - nvidia-driver-560
-          - nvidia-utils-560
+        name: ubuntu-drivers-common
         state: present
         update_cache: yes
+
+    - name: Auto-install recommended NVIDIA driver
+      command: ubuntu-drivers install --gpgpu
+      register: _driver_install
+      changed_when: "'is already installed' not in _driver_install.stdout"
 
     - name: Add NVIDIA container toolkit GPG key
       shell: |
@@ -45,16 +48,15 @@
         state: present
         update_cache: yes
 
-    - name: Generate CDI spec for rootless podman
-      shell: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-      args:
-        creates: /etc/cdi/nvidia.yaml
-
-    - name: Ensure CDI spec directory is readable
+    - name: Ensure CDI spec directory exists
       file:
         path: /etc/cdi
         state: directory
         mode: "0755"
+
+    - name: Generate CDI spec for rootless podman
+      command: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+      changed_when: true
 
     - name: Ensure CDI spec is readable
       file:
