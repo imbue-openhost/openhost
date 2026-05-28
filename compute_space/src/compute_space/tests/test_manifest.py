@@ -446,6 +446,51 @@ grants = [
         with pytest.raises(ValueError, match=r"services\.v2"):
             parse_manifest_from_string(toml)
 
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("https://github.com/org/repo/services/secrets", "github.com/org/repo/services/secrets"),
+            ("http://github.com/org/repo/services/secrets", "github.com/org/repo/services/secrets"),
+            ("github.com/org/repo/services/secrets/", "github.com/org/repo/services/secrets"),
+            ("https://github.com/org/repo/services/secrets/", "github.com/org/repo/services/secrets"),
+            ("github.com/org/repo/services/secrets", "github.com/org/repo/services/secrets"),
+        ],
+    )
+    def test_provides_service_url_normalized(self, raw, expected):
+        toml = (
+            MINIMAL
+            + f"""
+[[services.v2.provides]]
+service = "{raw}"
+version = "0.1.0"
+endpoint = "/_svc/"
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.provides_services_v2[0].service == expected
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("https://github.com/org/repo/services/oauth", "github.com/org/repo/services/oauth"),
+            ("github.com/org/repo/services/oauth/", "github.com/org/repo/services/oauth"),
+            ("https://github.com/org/repo/services/oauth/", "github.com/org/repo/services/oauth"),
+        ],
+    )
+    def test_consumes_service_url_normalized(self, raw, expected):
+        toml = (
+            MINIMAL
+            + f"""
+[[services.v2.consumes]]
+service = "{raw}"
+shortname = "oauth"
+version = ">=0.1.0"
+grants = []
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.consumes_services_v2[0].service == expected
+
 
 class TestCapabilitiesValidation:
     """Rootless podman constraints on [runtime.container].capabilities."""
