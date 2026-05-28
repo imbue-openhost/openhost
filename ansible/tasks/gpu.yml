@@ -27,6 +27,27 @@
       register: _driver_install
       changed_when: "'is already installed' not in _driver_install.stdout"
 
+    - name: Load NVIDIA kernel module
+      command: modprobe nvidia
+      register: _modprobe
+      ignore_errors: true
+      changed_when: false
+
+    - name: Check if NVIDIA driver is loaded
+      command: nvidia-smi
+      register: _nvidia_smi
+      ignore_errors: true
+      changed_when: false
+
+    - name: Reboot to load NVIDIA driver (if not loaded)
+      reboot:
+        reboot_timeout: 300
+      when: _nvidia_smi.rc != 0
+
+    - name: Verify NVIDIA driver after reboot
+      command: nvidia-smi
+      changed_when: false
+
     - name: Add NVIDIA container toolkit GPG key
       shell: |
         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
