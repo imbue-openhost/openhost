@@ -426,6 +426,31 @@ def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.Monke
         )
 
 
+def test_run_container_gpu_passthrough(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``gpu = True`` in the manifest, podman must receive a
+    ``--device nvidia.com/gpu=all`` flag for CDI-based GPU passthrough."""
+    manifest = _basic_manifest(gpu=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    cdi_device = "nvidia.com/gpu=all"
+    assert cdi_device in argv, f"Expected {cdi_device!r} in podman argv when gpu=True"
+    pair_idx = argv.index(cdi_device)
+    assert argv[pair_idx - 1] == "--device", (
+        f"CDI device {cdi_device!r} must appear as the value of a --device flag"
+    )
+
+
+def test_run_container_no_gpu_by_default(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``gpu`` is not set (default False), no GPU device flag should
+    appear in the podman argv."""
+    manifest = _basic_manifest()
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+
+    assert "nvidia.com/gpu=all" not in argv, (
+        "nvidia.com/gpu=all should not appear in podman argv when gpu is not set"
+    )
+
+
 def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With access_all_data, the app sees /data/app_data/ and
     /data/app_temp_data/ as whole-namespace parent mounts, not just its
