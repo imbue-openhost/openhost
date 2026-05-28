@@ -18,23 +18,42 @@
   block:
     # Kernel headers are required for DKMS to build the NVIDIA kernel module
     # against the running kernel (especially on cloud kernels like linux-aws).
-    - name: Install kernel headers and DKMS
+    - name: Install kernel headers and build dependencies
       apt:
         name:
           - "linux-headers-{{ ansible_kernel }}"
+          - "linux-modules-extra-{{ ansible_kernel }}"
           - dkms
+          - build-essential
         state: present
         update_cache: yes
+      register: _headers_install
+      # Some cloud images don't have matching headers in default repos.
+      # Fall back gracefully -- the NVIDIA DKMS package may still work
+      # if headers were pre-installed or available via a different source.
+      ignore_errors: true
 
-    - name: Install ubuntu-drivers-common
-      apt:
-        name: ubuntu-drivers-common
+    - name: Add NVIDIA driver PPA
+      apt_repository:
+        repo: ppa:graphics-drivers/ppa
         state: present
+        update_cache: yes
+      ignore_errors: true
 
-    - name: Auto-install recommended NVIDIA driver
+    - name: Install NVIDIA driver (server variant for datacenter GPUs)
+      apt:
+        name:
+          - nvidia-driver-570-server
+          - nvidia-utils-570-server
+        state: present
+        update_cache: yes
+      register: _driver_pkg
+      ignore_errors: true
+
+    - name: Fallback to auto-install if server driver unavailable
       command: ubuntu-drivers install --gpgpu
-      register: _driver_install
-      changed_when: "'is already installed' not in _driver_install.stdout"
+      when: _driver_pkg.failed | default(false)
+      register: _driver_auto
 
     - name: Load NVIDIA kernel module
       command: modprobe nvidia
