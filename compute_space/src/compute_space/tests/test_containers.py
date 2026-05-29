@@ -11,13 +11,18 @@ import os
 import subprocess
 
 import pytest
+
 from compute_space.core import containers
-from compute_space.core.containers import (DEFAULT_CAPABILITIES,
-                                           _bind_mount_arg, build_image,
-                                           get_docker_logs,
-                                           is_container_running, remove_image,
-                                           run_container, stop_container)
-from compute_space.core.manifest import AppManifest, PortMapping
+from compute_space.core.containers import DEFAULT_CAPABILITIES
+from compute_space.core.containers import _bind_mount_arg
+from compute_space.core.containers import build_image
+from compute_space.core.containers import get_docker_logs
+from compute_space.core.containers import is_container_running
+from compute_space.core.containers import remove_image
+from compute_space.core.containers import run_container
+from compute_space.core.containers import stop_container
+from compute_space.core.manifest import AppManifest
+from compute_space.core.manifest import PortMapping
 
 
 class _FakeCompleted:
@@ -177,9 +182,7 @@ def test_build_image_non_streaming_path_inspects_stdout_too(
     assert str(exc_info.value).startswith(containers.BUILD_CACHE_CORRUPT_MARKER)
 
 
-def test_build_image_streaming_path_reaps_child_on_timeout(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_build_image_streaming_path_reaps_child_on_timeout(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression guard for the zombie-safety fix: when proc.wait(timeout=
     300) raises TimeoutExpired in the streaming path, build_image must
     call proc.kill() followed by a bounded proc.wait().  A kill without
@@ -206,9 +209,7 @@ def test_build_image_streaming_path_reaps_child_on_timeout(
                 # well-behaved kill that does reap.
                 return self.returncode
             # The first wait (the 300s build wait) is the one that times out.
-            raise subprocess.TimeoutExpired(
-                cmd=["podman", "build"], timeout=timeout or 0
-            )
+            raise subprocess.TimeoutExpired(cmd=["podman", "build"], timeout=timeout or 0)
 
         def kill(self) -> None:
             kill_calls.append(self.pid)
@@ -229,9 +230,7 @@ def test_build_image_streaming_path_reaps_child_on_timeout(
 
     # Must have invoked kill and then a bounded wait with timeout=5.
     assert kill_calls == [99999], f"expected one kill, got {kill_calls}"
-    assert (
-        5 in wait_calls
-    ), f"expected bounded wait(timeout=5) after kill, got {wait_calls}"
+    assert 5 in wait_calls, f"expected bounded wait(timeout=5) after kill, got {wait_calls}"
 
 
 @pytest.mark.parametrize(
@@ -272,9 +271,9 @@ def test_build_image_does_not_misclassify_innocuous_output_as_cache_corrupt(
     with pytest.raises(RuntimeError) as exc_info:
         build_image("myapp", "/tmp/repo", "Dockerfile", temp_data_dir=None)
     msg = str(exc_info.value)
-    assert (
-        containers.BUILD_CACHE_CORRUPT_MARKER not in msg
-    ), f"Expected generic build failure, got cache-corrupt marker for output: {innocuous_output!r}"
+    assert containers.BUILD_CACHE_CORRUPT_MARKER not in msg, (
+        f"Expected generic build failure, got cache-corrupt marker for output: {innocuous_output!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +321,7 @@ def _run_and_capture(
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(temp_data_dir, exist_ok=True)
     os.makedirs(archive_dir, exist_ok=True)
-    os.makedirs(
-        os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True
-    )
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
 
     run_container(
         manifest.name,
@@ -343,9 +340,7 @@ def _run_and_capture(
     return run_cmds[0]
 
 
-def test_run_container_has_hardening_flags(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_has_hardening_flags(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _basic_manifest()
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
     assert "--cap-drop=ALL" in argv
@@ -354,25 +349,19 @@ def test_run_container_has_hardening_flags(
     assert "--add-host=host.containers.internal:host-gateway" in argv
 
 
-def test_run_container_mounts_use_idmap_option(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_mounts_use_idmap_option(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _basic_manifest(app_data=True, app_temp_data=True, access_vm_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
     # Every -v argument value should have :idmap (or :ro,idmap) as its
     # options suffix so container-root writes land on disk under the host
     # user, not under the mapped subuid.
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     assert volume_args  # The test manifest requested three mounts.
     for v in volume_args:
         assert v.endswith(":idmap") or v.endswith(":ro,idmap"), v
 
 
-def test_run_container_adds_manifest_capabilities(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_adds_manifest_capabilities(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _basic_manifest(capabilities=["NET_ADMIN", "NET_RAW"])
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
     # --cap-drop=ALL must come before the --cap-add entries.
@@ -398,9 +387,7 @@ def test_run_container_grants_docker_default_capabilities_by_default(
     drop_idx = argv.index("--cap-drop=ALL")
     for cap in sorted(DEFAULT_CAPABILITIES):
         pair_idx = argv.index(cap)
-        assert (
-            argv[pair_idx - 1] == "--cap-add"
-        ), f"{cap}: expected --cap-add, got {argv[pair_idx - 1]!r}"
+        assert argv[pair_idx - 1] == "--cap-add", f"{cap}: expected --cap-add, got {argv[pair_idx - 1]!r}"
         assert pair_idx > drop_idx, f"{cap}: --cap-drop=ALL must precede --cap-add"
 
 
@@ -418,15 +405,11 @@ def test_run_container_does_not_duplicate_baseline_caps_from_manifest(
 
     # The redundant cap appears exactly once (from the baseline loop);
     # NET_ADMIN appears exactly once (from the manifest loop).
-    assert (
-        argv.count(redundant) == 1
-    ), f"expected one {redundant}, got {argv.count(redundant)}"
+    assert argv.count(redundant) == 1, f"expected one {redundant}, got {argv.count(redundant)}"
     assert argv.count("NET_ADMIN") == 1
 
 
-def test_run_container_adds_manifest_devices(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``manifest.devices`` entries must be passed to podman as
     ``--device <entry>`` pairs.  Symmetric to the capabilities test:
     the manifest validator restricts devices to SAFE_DEVICE_PATHS at
@@ -445,9 +428,7 @@ def test_run_container_adds_manifest_devices(
         )
 
 
-def test_run_container_gpu_passthrough(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_gpu_passthrough(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When ``gpu = True`` in the manifest, podman must receive a
     ``--device nvidia.com/gpu=all`` flag for CDI-based GPU passthrough."""
     manifest = _basic_manifest(gpu=True)
@@ -456,27 +437,19 @@ def test_run_container_gpu_passthrough(
     cdi_device = "nvidia.com/gpu=all"
     assert cdi_device in argv, f"Expected {cdi_device!r} in podman argv when gpu=True"
     pair_idx = argv.index(cdi_device)
-    assert (
-        argv[pair_idx - 1] == "--device"
-    ), f"CDI device {cdi_device!r} must appear as the value of a --device flag"
+    assert argv[pair_idx - 1] == "--device", f"CDI device {cdi_device!r} must appear as the value of a --device flag"
 
 
-def test_run_container_no_gpu_by_default(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_no_gpu_by_default(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When ``gpu`` is not set (default False), no GPU device flag should
     appear in the podman argv."""
     manifest = _basic_manifest()
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
-    assert (
-        "nvidia.com/gpu=all" not in argv
-    ), "nvidia.com/gpu=all should not appear in podman argv when gpu is not set"
+    assert "nvidia.com/gpu=all" not in argv, "nvidia.com/gpu=all should not appear in podman argv when gpu is not set"
 
 
-def test_run_container_access_all_data_mounts_parent_dirs(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With access_all_data, the app sees /data/app_data/ and
     /data/app_temp_data/ as whole-namespace parent mounts, not just its
     own subdir.  This is security-sensitive because a typo here would
@@ -484,9 +457,7 @@ def test_run_container_access_all_data_mounts_parent_dirs(
     manifest = _basic_manifest(access_all_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     # Every mount must be idmap (rw or ro).
     for v in volume_args:
         assert v.endswith(":idmap") or v.endswith(":ro,idmap"), v
@@ -500,14 +471,10 @@ def test_run_container_access_all_data_mounts_parent_dirs(
     # silently swapping it to ro would break every app that relies on
     # /data/vm_data as shared scratch space.
     vm_mount = next(v for v in volume_args if v.endswith(":/data/vm_data:idmap"))
-    assert (
-        "ro" not in vm_mount.rsplit(":", 1)[1]
-    ), f"vm_data should be rw under access_all_data, got {vm_mount}"
+    assert "ro" not in vm_mount.rsplit(":", 1)[1], f"vm_data should be rw under access_all_data, got {vm_mount}"
 
 
-def test_run_container_access_vm_data_mounts_vm_data_read_only(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """access_vm_data (without access_all_data) grants only a read-only
     view of /data/vm_data.  The distinction matters: this is what lets
     apps read shared state without being able to corrupt it, and a
@@ -517,57 +484,41 @@ def test_run_container_access_vm_data_mounts_vm_data_read_only(
     manifest = _basic_manifest(access_vm_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     vm_mounts = [v for v in volume_args if "/data/vm_data" in v]
     assert len(vm_mounts) == 1, vm_mounts
     assert vm_mounts[0].endswith(":ro,idmap"), vm_mounts[0]
 
 
-def test_run_container_app_archive_mounts_per_app_subdir(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_app_archive_mounts_per_app_subdir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Apps opting in via [data].app_archive get a per-app bind mount at /data/app_archive/<name>/ (host source: operator-configured archive_dir, container path same regardless of backing). A regression mounting the parent instead would expose every app's archive contents to every app."""
     manifest = _basic_manifest(app_data=True, app_archive=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     archive_mounts = [v for v in volume_args if "/data/app_archive" in v]
     assert len(archive_mounts) == 1, archive_mounts
 
-    assert archive_mounts[0].endswith(
-        f":/data/app_archive/{manifest.name}:idmap"
-    ), archive_mounts[0]
+    assert archive_mounts[0].endswith(f":/data/app_archive/{manifest.name}:idmap"), archive_mounts[0]
 
     assert f"archive/{manifest.name}:" in archive_mounts[0], archive_mounts[0]
 
 
-def test_run_container_app_archive_off_by_default(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_app_archive_off_by_default(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Apps that don't opt into app_archive get NO archive bind mount; a regression that always mounted the archive tier would surface operator-configured backings to apps that never asked for it."""
     manifest = _basic_manifest(app_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     assert not any("/data/app_archive" in v for v in volume_args)
 
 
-def test_run_container_access_all_data_mounts_archive_parent(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_container_access_all_data_mounts_archive_parent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``access_all_data`` mounts the parent ``/data/app_archive`` directory (not a single per-app subdir), mirroring how app_data is mounted under access_all_data."""
     manifest = _basic_manifest(access_all_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     targets = [v.rsplit(":", 2)[1] for v in volume_args]
     assert "/data/app_archive" in targets
     assert f"/data/app_archive/{manifest.name}" not in targets
@@ -593,9 +544,7 @@ def test_run_container_access_all_data_skips_archive_mount_when_archive_dir_miss
     archive_dir = str(tmp_path / "archive-not-mounted")
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(temp_data_dir, exist_ok=True)
-    os.makedirs(
-        os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True
-    )
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
 
     run_container(
         manifest.name,
@@ -611,9 +560,7 @@ def test_run_container_access_all_data_skips_archive_mount_when_archive_dir_miss
     assert len(run_cmds) == 1
     argv = run_cmds[0]
 
-    volume_args = [
-        arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"
-    ]
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     archive_mounts = [v for v in volume_args if "/data/app_archive" in v]
     assert archive_mounts == [], f"expected no archive mount, got {archive_mounts}"
 
@@ -624,16 +571,12 @@ def test_run_container_app_archive_env_var_translated_to_container_path(
     """``OPENHOST_APP_ARCHIVE_DIR`` in env_vars must be translated from the host path to the in-container path before being stamped on the podman run argv — same host-vs-container translation pattern as ``OPENHOST_APP_DATA_DIR`` and ``OPENHOST_APP_TEMP_DIR``."""
     manifest = _basic_manifest(app_data=True, app_archive=True)
     env_vars = {"OPENHOST_APP_ARCHIVE_DIR": "/some/host/archive/myapp"}
-    argv = _run_and_capture(
-        monkeypatch, manifest=manifest, tmp_path=tmp_path, env_vars=env_vars
-    )
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path, env_vars=env_vars)
 
     e_values = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-e"]
     archive_env = [e for e in e_values if e.startswith("OPENHOST_APP_ARCHIVE_DIR=")]
     assert len(archive_env) == 1, archive_env
-    assert (
-        archive_env[0] == f"OPENHOST_APP_ARCHIVE_DIR=/data/app_archive/{manifest.name}"
-    )
+    assert archive_env[0] == f"OPENHOST_APP_ARCHIVE_DIR=/data/app_archive/{manifest.name}"
 
 
 def test_run_container_port_mappings_bind_tcp_and_udp_on_all_interfaces(
@@ -821,9 +764,7 @@ def test_get_docker_logs_returns_empty_when_no_build_log_and_no_container(
     assert output == ""
 
 
-def test_get_docker_logs_appends_podman_logs_when_container_id_set(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_get_docker_logs_appends_podman_logs_when_container_id_set(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With a container id, get_docker_logs should also run ``podman logs
     --tail <N>`` and concatenate the output under a 'Container logs' header."""
     _make_build_log(tmp_path, "notes", "=== Build complete ===\n")
@@ -844,9 +785,7 @@ def test_get_docker_logs_appends_podman_logs_when_container_id_set(
     assert "app stdout line" in output
 
 
-def test_get_docker_logs_strips_ansi_escape_sequences(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_get_docker_logs_strips_ansi_escape_sequences(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Color codes and carriage returns from podman logs should be
     stripped before we hand the text back to the dashboard (which
     otherwise renders them as garbage text)."""
@@ -883,10 +822,7 @@ def test_bind_mount_arg_ro_emits_ro_idmap() -> None:
     ordering (``ro,idmap``) matters for operator readability of
     ``podman ps`` output; pin the canonical rendering here even though
     podman parses the options order-independently."""
-    assert (
-        _bind_mount_arg("/srv/data", "/data", read_only=True)
-        == "/srv/data:/data:ro,idmap"
-    )
+    assert _bind_mount_arg("/srv/data", "/data", read_only=True) == "/srv/data:/data:ro,idmap"
 
 
 def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:

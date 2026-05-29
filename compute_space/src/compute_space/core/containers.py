@@ -24,7 +24,8 @@ import sqlite3
 import subprocess
 
 from compute_space.core.logging import logger
-from compute_space.core.manifest import AppManifest, PortMapping
+from compute_space.core.manifest import AppManifest
+from compute_space.core.manifest import PortMapping
 
 CONTAINER_ROOT = "/data"
 
@@ -71,9 +72,7 @@ _BUILD_CACHE_CORRUPT_FRAGMENTS_UNCONDITIONAL = (
 # The "missing local layer blob" error from containers-storage.  The
 # full "content digest" prefix rules out registry-side "not found"
 # errors that happen to mention a sha256 digest.
-_MISSING_LAYER_RE = re.compile(
-    r"content digest sha256:[0-9a-f]+:\s*not found", re.IGNORECASE
-)
+_MISSING_LAYER_RE = re.compile(r"content digest sha256:[0-9a-f]+:\s*not found", re.IGNORECASE)
 
 
 def _is_build_cache_corrupt_line(line: str) -> bool:
@@ -104,9 +103,7 @@ def container_runtime_available() -> bool:
     except FileNotFoundError:
         return False
     except subprocess.TimeoutExpired:
-        logger.warning(
-            "podman --version timed out after 5s; treating podman as unavailable"
-        )
+        logger.warning("podman --version timed out after 5s; treating podman as unavailable")
         return False
     except OSError as e:
         logger.warning(
@@ -137,9 +134,7 @@ def _is_build_cache_corrupt(output: str) -> bool:
 def _raise_if_build_cache_corrupt(output: str) -> None:
     """Raise a tagged RuntimeError if ``output`` matches a cache-corruption pattern."""
     if _is_build_cache_corrupt(output):
-        raise RuntimeError(
-            f"{BUILD_CACHE_CORRUPT_MARKER} Container build cache is corrupted."
-        )
+        raise RuntimeError(f"{BUILD_CACHE_CORRUPT_MARKER} Container build cache is corrupted.")
 
 
 def build_image(
@@ -168,9 +163,7 @@ def build_image(
     if temp_data_dir:
         # Stream build output line-by-line so the dashboard can show progress.
         build_output = ""
-        with subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-        ) as proc:
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
             try:
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -182,16 +175,12 @@ def build_image(
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "Build process %d did not exit within 5s of SIGKILL", proc.pid
-                    )
+                    logger.warning("Build process %d did not exit within 5s of SIGKILL", proc.pid)
                 raise
         if proc.returncode != 0:
             _raise_if_build_cache_corrupt(build_output)
             tail = build_output[-2000:] if len(build_output) > 2000 else build_output
-            raise RuntimeError(
-                f"Container build failed (exit code {proc.returncode}):\n{tail}"
-            )
+            raise RuntimeError(f"Container build failed (exit code {proc.returncode}):\n{tail}")
     else:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
@@ -205,9 +194,7 @@ def build_image(
     return image_tag
 
 
-def _bind_mount_arg(
-    host_path: str, container_path: str, *, read_only: bool = False
-) -> str:
+def _bind_mount_arg(host_path: str, container_path: str, *, read_only: bool = False) -> str:
     """Render a ``-v`` value with ``:idmap`` (or ``:ro,idmap`` for read-only)."""
     options = "ro,idmap" if read_only else "idmap"
     return f"{host_path}:{container_path}:{options}"
@@ -277,9 +264,7 @@ def run_container(
         #
         # WARNING: this disables ALL network isolation.  The container can
         # reach any port on the host including other apps' loopback ports.
-        logger.warning(
-            "App %s uses network_host — all network isolation is disabled", app_name
-        )
+        logger.warning("App %s uses network_host — all network isolation is disabled", app_name)
         cmd.append("--network=host")
     else:
         cmd.extend(
@@ -311,9 +296,7 @@ def run_container(
         cmd.extend(
             [
                 "-v",
-                _bind_mount_arg(
-                    os.path.join(data_dir, "app_data"), f"{CONTAINER_ROOT}/app_data"
-                ),
+                _bind_mount_arg(os.path.join(data_dir, "app_data"), f"{CONTAINER_ROOT}/app_data"),
             ]
         )
         cmd.extend(
@@ -328,9 +311,7 @@ def run_container(
         # access_all_data is permissive — skip the archive mount when
         # the tier isn't configured rather than refusing to start.
         if os.path.isdir(archive_dir):
-            cmd.extend(
-                ["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")]
-            )
+            cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
         os.makedirs(vm_data_dir, exist_ok=True)
         cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data)])
     else:
@@ -385,9 +366,7 @@ def run_container(
         cmd.append(image_tag)
 
     logger.info("Running container: %s", " ".join(cmd))
-    _append_log(
-        app_name, temp_data_dir, f"=== Starting container: {container_name} ===\n"
-    )
+    _append_log(app_name, temp_data_dir, f"=== Starting container: {container_name} ===\n")
 
     # Remove any stale container with the same name so podman run doesn't
     # fail with a name conflict.
@@ -426,17 +405,11 @@ def stop_container(container_id: str) -> None:
                 container_id,
                 result.returncode,
             )
-            subprocess.run(
-                ["podman", "kill", container_id], capture_output=True, timeout=10
-            )
+            subprocess.run(["podman", "kill", container_id], capture_output=True, timeout=10)
     except subprocess.TimeoutExpired:
         logger.warning("podman stop %s timed out, escalating to kill", container_id)
-        subprocess.run(
-            ["podman", "kill", container_id], capture_output=True, timeout=10
-        )
-    subprocess.run(
-        ["podman", "rm", "-f", container_id], capture_output=True, timeout=30
-    )
+        subprocess.run(["podman", "kill", container_id], capture_output=True, timeout=10)
+    subprocess.run(["podman", "rm", "-f", container_id], capture_output=True, timeout=30)
 
 
 def stop_app_process(app_row: sqlite3.Row) -> None:
@@ -530,8 +503,6 @@ def get_docker_logs(
         except subprocess.TimeoutExpired:
             logger.warning("podman logs timed out after 10s for %s", container_id)
         except OSError as e:
-            logger.warning(
-                "podman logs failed for %s with OSError: %s", container_id, e
-            )
+            logger.warning("podman logs failed for %s with OSError: %s", container_id, e)
 
     return "\n".join(parts) if parts else ""
