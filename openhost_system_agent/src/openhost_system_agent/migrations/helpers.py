@@ -11,11 +11,16 @@ def run(*cmd: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def write_file(path: str, content: str, mode: int = 0o644) -> None:
+def write_file(path: str, content: str, *, mode: int = 0o644) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
-    os.chmod(path, mode)
+    old_umask = os.umask(0)
+    try:
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+    finally:
+        os.umask(old_umask)
 
 
 def ensure_line(path: str, line: str) -> None:
