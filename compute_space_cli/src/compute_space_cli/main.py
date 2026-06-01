@@ -123,7 +123,7 @@ class AppCmd:
         app_id = body.get("app_id")
         app_name = body.get("app_name")
         print(f"Deploying {app_name}...")
-        print(f"  {cfg.url}/app_detail/{app_id}")
+        print(f"  {cfg.url}/app_detail/{app_name}")
         if not wait:
             print(f"Status: {body.get('status', 'submitted')}")
             return

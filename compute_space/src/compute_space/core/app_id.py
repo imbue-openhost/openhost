@@ -1,6 +1,11 @@
 """Here to avoid a circular import in migrations if we put this in apps.py"""
 
+import re
 import secrets
+
+# App names are DNS-label-like: lowercase alphanumeric, hyphens allowed but not
+# at the edges.  Kept in sync with the check in apps.validate_manifest.
+_APP_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
 # Bitcoin base58 alphabet: omits 0, O, I, l to avoid visual ambiguity.
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -26,3 +31,8 @@ def new_app_id() -> str:
 def is_valid_app_id(s: str) -> bool:
     """True iff s is exactly APP_ID_LENGTH chars, all from the base58 alphabet."""
     return len(s) == APP_ID_LENGTH and all(c in _BASE58_SET for c in s)
+
+
+def is_valid_app_name(s: str) -> bool:
+    """True iff s is a valid app name (lowercase alphanumeric, interior hyphens)."""
+    return bool(_APP_NAME_RE.match(s))

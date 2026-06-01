@@ -489,7 +489,7 @@ async def _reload_app_impl(
                     )
                     db.commit()
                     if continue_oauth:
-                        return Redirect(path=f"/app_detail/{app_id}")
+                        return Redirect(path=f"/app_detail/{app_name}")
                     return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
                 except OAuthAuthorizationRequired as e:
                     lf.write("No token available; redirecting to oauth flow\n")
@@ -511,7 +511,7 @@ async def _reload_app_impl(
                 )
                 db.commit()
                 if continue_oauth:
-                    return Redirect(path=f"/app_detail/{app_id}")
+                    return Redirect(path=f"/app_detail/{app_name}")
                 return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
 
     await asyncio.to_thread(stop_app_process, app_row)
@@ -553,7 +553,10 @@ async def reload_app_after_oauth(
     so we don't truncate the log file again or re-prompt for OAuth."""
     if not continue_oauth_update:
         # GET without the flag isn't meaningful; nudge the operator back to /app_detail.
-        return Redirect(path=f"/app_detail/{app_id}")
+        row = db.execute("SELECT name FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+        if not row:
+            return Redirect(path="/dashboard")
+        return Redirect(path=f"/app_detail/{row['name']}")
     return await _reload_app_impl(app_id, update=True, continue_oauth=True, db=db, config=config)
 
 

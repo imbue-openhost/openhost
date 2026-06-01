@@ -151,7 +151,7 @@ async function grantPermission(btn) {
 <script id="page-config" type="application/json">
 {
   "renameAppUrl": "/rename_app/{{ app.app_id }}",
-  "appDetailUrl": "/app_detail/{{ app.app_id }}",
+  "appDetailUrl": "/app_detail/{{ app.name }}",
   "appLogsUrl": "/app_logs/{{ app.app_id }}",
   "appStatusUrl": "/api/app_status/{{ app.app_id }}",
   "appStatus": {{ app.status | tojson }},
