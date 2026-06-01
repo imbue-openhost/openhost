@@ -64,6 +64,7 @@ class Migration0002Baseline(SystemMigration):
             "# Managed by OpenHost; do not edit by hand.\n"
             "net.ipv4.ip_unprivileged_port_start = 25\n"
             "kernel.apparmor_restrict_unprivileged_userns = 0\n",
+            mode=0o644,
         )
         run("sysctl", "-p", "/etc/sysctl.d/90-openhost-podman.conf")
 
@@ -74,6 +75,7 @@ class Migration0002Baseline(SystemMigration):
             "# Managed by OpenHost; do not edit by hand.\n"
             'unqualified-search-registries = ["docker.io"]\n'
             'short-name-mode = "permissive"\n',
+            mode=0o644,
         )
 
     def _dummy_interface(self) -> None:
@@ -86,10 +88,12 @@ class Migration0002Baseline(SystemMigration):
         write_file(
             "/etc/systemd/network/10-openhost0.netdev",
             "[NetDev]\nName=openhost0\nKind=dummy\n",
+            mode=0o644,
         )
         write_file(
             "/etc/systemd/network/10-openhost0.network",
             "[Match]\nName=openhost0\n\n[Network]\nAddress=10.200.0.1/32\n",
+            mode=0o644,
         )
 
     def _user_container_config(self) -> None:
@@ -98,6 +102,7 @@ class Migration0002Baseline(SystemMigration):
         write_file(
             str(conf_dir / "containers.conf"),
             '# Managed by OpenHost; do not edit by hand.\n[containers]\nhost_containers_internal_ip = "10.200.0.1"\n',
+            mode=0o644,
         )
         for p in [conf_dir, conf_dir / "containers.conf"]:
             run("chown", "host:host", str(p))
@@ -135,6 +140,6 @@ class Migration0002Baseline(SystemMigration):
             "[Install]\n"
             "WantedBy=multi-user.target\n"
         )
-        write_file("/etc/systemd/system/openhost.service", unit)
+        write_file("/etc/systemd/system/openhost.service", unit, mode=0o644)
         run("systemctl", "daemon-reload")
         run("systemctl", "enable", "openhost")

@@ -11,7 +11,13 @@ def run(*cmd: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def write_file(path: str, content: str, *, mode: int = 0o644) -> None:
+def write_file(path: str, content: str, *, mode: int = 0o600) -> None:
+    """Write *content* to *path*, creating parent dirs as needed.
+
+    ``mode`` defaults to ``0o600`` (owner-only).  System config files
+    that need to be world-readable (sysctl snippets, systemd units,
+    container registries) should pass ``mode=0o644`` explicitly.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     old_umask = os.umask(0)
