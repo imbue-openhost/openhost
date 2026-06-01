@@ -43,7 +43,10 @@ def _call_system_agent_sync[ResultT](result_type: type[ResultT], *args: str, tim
     except (json.JSONDecodeError, ValueError) as e:
         raise SystemAgentError(f"Invalid JSON from system agent: {result.stdout}") from e
 
-    return cattrs.structure(raw, result_type)
+    try:
+        return cattrs.structure(raw, result_type)
+    except (cattrs.ClassValidationError, KeyError, TypeError) as e:
+        raise SystemAgentError(f"Unexpected response shape from system agent: {e}") from e
 
 
 @async_wrap
