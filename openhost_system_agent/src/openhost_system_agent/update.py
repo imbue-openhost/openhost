@@ -148,8 +148,8 @@ def _run_pixi_install() -> None:
             text=True,
             timeout=300,
         )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("pixi install timed out after 300s")
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("pixi install timed out after 300s") from e
     if result.returncode != 0:
         raise RuntimeError(f"pixi install failed (exit {result.returncode}):\n{result.stderr}")
 
@@ -171,8 +171,8 @@ def _run_migrations_reexec() -> list[int]:
             text=True,
             timeout=300,
         )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("System migrations timed out after 300s")
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("System migrations timed out after 300s") from e
     if result.returncode != 0:
         raise RuntimeError(f"System migrations failed:\n{result.stderr}")
 
