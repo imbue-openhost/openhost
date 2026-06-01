@@ -4,7 +4,7 @@ import re
 import secrets
 
 # App names are DNS-label-like: lowercase alphanumeric, hyphens allowed but not
-# at the edges.  Kept in sync with the check in apps.validate_manifest.
+# at the edges.
 _APP_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
 # Bitcoin base58 alphabet: omits 0, O, I, l to avoid visual ambiguity.
