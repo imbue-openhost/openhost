@@ -140,13 +140,16 @@ def apply_update() -> ApplyResult:
 
 
 def _run_pixi_install() -> None:
-    result = subprocess.run(
-        ["/home/host/.pixi/bin/pixi", "install"],
-        cwd=_PROJECT_DIR,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    try:
+        result = subprocess.run(
+            ["/home/host/.pixi/bin/pixi", "install"],
+            cwd=_PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("pixi install timed out after 300s")
     if result.returncode != 0:
         raise RuntimeError(f"pixi install failed (exit {result.returncode}):\n{result.stderr}")
 
@@ -160,13 +163,16 @@ _MIGRATE_SCRIPT = (
 
 def _run_migrations_reexec() -> list[int]:
     """Run migrations in a subprocess so the freshly-installed code is imported."""
-    result = subprocess.run(
-        [sys.executable, "-c", _MIGRATE_SCRIPT],
-        cwd=_PROJECT_DIR,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _MIGRATE_SCRIPT],
+            cwd=_PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("System migrations timed out after 300s")
     if result.returncode != 0:
         raise RuntimeError(f"System migrations failed:\n{result.stderr}")
 
