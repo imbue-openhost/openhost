@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -17,6 +16,7 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
+from compute_space.core.app_id import is_valid_app_name
 from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import read_owner_username
@@ -265,7 +265,7 @@ def validate_manifest(manifest: AppManifest, db: sqlite3.Connection, app_name: s
     if app_name is None:
         app_name = manifest.name
 
-    if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", app_name):
+    if not is_valid_app_name(app_name):
         return "App name must be lowercase alphanumeric (hyphens allowed, not at start/end)"
 
     if f"/{app_name}" in RESERVED_PATHS:

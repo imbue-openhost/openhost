@@ -26,8 +26,8 @@ function saveName() {
     .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
       if (!res.ok) { errEl.textContent = res.data.error; return; }
-      // app_id is unchanged on rename; the URL stays the same. Reload to pick up the new name in headings.
-      window.location.href = config.appDetailUrl;
+      // The detail URL is keyed by name, so a rename changes it.
+      window.location.href = '/app_detail/' + encodeURIComponent(res.data.name);
     });
 }
 
