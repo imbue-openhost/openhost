@@ -87,9 +87,10 @@ def provision_data(
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
 
-    Apps only get filesystem access to directories they explicitly request
-    via app_data, app_temp_data, and app_archive flags in [data].  SQLite
-    entries implicitly enable app_data.
+    By default, apps receive a permanent data directory (app_data defaults
+    to True).  Additional storage tiers must be explicitly requested via
+    app_temp_data, app_archive, access_all_app_data, or access_all_archive.
+    SQLite entries also implicitly enable app_data.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
