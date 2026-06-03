@@ -37,8 +37,7 @@ def _require_url_safe(token: str, source: str) -> None:
     """Reject tokens that would need URL-escaping to appear in the claim URL."""
     if not token or not _URL_SAFE_TOKEN_RE.match(token):
         print(
-            f"Error: claim token from {source} is not URL-safe. "
-            "Allowed characters: letters, digits, '-', '_'.",
+            f"Error: claim token from {source} is not URL-safe. Allowed characters: letters, digits, '-', '_'.",
             file=sys.stderr,
         )
         raise SystemExit(2)
