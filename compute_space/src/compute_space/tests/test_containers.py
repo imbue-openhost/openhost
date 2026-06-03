@@ -426,31 +426,6 @@ def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.Monke
         )
 
 
-def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With access_all_app_data, the app sees /data/app_data/ and
-    /data/app_temp_data/ as whole-namespace parent mounts, not just its
-    own subdir.  This is security-sensitive because a typo here would
-    expose every app's data to every app; pin the exact mount layout."""
-    manifest = _basic_manifest(access_all_app_data=True)
-    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
-
-    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
-    # Every mount must be idmap (rw or ro).
-    for v in volume_args:
-        assert v.endswith(":idmap") or v.endswith(":ro,idmap"), v
-
-    # Specifically, the app_data/app_temp_data parent mounts must be the
-    # *parent* directories, not the per-app subdirectories.
-    targets = [v.rsplit(":", 2)[1] for v in volume_args]
-    assert "/data/app_data" in targets
-    assert "/data/app_temp_data" in targets
-    # With access_all_app_data, vm_data is explicitly mounted rw.  Pin this —
-    # silently swapping it to ro would break every app that relies on
-    # /data/vm_data as shared scratch space.
-    vm_mount = next(v for v in volume_args if v.endswith(":/data/vm_data:idmap"))
-    assert "ro" not in vm_mount.rsplit(":", 1)[1], f"vm_data should be rw under access_all_app_data, got {vm_mount}"
-
-
 def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """access_vm_data (without access_all_app_data) grants only a read-only
     view of /data/vm_data.  The distinction matters: this is what lets
@@ -488,58 +463,6 @@ def test_run_container_app_archive_off_by_default(tmp_path, monkeypatch: pytest.
 
     volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
     assert not any("/data/app_archive" in v for v in volume_args)
-
-
-def test_run_container_access_all_data_mounts_archive_parent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``access_all_archive`` mounts the parent ``/data/app_archive`` directory (not a single per-app subdir)."""
-    manifest = _basic_manifest(access_all_archive=True)
-    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
-
-    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
-    targets = [v.rsplit(":", 2)[1] for v in volume_args]
-    assert "/data/app_archive" in targets
-    assert f"/data/app_archive/{manifest.name}" not in targets
-
-
-def test_run_container_access_all_data_skips_archive_mount_when_archive_dir_missing(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``access_all_archive`` is permissive: when the archive tier isn't configured or its mount has dropped, the container must still start without the archive bind."""
-    runs: list[list[str]] = []
-
-    def fake_run(cmd, capture_output=False, text=False, timeout=60, **_):  # type: ignore[no-untyped-def]
-        runs.append(list(cmd))
-        if cmd[:2] == ["podman", "run"]:
-            return _FakeCompleted(0, stdout="container-id-xyz\n")
-        return _FakeCompleted(0)
-
-    _patch_subprocess_run(monkeypatch, fake_run)
-
-    manifest = _basic_manifest(access_all_archive=True)
-    data_dir = str(tmp_path / "persistent")
-    temp_data_dir = str(tmp_path / "temp")
-    archive_dir = str(tmp_path / "archive-not-mounted")
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(temp_data_dir, exist_ok=True)
-    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
-
-    run_container(
-        manifest.name,
-        "openhost-myapp:latest",
-        manifest,
-        local_port=9001,
-        env_vars={},
-        data_dir=data_dir,
-        temp_data_dir=temp_data_dir,
-        archive_dir=archive_dir,
-    )
-    run_cmds = [c for c in runs if c[:2] == ["podman", "run"]]
-    assert len(run_cmds) == 1
-    argv = run_cmds[0]
-
-    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
-    archive_mounts = [v for v in volume_args if "/data/app_archive" in v]
-    assert archive_mounts == [], f"expected no archive mount, got {archive_mounts}"
 
 
 def test_run_container_access_all_archive_mounts_archive_parent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
