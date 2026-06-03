@@ -155,8 +155,6 @@ class AppManifest:
     access_vm_data: bool = False
     access_all_app_data: bool = False
     access_all_archive: bool = False
-    # Deprecated: use access_all_app_data + access_all_archive instead.
-    access_all_data: bool = False
 
     # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
@@ -375,7 +373,6 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_app_data=data_section.get("access_all_app_data", False),
         access_all_archive=data_section.get("access_all_archive", False),
-        access_all_data=data_section.get("access_all_data", False),
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,

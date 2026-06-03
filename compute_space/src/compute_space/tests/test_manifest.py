@@ -53,7 +53,6 @@ class TestDefaults:
         assert manifest.access_vm_data is False
         assert manifest.access_all_app_data is False
         assert manifest.access_all_archive is False
-        assert manifest.access_all_data is False  # deprecated alias still False by default
 
     def test_sqlite_default_empty(self):
         manifest = parse_manifest_from_string(MINIMAL)
@@ -661,12 +660,6 @@ class TestAppArchive:
         toml = MINIMAL + "\n[data]\napp_archive = true\n"
         manifest = parse_manifest_from_string(toml)
         assert manifest.app_archive is True
-
-    def test_app_archive_with_access_all_data(self):
-        toml = MINIMAL + "\n[data]\naccess_all_data = true\napp_archive = true\n"
-        manifest = parse_manifest_from_string(toml)
-        assert manifest.app_archive is True
-        assert manifest.access_all_data is True
 
     def test_access_all_app_data_parsed(self):
         toml = MINIMAL + "\n[data]\naccess_all_app_data = true\n"

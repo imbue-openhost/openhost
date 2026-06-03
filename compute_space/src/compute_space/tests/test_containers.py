@@ -427,11 +427,11 @@ def test_run_container_adds_manifest_devices(tmp_path, monkeypatch: pytest.Monke
 
 
 def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With access_all_data, the app sees /data/app_data/ and
+    """With access_all_app_data, the app sees /data/app_data/ and
     /data/app_temp_data/ as whole-namespace parent mounts, not just its
     own subdir.  This is security-sensitive because a typo here would
     expose every app's data to every app; pin the exact mount layout."""
-    manifest = _basic_manifest(access_all_data=True)
+    manifest = _basic_manifest(access_all_app_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
     volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
@@ -444,15 +444,15 @@ def test_run_container_access_all_data_mounts_parent_dirs(tmp_path, monkeypatch:
     targets = [v.rsplit(":", 2)[1] for v in volume_args]
     assert "/data/app_data" in targets
     assert "/data/app_temp_data" in targets
-    # With access_all_data, vm_data is explicitly mounted rw.  Pin this —
+    # With access_all_app_data, vm_data is explicitly mounted rw.  Pin this —
     # silently swapping it to ro would break every app that relies on
     # /data/vm_data as shared scratch space.
     vm_mount = next(v for v in volume_args if v.endswith(":/data/vm_data:idmap"))
-    assert "ro" not in vm_mount.rsplit(":", 1)[1], f"vm_data should be rw under access_all_data, got {vm_mount}"
+    assert "ro" not in vm_mount.rsplit(":", 1)[1], f"vm_data should be rw under access_all_app_data, got {vm_mount}"
 
 
 def test_run_container_access_vm_data_mounts_vm_data_read_only(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """access_vm_data (without access_all_data) grants only a read-only
+    """access_vm_data (without access_all_app_data) grants only a read-only
     view of /data/vm_data.  The distinction matters: this is what lets
     apps read shared state without being able to corrupt it, and a
     regression swapping in rw here would turn a security-critical mount
@@ -491,8 +491,8 @@ def test_run_container_app_archive_off_by_default(tmp_path, monkeypatch: pytest.
 
 
 def test_run_container_access_all_data_mounts_archive_parent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``access_all_data`` mounts the parent ``/data/app_archive`` directory (not a single per-app subdir), mirroring how app_data is mounted under access_all_data."""
-    manifest = _basic_manifest(access_all_data=True)
+    """``access_all_archive`` mounts the parent ``/data/app_archive`` directory (not a single per-app subdir)."""
+    manifest = _basic_manifest(access_all_archive=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
 
     volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
@@ -504,7 +504,7 @@ def test_run_container_access_all_data_mounts_archive_parent(tmp_path, monkeypat
 def test_run_container_access_all_data_skips_archive_mount_when_archive_dir_missing(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``access_all_data`` is permissive: when the archive tier isn't configured or its mount has dropped, the container must still start without the archive bind, otherwise apps like the backup app would be locked out on every archive-less zone."""
+    """``access_all_archive`` is permissive: when the archive tier isn't configured or its mount has dropped, the container must still start without the archive bind."""
     runs: list[list[str]] = []
 
     def fake_run(cmd, capture_output=False, text=False, timeout=60, **_):  # type: ignore[no-untyped-def]
@@ -515,7 +515,7 @@ def test_run_container_access_all_data_skips_archive_mount_when_archive_dir_miss
 
     _patch_subprocess_run(monkeypatch, fake_run)
 
-    manifest = _basic_manifest(access_all_data=True)
+    manifest = _basic_manifest(access_all_archive=True)
     data_dir = str(tmp_path / "persistent")
     temp_data_dir = str(tmp_path / "temp")
     archive_dir = str(tmp_path / "archive-not-mounted")
