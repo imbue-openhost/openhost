@@ -9,7 +9,7 @@
 openhost/
 ├── compute_space/
 │   └── compute_space/    # quart/hypercorn app — routes requests to apps, manages containers
-├── self_host_cli/        # `openhost` CLI: up, down, doctor, update
+├── routerd_cli/          # `openhost` CLI: up, down, doctor, update
 ├── compute_space_cli/    # compute space management CLI
 ├── ansible/              # server deployment (any VPS or bare metal)
 ├── apps/
