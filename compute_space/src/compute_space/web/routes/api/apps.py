@@ -386,9 +386,7 @@ async def _read_app_git_info(repo_path: str | None) -> tuple[str | None, str | N
 async def app_status(app_id: str, db: sqlite3.Connection) -> Response[AppStatusResponse] | Response[ErrorResponse]:
     if not is_valid_app_id(app_id):
         return Response(content=ErrorResponse(error="Invalid app_id"), status_code=400)
-    app_row = db.execute(
-        "SELECT status, error_message, repo_path FROM apps WHERE app_id = ?", (app_id,)
-    ).fetchone()
+    app_row = db.execute("SELECT status, error_message, repo_path FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     if not app_row:
         return Response(content=ErrorResponse(error="not found"), status_code=404)
     error_msg = app_row["error_message"]
