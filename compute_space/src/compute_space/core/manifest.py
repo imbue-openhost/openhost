@@ -149,10 +149,13 @@ class AppManifest:
 
     # [data]
     sqlite_dbs: list[str] = attr.Factory(list)
-    app_data: bool = False
+    app_data: bool = True
     app_temp_data: bool = False
     app_archive: bool = False
     access_vm_data: bool = False
+    access_all_app_data: bool = False
+    access_all_archive: bool = False
+    # Deprecated: use access_all_app_data + access_all_archive instead.
     access_all_data: bool = False
 
     # [services.v2]
@@ -366,10 +369,12 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         cpu_millicores=resources.get("cpu_millicores", 100),
         gpu=resources.get("gpu", False),
         sqlite_dbs=data_section.get("sqlite", []),
-        app_data=data_section.get("app_data", False),
+        app_data=data_section.get("app_data", True),
         app_temp_data=data_section.get("app_temp_data", False),
         app_archive=data_section.get("app_archive", False),
         access_vm_data=data_section.get("access_vm_data", False),
+        access_all_app_data=data_section.get("access_all_app_data", False),
+        access_all_archive=data_section.get("access_all_archive", False),
         access_all_data=data_section.get("access_all_data", False),
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),

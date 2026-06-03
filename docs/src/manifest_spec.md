@@ -55,16 +55,18 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `app_data` | boolean | no | false | Request access to permanent filesystem directory (backed up) |
+| `app_data` | boolean | no | **true** | Request access to permanent filesystem directory (backed up). Set `false` to explicitly opt out. |
 | `app_temp_data` | boolean | no | false | Request access to temporary filesystem directory (not backed up) |
 | `app_archive` | boolean | no | false | Request access to the elastic archive directory for bulk content. Backed by S3 (via JuiceFS) once the operator configures it from the dashboard; apps with this flag won't install until S3 is configured. |
 | `sqlite` | string[] | no | [] | SQLite database names to provision (implicitly enables `app_data`) |
-| `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory |
-| `access_all_data` | boolean | no | false | Full access to permanent data, temp data, archive, and vm data |
+| `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory (read-only) |
+| `access_all_app_data` | boolean | no | false | Mount all apps' permanent data and temp data parent directories (rw). Also grants rw access to vm_data. For admin tools like file browsers. |
+| `access_all_archive` | boolean | no | false | Mount all apps' archive parent directory. Permissive: silently skipped when JuiceFS is not configured. For backup tools. |
+| `access_all_data` | boolean | no | false | **Deprecated.** Equivalent to `access_all_app_data = true` + `access_all_archive = true`. |
 
 ## Data Directory Structure
 
-Apps have three storage areas, each with different durability + size + latency tradeoffs. **By default, apps have no filesystem access.** Each must be explicitly requested:
+Apps have three storage areas, each with different durability + size + latency tradeoffs. **By default, apps receive a permanent data directory (`app_data`).** Other tiers must be explicitly requested:
 
 - **Permanent data** (`/data/app_data/{app_name}/`) — local disk. Small, fast, backed up. Enabled by `app_data = true` or by requesting `sqlite` entries. **SQLite databases must live here**, not in `app_archive`: the archive tier may be backed by a network FS with close-to-open consistency that corrupts SQLite WAL.
 - **Temporary data** (`/data/app_temp_data/{app_name}/`) — local disk scratch. Not backed up, recreatable. Enabled by `app_temp_data = true`.
@@ -75,7 +77,7 @@ The archive tier is disabled by default. The operator configures it one-shot fro
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, the storage guard stops running apps until space is freed.
 
-All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_data`, the parent dirs are mounted instead (`/data/app_data/`, `/data/app_temp_data/`, `/data/app_archive/`) so the app can see all apps' data.
+All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_app_data`, the parent dirs `/data/app_data/` and `/data/app_temp_data/` are mounted so the app can see all apps' data. With `access_all_archive`, the `/data/app_archive/` parent is mounted. The deprecated `access_all_data` is equivalent to both flags combined.
 
 ## Environment Variable Injection
 
@@ -170,5 +172,6 @@ port = 5000
 command = "/data -A"
 
 [data]
-access_all_data = true
+access_all_app_data = true
+access_all_archive = true
 ```
