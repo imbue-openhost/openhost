@@ -62,7 +62,7 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 | `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory (read-only) |
 | `access_all_app_data` | boolean | no | false | Mount all apps' permanent data and temp data parent directories (rw). Also grants rw access to vm_data. For admin tools like file browsers. |
 | `access_all_archive` | boolean | no | false | Mount all apps' archive parent directory. Permissive: silently skipped when JuiceFS is not configured. For backup tools. |
-| `access_all_data` | boolean | no | false | **Deprecated.** Equivalent to `access_all_app_data = true` + `access_all_archive = true`. |
+
 
 ## Data Directory Structure
 
@@ -77,7 +77,7 @@ The archive tier is disabled by default. The operator configures it one-shot fro
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, the storage guard stops running apps until space is freed.
 
-All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_app_data`, the parent dirs `/data/app_data/` and `/data/app_temp_data/` are mounted so the app can see all apps' data. With `access_all_archive`, the `/data/app_archive/` parent is mounted. The deprecated `access_all_data` is equivalent to both flags combined.
+All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_app_data`, the parent dirs `/data/app_data/` and `/data/app_temp_data/` are mounted so the app can see all apps' data. With `access_all_archive`, the `/data/app_archive/` parent is mounted.
 
 ## Environment Variable Injection
 

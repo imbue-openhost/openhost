@@ -286,25 +286,22 @@ def test_test_connection_succeeds(client: TestClient[Litestar], cookies: dict[st
 
 def test_manifest_requires_archive_only_matches_app_archive_true() -> None:
     """``manifest_requires_archive`` (install/reload gates) keys on
-    ``app_archive = true`` only; access_all_archive and access_all_data are
-    permissive so they don't block installs on archive-less zones."""
+    ``app_archive = true`` only; access_all_archive is permissive so it
+    doesn't block installs on archive-less zones."""
     assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\n")
-    assert not archive_backend.manifest_requires_archive("[data]\naccess_all_data = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\naccess_all_archive = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\naccess_all_app_data = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\napp_data = true\n")
     assert not archive_backend.manifest_requires_archive("")
     # Anchor on TOML key=value shape so substring matching can't false-match.
     assert not archive_backend.manifest_requires_archive("[data]\napp_archive = false\napp_data = true\n")
-    assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\naccess_all_data = true\n")
+    assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\naccess_all_archive = true\n")
 
 
 def test_manifest_uses_archive_matches_either_flag() -> None:
-    """``manifest_uses_archive`` is broader: any of app_archive, access_all_archive,
-    or the deprecated access_all_data qualify, since all result in the archive mount
-    being granted to the container."""
+    """``manifest_uses_archive`` is broader: app_archive and access_all_archive
+    both qualify, since both result in the archive mount being granted to the container."""
     assert archive_backend.manifest_uses_archive("[data]\napp_archive = true\n")
-    assert archive_backend.manifest_uses_archive("[data]\naccess_all_data = true\n")
     assert archive_backend.manifest_uses_archive("[data]\naccess_all_archive = true\n")
     assert not archive_backend.manifest_uses_archive("[data]\napp_data = true\n")
     assert not archive_backend.manifest_uses_archive("[data]\napp_archive = false\napp_data = true\n")
@@ -315,7 +312,7 @@ def test_manifest_uses_archive_matches_either_flag() -> None:
 # --- install/reload gates (api/apps endpoints' archive backend checks) ----
 
 
-def _archive_manifest(name: str, *, app_archive: bool, access_all_data: bool = False) -> AppManifest:
+def _archive_manifest(name: str, *, app_archive: bool, access_all_archive: bool = False) -> AppManifest:
     return AppManifest(
         name=name,
         version="1.0",
@@ -329,7 +326,7 @@ def _archive_manifest(name: str, *, app_archive: bool, access_all_data: bool = F
         gpu=False,
         app_data=True,
         app_archive=app_archive,
-        access_all_data=access_all_data,
+        access_all_archive=access_all_archive,
         access_vm_data=False,
         app_temp_data=False,
         public_paths=["/"],
@@ -378,10 +375,10 @@ def test_add_app_refuses_archive_app_when_backend_disabled(
     assert "S3" in body["error"] or "system page" in body["error"].lower()
 
 
-def test_add_app_allows_access_all_data_when_backend_disabled(
+def test_add_app_allows_access_all_archive_when_backend_disabled(
     apps_client: TestClient[Litestar], cookies: dict[str, str], tmp_path: Path
 ) -> None:
-    """``access_all_data = true`` (without ``app_archive``) does NOT need a
+    """``access_all_archive = true`` (without ``app_archive``) does NOT need a
     configured archive backend — the app silently goes without the mount."""
     fake_clone_dir = str(tmp_path / "clone-aad")
     os.makedirs(fake_clone_dir)
@@ -389,7 +386,7 @@ def test_add_app_allows_access_all_data_when_backend_disabled(
         mock.patch.object(
             apps_routes,
             "parse_manifest",
-            return_value=_archive_manifest("seer", app_archive=False, access_all_data=True),
+            return_value=_archive_manifest("seer", app_archive=False, access_all_archive=True),
         ),
         mock.patch.object(apps_routes, "validate_manifest", return_value=None),
         mock.patch.object(apps_routes, "insert_and_deploy", return_value="seer"),
@@ -434,10 +431,10 @@ def test_reload_app_refuses_when_archive_unhealthy(
     assert resp.status_code == 503
 
 
-def test_reload_app_allows_access_all_data_when_archive_unhealthy(
+def test_reload_app_allows_access_all_archive_when_archive_unhealthy(
     cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]
 ) -> None:
-    """access_all_data apps can still reload while the archive is unhealthy
+    """access_all_archive apps can still reload while the archive is unhealthy
     — they just see the archive when it's available."""
     seer_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
@@ -448,7 +445,7 @@ def test_reload_app_allows_access_all_data_when_archive_unhealthy(
         db.execute(
             "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
             "VALUES (?, 'seer', '1.0', '/r/seer', 19603, 'running', "
-            "'[data]\naccess_all_data = true\n')",
+            "'[data]\naccess_all_archive = true\n')",
             (seer_id,),
         )
         db.commit()

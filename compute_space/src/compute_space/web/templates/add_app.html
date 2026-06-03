@@ -169,9 +169,9 @@ function renderManifest(m, url) {
     row('SQLite databases', m.sqlite_dbs.map(esc).join(', '));
   }
 
-  const wantsAllAppData = m.access_all_app_data || m.access_all_data;
-  const wantsAllArchive = m.access_all_archive || m.access_all_data;
-  const hasFs = m.app_data || m.app_temp_data || m.access_vm_data || m.access_all_data || m.access_all_app_data || m.access_all_archive || m.app_archive || m.sqlite_dbs.length;
+  const wantsAllAppData = m.access_all_app_data;
+  const wantsAllArchive = m.access_all_archive;
+  const hasFs = m.app_data || m.app_temp_data || m.access_vm_data || m.access_all_app_data || m.access_all_archive || m.app_archive || m.sqlite_dbs.length;
   if (hasFs) {
     section('Filesystem Permissions', '#fff3cd');
     if (wantsAllAppData) {

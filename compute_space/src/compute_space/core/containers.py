@@ -4,7 +4,7 @@ Every container runs under the unprivileged ``host`` user in podman's
 default rootless user namespace.  Host bind mounts use ``:idmap`` so
 container-root writes land on disk owned by the ``host`` user.  Each
 app sees only its own ``/data/...`` subdirectory unless it requests
-``access_all_data``.
+``access_all_app_data`` or ``access_all_archive``.
 
 Security defaults: ``--cap-drop=ALL`` then re-add ``DEFAULT_CAPABILITIES``
 (Docker's default set) plus anything the manifest requests from
@@ -215,9 +215,8 @@ def run_container(
     vm_data_dir = os.path.join(data_dir, "vm_data")
     container_name = f"openhost-{app_name}"
 
-    # access_all_data (deprecated) expands to access_all_app_data + access_all_archive.
-    wants_all_app_data = manifest.access_all_app_data or manifest.access_all_data
-    wants_all_archive = manifest.access_all_archive or manifest.access_all_data
+    wants_all_app_data = manifest.access_all_app_data
+    wants_all_archive = manifest.access_all_archive
 
     has_app_data = manifest.app_data or manifest.sqlite_dbs or wants_all_app_data
     has_app_temp = manifest.app_temp_data or wants_all_app_data
@@ -317,8 +316,8 @@ def run_container(
             cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)])
 
     if wants_all_archive:
-        # access_all_archive / access_all_data is permissive — skip the archive
-        # mount when the tier isn't configured rather than refusing to start.
+        # access_all_archive is permissive — skip the archive mount when
+        # the tier isn't configured rather than refusing to start.
         if os.path.isdir(archive_dir):
             cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
     elif has_app_archive:
