@@ -63,6 +63,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Run in foreground instead of daemonizing.",
     )
+    up_parser.add_argument(
+        "--claim-token",
+        type=str,
+        default=None,
+        help=(
+            "Secret required to claim this OpenHost on first boot. When set, "
+            "the password-setup page rejects callers that don't supply this "
+            "token, preventing a MITM from claiming the instance. Must be "
+            "URL-safe (letters, digits, '-', '_'). If omitted (the default), "
+            "/setup accepts any caller -- safe only when the endpoint is "
+            "reachable only by you (e.g. loopback-only)."
+        ),
+    )
 
     # --- openhost down ---
     sub.add_parser(

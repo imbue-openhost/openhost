@@ -19,7 +19,9 @@ from self_host_cli.down import _cleanup_pidfile
 from self_host_cli.down import _is_alive
 from self_host_cli.down import _read_pid
 from self_host_cli.main import _build_parser
+from self_host_cli.up import _claim_token_path
 from self_host_cli.up import _detect_public_ip
+from self_host_cli.up import _provision_claim_token
 from self_host_cli.up import _resolve_zone_domain
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,16 @@ class TestArgParsing:
         parser = _build_parser()
         args = parser.parse_args(["up", "--foreground"])
         assert args.foreground is True
+
+    def test_up_claim_token(self):
+        parser = _build_parser()
+        args = parser.parse_args(["up", "--claim-token", "secret123"])
+        assert args.claim_token == "secret123"
+
+    def test_up_claim_token_default(self):
+        parser = _build_parser()
+        args = parser.parse_args(["up"])
+        assert args.claim_token is None
 
     def test_down(self):
         parser = _build_parser()
@@ -199,3 +211,60 @@ class TestUpHelpers:
         args = Namespace(domain="example.com", zone_domain="other.com")
         with pytest.raises(SystemExit):
             _resolve_zone_domain(args)
+
+
+class TestClaimToken:
+    def test_supplied_token_is_written(self, tmp_path, capsys):
+        _provision_claim_token(str(tmp_path), supplied_token="my-secret", port=8080)
+        assert _claim_token_path(str(tmp_path)).read_text() == "my-secret"
+        assert "claim=my-secret" in capsys.readouterr().out
+
+    def test_supplied_token_overwrites_existing(self, tmp_path):
+        path = _claim_token_path(str(tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_text("stale")
+        _provision_claim_token(str(tmp_path), supplied_token="fresh", port=8080)
+        assert path.read_text() == "fresh"
+
+    def test_existing_token_preserved_when_none_supplied(self, tmp_path, capsys):
+        path = _claim_token_path(str(tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_text("keep-me")
+        _provision_claim_token(str(tmp_path), supplied_token=None, port=8080)
+        assert path.read_text() == "keep-me"
+        assert "claim=keep-me" in capsys.readouterr().out
+
+    def test_no_token_default(self, tmp_path, capsys):
+        # No --claim-token and no file on disk: behavior unchanged from before.
+        _provision_claim_token(str(tmp_path), supplied_token=None, port=8080)
+        assert not _claim_token_path(str(tmp_path)).exists()
+        out = capsys.readouterr().out
+        assert "no token set" in out
+        assert "claim=" not in out
+
+    def test_supplied_token_rejects_non_url_safe(self, tmp_path, capsys):
+        with pytest.raises(SystemExit):
+            _provision_claim_token(str(tmp_path), supplied_token="has spaces", port=8080)
+        assert "URL-safe" in capsys.readouterr().err
+
+    def test_supplied_token_rejects_special_chars(self, tmp_path):
+        for bad in ("a/b", "a?b", "a&b", "a%b", "a=b", "a#b", ""):
+            with pytest.raises(SystemExit):
+                _provision_claim_token(str(tmp_path), supplied_token=bad, port=8080)
+
+    def test_existing_token_rejected_if_not_url_safe(self, tmp_path, capsys):
+        path = _claim_token_path(str(tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_text("not safe!")
+        with pytest.raises(SystemExit):
+            _provision_claim_token(str(tmp_path), supplied_token=None, port=8080)
+        assert "URL-safe" in capsys.readouterr().err
+
+    def test_existing_token_with_metadata_suffix(self, tmp_path, capsys):
+        # setup_app parses content.split(":", 1)[0] so trailing metadata is fine
+        # as long as the token portion is URL-safe.
+        path = _claim_token_path(str(tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_text("abc123:some-metadata-here")
+        _provision_claim_token(str(tmp_path), supplied_token=None, port=8080)
+        assert "claim=abc123" in capsys.readouterr().out

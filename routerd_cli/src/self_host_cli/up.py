@@ -7,16 +7,80 @@
 import argparse
 import ipaddress
 import os
+import re
 import signal
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
+from self_host_cli.config_gen import _DEFAULT_DATA_DIR
 from self_host_cli.config_gen import generate_config
+
+# Matches secrets.token_urlsafe output; safe to drop into a URL query string
+# verbatim with no escaping.
+_URL_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _PID_DIR = os.path.expanduser("~/.openhost/run")
 _ROUTER_PID = os.path.join(_PID_DIR, "router.pid")
+
+
+def _claim_token_path(data_dir: str) -> Path:
+    # Mirrors compute_space.config.Config.claim_token_path; duplicated here to
+    # avoid importing Config (and triggering its directory side effects) just
+    # to compute one path.
+    return Path(data_dir) / "persistent_data" / "openhost" / "claim_token"
+
+
+def _require_url_safe(token: str, source: str) -> None:
+    """Reject tokens that would need URL-escaping to appear in the claim URL."""
+    if not token or not _URL_SAFE_TOKEN_RE.match(token):
+        print(
+            f"Error: claim token from {source} is not URL-safe. "
+            "Allowed characters: letters, digits, '-', '_'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _provision_claim_token(
+    data_dir: str,
+    supplied_token: str | None,
+    port: int,
+) -> None:
+    """Honor the operator's claim-token choice for first-boot /setup.
+
+    - supplied_token: validate and write to disk (overwriting any prior value).
+    - none supplied, file exists: validate the existing token and reuse it.
+    - none supplied, no file: leave it unset; /setup accepts any caller.
+
+    When a token is in play, print the claim URL so the operator can hand it
+    to the human who will claim the workspace.
+    """
+    path = _claim_token_path(data_dir)
+
+    if supplied_token is not None:
+        _require_url_safe(supplied_token, "--claim-token")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(supplied_token)
+        token = supplied_token
+    elif path.exists():
+        # split(":", 1)[0] matches setup_app's parser, which allows trailing
+        # metadata after a colon.
+        token = path.read_text().strip().split(":", 1)[0]
+        _require_url_safe(token, str(path))
+    else:
+        print("  Claim:     no token set; /setup will accept any caller.")
+        return
+
+    # 600 — token grants ownership of this instance on first /setup.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+    print(f"  Claim URL: http://localhost:{port}/setup?claim={token}")
 
 
 def _is_public_ip(ip: str) -> bool:
@@ -107,6 +171,12 @@ def run_up(args: argparse.Namespace) -> None:
     if zone_domain:
         print(f"  Domain:    {zone_domain} (host-based app subdomain routing)")
     print(f"  Router:    http://localhost:{args.port}")
+
+    _provision_claim_token(
+        data_dir=_DEFAULT_DATA_DIR,
+        supplied_token=getattr(args, "claim_token", None),
+        port=args.port,
+    )
 
     env = os.environ.copy()
     env["OPENHOST_ROUTER_CONFIG"] = config_path
