@@ -4,28 +4,9 @@ import threading
 
 from compute_space.config import Config
 from compute_space.core.apps import start_app_process
-from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
-from compute_space.core.containers import container_runtime_available
 from compute_space.core.containers import is_container_running
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
-
-
-def _mark_running_apps_container_runtime_missing(config: Config) -> int:
-    """Flip every running/starting/building app to ``status='error'`` with
-    ``CONTAINER_RUNTIME_MISSING_ERROR`` and clear ``container_id``.  Returns rowcount.
-    """
-    db = sqlite3.connect(config.db_path)
-    try:
-        cursor = db.execute(
-            "UPDATE apps SET status = 'error', error_message = ?, container_id = NULL "
-            "WHERE status IN ('running', 'starting', 'building')",
-            (CONTAINER_RUNTIME_MISSING_ERROR,),
-        )
-        db.commit()
-        return cursor.rowcount
-    finally:
-        db.close()
 
 
 def check_app_status(config: Config) -> None:
@@ -33,23 +14,8 @@ def check_app_status(config: Config) -> None:
 
     Apps that need rebuilding are restarted sequentially in a single
     background thread to avoid concurrent image builds against the same
-    containers-storage instance.  When podman isn't available, every
-    running/starting/building app is flipped to 'error' with a
-    remediation message and no rebuild is attempted — the dashboard
-    stays reachable so the operator can see what happened.
+    containers-storage instance.
     """
-    if not container_runtime_available():
-        affected = _mark_running_apps_container_runtime_missing(config)
-        if affected:
-            logger.error(
-                "podman runtime missing; marked %d running/starting apps as error. %s",
-                affected,
-                CONTAINER_RUNTIME_MISSING_ERROR,
-            )
-        else:
-            logger.warning("podman runtime missing; no running apps to mark.")
-        return
-
     db = sqlite3.connect(config.db_path)
     db.row_factory = sqlite3.Row
     apps_to_restart: list[str] = []

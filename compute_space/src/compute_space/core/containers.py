@@ -81,36 +81,6 @@ def _is_build_cache_corrupt_line(line: str) -> bool:
     return bool(_MISSING_LAYER_RE.search(line))
 
 
-CONTAINER_RUNTIME_MISSING_ERROR = (
-    "podman runtime not available — run `ansible-playbook ansible/setup.yml` "
-    "on this host to install and configure rootless podman."
-)
-
-
-def container_runtime_available() -> bool:
-    """Return True if ``podman --version`` succeeds.
-
-    Unexpected failures (timeout, OSError other than FileNotFoundError)
-    are logged; FileNotFoundError is silent since the caller already
-    surfaces CONTAINER_RUNTIME_MISSING_ERROR.
-    """
-    try:
-        result = subprocess.run(
-            ["podman", "--version"],
-            capture_output=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        return False
-    except subprocess.TimeoutExpired:
-        logger.warning("podman --version timed out after 5s; treating podman as unavailable")
-        return False
-    except OSError as e:
-        logger.warning("podman --version failed with OSError (%s); treating podman as unavailable", e)
-        return False
-    return result.returncode == 0
-
-
 def _log_path(app_name: str, temp_data_dir: str) -> str:
     # Name preserved as docker.log for compatibility with existing log
     # tooling on deployed hosts.

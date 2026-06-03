@@ -44,11 +44,7 @@ def _container_runtime_available():
 
     Runs ``podman info`` (not just ``--version``) because the
     ``requires_containers`` tests need a working rootless namespace, not
-    just the binary on PATH.  This is intentionally a heavier probe
-    than the production ``compute_space.core.containers.container_runtime_available``
-    which only verifies binary presence — those two probes answer
-    different questions (can I build/run containers? vs should I
-    surface the 'runtime missing' banner?) and deliberately diverge.
+    just the binary on PATH.
     """
     try:
         r = subprocess.run(["podman", "info"], capture_output=True, timeout=10)

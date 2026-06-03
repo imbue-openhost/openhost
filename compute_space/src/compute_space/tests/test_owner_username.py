@@ -338,7 +338,7 @@ def test_route_set_updates_user_row(cfg: Any, settings_client: TestClient[Litest
     ("payload", "needle"),
     [
         ({"username": "alice space"}, "letters"),  # validator error verbatim
-        ({"username": ""}, "Username"),  # empty username explicitly rejected
+        ({"username": ""}, "Validation"),  # attrs _not_blank validator rejects empty
     ],
 )
 def test_route_set_rejects_invalid(

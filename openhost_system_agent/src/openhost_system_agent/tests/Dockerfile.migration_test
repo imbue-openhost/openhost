@@ -1,0 +1,41 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# systemd + minimal base packages (python comes from pixi, not apt)
+RUN apt-get update -qq && \
+    apt-get install -y -qq systemd systemd-sysv git curl sudo iproute2 \
+    openssh-server ca-certificates gnupg wget fuse3 uidmap passt \
+    golang-github-containers-common && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    systemctl enable ssh
+
+# Create host user with passwordless sudo (matches ansible user_setup.yml)
+RUN useradd -m -s /bin/bash -G sudo host && \
+    echo "host ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/host && \
+    chmod 0440 /etc/sudoers.d/host
+
+# Install pixi
+RUN su - host -c "curl -fsSL https://pixi.sh/install.sh | bash"
+
+# Copy the repo in
+COPY --chown=host:host . /home/host/openhost
+WORKDIR /home/host/openhost
+
+# Install deps via pixi (provides python + all packages)
+RUN su - host -c "cd /home/host/openhost && /home/host/.pixi/bin/pixi install"
+
+# Bootstrap migration log at v1 (baseline)
+RUN mkdir -p /etc/openhost && \
+    echo '{"version":1,"timestamp":"2025-01-01T00:00:00Z","success":true,"error":null}' \
+    > /etc/openhost/migrations.jsonl
+
+# Create minimal router config and data dirs (normally created by ansible)
+RUN mkdir -p /home/host/.openhost/local_compute_space \
+             /opt/openhost && \
+    printf '[openhost]\nzone_domain = "test.local"\nhost = "127.0.0.1"\n' \
+    > /home/host/.openhost/local_compute_space/config.toml && \
+    chown -R host:host /home/host/.openhost /opt/openhost
+
+# systemd as init
+CMD ["/sbin/init"]

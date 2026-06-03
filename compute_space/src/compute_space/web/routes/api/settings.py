@@ -1,94 +1,60 @@
+from __future__ import annotations
+
 import sqlite3
+from enum import StrEnum
 
 import attr
 import bcrypt
-import git
 from litestar import Router
 from litestar import get
 from litestar import post
 from litestar.exceptions import HTTPException
 
-from compute_space.config import Config
-from compute_space.core.apps import inject_github_token_in_url
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.auth import update_owner_username
 from compute_space.core.auth.auth import validate_owner_username
-from compute_space.core.containers import CONTAINER_RUNTIME_MISSING_ERROR
-from compute_space.core.containers import container_runtime_available
-from compute_space.core.git_ops import RemoteNotSetError
-from compute_space.core.git_ops import get_current_ref
-from compute_space.core.git_ops import get_remote_url
-from compute_space.core.git_ops import init_repo_if_nonexistent
-from compute_space.core.git_ops import parse_repo_url
-from compute_space.core.git_ops import set_remote_url
-from compute_space.core.oauth import OAuthAuthorizationRequired
-from compute_space.core.oauth import get_oauth_token
-from compute_space.core.runtime_sentinel import host_prep_status
-from compute_space.core.services_v2 import ServiceNotAvailable
-from compute_space.core.updates import check_git_state
-from compute_space.core.updates import hard_checkout_and_validate
+from compute_space.core.system_agent import SystemAgentError
+from compute_space.core.system_agent import system_agent_apply
+from compute_space.core.system_agent import system_agent_fetch
+from compute_space.core.system_agent import system_agent_get_remote
+from compute_space.core.system_agent import system_agent_set_remote
+from compute_space.core.system_agent import system_agent_status
 from compute_space.core.updates import trigger_restart
+from compute_space.core.util import not_blank
 from compute_space.web.auth.auth import require_owner_auth
+from openhost_system_agent.protocol import RemoteInfo
 
 # --- request / response types -----------------------------------------------
 
 
+class UpdateState(StrEnum):
+    UPDATE_AVAILABLE = "UPDATE_AVAILABLE"
+    UP_TO_DATE = "UP_TO_DATE"
+    ERROR = "ERROR"
+
+
+_GIT_STATE_TO_UPDATE_STATE = {
+    "UP_TO_DATE": UpdateState.UP_TO_DATE,
+    "BEHIND_REMOTE": UpdateState.UPDATE_AVAILABLE,
+    "AHEAD_OF_REMOTE": UpdateState.UPDATE_AVAILABLE,
+    "DIRTY": UpdateState.UPDATE_AVAILABLE,
+}
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class SetRemoteRequest:
-    url: str = ""
+    url: str = attr.ib(validator=not_blank)
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class SetOwnerUsernameRequest:
-    username: str = ""
+    username: str = attr.ib(validator=not_blank)
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class GetRemoteResponse:
-    url: str | None = None
-    ref: str | None = None
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class SetRemoteResponse:
-    token_applied: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class HostPrepOk:
-    """Flat fields the dashboard reads when the host is ready for updates."""
-
-    host_prep_ok: bool  # always True for this variant
-    container_runtime_available: bool  # always True
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class HostPrepBlocked:
-    """Flat fields the dashboard reads when an update would brick the router.
-
-    Carries the reason/message pair the banner renders verbatim.
-    """
-
-    host_prep_ok: bool  # always False for this variant
-    container_runtime_available: bool
-    host_prep_reason: str
-    host_prep_message: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CheckUpdatesOk:
+class CheckUpdatesResponse:
     state: str
-    host_prep_ok: bool
-    container_runtime_available: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CheckUpdatesBlocked:
-    state: str
-    host_prep_ok: bool
-    container_runtime_available: bool
-    host_prep_reason: str
-    host_prep_message: str
+    error: str | None = None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -96,139 +62,85 @@ class OwnerUsernameResponse:
     username: str | None
 
 
-def _host_prep_fields() -> HostPrepOk | HostPrepBlocked:
-    """Probe the live runtime and the sentinel; return the shape the UI expects."""
-    if not container_runtime_available():
-        return HostPrepBlocked(
-            host_prep_ok=False,
-            container_runtime_available=False,
-            host_prep_reason="container_runtime_missing",
-            host_prep_message=CONTAINER_RUNTIME_MISSING_ERROR,
-        )
-    prep = host_prep_status()
-    if not prep.ok:
-        return HostPrepBlocked(
-            host_prep_ok=False,
-            container_runtime_available=True,
-            host_prep_reason=prep.reason,
-            host_prep_message=prep.message,
-        )
-    return HostPrepOk(host_prep_ok=True, container_runtime_available=True)
-
-
 # --- routes -----------------------------------------------------------------
 
 
 @get("/api/settings/get_remote", guards=[require_owner_auth])
-async def get_remote(config: Config) -> GetRemoteResponse:
+async def get_remote() -> RemoteInfo:
     try:
-        url = await get_remote_url(config.openhost_repo_path)
-        ref = await get_current_ref(config.openhost_repo_path)
-    except RemoteNotSetError:
-        return GetRemoteResponse()
-    except (git.InvalidGitRepositoryError, git.NoSuchPathError) as e:
-        raise HTTPException(detail=repr(e), status_code=500) from e
-    return GetRemoteResponse(url=url, ref=ref)
+        return await system_agent_get_remote()
+    except SystemAgentError as e:
+        raise HTTPException(detail=str(e), status_code=500) from e
 
 
 @post("/api/settings/set_remote", status_code=200, guards=[require_owner_auth])
-async def set_remote(data: SetRemoteRequest, config: Config) -> SetRemoteResponse:
-    """Set git remote URL, injecting a GitHub auth token if available.
-
-    A checkout is required so we can persist the ``ref`` setting properly,
-    which means a whole reboot is needed afterwards.
-    """
-    url = (data.url or "").strip()
-    if not url:
-        raise HTTPException(detail="url is required", status_code=400)
-
-    base_url, ref = parse_repo_url(url)
-    ref = ref or "main"
-
-    token_applied = False
+async def set_remote(data: SetRemoteRequest) -> RemoteInfo:
     try:
-        token = await get_oauth_token("github", ["repo"], return_to="/settings")
-        base_url = inject_github_token_in_url(base_url, token)
-        token_applied = True
-    except (ServiceNotAvailable, OAuthAuthorizationRequired):
-        pass  # best-effort; proceed without token
-
-    try:
-        await init_repo_if_nonexistent(config.openhost_repo_path)
-        await set_remote_url(config.openhost_repo_path, base_url)
-        await hard_checkout_and_validate(config.openhost_repo_path, ref)
-    except Exception as e:
+        return await system_agent_set_remote(data.url.strip())
+    except SystemAgentError as e:
         raise HTTPException(detail=str(e), status_code=500) from e
-    return SetRemoteResponse(token_applied=token_applied)
 
 
-@post("/api/settings/check_for_updates", status_code=200, guards=[require_owner_auth])
-async def check_for_updates(config: Config) -> CheckUpdatesOk | CheckUpdatesBlocked:
+@get("/api/settings/update", guards=[require_owner_auth])
+async def check_for_updates() -> CheckUpdatesResponse:
     try:
-        state = await check_git_state(config.openhost_repo_path)
-    except Exception as e:
-        raise HTTPException(detail=repr(e), status_code=500) from e
-    prep = _host_prep_fields()
-    if isinstance(prep, HostPrepBlocked):
-        return CheckUpdatesBlocked(
-            state=str(state),
-            host_prep_ok=prep.host_prep_ok,
-            container_runtime_available=prep.container_runtime_available,
-            host_prep_reason=prep.host_prep_reason,
-            host_prep_message=prep.host_prep_message,
-        )
-    return CheckUpdatesOk(
-        state=str(state),
-        host_prep_ok=prep.host_prep_ok,
-        container_runtime_available=prep.container_runtime_available,
-    )
+        fetch_result = await system_agent_fetch()
+    except SystemAgentError as e:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=str(e))
 
-
-@post("/api/settings/update_repo_state", status_code=204, guards=[require_owner_auth])
-async def update_repo_state(config: Config) -> None:
-    """git reset to local origin/[branch] + pixi install.
-
-    Returns HTTP 409 when the host isn't prepared for the installed runtime;
-    the blocking host_prep fields are carried in the exception's ``extra``.
-    """
-    prep = _host_prep_fields()
-    if isinstance(prep, HostPrepBlocked):
-        raise HTTPException(
-            detail=prep.host_prep_message,
-            status_code=409,
-            extra=attr.asdict(prep),
-        )
-
-    ref = await get_current_ref(config.openhost_repo_path)
     try:
-        await hard_checkout_and_validate(config.openhost_repo_path, ref)
-    except Exception as e:
-        raise HTTPException(detail=repr(e), status_code=500) from e
+        migration_status = await system_agent_status()
+    except SystemAgentError as e:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=str(e))
+
+    if not migration_status.ok:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=migration_status.message)
+
+    state = _GIT_STATE_TO_UPDATE_STATE.get(fetch_result.state)
+    if state is None:
+        return CheckUpdatesResponse(state=UpdateState.ERROR, error=f"Unknown git state: {fetch_result.state}")
+
+    return CheckUpdatesResponse(state=state)
+
+
+@post("/api/settings/update", status_code=204, guards=[require_owner_auth])
+async def apply_update() -> None:
+    try:
+        migration_status = await system_agent_status()
+    except SystemAgentError as e:
+        raise HTTPException(detail=str(e), status_code=500) from e
+
+    if not migration_status.ok:
+        raise HTTPException(detail=migration_status.message, status_code=409)
+
+    try:
+        await system_agent_apply()
+    except SystemAgentError as e:
+        raise HTTPException(detail=str(e), status_code=500) from e
 
 
 @post("/api/settings/restart_compute_space", status_code=204, guards=[require_owner_auth])
 async def restart_compute_space() -> None:
-    # this response may not get sent, don't depend on it
     trigger_restart()
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class ChangePasswordRequest:
-    current_password: str = ""
-    new_password: str = ""
-    confirm_password: str = ""
+    current_password: str
+    new_password: str
+    confirm_password: str
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class ChangePasswordResponse:
-    ok: bool = True
+    ok: bool
 
 
 @post("/api/settings/change_password", status_code=200, guards=[require_owner_auth])
 async def change_password(data: ChangePasswordRequest, db: sqlite3.Connection) -> ChangePasswordResponse:
-    current = (data.current_password or "").strip()
-    new_pw = (data.new_password or "").strip()
-    confirm = (data.confirm_password or "").strip()
+    current = data.current_password.strip()
+    new_pw = data.new_password.strip()
+    confirm = data.confirm_password.strip()
 
     if not current or not new_pw:
         raise HTTPException(detail="All fields required", status_code=400)
@@ -256,32 +168,24 @@ async def change_password(data: ChangePasswordRequest, db: sqlite3.Connection) -
 
 @get("/api/settings/owner_username", guards=[require_owner_auth])
 async def get_owner_username(db: sqlite3.Connection) -> OwnerUsernameResponse:
-    """Return the configured owner username for the dashboard form."""
     return OwnerUsernameResponse(username=read_owner_username(db))
 
 
 @post("/api/settings/owner_username", status_code=200, guards=[require_owner_auth])
 async def set_owner_username(data: SetOwnerUsernameRequest, db: sqlite3.Connection) -> OwnerUsernameResponse:
-    """Update the owner's display username.
-
-    Forwarded to per-app containers via ``OPENHOST_OWNER_USERNAME`` on their
-    next reload; already-running containers keep the old value until they restart.
-    """
-    candidate = (data.username or "").strip()
-    error = validate_owner_username(candidate)
+    error = validate_owner_username(data.username)
     if error is not None:
         raise HTTPException(detail=error, status_code=400)
 
     try:
-        update_owner_username(db, candidate)
+        update_owner_username(db, data.username)
         db.commit()
     except ValueError as e:
-        # No user row yet — operator's next step is /setup, not retry.
         raise HTTPException(detail=str(e), status_code=400) from e
     except sqlite3.Error as e:
         raise HTTPException(detail=f"database error: {e}", status_code=500) from e
 
-    return OwnerUsernameResponse(username=candidate)
+    return OwnerUsernameResponse(username=data.username)
 
 
 api_settings_routes = Router(
@@ -290,7 +194,7 @@ api_settings_routes = Router(
         get_remote,
         set_remote,
         check_for_updates,
-        update_repo_state,
+        apply_update,
         restart_compute_space,
         change_password,
         get_owner_username,

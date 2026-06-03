@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+from openhost_system_agent.migrations.base import SystemMigration
+from openhost_system_agent.migrations.versions.v0002_baseline import Migration0002Baseline
+
+# Numbered migrations in apply order. Versions MUST start at 2 and be
+# contiguous. v1 is the baseline produced by ansible setup.yml.
+REGISTRY: list[SystemMigration] = [
+    Migration0002Baseline(),
+]
+
+
+def validate_registry(registry: Sequence[SystemMigration]) -> None:
+    if not registry:
+        return
+    versions = [m.version for m in registry]
+    expected = list(range(2, 2 + len(versions)))
+    if versions != expected:
+        raise RuntimeError(
+            f"Migration registry is not strictly increasing and contiguous starting at 2: "
+            f"got {versions}, expected {expected}"
+        )
+
+
+def latest_registry_version(registry: Sequence[SystemMigration]) -> int:
+    if not registry:
+        return 1
+    return registry[-1].version
