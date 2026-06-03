@@ -141,6 +141,11 @@ class AppCmd:
         print(f"{app_name}: {result.get('status', 'unknown')}")
         if result.get("error"):
             print(f"  error: {result['error']}")
+        sha = result.get("git_sha")
+        if sha:
+            branch = result.get("git_branch") or "(detached HEAD)"
+            dirty = " (dirty)" if result.get("git_dirty") else ""
+            print(f"  git: {branch} @ {sha}{dirty}")
 
     @cappa.command(name="logs")
     def logs(
@@ -528,6 +533,22 @@ class InstanceCmd:
         raise SystemExit(subprocess.call(cmd))
 
 
+@cappa.command(name="version", help="Show the git branch/SHA of the running openhost.")
+@attrs.define
+class Version:
+    def __call__(self, cfg: Annotated[config.Instance, Dep(resolve_instance)]) -> None:
+        result = make_api_request(cfg.url, cfg.token, "GET", "/api/version").json()
+        sha = result.get("sha") or ""
+        short = result.get("short_sha") or (sha[:8] if sha else "")
+        branch = result.get("branch") or "(detached HEAD)"
+        if not sha:
+            print(f"{cfg.url}: openhost is not a git checkout — no version info available")
+            return
+        dirty = " (dirty)" if result.get("dirty") else ""
+        print(f"{cfg.url}: {branch} @ {short}{dirty}")
+        print(f"  full sha: {sha}")
+
+
 @cappa.command(name="curl", help="curl with your OpenHost bearer token injected.")
 @attrs.define
 class Curl:
@@ -548,7 +569,7 @@ class Curl:
 @cappa.command(name="oh", help="OpenHost compute space CLI — manage things in your compute space.")
 @attrs.define
 class Oh:
-    subcommand: cappa.Subcommands[Status | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl]
+    subcommand: cappa.Subcommands[Status | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl | Version]
     instance: Annotated[
         str | None,
         cappa.Arg(long=True, default=None, propagate=True, help="Target a specific named instance"),
