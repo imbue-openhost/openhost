@@ -14,6 +14,7 @@ from litestar import delete
 from litestar import get
 from litestar import post
 
+from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.core.auth.security_audit import AuditResult
 from compute_space.core.auth.security_audit import ListeningPort
@@ -21,6 +22,9 @@ from compute_space.core.auth.security_audit import is_sshd_active
 from compute_space.core.auth.security_audit import list_listening_ports
 from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.containers import drop_docker_build_cache
+from compute_space.core.git_ops import get_branch_name
+from compute_space.core.git_ops import get_head_sha
+from compute_space.core.git_ops import is_dirty
 from compute_space.core.logging import get_log_path
 from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
@@ -104,6 +108,17 @@ class SshStatusResponse:
 class DropCacheOk:
     ok: bool  # always True
     output: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class VersionInfo:
+    """Git info for the running openhost checkout. ``branch`` is None when HEAD is detached.
+    ``sha`` is empty when the install isn't a git checkout (e.g. tarball deploys)."""
+
+    branch: str | None
+    sha: str
+    short_sha: str
+    dirty: bool
 
 
 # ─── API Tokens ────────────────────────────────────────────────────────────
@@ -260,6 +275,21 @@ def drop_docker_cache() -> Response[DropCacheOk] | Response[ErrorResponse]:
     return Response(content=DropCacheOk(ok=True, output=output), status_code=200, media_type=MediaType.JSON)
 
 
+@get("/api/version", guards=[require_owner_auth])
+async def api_version() -> VersionInfo:
+    """Return git branch/SHA of the running openhost checkout.
+
+    If openhost wasn't installed via git, sha/short_sha are empty and dirty is False.
+    """
+    try:
+        sha = await get_head_sha(OPENHOST_PROJECT_DIR)
+        branch = await get_branch_name(OPENHOST_PROJECT_DIR)
+        dirty = await is_dirty(OPENHOST_PROJECT_DIR)
+    except Exception:
+        return VersionInfo(branch=None, sha="", short_sha="", dirty=False)
+    return VersionInfo(branch=branch, sha=sha, short_sha=sha[:8], dirty=dirty)
+
+
 @post("/restart_router", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
 def restart_router() -> OkResponse:
     """Restart the router systemd service to pick up code changes."""
@@ -291,6 +321,7 @@ system_routes = Router(
         ssh_status,
         toggle_ssh,
         drop_docker_cache,
+        api_version,
         restart_router,
     ],
 )
