@@ -96,9 +96,13 @@ def provision_data(
     app_archive_dir = os.path.join(archive_dir, app_name)
     env_vars = {}
 
+    # access_all_data (deprecated) expands to access_all_app_data + access_all_archive.
+    wants_all_app_data = manifest.access_all_app_data or manifest.access_all_data
+    wants_all_archive = manifest.access_all_archive or manifest.access_all_data
+
     # Determine if permanent data dir is needed:
-    # explicitly requested, has sqlite entries, or access_all_data
-    needs_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
+    # app_data defaults true; also enabled by sqlite entries or cross-app access.
+    needs_app_data = manifest.app_data or manifest.sqlite_dbs or wants_all_app_data
 
     if needs_app_data:
         os.makedirs(app_data_dir, exist_ok=True)
@@ -117,7 +121,7 @@ def provision_data(
             if upper_key != env_key:
                 env_vars[upper_key] = db_path
 
-    if manifest.app_temp_data or manifest.access_all_data:
+    if manifest.app_temp_data or wants_all_app_data:
         os.makedirs(app_temp_dir, exist_ok=True)
         env_vars["OPENHOST_APP_TEMP_DIR"] = app_temp_dir
 
@@ -135,9 +139,9 @@ def provision_data(
             )
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
-    elif manifest.access_all_data and archive_available:
-        # access_all_data is permissive — skip the archive mount when
-        # the tier isn't configured rather than refusing to provision.
+    elif wants_all_archive and archive_available:
+        # access_all_archive / access_all_data is permissive — skip the archive
+        # mount when the tier isn't configured rather than refusing to provision.
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
 

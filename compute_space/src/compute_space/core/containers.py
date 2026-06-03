@@ -215,10 +215,14 @@ def run_container(
     vm_data_dir = os.path.join(data_dir, "vm_data")
     container_name = f"openhost-{app_name}"
 
-    has_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
-    has_app_temp = manifest.app_temp_data or manifest.access_all_data
-    has_app_archive = manifest.app_archive or manifest.access_all_data
-    has_vm_data = manifest.access_vm_data or manifest.access_all_data
+    # access_all_data (deprecated) expands to access_all_app_data + access_all_archive.
+    wants_all_app_data = manifest.access_all_app_data or manifest.access_all_data
+    wants_all_archive = manifest.access_all_archive or manifest.access_all_data
+
+    has_app_data = manifest.app_data or manifest.sqlite_dbs or wants_all_app_data
+    has_app_temp = manifest.app_temp_data or wants_all_app_data
+    has_app_archive = manifest.app_archive or wants_all_archive
+    has_vm_data = manifest.access_vm_data or wants_all_app_data
 
     c_app_data = f"{CONTAINER_ROOT}/app_data/{app_name}"
     c_app_temp = f"{CONTAINER_ROOT}/app_temp_data/{app_name}"
@@ -288,8 +292,8 @@ def run_container(
     for cap in sorted(DEFAULT_CAPABILITIES):
         cmd.extend(["--cap-add", cap])
 
-    if manifest.access_all_data:
-        # Opt-in full access to every app's data.
+    if wants_all_app_data:
+        # Mount the full parent dirs so the app can see all apps' data/temp.
         cmd.extend(["-v", _bind_mount_arg(os.path.join(data_dir, "app_data"), f"{CONTAINER_ROOT}/app_data")])
         cmd.extend(
             [
@@ -300,10 +304,7 @@ def run_container(
                 ),
             ]
         )
-        # access_all_data is permissive — skip the archive mount when
-        # the tier isn't configured rather than refusing to start.
-        if os.path.isdir(archive_dir):
-            cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
+        # vm_data is rw under wants_all_app_data (admin-level access).
         os.makedirs(vm_data_dir, exist_ok=True)
         cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data)])
     else:
@@ -311,11 +312,17 @@ def run_container(
             cmd.extend(["-v", _bind_mount_arg(app_data_dir, c_app_data)])
         if has_app_temp:
             cmd.extend(["-v", _bind_mount_arg(app_temp_dir, c_app_temp)])
-        if has_app_archive:
-            cmd.extend(["-v", _bind_mount_arg(app_archive_dir, c_app_archive)])
         if has_vm_data:
             os.makedirs(vm_data_dir, exist_ok=True)
             cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)])
+
+    if wants_all_archive:
+        # access_all_archive / access_all_data is permissive — skip the archive
+        # mount when the tier isn't configured rather than refusing to start.
+        if os.path.isdir(archive_dir):
+            cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
+    elif has_app_archive:
+        cmd.extend(["-v", _bind_mount_arg(app_archive_dir, c_app_archive)])
 
     # Structured port mappings: bind TCP+UDP on 0.0.0.0.  host_port
     # values below UNPRIVILEGED_PORT_FLOOR are rejected at manifest

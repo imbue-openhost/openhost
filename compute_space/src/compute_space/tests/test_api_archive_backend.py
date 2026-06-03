@@ -286,10 +286,12 @@ def test_test_connection_succeeds(client: TestClient[Litestar], cookies: dict[st
 
 def test_manifest_requires_archive_only_matches_app_archive_true() -> None:
     """``manifest_requires_archive`` (install/reload gates) keys on
-    ``app_archive = true`` only; ``access_all_data = true`` doesn't qualify
-    so apps like the backup app aren't blocked on archive-less zones."""
+    ``app_archive = true`` only; access_all_archive and access_all_data are
+    permissive so they don't block installs on archive-less zones."""
     assert archive_backend.manifest_requires_archive("[data]\napp_archive = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\naccess_all_data = true\n")
+    assert not archive_backend.manifest_requires_archive("[data]\naccess_all_archive = true\n")
+    assert not archive_backend.manifest_requires_archive("[data]\naccess_all_app_data = true\n")
     assert not archive_backend.manifest_requires_archive("[data]\napp_data = true\n")
     assert not archive_backend.manifest_requires_archive("")
     # Anchor on TOML key=value shape so substring matching can't false-match.
@@ -298,12 +300,16 @@ def test_manifest_requires_archive_only_matches_app_archive_true() -> None:
 
 
 def test_manifest_uses_archive_matches_either_flag() -> None:
-    """``manifest_uses_archive`` is broader: either flag qualifies, since
-    both result in the archive mount being granted to the container."""
+    """``manifest_uses_archive`` is broader: any of app_archive, access_all_archive,
+    or the deprecated access_all_data qualify, since all result in the archive mount
+    being granted to the container."""
     assert archive_backend.manifest_uses_archive("[data]\napp_archive = true\n")
     assert archive_backend.manifest_uses_archive("[data]\naccess_all_data = true\n")
+    assert archive_backend.manifest_uses_archive("[data]\naccess_all_archive = true\n")
     assert not archive_backend.manifest_uses_archive("[data]\napp_data = true\n")
     assert not archive_backend.manifest_uses_archive("[data]\napp_archive = false\napp_data = true\n")
+    # access_all_app_data alone does NOT imply archive access.
+    assert not archive_backend.manifest_uses_archive("[data]\naccess_all_app_data = true\n")
 
 
 # --- install/reload gates (api/apps endpoints' archive backend checks) ----
