@@ -35,6 +35,11 @@ from compute_space.core.updates import trigger_restart
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import build_session_cookie
 
+# Set when setup_post succeeds. /health flips to 503 immediately so clients
+# polling for the post-restart main app don't see a stale 200 from the setup
+# app during the brief window before hypercorn actually drops the listener.
+_setup_completed: bool = False
+
 
 def _verify_claim_token(claim_token: str, claim_token_path: str) -> bool:
     """Compare ``claim_token`` against the token written to ``claim_token_path``."""
@@ -138,6 +143,9 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
     response = Response(content=body, status_code=200, media_type=MediaType.HTML)
     response.set_cookie(build_session_cookie(session_token, cookie_domain=config.zone_domain_no_port))
 
+    global _setup_completed  # noqa: PLW0603
+    _setup_completed = True
+
     # Schedule the restart for after the response has been written so the
     # client actually receives the 200 + Set-Cookie before the listener drops.
     response.background = BackgroundTask(_trigger_restart_after_response)
@@ -157,7 +165,7 @@ def health() -> Response[dict[str, str]]:
     """Liveness probe.  Returns ``{"status": "ok"}`` (or 503 when restarting).
     Security audit data is only available via the authenticated
     ``/api/security-audit`` endpoint."""
-    if is_shutdown_pending():
+    if is_shutdown_pending() or _setup_completed:
         return Response(content={"status": "restarting"}, status_code=503)
     return Response(content={"status": "ok"})
 

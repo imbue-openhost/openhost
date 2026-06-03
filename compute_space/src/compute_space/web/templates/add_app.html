@@ -394,7 +394,7 @@ async function deployApp() {
     return;
   }
 
-  const detailUrl = '/app_detail/' + encodeURIComponent(data.app_id)
+  const detailUrl = '/app_detail/' + encodeURIComponent(data.app_name)
     + (nextUrl ? '?next=' + encodeURIComponent(nextUrl) : '');
   window.location = detailUrl;
 }

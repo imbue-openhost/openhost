@@ -65,6 +65,22 @@ def get_current_ref(repo_path: Path) -> str:
         return repo.head.commit.hexsha[:8]
 
 
+@async_wrap
+def get_head_sha(repo_path: Path) -> str:
+    """Return the full HEAD commit SHA."""
+    return git.Repo(repo_path).head.commit.hexsha
+
+
+@async_wrap
+def get_branch_name(repo_path: Path) -> str | None:
+    """Return the current branch name, or None if HEAD is detached."""
+    repo = git.Repo(repo_path)
+    try:
+        return repo.active_branch.name
+    except TypeError:
+        return None
+
+
 def _strip_credentials(url: str) -> str:
     """Remove userinfo (OAuth tokens, passwords) from a URL."""
     parsed = urllib.parse.urlparse(url)

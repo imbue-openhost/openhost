@@ -15,14 +15,8 @@ from compute_space.web.auth.auth import verify_owner_auth
 
 @get("/system/", guards=[require_owner_auth])
 async def system_page() -> Template:
-    """Serve the System page (security audit, storage, maintenance actions)."""
+    """Serve the System Info page (security audit, storage, logs)."""
     return Template(template_name="system.html")
-
-
-@get("/logs/", guards=[require_owner_auth])
-async def logs_page() -> Template:
-    """Serve the compute space logs page."""
-    return Template(template_name="logs.html")
 
 
 @get("/terminal/", guards=[require_owner_auth])
@@ -65,5 +59,5 @@ async def terminal_ws(socket: WebSocket[Any, Any, Any]) -> None:
 
 pages_system_routes = Router(
     path="/",
-    route_handlers=[system_page, logs_page, terminal_page, terminal_ws],
+    route_handlers=[system_page, terminal_page, terminal_ws],
 )

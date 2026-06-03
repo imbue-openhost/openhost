@@ -74,6 +74,11 @@ SAFE_DEVICE_PATHS: frozenset[str] = frozenset(
 )
 
 
+def _normalize_service_url(url: str) -> str:
+    url = url.removeprefix("https://").removeprefix("http://")
+    return url.rstrip("/")
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class PortMapping:
     """A structured port mapping declared in [[ports]]."""
@@ -85,14 +90,14 @@ class PortMapping:
 
 @attr.s(auto_attribs=True, frozen=True)
 class ServiceProvides:
-    service: str
+    service: str = attr.ib(converter=_normalize_service_url)
     version: str
     endpoint: str
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class ServiceConsumes:
-    service: str
+    service: str = attr.ib(converter=_normalize_service_url)
     shortname: str
     version: str
     # Each grant is either an opaque string (e.g. "read") or a JSON structure

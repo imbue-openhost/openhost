@@ -33,7 +33,7 @@
     src: templates/openhost.service.j2
     dest: /etc/systemd/system/openhost.service
   vars:
-    host_uid: "{{ getent_passwd.host[1] }}"
+    host_uid: "{{ ansible_facts['getent_passwd'].host[1] }}"
   register: service_file
 
 - name: Reload systemd

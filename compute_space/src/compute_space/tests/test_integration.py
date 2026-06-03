@@ -252,12 +252,10 @@ class TestRouterCore:
         base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/system/")
         assert r.status_code == 200
-        # The System page hosts the security audit, listening ports, storage,
-        # and SSH controls.
         assert 'id="security-table"' in r.text
         assert 'id="ports-table"' in r.text
         assert 'id="storage-table"' in r.text
-        assert 'id="ssh-btn"' in r.text
+        assert 'id="cs-logs"' in r.text
 
     def test_listening_ports_endpoint(self, admin_session, config):
         """GET /api/listening-ports returns a list of classified ports."""
@@ -922,7 +920,7 @@ class TestContainerRestart:
 
             app_id = app_id_for(session, self.BASE_URL, self.APP_NAME)
             assert app_id is not None, "App row should exist after rebuild"
-            r = session.get(f"{self.BASE_URL}/app_detail/{app_id}")
+            r = session.get(f"{self.BASE_URL}/app_detail/{self.APP_NAME}")
             assert r.status_code == 200
 
             # Poll the DB for status='running' (background thread may
@@ -1008,7 +1006,7 @@ class TestContainerE2E:
         while time.time() < deadline:
             app_id = app_id_for(admin_session, base_url, "test-app")
             if app_id:
-                r = admin_session.get(f"{base_url}/app_detail/{app_id}")
+                r = admin_session.get(f"{base_url}/app_detail/test-app")
                 if r.status_code == 200 and "running" in r.text:
                     break
             time.sleep(2)
@@ -1447,7 +1445,7 @@ class TestGitUrlDeployE2E:
             app_id = app_id_for(admin_session, base_url, self.APP_NAME)
             if app_id:
                 r = admin_session.get(
-                    f"{base_url}/app_detail/{app_id}",
+                    f"{base_url}/app_detail/{self.APP_NAME}",
                 )
                 if r.status_code == 200 and "running" in r.text:
                     break

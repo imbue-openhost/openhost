@@ -17,6 +17,9 @@ def write_file(path: str, content: str, *, mode: int = 0o600) -> None:
     ``mode`` defaults to ``0o600`` (owner-only).  System config files
     that need to be world-readable (sysctl snippets, systemd units,
     container registries) should pass ``mode=0o644`` explicitly.
+
+    Note: this agent runs as root, so created files will be owned by
+    root:root and ``mode`` bits apply relative to that.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)

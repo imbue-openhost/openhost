@@ -305,8 +305,10 @@ def test_list_meta_dumps_handles_no_prefix():
 # --- is_archive_dir_healthy -----------------------------------------------
 
 
-def test_is_archive_dir_healthy_disabled_returns_false(cfg, db):
-    assert not archive_backend.is_archive_dir_healthy(cfg, db)
+def test_is_archive_dir_healthy_disabled_returns_true(cfg, db):
+    """When S3 is not configured there is no archive data to protect, so
+    the health check should pass to avoid blocking app operations."""
+    assert archive_backend.is_archive_dir_healthy(cfg, db)
 
 
 def test_is_archive_dir_healthy_s3_uses_is_mounted(cfg, db):

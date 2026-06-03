@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import sqlite3
+from pathlib import Path
 from threading import Thread
 from typing import Annotated
 from typing import Any
@@ -35,6 +36,9 @@ from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
+from compute_space.core.git_ops import get_branch_name
+from compute_space.core.git_ops import get_head_sha
+from compute_space.core.git_ops import is_dirty
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.oauth import OAuthAuthorizationRequired
@@ -122,6 +126,13 @@ class AppStatusResponse:
     status: str
     error: str | None
     error_kind: str | None
+    # Git info for the app's checked-out repo. All None when the app has no
+    # git repo on disk (e.g. builtin apps copied from the apps/ directory)
+    # or when the .git read fails for any reason. ``git_branch`` is None when
+    # HEAD is detached even if ``git_sha`` is populated.
+    git_branch: str | None = None
+    git_sha: str | None = None
+    git_dirty: bool | None = None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -355,11 +366,27 @@ async def api_apps(db: sqlite3.Connection) -> list[AppSummary]:
     ]
 
 
+async def _read_app_git_info(repo_path: str | None) -> tuple[str | None, str | None, bool | None]:
+    """Return (branch, sha, dirty) for an app's repo, or (None, None, None) on any error."""
+    if not repo_path:
+        return None, None, None
+    path = Path(repo_path)
+    if not (path / ".git").exists():
+        return None, None, None
+    try:
+        branch = await get_branch_name(path)
+        sha = await get_head_sha(path)
+        dirty = await is_dirty(path)
+    except Exception:
+        return None, None, None
+    return branch, sha, dirty
+
+
 @get("/api/app_status/{app_id:str}", guards=[require_owner_auth])
 async def app_status(app_id: str, db: sqlite3.Connection) -> Response[AppStatusResponse] | Response[ErrorResponse]:
     if not is_valid_app_id(app_id):
         return Response(content=ErrorResponse(error="Invalid app_id"), status_code=400)
-    app_row = db.execute("SELECT status, error_message FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+    app_row = db.execute("SELECT status, error_message, repo_path FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     if not app_row:
         return Response(content=ErrorResponse(error="not found"), status_code=404)
     error_msg = app_row["error_message"]
@@ -370,8 +397,16 @@ async def app_status(app_id: str, db: sqlite3.Connection) -> Response[AppStatusR
     if error_msg and (BUILD_CACHE_CORRUPT_MARKER in error_msg or "[CACHE_CORRUPT]" in error_msg):
         error_kind = "build_cache_corrupt"
         error_msg = "Container build cache is corrupted."
+    git_branch, git_sha, git_dirty = await _read_app_git_info(app_row["repo_path"])
     return Response(
-        content=AppStatusResponse(status=app_row["status"], error=error_msg, error_kind=error_kind),
+        content=AppStatusResponse(
+            status=app_row["status"],
+            error=error_msg,
+            error_kind=error_kind,
+            git_branch=git_branch,
+            git_sha=git_sha,
+            git_dirty=git_dirty,
+        ),
         status_code=200,
         media_type=MediaType.JSON,
     )
@@ -489,7 +524,7 @@ async def _reload_app_impl(
                     )
                     db.commit()
                     if continue_oauth:
-                        return Redirect(path=f"/app_detail/{app_id}")
+                        return Redirect(path=f"/app_detail/{app_name}")
                     return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
                 except OAuthAuthorizationRequired as e:
                     lf.write("No token available; redirecting to oauth flow\n")
@@ -511,7 +546,7 @@ async def _reload_app_impl(
                 )
                 db.commit()
                 if continue_oauth:
-                    return Redirect(path=f"/app_detail/{app_id}")
+                    return Redirect(path=f"/app_detail/{app_name}")
                 return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
 
     await asyncio.to_thread(stop_app_process, app_row)
@@ -553,7 +588,10 @@ async def reload_app_after_oauth(
     so we don't truncate the log file again or re-prompt for OAuth."""
     if not continue_oauth_update:
         # GET without the flag isn't meaningful; nudge the operator back to /app_detail.
-        return Redirect(path=f"/app_detail/{app_id}")
+        row = db.execute("SELECT name FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+        if not row:
+            return Redirect(path="/dashboard")
+        return Redirect(path=f"/app_detail/{row['name']}")
     return await _reload_app_impl(app_id, update=True, continue_oauth=True, db=db, config=config)
 
 

@@ -55,6 +55,19 @@
 </table>
 {% endif %}
 
+{% if services_provided %}
+<h3>Services Provided</h3>
+<table>
+  <tr><th>Service URL</th><th>Version</th></tr>
+  {% for svc in services_provided %}
+  <tr>
+    <td>{{ svc.service_url }}</td>
+    <td>{{ svc.service_version }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 {% if databases %}
 <h3>SQLite Databases</h3>
 <table>
@@ -138,7 +151,7 @@ async function grantPermission(btn) {
 <script id="page-config" type="application/json">
 {
   "renameAppUrl": "/rename_app/{{ app.app_id }}",
-  "appDetailUrl": "/app_detail/{{ app.app_id }}",
+  "appDetailUrl": "/app_detail/{{ app.name }}",
   "appLogsUrl": "/app_logs/{{ app.app_id }}",
   "appStatusUrl": "/api/app_status/{{ app.app_id }}",
   "appStatus": {{ app.status | tojson }},
