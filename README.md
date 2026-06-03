@@ -110,7 +110,7 @@ Notes:
 
 | component | path | what it does | status |
 |-----------|------|-------------|--------|
-| CLI | `self_host_cli/` | `openhost` command: up, down, doctor, update | buggy — has stale VM flags, being reworked |
+| CLI | `routerd_cli/` | `openhost` command: up, down, doctor, update | buggy — has stale VM flags, being reworked |
 | compute_space CLI | `compute_space_cli/` | compute space management CLI | working |
 | compute_space | `compute_space/compute_space/` | HTTP routing, app deployment, auth, reverse proxy | working |
 | dau_tracker | `apps/dau_tracker/` | DAU tracking + version check | working |

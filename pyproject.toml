@@ -38,13 +38,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["self_host_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli"]
+packages = ["routerd_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli"]
 
 [tool.pytest.ini_options]
 testpaths = [
     "compute_space/src/compute_space/tests",
     "compute_space_cli/src/compute_space_cli/tests",
-    "self_host_cli/src/self_host_cli/tests",
+    "routerd_cli/src/self_host_cli/tests",
     "apps/oauth/src/oauth/tests",
 ]
 # do NOT set --import-mode=importlib or change the import-mode.
