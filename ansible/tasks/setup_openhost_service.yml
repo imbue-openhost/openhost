@@ -16,6 +16,30 @@
     group: host
   register: config_file
 
+# First-boot claim token. When `claim_token` is supplied, anyone hitting /setup
+# must include `?claim=<value>` to set the owner password — prevents a MITM
+# from claiming the instance during the window between service start and the
+# human completing /setup. setup_app deletes this file after a successful
+# claim, so subsequent deploys without -e claim_token don't resurrect it.
+# Don't re-supply the var on later deploys: it's only meaningful at first boot.
+- name: Ensure claim-token directory exists
+  file:
+    path: /home/host/.openhost/local_compute_space/persistent_data/openhost
+    state: directory
+    owner: host
+    group: host
+    mode: "0755"
+  when: claim_token is defined
+
+- name: Write claim token
+  copy:
+    content: "{{ claim_token }}"
+    dest: /home/host/.openhost/local_compute_space/persistent_data/openhost/claim_token
+    owner: host
+    group: host
+    mode: "0600"
+  when: claim_token is defined
+
 # Look up the host user's UID so the service template can reference
 # the right /run/user/<uid> path and user@<uid>.service unit. The
 # host user is created without a fixed UID so the value varies by
