@@ -404,11 +404,7 @@ def manifest_uses_archive(manifest_raw: str) -> bool:
     destructive removal still needs the archive healthy to delete S3 bytes.
     """
     data = _data_section(manifest_raw)
-    return bool(
-        data.get("app_archive")
-        or data.get("access_all_archive")
-        or data.get("access_all_data")
-    )
+    return bool(data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data"))
 
 
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
