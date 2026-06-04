@@ -307,6 +307,8 @@ def test_manifest_uses_archive_matches_either_flag() -> None:
     assert not archive_backend.manifest_uses_archive("[data]\napp_archive = false\napp_data = true\n")
     # access_all_app_data alone does NOT imply archive access.
     assert not archive_backend.manifest_uses_archive("[data]\naccess_all_app_data = true\n")
+    # access_all_data (backwards-compat alias) DOES imply archive access.
+    assert archive_backend.manifest_uses_archive("[data]\naccess_all_data = true\n")
 
 
 # --- install/reload gates (api/apps endpoints' archive backend checks) ----
