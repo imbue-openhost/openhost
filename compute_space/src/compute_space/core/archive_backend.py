@@ -398,13 +398,13 @@ def manifest_requires_archive(manifest_raw: str) -> bool:
 def manifest_uses_archive(manifest_raw: str) -> bool:
     """Return True if the app receives the archive mount.
 
-    ``app_archive`` is a hard requirement; ``access_all_archive`` is
-    permissive but still causes the app to receive the archive bind-mount
-    when the tier is live, so destructive removal still needs the archive
-    healthy to delete S3 bytes.
+    ``app_archive`` is a hard requirement; ``access_all_archive`` and the
+    convenience alias ``access_all_data`` are permissive but still cause
+    the app to receive the archive bind-mount when the tier is live, so
+    destructive removal still needs the archive healthy to delete S3 bytes.
     """
     data = _data_section(manifest_raw)
-    return bool(data.get("app_archive") or data.get("access_all_archive"))
+    return bool(data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data"))
 
 
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
