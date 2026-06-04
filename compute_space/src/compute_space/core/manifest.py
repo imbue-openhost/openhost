@@ -376,7 +376,8 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_archive=data_section.get("app_archive", False),
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_data=data_section.get("access_all_data", False),
-        access_all_app_data=data_section.get("access_all_app_data", False) or data_section.get("access_all_data", False),
+        access_all_app_data=data_section.get("access_all_app_data", False)
+        or data_section.get("access_all_data", False),
         access_all_archive=data_section.get("access_all_archive", False) or data_section.get("access_all_data", False),
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),
