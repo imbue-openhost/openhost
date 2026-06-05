@@ -203,13 +203,22 @@
     state: directory
     mode: "0755"
 
-# Read by compute_space.core.runtime_sentinel + the dashboard update-check endpoint.  Bump runtime_version here AND
-# EXPECTED_RUNTIME_VERSION in runtime_sentinel.py together when a host-side change requires re-running ansible.
-- name: Write host runtime sentinel
+# openhost_system_agent tracks host system state in this migration log.
+# Ansible provisioning establishes the v1 baseline (everything above plus
+# the rest of setup.yml); the agent then applies v2+ migrations on top.
+# Without this baseline the agent reports "No migration history found" and
+# refuses to apply migrations (see openhost_system_agent/migrations/runner.py).
+# Write it only if absent so re-running ansible never clobbers the agent's
+# own appended history.
+- name: Check for existing system migration log
+  stat:
+    path: /etc/openhost/migrations.jsonl
+  register: _migration_log
+
+- name: Write v1 system migration baseline
   copy:
     content: |
-      # Managed by ansible/tasks/containers.yml; do not edit by hand.
-      runtime=podman
-      runtime_version=1
-    dest: /etc/openhost/runtime
+      {"version":1,"timestamp":"{{ ansible_date_time.iso8601 }}","success":true,"error":null}
+    dest: /etc/openhost/migrations.jsonl
     mode: "0644"
+  when: not _migration_log.stat.exists
