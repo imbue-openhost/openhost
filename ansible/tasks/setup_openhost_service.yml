@@ -26,6 +26,28 @@
     key: host
     split: ":"
 
+# The openhost_system_agent CLI is installed only inside the pixi env
+# (via [project.scripts]). compute_space invokes it as `sudo
+# openhost_system_agent`, but sudo resets PATH to its compiled-in
+# secure_path, which does NOT include the pixi env — so the bare name
+# can't be found. Symlink it into /usr/local/bin (which IS on
+# secure_path) so the privileged agent is reachable from sudo.
+- name: Find openhost_system_agent binary path
+  shell: /home/host/.pixi/bin/pixi run which openhost_system_agent
+  args:
+    chdir: /home/host/openhost
+  register: system_agent_path
+  changed_when: false
+
+- name: Symlink openhost_system_agent onto sudo's secure_path
+  become: yes
+  become_user: root
+  file:
+    src: "{{ system_agent_path.stdout | trim }}"
+    dest: /usr/local/bin/openhost_system_agent
+    state: link
+    force: yes
+
 - name: Install openhost systemd service
   become: yes
   become_user: root
