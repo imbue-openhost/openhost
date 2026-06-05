@@ -68,12 +68,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Secret required to claim this OpenHost on first boot. When set, "
-            "the password-setup page rejects callers that don't supply this "
-            "token, preventing a MITM from claiming the instance. Must be "
-            "URL-safe (letters, digits, '-', '_'). If omitted (the default), "
-            "/setup accepts any caller -- safe only when the endpoint is "
-            "reachable only by you (e.g. loopback-only)."
+            "Secret required to claim this OpenHost on first boot. If omitted, "
+            "a URL-safe random token is generated and printed. The password-"
+            "setup page rejects every caller that doesn't supply this token, "
+            "preventing a MITM from claiming the instance. Must be URL-safe "
+            "(letters, digits, '-', '_')."
         ),
     )
 

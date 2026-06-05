@@ -16,12 +16,14 @@
     group: host
   register: config_file
 
-# First-boot claim token. When `claim_token` is supplied, anyone hitting /setup
-# must include `?claim=<value>` to set the owner password — prevents a MITM
-# from claiming the instance during the window between service start and the
-# human completing /setup. setup_app deletes this file after a successful
-# claim, so subsequent deploys without -e claim_token don't resurrect it.
-# Don't re-supply the var on later deploys: it's only meaningful at first boot.
+# First-boot claim token. `claim_token_required = true` is baked into the
+# rendered config above, so /setup rejects every caller unless their request
+# carries a token matching this file. If the operator doesn't pass
+# `-e claim_token=…`, we generate a fresh URL-safe random one and print the
+# claim URL at the end of the play — handing the secret to the human who
+# will claim the workspace. vm-manager passes the var to control the value.
+# setup_app deletes this file after a successful claim, so on re-deploys
+# (where the instance is already claimed) the rewritten file is inert.
 - name: Ensure claim-token directory exists
   file:
     path: /home/host/.openhost/local_compute_space/persistent_data/openhost
@@ -29,16 +31,22 @@
     owner: host
     group: host
     mode: "0755"
-  when: claim_token is defined
+
+- name: Resolve effective claim token
+  set_fact:
+    effective_claim_token: "{{ claim_token | default(lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
 
 - name: Write claim token
   copy:
-    content: "{{ claim_token }}"
+    content: "{{ effective_claim_token }}"
     dest: /home/host/.openhost/local_compute_space/persistent_data/openhost/claim_token
     owner: host
     group: host
     mode: "0600"
-  when: claim_token is defined
+
+- name: Show claim URL
+  debug:
+    msg: "Claim URL: https://{{ domain }}/setup?claim={{ effective_claim_token }}"
 
 # Look up the host user's UID so the service template can reference
 # the right /run/user/<uid> path and user@<uid>.service unit. The

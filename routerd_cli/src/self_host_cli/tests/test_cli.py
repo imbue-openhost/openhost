@@ -234,13 +234,14 @@ class TestClaimToken:
         assert path.read_text() == "keep-me"
         assert "claim=keep-me" in capsys.readouterr().out
 
-    def test_no_token_default(self, tmp_path, capsys):
-        # No --claim-token and no file on disk: behavior unchanged from before.
+    def test_random_token_generated_when_absent(self, tmp_path, capsys):
+        # No --claim-token and no file on disk: generate a URL-safe random token.
         _provision_claim_token(str(tmp_path), supplied_token=None, port=8080)
-        assert not _claim_token_path(str(tmp_path)).exists()
-        out = capsys.readouterr().out
-        assert "no token set" in out
-        assert "claim=" not in out
+        path = _claim_token_path(str(tmp_path))
+        token = path.read_text()
+        # token_urlsafe(32) yields ~43 chars of urlsafe-base64.
+        assert len(token) >= 32
+        assert f"claim={token}" in capsys.readouterr().out
 
     def test_supplied_token_rejects_non_url_safe(self, tmp_path, capsys):
         with pytest.raises(SystemExit):

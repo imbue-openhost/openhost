@@ -11,5 +11,6 @@ acme_directory_url = "{{ acme_directory_url }}"
 coredns_enabled = true
 public_ip = "{{ public_ip | default(inventory_hostname) }}"
 start_caddy = true
+claim_token_required = true
 data_root_dir = "/home/host/.openhost/local_compute_space"
 apps_dir_override = "/home/host/openhost/apps"

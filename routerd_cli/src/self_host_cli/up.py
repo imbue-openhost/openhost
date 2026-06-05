@@ -8,6 +8,7 @@ import argparse
 import ipaddress
 import os
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -48,20 +49,24 @@ def _provision_claim_token(
     supplied_token: str | None,
     port: int,
 ) -> None:
-    """Honor the operator's claim-token choice for first-boot /setup.
+    """Ensure a claim-token file exists so first-boot /setup can be claimed.
+
+    DefaultConfig has claim_token_required=True (fail-safe), so /setup rejects
+    every caller unless a token file is present and supplied via the URL. Here
+    we make sure that file exists:
 
     - supplied_token: validate and write to disk (overwriting any prior value).
-    - none supplied, file exists: validate the existing token and reuse it.
-    - none supplied, no file: leave it unset; /setup accepts any caller.
+    - else, file already on disk: validate the existing token and reuse it.
+    - else: generate a fresh URL-safe random token and write it.
 
-    When a token is in play, print the claim URL so the operator can hand it
-    to the human who will claim the workspace.
+    The resulting claim URL is printed so the operator can hand it to the
+    human who will claim the workspace.
     """
     path = _claim_token_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     if supplied_token is not None:
         _require_url_safe(supplied_token, "--claim-token")
-        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(supplied_token)
         token = supplied_token
     elif path.exists():
@@ -70,8 +75,8 @@ def _provision_claim_token(
         token = path.read_text().strip().split(":", 1)[0]
         _require_url_safe(token, str(path))
     else:
-        print("  Claim:     no token set; /setup will accept any caller.")
-        return
+        token = secrets.token_urlsafe(32)
+        path.write_text(token)
 
     # 600 — token grants ownership of this instance on first /setup.
     try:
