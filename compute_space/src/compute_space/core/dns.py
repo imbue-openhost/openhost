@@ -35,6 +35,7 @@ def start_coredns(
     # Write Corefile. this is coredns's config.
     corefile = _jinja_env.get_template("Corefile").render(
         zone_domain=zone_domain,
+        public_ip=public_ip,
         zone_file_path=zonefile_path,
     )
     with open(corefile_path, "w") as f:

@@ -5,6 +5,8 @@ environments:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
     - https://pypi.org/simple
+    options:
+      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -243,6 +245,8 @@ environments:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
     - https://pypi.org/simple
+    options:
+      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -2084,7 +2088,7 @@ packages:
 - pypi: ./
   name: openhost
   version: 0.1.0
-  sha256: f57d66ae20d5bec56151317ee28a947f802318e31970d1034c49da5c92491413
+  sha256: 54aeca37554df90e8698584ed6c2bed3109eda6ad99c5000edf070c90a2a3175
   requires_dist:
   - pyjwt[crypto]
   - acme>=5.4.0
@@ -2110,7 +2114,6 @@ packages:
   - typed-settings>=25.3.0
   - websockets
   requires_python: ==3.12.*
-  editable: true
 - conda: https://conda.anaconda.org/conda-forge/linux-64/openssl-3.6.2-h35e630c_0.conda
   sha256: c0ef482280e38c71a08ad6d71448194b719630345b0c9c60744a2010e8a8e0cb
   md5: da1b85b6a87e141f5140bb9924cecab0
