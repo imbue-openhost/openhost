@@ -120,7 +120,9 @@ def apply_update() -> ApplyResult:
     remote_sha = repo.refs[remote_ref].commit.hexsha
 
     if local_sha == remote_sha:
-        return ApplyResult(ref=local_sha[:8], system_migrations_applied=[], already_up_to_date=True)
+        logger.info("Running system migrations...")
+        applied = _run_migrations_reexec()
+        return ApplyResult(ref=local_sha[:8], system_migrations_applied=applied, already_up_to_date=not applied)
 
     logger.info(f"Checking out {remote_ref}...")
     try:

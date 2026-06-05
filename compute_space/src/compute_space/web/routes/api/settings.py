@@ -93,6 +93,9 @@ async def check_for_updates() -> CheckUpdatesResponse:
     except SystemAgentError as e:
         return CheckUpdatesResponse(state=UpdateState.ERROR, error=str(e))
 
+    if not migration_status.ok and migration_status.reason == "behind":
+        return CheckUpdatesResponse(state=UpdateState.UPDATE_AVAILABLE, error=migration_status.message)
+
     if not migration_status.ok:
         return CheckUpdatesResponse(state=UpdateState.ERROR, error=migration_status.message)
 
@@ -110,7 +113,7 @@ async def apply_update() -> None:
     except SystemAgentError as e:
         raise HTTPException(detail=str(e), status_code=500) from e
 
-    if not migration_status.ok:
+    if not migration_status.ok and migration_status.reason != "behind":
         raise HTTPException(detail=migration_status.message, status_code=409)
 
     try:
