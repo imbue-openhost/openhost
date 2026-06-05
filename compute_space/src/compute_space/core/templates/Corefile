@@ -1,5 +1,5 @@
 {{ zone_domain }}:53 {
-    bind {{ public_ip }}
+    bind {{ bind_ip }}
     file {{ zone_file_path }} {
         reload 2s
     }

@@ -11,6 +11,7 @@ waits for CoreDNS to pick it up, then calls clear_txt() after the cert is issued
 from __future__ import annotations
 
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -27,6 +28,23 @@ _jinja_env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR))
 _SERIAL_RE = re.compile(r"^(\s+)(\d+)(\s+;\s*serial\s*)$", re.MULTILINE)
 
 
+def _coredns_bind_ip(public_ip: str) -> str:
+    """Return the local address CoreDNS should bind for authoritative DNS.
+
+    Binding wildcard :53 conflicts with Podman's aardvark-dns on 10.89.0.1:53.
+    Binding the configured public IP works on hosts where that IP is assigned to
+    an interface (for example Hetzner), but fails on AWS/GCP where public IPs are
+    NATed to a private VM address. The default-route source address is the local
+    interface address that receives that NATed traffic.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return public_ip
+
+
 def start_coredns(
     zone_domain: str, public_ip: str, corefile_path: Path, zonefile_path: Path
 ) -> subprocess.Popen[bytes]:
@@ -35,7 +53,7 @@ def start_coredns(
     # Write Corefile. this is coredns's config.
     corefile = _jinja_env.get_template("Corefile").render(
         zone_domain=zone_domain,
-        public_ip=public_ip,
+        bind_ip=_coredns_bind_ip(public_ip),
         zone_file_path=zonefile_path,
     )
     with open(corefile_path, "w") as f:
