@@ -1,15 +1,14 @@
 """Tests for provision_data TLS cert env-var injection.
 
-When a manifest requests ``[tls] cert = true`` and the platform cert files
-exist, provision_data must inject OPENHOST_TLS_CERT_PATH and
-OPENHOST_TLS_KEY_PATH env vars that point at the in-container paths.
+When a manifest requests ``[tls] cert = true``, provision_data must inject
+OPENHOST_TLS_CERT_PATH and OPENHOST_TLS_KEY_PATH unconditionally (pointing
+at the fixed in-container paths).  File-existence validation happens in
+run_container, not here.
 """
 
 from __future__ import annotations
 
 import os
-
-import pytest
 
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
@@ -55,61 +54,36 @@ def _provision(
 
 class TestProvisionDataTlsCert:
     """provision_data injects OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH
-    when the manifest requests [tls] cert = true and the host files exist."""
+    whenever the manifest requests [tls] cert = true, regardless of whether
+    the host cert files exist (run_container enforces that separately)."""
 
-    def test_tls_env_vars_injected_when_cert_exists(self, tmp_path) -> None:
-        cert = tmp_path / "tls.crt"
-        key = tmp_path / "tls.key"
-        cert.write_text("CERT")
-        key.write_text("KEY")
-
+    def test_tls_env_vars_injected_when_tls_cert_true(self, tmp_path) -> None:
         manifest = _basic_manifest(tls_cert=True)
-        env = _provision(tmp_path, manifest, tls_cert_path=str(cert), tls_key_path=str(key))
+        env = _provision(tmp_path, manifest, tls_cert_path="/some/path.crt", tls_key_path="/some/path.key")
+
+        assert env["OPENHOST_TLS_CERT_PATH"] == "/run/secrets/tls/tls.crt"
+        assert env["OPENHOST_TLS_KEY_PATH"] == "/run/secrets/tls/tls.key"
+
+    def test_tls_env_vars_injected_even_when_paths_not_provided(self, tmp_path) -> None:
+        """provision_data injects the in-container paths regardless of whether
+        the host cert path args are passed — those are only used by run_container."""
+        manifest = _basic_manifest(tls_cert=True)
+        env = _provision(tmp_path, manifest, tls_cert_path=None, tls_key_path=None)
 
         assert env["OPENHOST_TLS_CERT_PATH"] == "/run/secrets/tls/tls.crt"
         assert env["OPENHOST_TLS_KEY_PATH"] == "/run/secrets/tls/tls.key"
 
     def test_tls_env_vars_not_injected_when_manifest_flag_false(self, tmp_path) -> None:
-        cert = tmp_path / "tls.crt"
-        key = tmp_path / "tls.key"
-        cert.write_text("CERT")
-        key.write_text("KEY")
-
         manifest = _basic_manifest(tls_cert=False)
-        env = _provision(tmp_path, manifest, tls_cert_path=str(cert), tls_key_path=str(key))
-
-        assert "OPENHOST_TLS_CERT_PATH" not in env
-        assert "OPENHOST_TLS_KEY_PATH" not in env
-
-    def test_tls_env_vars_not_injected_when_files_absent(self, tmp_path) -> None:
-        manifest = _basic_manifest(tls_cert=True)
-        env = _provision(
-            tmp_path,
-            manifest,
-            tls_cert_path=str(tmp_path / "nonexistent.crt"),
-            tls_key_path=str(tmp_path / "nonexistent.key"),
-        )
-
-        assert "OPENHOST_TLS_CERT_PATH" not in env
-        assert "OPENHOST_TLS_KEY_PATH" not in env
-
-    def test_tls_env_vars_not_injected_when_paths_not_provided(self, tmp_path) -> None:
-        """TLS disabled on the platform: no paths passed, no env vars injected."""
-        manifest = _basic_manifest(tls_cert=True)
-        env = _provision(tmp_path, manifest, tls_cert_path=None, tls_key_path=None)
+        env = _provision(tmp_path, manifest, tls_cert_path="/some/path.crt", tls_key_path="/some/path.key")
 
         assert "OPENHOST_TLS_CERT_PATH" not in env
         assert "OPENHOST_TLS_KEY_PATH" not in env
 
     def test_standard_env_vars_still_present_alongside_tls(self, tmp_path) -> None:
         """Adding TLS env vars must not displace the standard OPENHOST_* vars."""
-        cert = tmp_path / "tls.crt"
-        key = tmp_path / "tls.key"
-        cert.write_text("CERT")
-        key.write_text("KEY")
-
         manifest = _basic_manifest(tls_cert=True)
-        env = _provision(tmp_path, manifest, tls_cert_path=str(cert), tls_key_path=str(key))
+        env = _provision(tmp_path, manifest, tls_cert_path="/some/path.crt", tls_key_path="/some/path.key")
 
         assert "OPENHOST_APP_NAME" in env
         assert "OPENHOST_ZONE_DOMAIN" in env

@@ -853,9 +853,7 @@ def _run_and_capture_with_tls(
     return run_cmds[0]
 
 
-def test_tls_cert_mount_added_when_requested_and_files_exist(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tls_cert_mount_added_when_requested_and_files_exist(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When the manifest sets tls_cert=True and the cert/key files exist on the
     host, run_container must bind-mount them read-only into the container at
     the canonical /run/secrets/tls/ paths."""
@@ -883,9 +881,7 @@ def test_tls_cert_mount_added_when_requested_and_files_exist(
     assert key_mounts[0] == f"{key}:/run/secrets/tls/tls.key:ro,idmap"
 
 
-def test_tls_cert_mount_skipped_when_manifest_flag_false(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tls_cert_mount_skipped_when_manifest_flag_false(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When tls_cert=False (the default), no /run/secrets/tls/ mounts are
     added even if the host cert files exist."""
     cert = tmp_path / "tls.crt"
@@ -908,43 +904,62 @@ def test_tls_cert_mount_skipped_when_manifest_flag_false(
     )
 
 
-def test_tls_cert_mount_skipped_when_files_absent(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tls_cert_mount_fails_when_files_absent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When the manifest requests the cert but the host cert/key files don't
-    exist yet (TLS not yet acquired), the mount is silently skipped — the
-    container still starts.  This is important for deployments where cert
-    acquisition happens after app deployment."""
+    exist (TLS not yet acquired), run_container must raise RuntimeError.
+    There is no silent fallback — the deploy fails so the operator knows
+    immediately why the app can't start."""
+    _patch_subprocess_run(monkeypatch, lambda *a, **kw: _FakeCompleted(0))
+
+    data_dir = str(tmp_path / "persistent")
+    temp_data_dir = str(tmp_path / "temp")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(archive_dir, exist_ok=True)
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", "myapp"), exist_ok=True)
+
     manifest = _basic_manifest(tls_cert=True)
-    argv = _run_and_capture_with_tls(
-        monkeypatch,
-        manifest=manifest,
-        tmp_path=tmp_path,
-        tls_cert_path=str(tmp_path / "nonexistent.crt"),
-        tls_key_path=str(tmp_path / "nonexistent.key"),
-    )
+    with pytest.raises(RuntimeError, match="platform certificate has not been acquired"):
+        run_container(
+            "myapp",
+            "openhost-myapp:latest",
+            manifest,
+            local_port=9001,
+            env_vars={},
+            data_dir=data_dir,
+            temp_data_dir=temp_data_dir,
+            archive_dir=archive_dir,
+            tls_cert_path=str(tmp_path / "nonexistent.crt"),
+            tls_key_path=str(tmp_path / "nonexistent.key"),
+        )
 
-    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
-    assert not any("/run/secrets/tls" in v for v in volume_args), (
-        f"Expected no TLS mounts when cert files absent, got: {volume_args}"
-    )
 
+def test_tls_cert_mount_fails_when_tls_disabled_on_platform(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When tls_cert=True but TLS is disabled on the platform (no cert paths
+    passed), run_container must raise RuntimeError with a clear message.
+    There is no silent fallback."""
+    _patch_subprocess_run(monkeypatch, lambda *a, **kw: _FakeCompleted(0))
 
-def test_tls_cert_mount_skipped_when_paths_not_provided(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When tls_cert=True but no cert paths are passed (TLS disabled on the
-    platform), no mount should be added."""
+    data_dir = str(tmp_path / "persistent")
+    temp_data_dir = str(tmp_path / "temp")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(archive_dir, exist_ok=True)
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", "myapp"), exist_ok=True)
+
     manifest = _basic_manifest(tls_cert=True)
-    argv = _run_and_capture_with_tls(
-        monkeypatch,
-        manifest=manifest,
-        tmp_path=tmp_path,
-        tls_cert_path=None,
-        tls_key_path=None,
-    )
-
-    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
-    assert not any("/run/secrets/tls" in v for v in volume_args), (
-        f"Expected no TLS mounts when paths not provided, got: {volume_args}"
-    )
+    with pytest.raises(RuntimeError, match="TLS is not enabled on this platform"):
+        run_container(
+            "myapp",
+            "openhost-myapp:latest",
+            manifest,
+            local_port=9001,
+            env_vars={},
+            data_dir=data_dir,
+            temp_data_dir=temp_data_dir,
+            archive_dir=archive_dir,
+            tls_cert_path=None,
+            tls_key_path=None,
+        )

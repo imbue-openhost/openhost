@@ -167,10 +167,10 @@ class AppManifest:
     # (e.g. XMPP federation on port 5269) where Caddy's TLS termination is
     # not on the data path.  The cert covers ``<zone_domain>`` and
     # ``*.<zone_domain>`` so it is valid for any ``<app>.<zone_domain>``
-    # subdomain.  Only available when TLS is enabled on the platform
-    # (tls_enabled = true in the router config); if TLS is disabled or the
-    # cert has not yet been acquired the mount is skipped and no env vars
-    # are injected.
+    # subdomain.  Requires TLS to be enabled on the platform
+    # (tls_enabled = true in the router config) and the certificate to have
+    # been acquired.  If either condition is not met the deploy fails with a
+    # clear error — there is no silent fallback.
     tls_cert: bool = False
 
     # [services.v2]

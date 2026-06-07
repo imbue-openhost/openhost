@@ -293,19 +293,22 @@ def run_container(
     # platform's wildcard cert and key are bind-mounted into the container
     # read-only at /run/secrets/tls/.  This gives apps like XMPP servers a
     # CA-trusted cert for raw TCP TLS without needing their own ACME client.
-    # The mount is silently skipped if the host cert/key files are absent
-    # (TLS not configured or cert not yet acquired).
-    if manifest.tls_cert and tls_cert_path and tls_key_path:
-        if os.path.exists(tls_cert_path) and os.path.exists(tls_key_path):
-            cmd.extend(["-v", _bind_mount_arg(tls_cert_path, "/run/secrets/tls/tls.crt", read_only=True)])
-            cmd.extend(["-v", _bind_mount_arg(tls_key_path, "/run/secrets/tls/tls.key", read_only=True)])
-        else:
-            logger.warning(
-                "App %s requests tls_cert but cert/key not found at %s / %s — skipping TLS cert mount",
-                app_name,
-                tls_cert_path,
-                tls_key_path,
+    # No fallback: if the app requests the cert and it isn't available the
+    # deploy fails so operators know immediately why TLS is not working.
+    if manifest.tls_cert:
+        if not tls_cert_path or not tls_key_path:
+            raise RuntimeError(
+                f"App '{app_name}' requires [tls] cert but TLS is not enabled on this platform "
+                f"(tls_enabled = false in the router config). Enable TLS or remove [tls] cert = true."
             )
+        if not os.path.exists(tls_cert_path) or not os.path.exists(tls_key_path):
+            raise RuntimeError(
+                f"App '{app_name}' requires [tls] cert but the platform certificate has not been "
+                f"acquired yet (expected at {tls_cert_path} / {tls_key_path}). "
+                f"Wait for the platform to finish its ACME certificate acquisition and redeploy."
+            )
+        cmd.extend(["-v", _bind_mount_arg(tls_cert_path, "/run/secrets/tls/tls.crt", read_only=True)])
+        cmd.extend(["-v", _bind_mount_arg(tls_key_path, "/run/secrets/tls/tls.key", read_only=True)])
 
     # Structured port mappings: bind TCP+UDP on 0.0.0.0.  host_port
     # values below UNPRIVILEGED_PORT_FLOOR are rejected at manifest
