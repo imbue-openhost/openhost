@@ -802,3 +802,149 @@ def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
     target vs. what the app's env var points at."""
     arg = _bind_mount_arg("/a/b/c/", "/data/app_data/myapp/")
     assert arg == "/a/b/c/:/data/app_data/myapp/:idmap"
+
+
+# ---------------------------------------------------------------------------
+# TLS cert sharing
+# ---------------------------------------------------------------------------
+
+
+def _run_and_capture_with_tls(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    manifest: AppManifest,
+    tmp_path,
+    tls_cert_path: str | None = None,
+    tls_key_path: str | None = None,
+) -> list[str]:
+    """Like _run_and_capture but threads tls_cert_path / tls_key_path through."""
+    runs: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=60, **_):  # type: ignore[no-untyped-def]
+        runs.append(list(cmd))
+        if cmd[:2] == ["podman", "run"]:
+            return _FakeCompleted(0, stdout="container-id-xyz\n")
+        return _FakeCompleted(0)
+
+    _patch_subprocess_run(monkeypatch, fake_run)
+
+    data_dir = str(tmp_path / "persistent")
+    temp_data_dir = str(tmp_path / "temp")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(temp_data_dir, exist_ok=True)
+    os.makedirs(archive_dir, exist_ok=True)
+    os.makedirs(os.path.join(temp_data_dir, "app_temp_data", manifest.name), exist_ok=True)
+
+    run_container(
+        manifest.name,
+        "openhost-myapp:latest",
+        manifest,
+        local_port=9001,
+        env_vars={},
+        data_dir=data_dir,
+        temp_data_dir=temp_data_dir,
+        archive_dir=archive_dir,
+        tls_cert_path=tls_cert_path,
+        tls_key_path=tls_key_path,
+    )
+    run_cmds = [c for c in runs if c[:2] == ["podman", "run"]]
+    assert len(run_cmds) == 1
+    return run_cmds[0]
+
+
+def test_tls_cert_mount_added_when_requested_and_files_exist(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the manifest sets tls_cert=True and the cert/key files exist on the
+    host, run_container must bind-mount them read-only into the container at
+    the canonical /run/secrets/tls/ paths."""
+    cert = tmp_path / "tls.crt"
+    key = tmp_path / "tls.key"
+    cert.write_text("CERT")
+    key.write_text("KEY")
+
+    manifest = _basic_manifest(tls_cert=True)
+    argv = _run_and_capture_with_tls(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        tls_cert_path=str(cert),
+        tls_key_path=str(key),
+    )
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    cert_mounts = [v for v in volume_args if "/run/secrets/tls/tls.crt" in v]
+    key_mounts = [v for v in volume_args if "/run/secrets/tls/tls.key" in v]
+
+    assert len(cert_mounts) == 1, f"expected one cert mount, got: {cert_mounts}"
+    assert cert_mounts[0] == f"{cert}:/run/secrets/tls/tls.crt:ro,idmap"
+    assert len(key_mounts) == 1, f"expected one key mount, got: {key_mounts}"
+    assert key_mounts[0] == f"{key}:/run/secrets/tls/tls.key:ro,idmap"
+
+
+def test_tls_cert_mount_skipped_when_manifest_flag_false(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When tls_cert=False (the default), no /run/secrets/tls/ mounts are
+    added even if the host cert files exist."""
+    cert = tmp_path / "tls.crt"
+    key = tmp_path / "tls.key"
+    cert.write_text("CERT")
+    key.write_text("KEY")
+
+    manifest = _basic_manifest(tls_cert=False)
+    argv = _run_and_capture_with_tls(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        tls_cert_path=str(cert),
+        tls_key_path=str(key),
+    )
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    assert not any("/run/secrets/tls" in v for v in volume_args), (
+        f"Expected no TLS mounts when tls_cert=False, got: {volume_args}"
+    )
+
+
+def test_tls_cert_mount_skipped_when_files_absent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the manifest requests the cert but the host cert/key files don't
+    exist yet (TLS not yet acquired), the mount is silently skipped — the
+    container still starts.  This is important for deployments where cert
+    acquisition happens after app deployment."""
+    manifest = _basic_manifest(tls_cert=True)
+    argv = _run_and_capture_with_tls(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        tls_cert_path=str(tmp_path / "nonexistent.crt"),
+        tls_key_path=str(tmp_path / "nonexistent.key"),
+    )
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    assert not any("/run/secrets/tls" in v for v in volume_args), (
+        f"Expected no TLS mounts when cert files absent, got: {volume_args}"
+    )
+
+
+def test_tls_cert_mount_skipped_when_paths_not_provided(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When tls_cert=True but no cert paths are passed (TLS disabled on the
+    platform), no mount should be added."""
+    manifest = _basic_manifest(tls_cert=True)
+    argv = _run_and_capture_with_tls(
+        monkeypatch,
+        manifest=manifest,
+        tmp_path=tmp_path,
+        tls_cert_path=None,
+        tls_key_path=None,
+    )
+
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    assert not any("/run/secrets/tls" in v for v in volume_args), (
+        f"Expected no TLS mounts when paths not provided, got: {volume_args}"
+    )

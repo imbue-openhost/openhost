@@ -155,6 +155,24 @@ class AppManifest:
     access_vm_data: bool = False
     access_all_data: bool = False
 
+    # [tls]
+    # When true the platform's wildcard TLS certificate and private key are
+    # bind-mounted into the container read-only at:
+    #   /run/secrets/tls/tls.crt   (full-chain PEM)
+    #   /run/secrets/tls/tls.key   (private key PEM)
+    # and the following environment variables are injected:
+    #   OPENHOST_TLS_CERT_PATH=/run/secrets/tls/tls.crt
+    #   OPENHOST_TLS_KEY_PATH=/run/secrets/tls/tls.key
+    # Use this for apps that need a CA-trusted certificate for raw TCP TLS
+    # (e.g. XMPP federation on port 5269) where Caddy's TLS termination is
+    # not on the data path.  The cert covers ``<zone_domain>`` and
+    # ``*.<zone_domain>`` so it is valid for any ``<app>.<zone_domain>``
+    # subdomain.  Only available when TLS is enabled on the platform
+    # (tls_enabled = true in the router config); if TLS is disabled or the
+    # cert has not yet been acquired the mount is skipped and no env vars
+    # are injected.
+    tls_cert: bool = False
+
     # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
@@ -371,6 +389,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_archive=data_section.get("app_archive", False),
         access_vm_data=data_section.get("access_vm_data", False),
         access_all_data=data_section.get("access_all_data", False),
+        tls_cert=data.get("tls", {}).get("cert", False),
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,

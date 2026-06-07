@@ -688,3 +688,26 @@ class TestShmMb:
         toml = MINIMAL + 'shm_mb = "big"\n'
         with pytest.raises(ValueError, match="shm_mb"):
             parse_manifest_from_string(toml)
+
+
+class TestTlsCert:
+    """[tls] cert — platform wildcard TLS cert sharing."""
+
+    def test_tls_cert_default_is_false(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.tls_cert is False
+
+    def test_tls_cert_explicit_true(self):
+        toml = MINIMAL + "\n[tls]\ncert = true\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.tls_cert is True
+
+    def test_tls_cert_explicit_false(self):
+        toml = MINIMAL + "\n[tls]\ncert = false\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.tls_cert is False
+
+    def test_tls_cert_section_absent_defaults_false(self):
+        """[tls] section entirely absent still gives False."""
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.tls_cert is False

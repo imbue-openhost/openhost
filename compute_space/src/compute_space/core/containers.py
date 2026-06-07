@@ -177,6 +177,8 @@ def run_container(
     temp_data_dir: str,
     archive_dir: str,
     port_mappings: list[PortMapping] | None = None,
+    tls_cert_path: str | None = None,
+    tls_key_path: str | None = None,
 ) -> str:
     """Start a detached container for an app.  Returns the container ID."""
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
@@ -286,6 +288,24 @@ def run_container(
         if has_vm_data:
             os.makedirs(vm_data_dir, exist_ok=True)
             cmd.extend(["-v", _bind_mount_arg(vm_data_dir, c_vm_data, read_only=True)])
+
+    # Platform TLS cert share.  When [tls] cert = true in the manifest the
+    # platform's wildcard cert and key are bind-mounted into the container
+    # read-only at /run/secrets/tls/.  This gives apps like XMPP servers a
+    # CA-trusted cert for raw TCP TLS without needing their own ACME client.
+    # The mount is silently skipped if the host cert/key files are absent
+    # (TLS not configured or cert not yet acquired).
+    if manifest.tls_cert and tls_cert_path and tls_key_path:
+        if os.path.exists(tls_cert_path) and os.path.exists(tls_key_path):
+            cmd.extend(["-v", _bind_mount_arg(tls_cert_path, "/run/secrets/tls/tls.crt", read_only=True)])
+            cmd.extend(["-v", _bind_mount_arg(tls_key_path, "/run/secrets/tls/tls.key", read_only=True)])
+        else:
+            logger.warning(
+                "App %s requests tls_cert but cert/key not found at %s / %s — skipping TLS cert mount",
+                app_name,
+                tls_cert_path,
+                tls_key_path,
+            )
 
     # Structured port mappings: bind TCP+UDP on 0.0.0.0.  host_port
     # values below UNPRIVILEGED_PORT_FLOOR are rejected at manifest

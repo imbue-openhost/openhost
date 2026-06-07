@@ -351,6 +351,8 @@ def insert_and_deploy(
         zone_domain=config.zone_domain,
         port=config.port,
         owner_username=read_owner_username(db) or DEFAULT_OWNER_USERNAME,
+        tls_cert_path=str(config.tls_cert_path) if config.tls_enabled else None,
+        tls_key_path=str(config.tls_key_path) if config.tls_enabled else None,
     )
 
     db.execute(
@@ -486,6 +488,8 @@ def deploy_app_background(
             config.temporary_data_dir,
             config.app_archive_dir,
             port_mappings=port_mappings,
+            tls_cert_path=str(config.tls_cert_path) if config.tls_enabled else None,
+            tls_key_path=str(config.tls_key_path) if config.tls_enabled else None,
         )
         db.execute(
             "UPDATE apps SET container_id = ? WHERE app_id = ?",
@@ -613,6 +617,8 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         zone_domain=config.zone_domain,
         port=config.port,
         owner_username=read_owner_username(db) or DEFAULT_OWNER_USERNAME,
+        tls_cert_path=str(config.tls_cert_path) if config.tls_enabled else None,
+        tls_key_path=str(config.tls_key_path) if config.tls_enabled else None,
     )
 
     app_token = env_vars.get("OPENHOST_APP_TOKEN")
@@ -650,6 +656,8 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         config.temporary_data_dir,
         config.app_archive_dir,
         port_mappings=port_mappings,
+        tls_cert_path=str(config.tls_cert_path) if config.tls_enabled else None,
+        tls_key_path=str(config.tls_key_path) if config.tls_enabled else None,
     )
     db.execute(
         "UPDATE apps SET container_id = ? WHERE app_id = ?",

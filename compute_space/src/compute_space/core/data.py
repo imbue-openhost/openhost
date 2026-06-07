@@ -83,6 +83,8 @@ def provision_data(
     zone_domain: str,
     port: int,
     owner_username: str,
+    tls_cert_path: str | None = None,
+    tls_key_path: str | None = None,
 ) -> dict[str, str]:
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
@@ -166,6 +168,15 @@ def provision_data(
     env_vars["OPENHOST_MY_REDIRECT_DOMAIN"] = my_openhost_redirect_domain
 
     env_vars["OPENHOST_OWNER_USERNAME"] = owner_username
+
+    # When the manifest requests [tls] cert = true and the platform cert
+    # exists, inject the in-container paths so apps don't need to hard-code
+    # them.  The actual bind mount is performed by run_container; the env
+    # vars here point at the fixed in-container paths /run/secrets/tls/.
+    if manifest.tls_cert and tls_cert_path and tls_key_path:
+        if os.path.exists(tls_cert_path) and os.path.exists(tls_key_path):
+            env_vars["OPENHOST_TLS_CERT_PATH"] = "/run/secrets/tls/tls.crt"
+            env_vars["OPENHOST_TLS_KEY_PATH"] = "/run/secrets/tls/tls.key"
 
     return env_vars
 
