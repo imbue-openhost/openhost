@@ -127,7 +127,7 @@ Apps receive a persistent data directory by default. You can opt out or request 
 - **`access_vm_data = true`** — read-only access to the VM's shared data at `/data/vm_data/`.
 - **`access_all_app_data = true`** — full rw access to all apps' persistent and temp data parent directories, plus rw vm_data. For admin tools like file browsers.
 - **`access_all_archive = true`** — full access to all apps' archive parent directory. Permissive: silently skipped when JuiceFS is not configured. For backup tools.
-- **`access_all_data = true`** — deprecated alias for `access_all_app_data = true` + `access_all_archive = true`. Still fully supported; prefer the granular flags in new manifests.
+- **`access_all_data = true`** — convenience shorthand for `access_all_app_data = true` + `access_all_archive = true`.
 
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the System page to allow starting a file-browser app for cleanup.

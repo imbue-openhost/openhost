@@ -156,8 +156,7 @@ class AppManifest:
     # Granular cross-app data flags (preferred):
     access_all_app_data: bool = False
     access_all_archive: bool = False
-    # Backwards-compatible alias for access_all_app_data + access_all_archive.
-    # Prefer the granular flags in new manifests.
+    # Convenience shorthand: equivalent to access_all_app_data + access_all_archive.
     access_all_data: bool = False
 
     # [services.v2]
