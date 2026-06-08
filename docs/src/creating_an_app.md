@@ -111,20 +111,24 @@ The router injects these environment variables into your app:
 | `OPENHOST_ROUTER_URL` | `http://host.containers.internal:8080` | internal URL of the router, used for constructing service requests. |
 | `OPENHOST_ZONE_DOMAIN` | `user.host.imbue.com` | The compute space's domain                                                                                      |
 | `OPENHOST_MY_REDIRECT_DOMAIN` | `my.selfhost.imbue.com` | The shared `my.*` OAuth redirect domain. This hosts a browser-local page that redirects the user to their zone. |
-| `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data`, `sqlite`, or `access_all_data` is requested   |
-| `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data` or `access_all_data` is requested          |
+| `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data` (default on), `sqlite`, or `access_all_app_data` is requested   |
+| `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data` or `access_all_app_data` is requested          |
 | `OPENHOST_SQLITE_<NAME>` | `/data/app_data/my-app/sqlite/main.db` (for `sqlite = ["main"]`) | Path to a provisioned SQLite database file. Set once per entry in `sqlite`                                      |
 | `OPENHOST_OWNER_USERNAME` | `alice` | The compute space owner's chosen display name. Use to seed SSO account names. Defaults to `owner` if not explicitly configured. |
 
 ### Data storage
 
-Apps have no filesystem access by default. Request what you need in the `[data]` section of your manifest:
+Apps receive a persistent data directory by default. You can opt out or request additional storage in the `[data]` section of your manifest:
 
+- **`app_data = true`** (default) — mounts a persistent directory at `/data/app_data/{app_name}/`. Backed up. Set `false` to opt out.
 - **`sqlite = ["db_name"]`** — Provisions a SQLite database. Access the file at `OPENHOST_SQLITE_<NAME>`.
-- **`app_data = true`** — mounts a persistent directory at `/data/app_data/{app_name}/`. Backed up.
 - **`app_temp_data = true`** — mounts a temporary directory at `/data/app_temp_data/{app_name}/`. Not backed up, can be recreated.
+- **`app_archive = true`** — mounts an elastic archive directory at `/data/app_archive/{app_name}/`. S3-backed via JuiceFS. Requires the operator to configure the archive backend first.
 - **`access_vm_data = true`** — read-only access to the VM's shared data at `/data/vm_data/`.
-- **`access_all_data = true`** — full access to all data directories (all apps' data + VM data).
+- **`access_all_app_data = true`** — full rw access to all apps' persistent and temp data parent directories, plus rw vm_data. For admin tools like file browsers.
+- **`access_all_archive = true`** — full access to all apps' archive parent directory. Permissive: silently skipped when JuiceFS is not configured. For backup tools.
+- **`access_all_data = true`** — convenience shorthand for `access_all_app_data = true` + `access_all_archive = true`.
+
 
 The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the System page to allow starting a file-browser app for cleanup.
 

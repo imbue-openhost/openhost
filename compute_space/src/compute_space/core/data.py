@@ -87,9 +87,12 @@ def provision_data(
     """Create data directories for an app based on manifest permissions.
     Returns a dict of environment variable name -> value.
 
-    Apps only get filesystem access to directories they explicitly request
-    via app_data, app_temp_data, and app_archive flags in [data].  SQLite
-    entries implicitly enable app_data.
+    By default, apps receive a permanent data directory (app_data defaults
+    to True).  Additional storage tiers must be explicitly requested via
+    app_temp_data, app_archive, access_all_app_data, access_all_archive,
+    or the convenience shorthand access_all_data (which implies both
+    access_all_app_data and access_all_archive).
+    SQLite entries also implicitly enable app_data.
     """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
@@ -97,8 +100,10 @@ def provision_data(
     env_vars = {}
 
     # Determine if permanent data dir is needed:
-    # explicitly requested, has sqlite entries, or access_all_data
-    needs_app_data = manifest.app_data or manifest.sqlite_dbs or manifest.access_all_data
+    # app_data defaults true; also enabled by sqlite entries or cross-app access.
+    wants_all_app_data = manifest.access_all_app_data
+    wants_all_archive = manifest.access_all_archive
+    needs_app_data = manifest.app_data or manifest.sqlite_dbs or wants_all_app_data
 
     if needs_app_data:
         os.makedirs(app_data_dir, exist_ok=True)
@@ -117,7 +122,7 @@ def provision_data(
             if upper_key != env_key:
                 env_vars[upper_key] = db_path
 
-    if manifest.app_temp_data or manifest.access_all_data:
+    if manifest.app_temp_data or wants_all_app_data:
         os.makedirs(app_temp_dir, exist_ok=True)
         env_vars["OPENHOST_APP_TEMP_DIR"] = app_temp_dir
 
@@ -135,8 +140,8 @@ def provision_data(
             )
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
-    elif manifest.access_all_data and archive_available:
-        # access_all_data is permissive — skip the archive mount when
+    elif wants_all_archive and archive_available:
+        # access_all_archive is permissive — skip the archive mount when
         # the tier isn't configured rather than refusing to provision.
         os.makedirs(app_archive_dir, exist_ok=True)
         env_vars["OPENHOST_APP_ARCHIVE_DIR"] = app_archive_dir
