@@ -156,8 +156,8 @@ class AppManifest:
     # Granular cross-app data flags (preferred):
     access_all_app_data: bool = False
     access_all_archive: bool = False
-    # Convenience flag: equivalent to access_all_app_data + access_all_archive.
-    # Kept for backwards compatibility with existing app manifests.
+    # Backwards-compatible alias for access_all_app_data + access_all_archive.
+    # Prefer the granular flags in new manifests.
     access_all_data: bool = False
 
     # [services.v2]
@@ -350,6 +350,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
             app_name,
         )
 
+    _compat_all_data = data_section.get("access_all_data", False)
     return AppManifest(
         name=app_name,
         version=app_section["version"],
@@ -375,10 +376,9 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         app_temp_data=data_section.get("app_temp_data", False),
         app_archive=data_section.get("app_archive", False),
         access_vm_data=data_section.get("access_vm_data", False),
-        access_all_data=data_section.get("access_all_data", False),
-        access_all_app_data=data_section.get("access_all_app_data", False)
-        or data_section.get("access_all_data", False),
-        access_all_archive=data_section.get("access_all_archive", False) or data_section.get("access_all_data", False),
+        access_all_data=_compat_all_data,
+        access_all_app_data=data_section.get("access_all_app_data", False) or _compat_all_data,
+        access_all_archive=data_section.get("access_all_archive", False) or _compat_all_data,
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,
