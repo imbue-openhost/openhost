@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlencode
 
 from litestar import Router
 from litestar import get
@@ -131,7 +132,12 @@ async def _resolve_edit_app(
         return {"mode": "repo", "href": base_url}
 
     proto = "https" if config.tls_enabled else "http"
-    action = f"{proto}://{provider_row['name']}.{config.zone_domain}{endpoint.rstrip('/')}/"
+    # Pass repo+ref in the query string too: the openhost router 302's
+    # unauthenticated POSTs to /login, and the post-login redirect comes back
+    # as a GET (only 307/308 preserve method), dropping the form body. Query
+    # params survive the bounce, and the provider falls back to them.
+    qs = urlencode({"repo": base_url, "ref": ref})
+    action = f"{proto}://{provider_row['name']}.{config.zone_domain}{endpoint}?{qs}"
     return {"mode": "service", "action": action, "repo": base_url, "ref": ref}
 
 
