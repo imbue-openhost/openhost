@@ -14,6 +14,7 @@ from compute_space.core.apps import list_builtin_apps
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.git_ops import get_head_sha
+from compute_space.core.git_ops import get_remote_url
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest_from_string
@@ -110,6 +111,21 @@ async def _resolve_edit_app(
     """
     if not repo_url:
         return None
+    if repo_url.startswith("file://"):
+        # Builtin apps live in the openhost checkout itself (file:// to
+        # apps/<name>). A browser can't do anything useful with that path and
+        # the open-workspace provider can't clone it, so substitute the
+        # enclosing openhost repo — the user lands in the openhost checkout at
+        # the same commit and can navigate to apps/<name> from there.
+        try:
+            openhost_remote = await get_remote_url(config.openhost_repo_path)
+        except Exception:
+            logger.opt(exception=True).warning("Failed to read openhost remote URL for builtin app")
+            openhost_remote = None
+        if not openhost_remote:
+            return None
+        repo_url = openhost_remote
+        repo_path = str(config.openhost_repo_path)
     base_url, ref_from_url = parse_repo_url(repo_url)
     repo_link_fallback = {"mode": "repo", "href": base_url}
     ref = ref_from_url
