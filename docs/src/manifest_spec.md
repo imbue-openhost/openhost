@@ -36,6 +36,29 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 | `container_port` | integer | yes | — | Port inside the container |
 | `host_port` | integer | no | `0` | Port on the host (0 = auto-assign) |
 
+### `[[tls_certs]]` — optional, repeatable
+
+Requests a real, ACME-issued TLS certificate (not self-signed) covering one or more hostnames under the app's own subdomain. The router acquires the certificate via the same ACME DNS-01 machinery used for the zone cert, writes it to a router-owned directory, and bind-mounts that directory **read-only** into the container at `/data/tls`. The cert/key paths are also exposed as environment variables.
+
+This exists for apps that need certificates trusted by third parties — for example an XMPP server doing server-to-server federation, where peers reject self-signed certs, and where the zone wildcard `*.{zone}` does not cover second-level component hosts like `conference.xmpp.{zone}`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `label` | string | yes | — | Unique identifier for this cert (lowercase, used to disambiguate env vars) |
+| `domains` | string[] | yes | — | SAN hostnames to cover. May use `{app}` and `{zone}` placeholders. Every rendered domain **must** be `{app}.{zone}` or a subdomain of it — apps cannot request certs for the bare zone or other apps' hostnames. |
+| `cert_path` | string | no | `certs/{app}.{zone}.crt` | Where the cert PEM lands, relative to `/data/tls`. May use placeholders. Must be a relative path. |
+| `key_path` | string | no | `certs/{app}.{zone}.key` | Where the key PEM lands, relative to `/data/tls`. May use placeholders. Must be a relative path. |
+
+Placeholders: `{app}` expands to the deployed app name, `{zone}` to the zone domain (no port). The router always issues a **dedicated** certificate with its own freshly-generated private key, covering exactly the requested SANs. (The zone wildcard cert is never reused: its private key is also valid for the bare zone and every other app's subdomain, so handing it to a container would let the app impersonate the whole zone.) Certificates are renewed automatically by the router (re-issued within 30 days of expiry; the container is restarted to load the new pair).
+
+If the certificate cannot be provisioned yet (e.g. CoreDNS/ACME not configured, or DNS not yet propagated), deployment fails with an error — apps that want to start regardless should also ship a self-signed fallback and only swap to the injected cert when present.
+
+```toml
+[[tls_certs]]
+label = "xmpp"
+domains = ["{app}.{zone}", "conference.{app}.{zone}", "share.{app}.{zone}"]
+```
+
 ### `[routing]` — optional
 
 | Field | Type | Required | Default | Description |
@@ -91,6 +114,8 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
 - `OPENHOST_ROUTER_URL` — URL of the router's HTTP server, reachable from inside the container.
 - `OPENHOST_OWNER_USERNAME` — the compute space owner's chosen display name; use to seed SSO account names. Defaults to `owner` if not explicitly configured.
+- `OPENHOST_TLS_CERT` / `OPENHOST_TLS_KEY` — in-container (read-only) paths to the first `[[tls_certs]]` cert/key pair (only if `[[tls_certs]]` declared). `OPENHOST_TLS_DOMAINS` is the comma-separated SAN list.
+- `OPENHOST_TLS_CERT_<LABEL>` / `OPENHOST_TLS_KEY_<LABEL>` / `OPENHOST_TLS_DOMAINS_<LABEL>` — per-cert variants for apps declaring multiple `[[tls_certs]]` entries (`<LABEL>` is the uppercased label with hyphens replaced by underscores).
 
 ## Examples
 

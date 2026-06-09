@@ -13,6 +13,32 @@ from compute_space.core.logging import logger
 
 _SHORTNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
+# Cap on how many [[tls_certs]] entries one app may declare, and how many
+# SAN domains each may request.  Real ACME providers (Let's Encrypt, Google
+# Trust Services) enforce their own per-cert SAN ceilings (~100) and
+# per-account issuance rate limits; these caps keep a single manifest from
+# requesting an unreasonable number of distinct certificates.
+MAX_TLS_CERT_REQUESTS = 8
+MAX_TLS_CERT_DOMAINS = 16
+
+# Allowed placeholders inside [[tls_certs]] domains/paths.  These expand at
+# provision time once the concrete app name and zone domain are known.
+#   {app}  -> the deployed app name (e.g. "xmpp")
+#   {zone} -> the zone domain with no port (e.g. "alice.example.com")
+_TLS_CERT_PLACEHOLDER_RE = re.compile(r"\{(app|zone)\}")
+# A rendered DNS name must look like a hostname: labels of letters/digits/
+# hyphens separated by dots, wildcards not permitted (apps only ever get a
+# concrete SAN list, never a wildcard).
+_DNS_NAME_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$"
+)
+
+
+def is_valid_dns_name(name: str) -> bool:
+    """True iff ``name`` is a syntactically valid, lowercase, non-wildcard DNS name."""
+    return bool(_DNS_NAME_RE.match(name))
+
+
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/containers.yml.
 # host_port values below this are rejected at parse time.
 UNPRIVILEGED_PORT_FLOOR = 25
@@ -89,6 +115,32 @@ class PortMapping:
 
 
 @attr.s(auto_attribs=True, frozen=True)
+class TlsCertRequest:
+    """A real TLS certificate the app wants provisioned and injected.
+
+    Declared in ``[[tls_certs]]``.  The router acquires a certificate
+    covering ``domains`` (via the same ACME DNS-01 machinery used for the
+    zone cert) and drops the PEM cert/key into the container so apps that
+    need real, browser/federation-trusted certs (e.g. an XMPP server doing
+    s2s federation) don't have to fall back to self-signed pairs.
+
+    ``domains`` entries and ``cert_path``/``key_path`` may contain the
+    ``{app}`` and ``{zone}`` placeholders, expanded at provision time.
+    ``cert_path``/``key_path`` are relative paths within the read-only TLS
+    mount (``/data/tls`` in the container); the router also injects
+    ``OPENHOST_TLS_CERT``/``OPENHOST_TLS_KEY`` pointing at the resulting
+    in-container paths.
+    """
+
+    label: str
+    domains: list[str]
+    # Relative paths within the read-only TLS mount (/data/tls) where the
+    # cert/key are placed; surfaced via OPENHOST_TLS_CERT/OPENHOST_TLS_KEY.
+    cert_path: str = "certs/{app}.{zone}.crt"
+    key_path: str = "certs/{app}.{zone}.key"
+
+
+@attr.s(auto_attribs=True, frozen=True)
 class ServiceProvides:
     service: str = attr.ib(converter=_normalize_service_url)
     version: str
@@ -158,6 +210,9 @@ class AppManifest:
     access_all_archive: bool = False
     # Convenience shorthand: equivalent to access_all_app_data + access_all_archive.
     access_all_data: bool = False
+
+    # [[tls_certs]]
+    tls_certs: list[TlsCertRequest] = attr.Factory(list)
 
     # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
@@ -253,6 +308,85 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
         if hport != 0:
             seen_host_ports.add(hport)
         result.append(PortMapping(label=label, container_port=cport, host_port=hport))
+    return result
+
+
+def _validate_tls_cert_template(value: str, field: str, label: str) -> None:
+    """Structural validation of a [[tls_certs]] domain or path template.
+
+    Only the placeholders ``{app}`` and ``{zone}`` are permitted; any other
+    ``{...}`` is rejected so a typo doesn't silently survive into a SAN.  The
+    concrete scoping check (the rendered domain must live under
+    ``{app}.{zone}``) happens at provision time once the real zone is known.
+    """
+    # Reject stray brace placeholders other than {app}/{zone}.
+    stripped = _TLS_CERT_PLACEHOLDER_RE.sub("", value)
+    if "{" in stripped or "}" in stripped:
+        raise ValueError(
+            f"[[tls_certs]] '{label}' {field} {value!r} contains an unknown placeholder; "
+            f"only {{app}} and {{zone}} are supported"
+        )
+
+
+def _parse_tls_certs(certs_list: list[Any]) -> list[TlsCertRequest]:
+    """Parse and validate [[tls_certs]] entries from manifest data."""
+    if not isinstance(certs_list, list):
+        raise ValueError("[[tls_certs]] must be a list of tables")
+    if len(certs_list) > MAX_TLS_CERT_REQUESTS:
+        raise ValueError(f"At most {MAX_TLS_CERT_REQUESTS} [[tls_certs]] entries are allowed")
+    seen_labels: set[str] = set()
+    # Track the sanitized env-var suffix (uppercase, hyphens->underscores) so
+    # two distinct labels that collapse to the same suffix (e.g. "web-a" and
+    # "web_a" both -> "WEB_A") are rejected rather than silently clobbering
+    # each other's OPENHOST_TLS_*_<SUFFIX> env vars at run time.
+    seen_env_suffixes: dict[str, str] = {}
+    result: list[TlsCertRequest] = []
+    for entry in certs_list:
+        if not isinstance(entry, dict):
+            raise ValueError("Each [[tls_certs]] entry must be a table")
+        label = entry.get("label")
+        if not label or not isinstance(label, str):
+            raise ValueError("Each [[tls_certs]] entry requires a string 'label'")
+        if not _SHORTNAME_RE.match(label):
+            raise ValueError(f"Invalid [[tls_certs]] label {label!r}: must match {_SHORTNAME_RE.pattern}")
+        if label in seen_labels:
+            raise ValueError(f"Duplicate [[tls_certs]] label: '{label}'")
+        seen_labels.add(label)
+        env_suffix = label.upper().replace("-", "_")
+        if env_suffix in seen_env_suffixes:
+            raise ValueError(
+                f"[[tls_certs]] label {label!r} collides with {seen_env_suffixes[env_suffix]!r} after "
+                f"env-var normalization (both map to suffix {env_suffix!r}); use distinct labels"
+            )
+        seen_env_suffixes[env_suffix] = label
+
+        domains_raw = entry.get("domains")
+        if not isinstance(domains_raw, list) or not domains_raw:
+            raise ValueError(f"[[tls_certs]] '{label}' requires a non-empty 'domains' list")
+        if len(domains_raw) > MAX_TLS_CERT_DOMAINS:
+            raise ValueError(f"[[tls_certs]] '{label}' requests too many domains (max {MAX_TLS_CERT_DOMAINS})")
+        domains: list[str] = []
+        seen_domains: set[str] = set()
+        for d in domains_raw:
+            if not isinstance(d, str) or not d:
+                raise ValueError(f"[[tls_certs]] '{label}' domains must be non-empty strings")
+            _validate_tls_cert_template(d, "domain", label)
+            if d in seen_domains:
+                raise ValueError(f"[[tls_certs]] '{label}' has duplicate domain {d!r}")
+            seen_domains.add(d)
+            domains.append(d)
+
+        cert_path = entry.get("cert_path", "certs/{app}.{zone}.crt")
+        key_path = entry.get("key_path", "certs/{app}.{zone}.key")
+        for fld, val in (("cert_path", cert_path), ("key_path", key_path)):
+            if not isinstance(val, str) or not val:
+                raise ValueError(f"[[tls_certs]] '{label}' {fld} must be a non-empty string")
+            _validate_tls_cert_template(val, fld, label)
+            if os.path.isabs(val) or os.path.normpath(val).startswith(".."):
+                raise ValueError(
+                    f"[[tls_certs]] '{label}' {fld} {val!r} must be a relative path within the app data dir"
+                )
+        result.append(TlsCertRequest(label=label, domains=domains, cert_path=cert_path, key_path=key_path))
     return result
 
 
@@ -365,6 +499,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         devices=_validate_devices(container.get("devices", [])),
         network_host=container.get("network_host", False),
         shm_mb=shm_mb,
+        tls_certs=_parse_tls_certs(data.get("tls_certs", [])),
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
         memory_mb=resources.get("memory_mb", 128),

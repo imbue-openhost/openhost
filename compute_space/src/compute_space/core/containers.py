@@ -23,12 +23,23 @@ import os
 import re
 import sqlite3
 import subprocess
+from typing import TYPE_CHECKING
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 
+if TYPE_CHECKING:
+    from compute_space.core.tls.app_certs import RenderedCertRequest
+
 CONTAINER_ROOT = "/data"
+
+# Read-only mount point inside the container for router-provisioned TLS
+# certs requested via [[tls_certs]].  Apps read their cert/key from here
+# (see OPENHOST_TLS_CERT/OPENHOST_TLS_KEY env vars).  Mounted read-only so
+# the app can't tamper with the router-managed key, and so renewals (which
+# the router writes on the host side) propagate without the app racing it.
+CONTAINER_TLS_ROOT = f"{CONTAINER_ROOT}/tls"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 
@@ -168,6 +179,25 @@ def _bind_mount_arg(host_path: str, container_path: str, *, read_only: bool = Fa
     return f"{host_path}:{container_path}:{options}"
 
 
+def _tls_cert_env(cert: RenderedCertRequest) -> dict[str, str]:
+    """Env vars pointing at a provisioned cert's in-container (read-only) paths.
+
+    Each cert exposes label-suffixed vars (``OPENHOST_TLS_CERT_<LABEL>`` etc.)
+    so an app with several certs can disambiguate.  Callers set the unsuffixed
+    ``OPENHOST_TLS_CERT``/``OPENHOST_TLS_KEY``/``OPENHOST_TLS_DOMAINS`` to the
+    first cert for the common single-cert case.
+    """
+    cert_in = f"{CONTAINER_TLS_ROOT}/{cert.cert_rel_path}"
+    key_in = f"{CONTAINER_TLS_ROOT}/{cert.key_rel_path}"
+    domains = ",".join(cert.domains)
+    suffix = cert.label.upper().replace("-", "_")
+    return {
+        f"OPENHOST_TLS_CERT_{suffix}": cert_in,
+        f"OPENHOST_TLS_KEY_{suffix}": key_in,
+        f"OPENHOST_TLS_DOMAINS_{suffix}": domains,
+    }
+
+
 def run_container(
     app_name: str,
     image_tag: str,
@@ -178,8 +208,16 @@ def run_container(
     temp_data_dir: str,
     archive_dir: str,
     port_mappings: list[PortMapping] | None = None,
+    tls_cert_dir: str | None = None,
+    rendered_certs: list[RenderedCertRequest] | None = None,
 ) -> str:
-    """Start a detached container for an app.  Returns the container ID."""
+    """Start a detached container for an app.  Returns the container ID.
+
+    ``tls_cert_dir``/``rendered_certs`` wire router-provisioned TLS certs
+    (from ``[[tls_certs]]``) into the container: the host ``tls_cert_dir`` is
+    bind-mounted read-only at ``/data/tls`` and ``OPENHOST_TLS_*`` env vars
+    point at the in-container cert/key paths.
+    """
     app_data_dir = os.path.join(data_dir, "app_data", app_name)
     app_temp_dir = os.path.join(temp_data_dir, "app_temp_data", app_name)
     app_archive_dir = os.path.join(archive_dir, app_name)
@@ -293,6 +331,18 @@ def run_container(
             cmd.extend(["-v", _bind_mount_arg(archive_dir, f"{CONTAINER_ROOT}/app_archive")])
     elif has_app_archive:
         cmd.extend(["-v", _bind_mount_arg(app_archive_dir, c_app_archive)])
+
+    # Router-provisioned TLS certs (from [[tls_certs]]): mount the per-app
+    # cert dir read-only and expose the cert/key paths as env vars.
+    if rendered_certs and tls_cert_dir and os.path.isdir(tls_cert_dir):
+        cmd.extend(["-v", _bind_mount_arg(tls_cert_dir, CONTAINER_TLS_ROOT, read_only=True)])
+        for cert in rendered_certs:
+            container_env.update(_tls_cert_env(cert))
+        # Convenience unsuffixed vars for the common single-cert case.
+        first = rendered_certs[0]
+        container_env["OPENHOST_TLS_CERT"] = f"{CONTAINER_TLS_ROOT}/{first.cert_rel_path}"
+        container_env["OPENHOST_TLS_KEY"] = f"{CONTAINER_TLS_ROOT}/{first.key_rel_path}"
+        container_env["OPENHOST_TLS_DOMAINS"] = ",".join(first.domains)
 
     # Structured port mappings: bind TCP+UDP on 0.0.0.0.  host_port
     # values below UNPRIVILEGED_PORT_FLOOR are rejected at manifest

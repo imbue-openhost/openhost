@@ -115,6 +115,8 @@ The router injects these environment variables into your app:
 | `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data` or `access_all_app_data` is requested          |
 | `OPENHOST_SQLITE_<NAME>` | `/data/app_data/my-app/sqlite/main.db` (for `sqlite = ["main"]`) | Path to a provisioned SQLite database file. Set once per entry in `sqlite`                                      |
 | `OPENHOST_OWNER_USERNAME` | `alice` | The compute space owner's chosen display name. Use to seed SSO account names. Defaults to `owner` if not explicitly configured. |
+| `OPENHOST_TLS_CERT` / `OPENHOST_TLS_KEY` | `/data/tls/my-app.user.host.imbue.com.crt` | In-container (read-only) paths to the first `[[tls_certs]]` cert/key pair. Set only when `[[tls_certs]]` is declared. `OPENHOST_TLS_DOMAINS` is the comma-separated SAN list. |
+| `OPENHOST_TLS_CERT_<LABEL>` / `OPENHOST_TLS_KEY_<LABEL>` / `OPENHOST_TLS_DOMAINS_<LABEL>` | `/data/tls/...` | Per-cert variants for apps declaring multiple `[[tls_certs]]` entries (`<LABEL>` uppercased, hyphens → underscores). |
 
 ### Data storage
 

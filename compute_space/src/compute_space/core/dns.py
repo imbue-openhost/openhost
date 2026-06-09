@@ -105,22 +105,40 @@ def set_txt(
     name: str,
     values: str | list[str],
 ) -> None:
-    """Append TXT record(s) to the zone file and bump the SOA serial.
+    """Append TXT record(s) under a single owner ``name`` and bump the SOA serial.
 
     For ACME DNS-01 challenges, name is typically '_acme-challenge'.
     values can be a single string or a list of strings (for multiple
-    authorizations, e.g. base domain + wildcard).
+    authorizations on the same owner name, e.g. base domain + wildcard).
     """
     if isinstance(values, str):
         values = [values]
+    set_txt_records(zone_file_path, {name: values})
+
+
+def set_txt_records(
+    zone_file_path: Path,
+    records: dict[str, list[str]],
+) -> None:
+    """Append TXT records under multiple owner names and bump the SOA serial once.
+
+    ``records`` maps each owner name (relative to the zone origin, e.g.
+    ``_acme-challenge`` or ``_acme-challenge.xmpp``) to its list of TXT
+    values.  Used for DNS-01 orders that span several subdomains, where each
+    identifier's challenge lives at ``_acme-challenge.<identifier>`` rather
+    than all sharing a single ``_acme-challenge`` owner.
+    """
     with open(zone_file_path) as f:
         content = f.read()
     content = _bump_serial(content)
-    for v in values:
-        content += f'{name}   IN TXT  "{v}"\n'
+    total = 0
+    for name, values in records.items():
+        for v in values:
+            content += f'{name}   IN TXT  "{v}"\n'
+            total += 1
     with open(zone_file_path, "w") as f:
         f.write(content)
-    logger.info(f"Set {len(values)} TXT record(s) {name}")
+    logger.info(f"Set {total} TXT record(s) across {len(records)} owner name(s)")
 
 
 def clear_txt(zone_file_path: Path) -> None:
