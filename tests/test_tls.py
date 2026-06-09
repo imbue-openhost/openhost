@@ -34,7 +34,9 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_module
 from josepy import JWKRSA
 
+from compute_space.core.manifest import TlsCertRequest
 from compute_space.core.tls.acquire_cert import acquire_tls_cert
+from compute_space.core.tls.app_certs import provision_app_certs
 from compute_space.core.tls.util import _acquire_cert_dns01
 from compute_space.core.tls.util import load_account_key
 from compute_space.tests.utils import kill_tree
@@ -435,3 +437,73 @@ class TestAccountKey:
         original = _generate_acme_account_key(str(key_path))
         loaded = load_account_key(key_path)
         assert original.to_json() == loaded.to_json()
+
+
+# ---------------------------------------------------------------------------
+# Tests — per-app cert provisioning (provision_app_certs)
+# ---------------------------------------------------------------------------
+
+
+@requires_tls
+class TestProvisionAppCerts:
+    """Integration tests for per-app [[tls_certs]] provisioning via DNS-01."""
+
+    def test_dedicated_cert_for_two_level_subdomain(
+        self, pebble_server, acme_account_key, zonefile_path, tls_tmpdir
+    ):
+        """A request needing conference.<app>.<zone> (not covered by *.<zone>)
+        issues a dedicated cert via DNS-01 covering all requested SANs."""
+        data_path = tls_tmpdir / "openhost_data_app"
+        data_path.mkdir(exist_ok=True)
+        # No wildcard cert on disk -> forces dedicated issuance.
+        req = TlsCertRequest(
+            label="xmpp",
+            domains=["{app}.{zone}", "conference.{app}.{zone}", "share.{app}.{zone}"],
+        )
+        rendered = provision_app_certs(
+            app_name="xmpp",
+            requests=[req],
+            zone=ZONE_DOMAIN,
+            openhost_data_path=data_path,
+            wildcard_cert_path=data_path / "nonexistent-cert.pem",
+            wildcard_key_path=data_path / "nonexistent-key.pem",
+            acme_account_key_path=acme_account_key["path"],
+            coredns_zonefile_path=zonefile_path,
+            acme_directory_url=pebble_server["directory_url"],
+            coredns_enabled=True,
+            verify_ssl=False,
+        )
+        assert len(rendered) == 1
+        cert_dir = data_path / "app_certs" / "xmpp"
+        cert_file = cert_dir / rendered[0].cert_rel_path
+        assert cert_file.exists()
+        cert = x509.load_pem_x509_certificate(cert_file.read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        dns_names = set(san.value.get_values_for_type(x509.DNSName))
+        assert f"xmpp.{ZONE_DOMAIN}" in dns_names
+        assert f"conference.xmpp.{ZONE_DOMAIN}" in dns_names
+        assert f"share.xmpp.{ZONE_DOMAIN}" in dns_names
+
+    def test_wildcard_reuse_no_acme(self, acquired_cert, zonefile_path, tls_tmpdir):
+        """A single-label request reuses the on-disk wildcard cert with no ACME order."""
+        data_path = tls_tmpdir / "openhost_data_reuse"
+        data_path.mkdir(exist_ok=True)
+        wc_cert = data_path / "wc-cert.pem"
+        wc_key = data_path / "wc-key.pem"
+        wc_cert.write_bytes(acquired_cert["cert_pem"])
+        wc_key.write_bytes(acquired_cert["key_pem"])
+
+        req = TlsCertRequest(label="main", domains=["{app}.{zone}"])
+        rendered = provision_app_certs(
+            app_name="someapp",
+            requests=[req],
+            zone=ZONE_DOMAIN,
+            openhost_data_path=data_path,
+            wildcard_cert_path=wc_cert,
+            wildcard_key_path=wc_key,
+            acme_account_key_path=None,  # must not be needed for reuse
+            coredns_zonefile_path=zonefile_path,
+            coredns_enabled=False,
+        )
+        cert_dir = data_path / "app_certs" / "someapp"
+        assert (cert_dir / rendered[0].cert_rel_path).read_bytes() == acquired_cert["cert_pem"]

@@ -725,3 +725,93 @@ class TestShmMb:
         toml = MINIMAL + 'shm_mb = "big"\n'
         with pytest.raises(ValueError, match="shm_mb"):
             parse_manifest_from_string(toml)
+
+
+class TestTlsCerts:
+    """[[tls_certs]] parsing and validation."""
+
+    def test_default_empty(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.tls_certs == []
+
+    def test_basic_entry(self):
+        toml = MINIMAL + ('\n[[tls_certs]]\nlabel = "xmpp"\ndomains = ["{app}.{zone}", "conference.{app}.{zone}"]\n')
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.tls_certs) == 1
+        c = manifest.tls_certs[0]
+        assert c.label == "xmpp"
+        assert c.domains == ["{app}.{zone}", "conference.{app}.{zone}"]
+        # Defaults
+        assert c.cert_path == "certs/{app}.{zone}.crt"
+        assert c.key_path == "certs/{app}.{zone}.key"
+
+    def test_custom_paths(self):
+        toml = MINIMAL + (
+            "\n[[tls_certs]]\n"
+            'label = "main"\n'
+            'domains = ["{app}.{zone}"]\n'
+            'cert_path = "tls/server.pem"\n'
+            'key_path = "tls/server.key"\n'
+        )
+        c = parse_manifest_from_string(toml).tls_certs[0]
+        assert c.cert_path == "tls/server.pem"
+        assert c.key_path == "tls/server.key"
+
+    def test_missing_domains_rejected(self):
+        toml = MINIMAL + '\n[[tls_certs]]\nlabel = "x"\n'
+        with pytest.raises(ValueError, match="domains"):
+            parse_manifest_from_string(toml)
+
+    def test_empty_domains_rejected(self):
+        toml = MINIMAL + '\n[[tls_certs]]\nlabel = "x"\ndomains = []\n'
+        with pytest.raises(ValueError, match="domains"):
+            parse_manifest_from_string(toml)
+
+    def test_missing_label_rejected(self):
+        toml = MINIMAL + '\n[[tls_certs]]\ndomains = ["{app}.{zone}"]\n'
+        with pytest.raises(ValueError, match="label"):
+            parse_manifest_from_string(toml)
+
+    def test_invalid_label_rejected(self):
+        toml = MINIMAL + '\n[[tls_certs]]\nlabel = "Bad Label"\ndomains = ["{app}.{zone}"]\n'
+        with pytest.raises(ValueError, match="label"):
+            parse_manifest_from_string(toml)
+
+    def test_duplicate_label_rejected(self):
+        toml = MINIMAL + (
+            '\n[[tls_certs]]\nlabel = "x"\ndomains = ["{app}.{zone}"]\n'
+            '\n[[tls_certs]]\nlabel = "x"\ndomains = ["a.{app}.{zone}"]\n'
+        )
+        with pytest.raises(ValueError, match="[Dd]uplicate"):
+            parse_manifest_from_string(toml)
+
+    def test_unknown_placeholder_rejected(self):
+        toml = MINIMAL + '\n[[tls_certs]]\nlabel = "x"\ndomains = ["{bogus}.{zone}"]\n'
+        with pytest.raises(ValueError, match="placeholder"):
+            parse_manifest_from_string(toml)
+
+    def test_absolute_cert_path_rejected(self):
+        toml = MINIMAL + ('\n[[tls_certs]]\nlabel = "x"\ndomains = ["{app}.{zone}"]\ncert_path = "/etc/ssl/x.crt"\n')
+        with pytest.raises(ValueError, match="relative path"):
+            parse_manifest_from_string(toml)
+
+    def test_traversal_cert_path_rejected(self):
+        toml = MINIMAL + ('\n[[tls_certs]]\nlabel = "x"\ndomains = ["{app}.{zone}"]\ncert_path = "../escape.crt"\n')
+        with pytest.raises(ValueError, match="relative path"):
+            parse_manifest_from_string(toml)
+
+    def test_too_many_entries_rejected(self):
+        entries = "".join(f'\n[[tls_certs]]\nlabel = "c{i}"\ndomains = ["c{i}.{{app}}.{{zone}}"]\n' for i in range(9))
+        with pytest.raises(ValueError, match="At most"):
+            parse_manifest_from_string(MINIMAL + entries)
+
+    def test_too_many_domains_rejected(self):
+        domains = ", ".join(f'"h{i}.{{app}}.{{zone}}"' for i in range(17))
+        toml = MINIMAL + f'\n[[tls_certs]]\nlabel = "x"\ndomains = [{domains}]\n'
+        with pytest.raises(ValueError, match="too many domains"):
+            parse_manifest_from_string(toml)
+
+    def test_duplicate_domain_rejected(self):
+        toml = MINIMAL + ('\n[[tls_certs]]\nlabel = "x"\ndomains = ["{app}.{zone}", "{app}.{zone}"]\n')
+        with pytest.raises(ValueError, match="duplicate domain"):
+            parse_manifest_from_string(toml)

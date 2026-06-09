@@ -28,6 +28,7 @@ from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
 from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
+from compute_space.core.tls.renewal import start_cert_renewal_sweep
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
@@ -96,6 +97,7 @@ def _full_app_bootstrap(config: Config) -> None:
     check_app_status(config)
     load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)
+    start_cert_renewal_sweep(config)
     retry_pending_default_apps(config)
 
 

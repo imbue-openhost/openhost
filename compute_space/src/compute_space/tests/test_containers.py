@@ -23,6 +23,7 @@ from compute_space.core.containers import run_container
 from compute_space.core.containers import stop_container
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
+from compute_space.core.tls.app_certs import RenderedCertRequest
 
 
 class _FakeCompleted:
@@ -299,6 +300,8 @@ def _run_and_capture(
     tmp_path,
     port_mappings: list[PortMapping] | None = None,
     env_vars: dict[str, str] | None = None,
+    tls_cert_dir: str | None = None,
+    rendered_certs=None,  # type: ignore[no-untyped-def]
 ) -> list[str]:
     """Invoke run_container with mocked subprocess and return the built argv."""
     runs: list[list[str]] = []
@@ -331,6 +334,8 @@ def _run_and_capture(
         temp_data_dir=temp_data_dir,
         archive_dir=archive_dir,
         port_mappings=port_mappings,
+        tls_cert_dir=tls_cert_dir,
+        rendered_certs=rendered_certs,
     )
     # The "run" call is the one after the pre-cleanup "rm".
     run_cmds = [c for c in runs if c[:2] == ["podman", "run"]]
@@ -808,3 +813,90 @@ def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
     target vs. what the app's env var points at."""
     arg = _bind_mount_arg("/a/b/c/", "/data/app_data/myapp/")
     assert arg == "/a/b/c/:/data/app_data/myapp/:idmap"
+
+
+# ---------------------------------------------------------------------------
+# [[tls_certs]] injection
+# ---------------------------------------------------------------------------
+
+
+def _rendered(
+    label="main",
+    cert="certs/xmpp.alice.example.com.crt",
+    key="certs/xmpp.alice.example.com.key",
+    domains=("xmpp.alice.example.com",),
+):
+    return RenderedCertRequest(label=label, domains=list(domains), cert_rel_path=cert, key_rel_path=key)
+
+
+def test_run_container_no_tls_certs_by_default(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = _basic_manifest()
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+    assert not any(":/data/tls:" in a for a in argv)
+    assert not any(a.startswith("OPENHOST_TLS_") for a in argv)
+
+
+def test_run_container_mounts_tls_cert_dir_read_only(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cert_dir = tmp_path / "app_certs" / "myapp"
+    cert_dir.mkdir(parents=True)
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=_basic_manifest(),
+        tmp_path=tmp_path,
+        tls_cert_dir=str(cert_dir),
+        rendered_certs=[_rendered()],
+    )
+    volume_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-v"]
+    tls_mounts = [v for v in volume_args if v.endswith(":/data/tls:ro,idmap")]
+    assert len(tls_mounts) == 1
+    assert tls_mounts[0] == f"{cert_dir}:/data/tls:ro,idmap"
+
+
+def test_run_container_injects_tls_env_vars(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cert_dir = tmp_path / "app_certs" / "myapp"
+    cert_dir.mkdir(parents=True)
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=_basic_manifest(),
+        tmp_path=tmp_path,
+        tls_cert_dir=str(cert_dir),
+        rendered_certs=[_rendered()],
+    )
+    env_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-e"]
+    assert "OPENHOST_TLS_CERT=/data/tls/certs/xmpp.alice.example.com.crt" in env_args
+    assert "OPENHOST_TLS_KEY=/data/tls/certs/xmpp.alice.example.com.key" in env_args
+    assert "OPENHOST_TLS_DOMAINS=xmpp.alice.example.com" in env_args
+    # Label-suffixed variants also present.
+    assert "OPENHOST_TLS_CERT_MAIN=/data/tls/certs/xmpp.alice.example.com.crt" in env_args
+
+
+def test_run_container_multiple_certs_first_is_unsuffixed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cert_dir = tmp_path / "app_certs" / "myapp"
+    cert_dir.mkdir(parents=True)
+    certs = [
+        _rendered(label="a", cert="a.crt", key="a.key", domains=("a.x.alice.example.com",)),
+        _rendered(label="b", cert="b.crt", key="b.key", domains=("b.x.alice.example.com",)),
+    ]
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=_basic_manifest(),
+        tmp_path=tmp_path,
+        tls_cert_dir=str(cert_dir),
+        rendered_certs=certs,
+    )
+    env_args = [arg for prev, arg in zip(argv, argv[1:], strict=False) if prev == "-e"]
+    assert "OPENHOST_TLS_CERT=/data/tls/a.crt" in env_args
+    assert "OPENHOST_TLS_CERT_A=/data/tls/a.crt" in env_args
+    assert "OPENHOST_TLS_CERT_B=/data/tls/b.crt" in env_args
+
+
+def test_run_container_tls_skipped_when_dir_missing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # rendered_certs present but the dir doesn't exist -> no mount/env (defensive).
+    argv = _run_and_capture(
+        monkeypatch,
+        manifest=_basic_manifest(),
+        tmp_path=tmp_path,
+        tls_cert_dir=str(tmp_path / "does-not-exist"),
+        rendered_certs=[_rendered()],
+    )
+    assert not any(":/data/tls:" in a for a in argv)

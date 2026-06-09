@@ -42,6 +42,8 @@ from compute_space.core.ports import allocate_port
 from compute_space.core.ports import resolve_port_mappings
 from compute_space.core.services_v2 import ServiceNotAvailable
 from compute_space.core.services_v2 import register_v2_service_providers
+from compute_space.core.tls.app_certs import app_cert_dir
+from compute_space.core.tls.app_certs import provision_app_certs_for_deploy
 from compute_space.db import get_db
 
 
@@ -476,6 +478,7 @@ def deploy_app_background(
             (app_id,),
         )
         db.commit()
+        tls_cert_dir, rendered_certs = provision_app_certs_for_deploy(app_name, manifest, config)
         container_id = run_container(
             app_name,
             image_tag,
@@ -486,6 +489,8 @@ def deploy_app_background(
             config.temporary_data_dir,
             config.app_archive_dir,
             port_mappings=port_mappings,
+            tls_cert_dir=tls_cert_dir,
+            rendered_certs=rendered_certs,
         )
         db.execute(
             "UPDATE apps SET container_id = ? WHERE app_id = ?",
@@ -640,6 +645,7 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         manifest.container_image,
         temp_data_dir=config.temporary_data_dir,
     )
+    tls_cert_dir, rendered_certs = provision_app_certs_for_deploy(app_name, manifest, config)
     container_id = run_container(
         app_name,
         image_tag,
@@ -650,6 +656,8 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         config.temporary_data_dir,
         config.app_archive_dir,
         port_mappings=port_mappings,
+        tls_cert_dir=tls_cert_dir,
+        rendered_certs=rendered_certs,
     )
     db.execute(
         "UPDATE apps SET container_id = ? WHERE app_id = ?",
@@ -871,6 +879,9 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
                     config.temporary_data_dir,
                     config.app_archive_dir,
                 )
+                # Router-owned provisioned TLS certs live outside the app data
+                # dir (under persistent_data/openhost/app_certs); remove them too.
+                rmtree_with_sudo_fallback(str(app_cert_dir(config.openhost_data_path, app_name)))
         except Exception:
             logger.exception("Failed to deprovision data for %s", app_name)
 

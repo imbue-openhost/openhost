@@ -85,6 +85,33 @@ def _wait_for_txt_propagation(
     return False
 
 
+def _challenge_record_name(identifier: str, zone_domain: str) -> str:
+    """Owner name (relative to the zone origin) for a DNS-01 challenge.
+
+    The ACME DNS-01 challenge for identifier ``X`` must be answered at
+    ``_acme-challenge.X``.  Expressed relative to the CoreDNS zone origin
+    (``zone_domain``) that becomes:
+
+      * ``_acme-challenge``            when ``X`` == the zone, and
+      * ``_acme-challenge.<subdomain>`` when ``X`` is a subdomain of the zone.
+
+    A wildcard identifier (``*.zone``) shares the bare ``_acme-challenge``
+    owner with the apex, which is why several authorizations can map to one
+    owner name.
+    """
+    ident = identifier.lower().removeprefix("*.")
+    zone = zone_domain.lower()
+    if ident == zone:
+        return "_acme-challenge"
+    if ident.endswith("." + zone):
+        sub = ident[: -(len(zone) + 1)]
+        return f"_acme-challenge.{sub}"
+    # Identifier isn't under the served zone — fall back to a fully-qualified
+    # owner so CoreDNS still serves it (it'll just be a non-authoritative-looking
+    # name).  In practice scope validation upstream prevents this.
+    return f"_acme-challenge.{ident}."
+
+
 def _acquire_cert_dns01(
     domains: list[str],
     directory_url: str,
@@ -92,8 +119,18 @@ def _acquire_cert_dns01(
     account_key: JWKRSA,
     verify_ssl: bool = True,
     acme_email: str | None = None,
+    zone_domain: str | None = None,
 ) -> tuple[bytes, bytes]:
-    """Acquire cert via DNS-01 challenge by writing TXT records to the local zone file."""
+    """Acquire cert via DNS-01 challenge by writing TXT records to the local zone file.
+
+    ``zone_domain`` is the apex the local CoreDNS is authoritative for.  When
+    omitted it defaults to the (non-wildcard) base of ``domains[0]`` — correct
+    for the zone wildcard cert (``[zone, *.zone]``) but not for per-app certs
+    spanning subdomains, where the caller must pass the real zone so each
+    challenge TXT lands at ``_acme-challenge.<subdomain>``.
+    """
+    if zone_domain is None:
+        zone_domain = domains[0].removeprefix("*.")
     tls_key = _generate_tls_key()
 
     logger.info(f"DNS-01: connecting to ACME directory {directory_url}")
@@ -148,9 +185,14 @@ def _acquire_cert_dns01(
             # authorizations that both need _acme-challenge TXT records simultaneously.
             logger.info(f"DNS-01: collecting challenges from {len(order.authorizations)} authorization(s)")
             pending_challenges = []
-            validation_values = []
+            # Map each challenge owner name (relative to the zone origin) to its
+            # TXT values.  Subdomain identifiers each need their own
+            # _acme-challenge.<sub> owner; the apex and its wildcard share
+            # _acme-challenge.
+            records: dict[str, list[str]] = {}
             for i, authz in enumerate(order.authorizations):
-                logger.info(f"DNS-01: checking authz {i}: {authz.body.identifier} status={authz.body.status}")
+                identifier = authz.body.identifier.value
+                logger.info(f"DNS-01: checking authz {i}: {identifier} status={authz.body.status}")
                 if authz.body.status == messages.STATUS_VALID:
                     continue
                 for challenge_body in authz.body.challenges:
@@ -158,15 +200,18 @@ def _acquire_cert_dns01(
                         if challenge_body.status != messages.STATUS_PENDING:
                             logger.info(f"DNS-01: challenge already {challenge_body.status}, skipping")
                             break
-                        validation_values.append(challenge_body.validation(account_key))
+                        value = challenge_body.validation(account_key)
+                        owner = _challenge_record_name(identifier, zone_domain)
+                        records.setdefault(owner, []).append(value)
                         pending_challenges.append(challenge_body)
                         break
 
             logger.info(f"DNS-01: {len(pending_challenges)} pending challenges to answer")
             if pending_challenges:
                 # Write all TXT records to the zone file at once
-                logger.info(f"Setting {len(validation_values)} DNS-01 challenge TXT record(s)")
-                dns_module.set_txt(coredns_zonefile_path, "_acme-challenge", validation_values)
+                total_values = sum(len(v) for v in records.values())
+                logger.info(f"Setting {total_values} DNS-01 challenge TXT record(s)")
+                dns_module.set_txt_records(coredns_zonefile_path, records)
 
                 # Wait for CoreDNS to pick up the zone file change (reload interval = 2s)
                 time.sleep(3)
@@ -174,9 +219,16 @@ def _acquire_cert_dns01(
                 # Wait until an external resolver can see our TXT records before
                 # telling the ACME server to validate.  Without this, the ACME
                 # server's resolvers may get NXDOMAIN if the NS delegation from
-                # the parent zone hasn't propagated yet.
-                zone_domain = domains[0].lstrip("*.")
-                _wait_for_txt_propagation(zone_domain, validation_values)
+                # the parent zone hasn't propagated yet.  Poll each distinct
+                # challenge FQDN.
+                for owner, values in records.items():
+                    if owner == "_acme-challenge":
+                        fqdn = zone_domain
+                    else:
+                        # owner is "_acme-challenge.<sub>"; the challenge FQDN is "<sub>.<zone>".
+                        sub = owner[len("_acme-challenge.") :].rstrip(".")
+                        fqdn = f"{sub}.{zone_domain}" if sub else zone_domain
+                    _wait_for_txt_propagation(fqdn, values)
 
                 # Now answer all challenges
                 for challenge_body in pending_challenges:
