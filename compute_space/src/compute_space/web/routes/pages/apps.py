@@ -69,11 +69,12 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
 
     # check if we have a redigstered service.
     # otherwise default back to a repo link,
-    edit_app_url = app_row["repo_url"]
+    # edit_app_url = app_row["repo_url"]
+    edit_app_url = 'https://google.com'
     try:
         # if there's a provider for the open-workspace service, have a button to link to it.
         provider = resolve_provider('github.com/imbue-openhost/claude-code-container/services/open-workspace', '<1.0', db)
-        
+        logger.info(provider)
     except ServiceNotAvailable:
         pass
 
