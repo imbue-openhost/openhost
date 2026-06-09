@@ -10,7 +10,6 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
-import threading
 import time
 import tomllib
 import urllib.error
@@ -23,6 +22,11 @@ import botocore.exceptions  # noqa: F401  -- imported for ``except`` matching do
 
 from compute_space.config import Config
 from compute_space.core.logging import logger
+
+# Name of the systemd unit that manages the JuiceFS FUSE mount.
+# Installed by ansible (disabled); enabled by compute_space when the
+# operator configures the archive backend.
+JUICEFS_SERVICE = "openhost-juicefs"
 
 # Pin a specific JuiceFS release; sha256 is verified before extract so a
 # compromised release page can't swap the tarball.
@@ -183,8 +187,61 @@ def format_volume(
         )
 
 
-_mount_lock = threading.Lock()
-_mount_proc: subprocess.Popen[bytes] | None = None
+def _juicefs_env_file(config: Config) -> str:
+    """Path to the systemd EnvironmentFile for the JuiceFS service.
+
+    Contains JUICEFS_BINARY, JUICEFS_META_DSN, JUICEFS_MOUNT_DIR, and
+    the S3 credentials (ACCESS_KEY / SECRET_KEY).  Written by
+    ``_write_env_file`` at configure/attach time; read by the
+    ``openhost-juicefs.service`` systemd unit.
+    """
+    return os.path.join(config.openhost_data_path, "juicefs", "juicefs.env")
+
+
+def _write_env_file(
+    config: Config,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+) -> None:
+    """Write (or overwrite) the systemd EnvironmentFile for JuiceFS.
+
+    The file is mode 0600 so only the ``host`` user can read the S3
+    credentials.  Parent directories are created if missing.
+    """
+    env_path = _juicefs_env_file(config)
+    os.makedirs(os.path.dirname(env_path), exist_ok=True)
+    content = (
+        f"JUICEFS_BINARY={_juicefs_binary(config)}\n"
+        f"JUICEFS_META_DSN={_format_meta_dsn(config)}\n"
+        f"JUICEFS_MOUNT_DIR={juicefs_mount_dir(config)}\n"
+        f"ACCESS_KEY={s3_access_key_id}\n"
+        f"SECRET_KEY={s3_secret_access_key}\n"
+    )
+    # Atomic-ish write: write to a temp file then rename so a crash
+    # mid-write doesn't leave a truncated env file.
+    tmp_path = env_path + ".tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, content.encode())
+    finally:
+        os.close(fd)
+    os.rename(tmp_path, env_path)
+    logger.info("Wrote JuiceFS env file at %s", env_path)
+
+
+def _systemctl(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    """Run a ``systemctl`` command and return the result.
+
+    Raises ``RuntimeError`` on non-zero exit.
+    """
+    cmd = ["sudo", "systemctl", *args]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"systemctl {' '.join(args)} failed (rc={result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result
 
 
 def is_mounted(mount_point: str) -> bool:
@@ -209,123 +266,83 @@ def mount(
     s3_access_key_id: str,
     s3_secret_access_key: str,
 ) -> None:
-    """Start ``juicefs mount`` as a supervised child process.  Idempotent."""
-    global _mount_proc
+    """Start the JuiceFS mount via systemd.  Idempotent.
+
+    Writes the EnvironmentFile (binary path, meta DSN, mount dir, S3
+    creds), then enables and starts the ``openhost-juicefs`` systemd
+    service.  systemd's ``Restart=always`` handles automatic recovery
+    if the FUSE process is OOM-killed or crashes.
+    """
     mount_point = juicefs_mount_dir(config)
     os.makedirs(mount_point, exist_ok=True)
 
-    with _mount_lock:
+    if is_mounted(mount_point):
+        logger.info("juicefs already mounted at %s", mount_point)
+        return
+
+    _write_env_file(config, s3_access_key_id, s3_secret_access_key)
+
+    logger.info("Starting %s systemd service", JUICEFS_SERVICE)
+    # daemon-reload in case the unit file was just installed or updated.
+    _systemctl("daemon-reload")
+    _systemctl("enable", "--now", JUICEFS_SERVICE)
+
+    # Wait for the mount to appear.  systemd starts the process
+    # asynchronously; the FUSE handshake + initial S3 connection
+    # can take 15-30s on high-latency links (e.g. Hetzner -> us-west-2).
+    deadline = time.time() + 30
+    while time.time() < deadline:
         if is_mounted(mount_point):
-            logger.info("juicefs already mounted at %s", mount_point)
+            logger.info("juicefs mount ready at %s (via systemd)", mount_point)
             return
-        env = os.environ.copy()
-        # Creds via env, not argv, to keep them out of ``ps``.
-        env["ACCESS_KEY"] = s3_access_key_id
-        env["SECRET_KEY"] = s3_secret_access_key
-        cmd = [
-            _juicefs_binary(config),
-            # --no-agent: mount spawns two processes that each bind 6060/6061
-            # for pprof, which the security audit flags as unexpected.
-            "--no-agent",
-            "mount",
-            "--no-usage-report",
-            # -o allow_other: rootless podman maps container uids into a
-            # subuid range (e.g. container 1000 -> host 100999), so without
-            # allow_other those container processes can't traverse the FUSE
-            # mount at all.  POSIX dir-mode permissions on per-app subdirs
-            # still gate writes; this just opens up FUSE-level traversal.
-            # Requires user_allow_other in /etc/fuse.conf, which the
-            # ansible setup playbook configures.
-            "-o",
-            "allow_other",
-            _format_meta_dsn(config),
-            mount_point,
-        ]
-        logger.info("Starting juicefs mount at %s", mount_point)
-        # DEVNULL stdout/stderr: a long-lived mount filling a 64 KiB pipe
-        # buffer would freeze; juicefs has its own log file anyway.
-        _mount_proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        time.sleep(0.5)
+
+    # Check if the service failed to start.
+    try:
+        status = subprocess.run(
+            ["systemctl", "is-active", JUICEFS_SERVICE],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            if is_mounted(mount_point):
-                logger.info("juicefs mount ready at %s", mount_point)
-                return
-            rc = _mount_proc.poll()
-            if rc is not None:
-                _mount_proc = None
-                raise RuntimeError(f"juicefs mount exited early (rc={rc}); check ~/.juicefs/juicefs.log")
-            time.sleep(0.2)
-        # Kill the stuck child so it doesn't hold the mount-point lock and
-        # block retries.
-        try:
-            _mount_proc.terminate()
-            try:
-                _mount_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _mount_proc.kill()
-                _mount_proc.wait(timeout=5)
-        except Exception:
-            logger.exception("Failed to terminate stuck juicefs mount process")
-        finally:
-            _mount_proc = None
-        raise RuntimeError(f"juicefs mount did not become ready within 15s at {mount_point}")
+        svc_state = status.stdout.strip()
+    except Exception:
+        svc_state = "unknown"
+
+    raise RuntimeError(
+        f"juicefs mount did not become ready within 30s at {mount_point} "
+        f"(service state: {svc_state}); check journalctl -u {JUICEFS_SERVICE}"
+    )
 
 
 def umount(config: Config) -> None:
-    """Unmount the JuiceFS mount and reap the supervised process.
+    """Stop the JuiceFS systemd service and unmount.
 
-    Surfaces a busy-FS failure rather than swallowing it; we deliberately
-    don't have root, so lazy unmount isn't an option.  Idempotent.
+    Surfaces a failed-stop rather than swallowing it.  Idempotent.
     """
-    global _mount_proc
     mount_point = juicefs_mount_dir(config)
 
-    with _mount_lock:
-        if not is_mounted(mount_point):
-            if _mount_proc is not None and _mount_proc.poll() is None:
-                _mount_proc.terminate()
-                try:
-                    _mount_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    _mount_proc.kill()
-                    try:
-                        _mount_proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        logger.error("juicefs mount process did not exit after SIGKILL")
-            _mount_proc = None
-            return
-        cmd = [_juicefs_binary(config), "umount", mount_point]
-        # Always clear _mount_proc on any exit path so a retry doesn't
-        # inherit a stale handle.
+    if not is_mounted(mount_point):
+        # Service might be stopped already; ensure it's disabled so it
+        # doesn't auto-start on next boot.
         try:
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(f"juicefs umount of {mount_point} timed out after 30s") from exc
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"juicefs umount of {mount_point} failed "
-                    f"(rc={result.returncode}); ensure all containers "
-                    f"using the archive tier are stopped before switching "
-                    f"backends.  Original: {result.stderr.strip()}"
-                )
-            logger.info("juicefs unmounted from %s", mount_point)
-        finally:
-            if _mount_proc is not None:
-                try:
-                    _mount_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    _mount_proc.kill()
-                    try:
-                        _mount_proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        logger.error("juicefs mount process did not exit after SIGKILL")
-            _mount_proc = None
+            _systemctl("disable", "--now", JUICEFS_SERVICE)
+        except RuntimeError:
+            pass  # already stopped/disabled
+        return
+
+    logger.info("Stopping %s systemd service", JUICEFS_SERVICE)
+    try:
+        _systemctl("stop", JUICEFS_SERVICE, timeout=30)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Failed to stop {JUICEFS_SERVICE}; ensure all containers "
+            f"using the archive tier are stopped before switching "
+            f"backends.  Original: {exc}"
+        ) from exc
+
+    _systemctl("disable", JUICEFS_SERVICE)
+    logger.info("juicefs unmounted from %s (via systemd)", mount_point)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -428,7 +445,15 @@ def _set_state_message(db: sqlite3.Connection, message: str | None) -> None:
 
 def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
     """Bring the archive backend back online at boot.  Failures don't crash boot;
-    they're surfaced via state_message so the dashboard stays reachable."""
+    they're surfaced via state_message so the dashboard stays reachable.
+
+    With the systemd service (``openhost-juicefs.service``), the mount is
+    normally started by systemd before this process even boots (the unit
+    has ``Before=openhost.service``).  This function handles the case where
+    the service hasn't started yet (first boot after configuration, or if
+    the env file is stale/missing) by writing a fresh env file and
+    ensuring the service is enabled + started.
+    """
     state = read_state(db)
     if state.backend != "s3":
         return

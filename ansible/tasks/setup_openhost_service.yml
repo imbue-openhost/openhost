@@ -58,12 +58,26 @@
     host_uid: "{{ ansible_facts['getent_passwd'].host[1] }}"
   register: service_file
 
+# JuiceFS archive-tier mount: a dedicated systemd service with
+# Restart=always so the FUSE mount recovers automatically if the
+# JuiceFS process is OOM-killed or crashes.  Installed disabled;
+# compute_space enables it when the operator configures S3.
+- name: Install openhost-juicefs systemd service
+  become: yes
+  become_user: root
+  template:
+    src: templates/openhost-juicefs.service.j2
+    dest: /etc/systemd/system/openhost-juicefs.service
+  vars:
+    juicefs_env_file: /home/host/.openhost/local_compute_space/persistent_data/openhost/juicefs/juicefs.env
+  register: juicefs_service_file
+
 - name: Reload systemd
   become: yes
   become_user: root
   systemd:
     daemon_reload: yes
-  when: service_file.changed
+  when: service_file.changed or juicefs_service_file.changed
 
 - name: Enable openhost service
   become: yes
@@ -71,3 +85,7 @@
   systemd:
     name: openhost
     enabled: yes
+
+# Do NOT enable openhost-juicefs here; it stays disabled until the
+# operator configures the archive backend via the dashboard.  The
+# compute_space code enables + starts it at that point.
