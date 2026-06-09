@@ -53,6 +53,13 @@ def current_host_version(entries: list[MigrationLogEntry]) -> int:
 
 def append_entry(path: str, entry: MigrationLogEntry) -> None:
     line = json.dumps(attr.asdict(entry), separators=(",", ":")) + "\n"
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # If the existing file doesn't end in a newline (e.g. an external writer
+    # forgot one), prepend one so we don't run two JSON objects together on
+    # the same line — read_log would then skip both as malformed.
+    existing = p.read_bytes() if p.exists() else b""
+    if existing and not existing.endswith(b"\n"):
+        line = "\n" + line
+    with open(p, "a") as f:
         f.write(line)
