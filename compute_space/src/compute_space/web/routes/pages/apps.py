@@ -1,6 +1,7 @@
 import json
 import sqlite3
 
+from compute_space.core.services_v2 import ServiceNotAvailable, resolve_provider
 from litestar import Router
 from litestar import get
 from litestar.exceptions import HTTPException
@@ -66,6 +67,16 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
         except Exception:
             logger.opt(exception=True).warning("Failed to parse manifest for permission display (app %s)", app_id)
 
+    # check if we have a redigstered service.
+    # otherwise default back to a repo link,
+    edit_app_url = app_row["repo_url"]
+    try:
+        # if there's a provider for the open-workspace service, have a button to link to it.
+        provider = resolve_provider('github.com/imbue-openhost/claude-code-container/services/open-workspace', '<1.0', db)
+        
+    except ServiceNotAvailable:
+        pass
+
     return Template(
         template_name="app_detail.html",
         context={
@@ -77,6 +88,7 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
             "next_url": next,
             "granted_permissions": granted_perms,
             "ungranted_permissions": ungranted_perms,
+            "editAppURL": edit_app_url,
         },
     )
 
