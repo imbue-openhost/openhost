@@ -111,6 +111,7 @@ async def _resolve_edit_app(
     if not repo_url:
         return None
     base_url, ref_from_url = parse_repo_url(repo_url)
+    repo_link_fallback = {"mode": "repo", "href": base_url}
     ref = ref_from_url
     if not ref:
         try:
@@ -121,15 +122,15 @@ async def _resolve_edit_app(
     try:
         provider_app_id, _, _, endpoint = resolve_provider(EDIT_APP_SERVICE_URL, EDIT_APP_VERSION_SPEC, db)
     except ServiceNotAvailable:
-        return {"mode": "repo", "href": base_url}
+        return repo_link_fallback
 
     if not ref:
-        return {"mode": "repo", "href": base_url}
+        return repo_link_fallback
 
     provider_row = db.execute("SELECT name FROM apps WHERE app_id = ?", (provider_app_id,)).fetchone()
     if not provider_row:
         logger.warning("resolve_provider returned unknown app_id %s", provider_app_id)
-        return {"mode": "repo", "href": base_url}
+        return repo_link_fallback
 
     proto = "https" if config.tls_enabled else "http"
     # Pass repo+ref in the query string too: the openhost router 302's
