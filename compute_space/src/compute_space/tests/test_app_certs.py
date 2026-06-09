@@ -1,9 +1,8 @@
-"""Unit tests for per-app TLS cert provisioning/injection (no network).
+"""Unit tests for per-app TLS cert provisioning/injection.
 
-The ACME DNS-01 issuance path is exercised by the requires_tls integration
-suite; these tests cover the placeholder expansion, scope validation,
-wildcard-coverage logic, expiry gating, and the wildcard-reuse provisioning
-path (which never touches the network).
+The live ACME DNS-01 issuance is exercised by the requires_tls integration
+suite; here the ACME call is mocked, so these cover placeholder expansion,
+scope validation, expiry gating, and the always-dedicated provisioning flow.
 """
 
 import datetime

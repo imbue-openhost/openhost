@@ -131,7 +131,8 @@ class TlsCertRequest:
 
     label: str
     domains: list[str]
-    # Relative paths (under OPENHOST_APP_DATA_DIR) where cert/key are written.
+    # Relative paths within the read-only TLS mount (/data/tls) where the
+    # cert/key are placed; surfaced via OPENHOST_TLS_CERT/OPENHOST_TLS_KEY.
     cert_path: str = "certs/{app}.{zone}.crt"
     key_path: str = "certs/{app}.{zone}.key"
 

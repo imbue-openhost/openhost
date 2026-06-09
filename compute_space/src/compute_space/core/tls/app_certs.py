@@ -1,29 +1,9 @@
-"""Per-app real TLS certificate provisioning and injection.
+"""Provisioning and injection of real (ACME-issued) per-app TLS certs.
 
-Apps declare ``[[tls_certs]]`` in their manifest to request real,
-ACME-issued certificates (as opposed to the self-signed pairs an app
-would otherwise have to generate itself).  The motivating case is an XMPP
-server: server-to-server federation is rejected by most peers when the
-presented cert is self-signed, and the zone wildcard ``*.{zone}`` does
-NOT cover second-level component hosts like ``conference.xmpp.{zone}``.
-
-The router already owns the ACME account and the CoreDNS zone, so it can
-issue any cert under the zone via DNS-01.  This module:
-
-  * expands the ``{app}``/``{zone}`` placeholders in a manifest request,
-  * enforces that every requested SAN lives under ``{app}.{zone}`` (an app
-    can never obtain a cert for another app's hostname or the bare zone),
-  * issues a dedicated cert via DNS-01 with its own freshly-generated private
-    key for exactly the requested SANs.  The zone wildcard cert is NOT reused:
-    its key is also valid for the bare zone and every sibling app's subdomain,
-    so giving it to a container would let the app impersonate the whole zone,
-  * writes the cert/key under a router-owned per-app directory that is
-    bind-mounted read-only into the container, and
-  * decides when an existing cert is close enough to expiry to renew.
-
-Cert acquisition is serialized process-wide via ``_ACME_LOCK`` because the
-DNS-01 flow mutates a single shared ``_acme-challenge`` record set in the
-zone file; two concurrent orders would clobber each other's TXT records.
+See :func:`provision_app_certs` for the issuance policy and the reason the
+zone wildcard key is never reused.  Acquisition is serialized via
+``_ACME_LOCK`` because the DNS-01 flow mutates a single shared
+``_acme-challenge`` record set; concurrent orders would clobber each other.
 """
 
 from __future__ import annotations

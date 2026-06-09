@@ -1,9 +1,4 @@
-"""Unit tests for the per-app cert renewal sweep (no network).
-
-Exercises renew_app_certs_once's decision logic: which apps it touches, and
-whether it restarts the container based on cert-file mtime changes.  The
-provisioning and restart calls are monkeypatched so no podman/ACME is needed.
-"""
+"""Unit tests for the per-app cert renewal sweep (provisioning/restart mocked)."""
 
 from __future__ import annotations
 

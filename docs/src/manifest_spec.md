@@ -49,7 +49,7 @@ This exists for apps that need certificates trusted by third parties — for exa
 | `cert_path` | string | no | `certs/{app}.{zone}.crt` | Where the cert PEM lands, relative to `/data/tls`. May use placeholders. Must be a relative path. |
 | `key_path` | string | no | `certs/{app}.{zone}.key` | Where the key PEM lands, relative to `/data/tls`. May use placeholders. Must be a relative path. |
 
-Placeholders: `{app}` expands to the deployed app name, `{zone}` to the zone domain (no port). The router will reuse the zone wildcard cert when it covers every requested SAN (a single-label subdomain like `{app}.{zone}`), and only issue a dedicated certificate when a request needs hostnames the wildcard can't cover (e.g. `conference.{app}.{zone}`). Certificates are renewed automatically by the router (re-issued within 30 days of expiry; the container is restarted to load the new pair).
+Placeholders: `{app}` expands to the deployed app name, `{zone}` to the zone domain (no port). The router always issues a **dedicated** certificate with its own freshly-generated private key, covering exactly the requested SANs. (The zone wildcard cert is never reused: its private key is also valid for the bare zone and every other app's subdomain, so handing it to a container would let the app impersonate the whole zone.) Certificates are renewed automatically by the router (re-issued within 30 days of expiry; the container is restarted to load the new pair).
 
 If the certificate cannot be provisioned yet (e.g. CoreDNS/ACME not configured, or DNS not yet propagated), deployment fails with an error — apps that want to start regardless should also ship a self-signed fallback and only swap to the injected cert when present.
 

@@ -1,16 +1,4 @@
-"""Background renewal of per-app TLS certificates.
-
-App certs (issued for ``[[tls_certs]]`` requests) are ~90-day ACME certs.
-On each app start/reload :func:`provision_app_certs_for_deploy` already
-re-issues any cert within the renewal window, but a long-running app that is
-never reloaded would eventually present an expired cert.  This daemon sweeps
-all running apps on an interval, re-provisions their certs, and restarts the
-container when a cert was actually renewed so the app loads the new pair
-(apps generally read certs only at startup).
-
-Mirrors the storage-guard daemon pattern: one daemon thread per ``db_path``,
-guarded so repeated bootstraps don't spawn duplicates.
-"""
+"""Background renewal daemon for per-app TLS certs (see :func:`renew_app_certs_once`)."""
 
 from __future__ import annotations
 
@@ -49,8 +37,12 @@ def _dir_mtimes(path: str) -> dict[str, float]:
 def renew_app_certs_once(config: Config) -> None:
     """Re-provision certs for every running app with ``[[tls_certs]]``.
 
+    App certs are ~90-day ACME certs; :func:`provision_app_certs_for_deploy`
+    re-issues any within the renewal window, but a long-running app that is
+    never reloaded would eventually present an expired cert, hence this sweep.
     Restarts an app's container only when its cert files actually changed
-    (i.e. a renewal occurred).  Each app is handled independently; a failure
+    (i.e. a renewal occurred) so the app loads the new pair (apps generally
+    read certs only at startup).  Each app is handled independently; a failure
     on one is logged and does not block the others.
     """
     # Local import avoids a module-load import cycle (apps -> tls.app_certs).
