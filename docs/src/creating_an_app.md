@@ -100,6 +100,7 @@ if __name__ == "__main__":
 - Data directories are mounted into the container at `/data/`. See [Environment variables](#environment-variables) below.
 - The router handles authentication. By default, all routes require the compute space owner to be logged in. To make specific routes public, list them in `public_paths` in the manifest.
 - For apps that implement their own auth, routes can be set as public, and requests that have been authenticated by the router will bear a `X-OpenHost-Is-Owner=true` header.
+- To surface interesting paths on your app (e.g. an admin console) to the user on the dashboard, declare them in `[[links]]` (each with a `name` and `path`). See the [manifest spec](manifest_spec.md).
 
 The router injects these environment variables into your app:
 

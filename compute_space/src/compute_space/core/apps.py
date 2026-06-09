@@ -33,6 +33,7 @@ from compute_space.core.data import provision_data
 from compute_space.core.data import rmtree_with_sudo_fallback
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
+from compute_space.core.manifest import AppLink
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
@@ -76,6 +77,30 @@ RESERVED_PATHS = {
 }
 
 
+def _serialize_links(links: list[AppLink]) -> str:
+    """Serialize manifest [[links]] to the JSON stored in ``apps.links``."""
+    return json.dumps([{"name": link.name, "path": link.path} for link in links])
+
+
+def deserialize_links(raw: str | None) -> list[AppLink]:
+    """Parse the JSON stored in ``apps.links`` back into ``AppLink`` objects.
+
+    Tolerates malformed/missing values (returns ``[]``) so a bad row can't
+    take down the dashboard; such a value would indicate corruption since
+    the column is only ever written by :func:`_serialize_links`.
+    """
+    try:
+        entries = json.loads(raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Failed to parse apps.links JSON; treating as empty: %r", raw)
+        return []
+    links: list[AppLink] = []
+    for entry in entries:
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and isinstance(entry.get("path"), str):
+            links.append(AppLink(name=entry["name"], path=entry["path"]))
+    return links
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class App:
     """In-memory mirror of one row of the ``apps`` table."""
@@ -99,6 +124,7 @@ class App:
     cpu_millicores: int
     gpu: int
     public_paths: list[str]
+    links: list[AppLink]
     manifest_raw: str | None
     installed_by: str | None
     created_at: str
@@ -108,6 +134,7 @@ class App:
     def from_row(cls, row: sqlite3.Row) -> "App":
         fields = {f.name: row[f.name] for f in attr.fields(cls)}
         fields["public_paths"] = json.loads(fields["public_paths"] or "[]")
+        fields["links"] = deserialize_links(fields["links"])
         return cls(**fields)
 
 
@@ -357,8 +384,8 @@ def insert_and_deploy(
         """INSERT INTO apps
            (app_id, name, manifest_name, version, description, runtime_type, repo_path, repo_url,
             health_check, local_port, container_port, memory_mb, cpu_millicores,
-            gpu, public_paths, manifest_raw, status, installed_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gpu, public_paths, links, manifest_raw, status, installed_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             app_id,
             app_name,
@@ -375,6 +402,7 @@ def insert_and_deploy(
             manifest.cpu_millicores,
             int(manifest.gpu),
             json.dumps(manifest.public_paths),
+            _serialize_links(manifest.links),
             manifest.raw_toml,
             "building",
             installed_by,
@@ -796,9 +824,10 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
             try:
                 manifest = parse_manifest(repo_path)
                 db.execute(
-                    "UPDATE apps SET public_paths = ?, manifest_raw = ?, manifest_name = ? WHERE app_id = ?",
+                    "UPDATE apps SET public_paths = ?, links = ?, manifest_raw = ?, manifest_name = ? WHERE app_id = ?",
                     (
                         json.dumps(manifest.public_paths),
+                        _serialize_links(manifest.links),
                         manifest.raw_toml,
                         manifest.name,
                         app_id,

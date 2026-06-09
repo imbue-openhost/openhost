@@ -41,6 +41,19 @@
   {% endif %}
 </table>
 
+{% if links %}
+<h3>Links</h3>
+<table>
+  <tr><th>Name</th><th>Path</th></tr>
+  {% for link in links %}
+  <tr>
+    <td>{{ link.name }}</td>
+    <td><a href="{{ app_url(app.name).rstrip('/') }}{{ link.path }}">{{ link.path }}</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 {% if port_mappings %}
 <h3>Port Mappings</h3>
 <table>
