@@ -131,7 +131,7 @@ async def _resolve_edit_app(
         return {"mode": "repo", "href": base_url}
 
     proto = "https" if config.tls_enabled else "http"
-    action = f"{proto}://{provider_row['name']}.{config.zone_domain}{endpoint}"
+    action = f"{proto}://{provider_row['name']}.{config.zone_domain}{endpoint.rstrip('/')}/"
     return {"mode": "service", "action": action, "repo": base_url, "ref": ref}
 
 
