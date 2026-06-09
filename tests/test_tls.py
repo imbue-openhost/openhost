@@ -465,8 +465,6 @@ class TestProvisionAppCerts:
             requests=[req],
             zone=ZONE_DOMAIN,
             openhost_data_path=data_path,
-            wildcard_cert_path=data_path / "nonexistent-cert.pem",
-            wildcard_key_path=data_path / "nonexistent-key.pem",
             acme_account_key_path=acme_account_key["path"],
             coredns_zonefile_path=zonefile_path,
             acme_directory_url=pebble_server["directory_url"],
@@ -483,27 +481,33 @@ class TestProvisionAppCerts:
         assert f"xmpp.{ZONE_DOMAIN}" in dns_names
         assert f"conference.xmpp.{ZONE_DOMAIN}" in dns_names
         assert f"share.xmpp.{ZONE_DOMAIN}" in dns_names
+        # Never a wildcard — the cert is scoped to the app's own SANs only.
+        assert f"*.{ZONE_DOMAIN}" not in dns_names
 
-    def test_wildcard_reuse_no_acme(self, acquired_cert, zonefile_path, tls_tmpdir):
-        """A single-label request reuses the on-disk wildcard cert with no ACME order."""
-        data_path = tls_tmpdir / "openhost_data_reuse"
+    def test_single_label_subdomain_issues_dedicated_cert(
+        self, pebble_server, acme_account_key, zonefile_path, tls_tmpdir
+    ):
+        """Even a single-label request gets its own dedicated cert+key (the zone
+        wildcard key is never handed to an app)."""
+        data_path = tls_tmpdir / "openhost_data_single"
         data_path.mkdir(exist_ok=True)
-        wc_cert = data_path / "wc-cert.pem"
-        wc_key = data_path / "wc-key.pem"
-        wc_cert.write_bytes(acquired_cert["cert_pem"])
-        wc_key.write_bytes(acquired_cert["key_pem"])
-
         req = TlsCertRequest(label="main", domains=["{app}.{zone}"])
         rendered = provision_app_certs(
             app_name="someapp",
             requests=[req],
             zone=ZONE_DOMAIN,
             openhost_data_path=data_path,
-            wildcard_cert_path=wc_cert,
-            wildcard_key_path=wc_key,
-            acme_account_key_path=None,  # must not be needed for reuse
+            acme_account_key_path=acme_account_key["path"],
             coredns_zonefile_path=zonefile_path,
-            coredns_enabled=False,
+            acme_directory_url=pebble_server["directory_url"],
+            coredns_enabled=True,
+            verify_ssl=False,
         )
         cert_dir = data_path / "app_certs" / "someapp"
-        assert (cert_dir / rendered[0].cert_rel_path).read_bytes() == acquired_cert["cert_pem"]
+        cert = x509.load_pem_x509_certificate((cert_dir / rendered[0].cert_rel_path).read_bytes())
+        san = set(
+            cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
+                x509.DNSName
+            )
+        )
+        assert san == {f"someapp.{ZONE_DOMAIN}"}

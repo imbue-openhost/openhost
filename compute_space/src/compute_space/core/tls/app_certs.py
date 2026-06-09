@@ -13,9 +13,10 @@ issue any cert under the zone via DNS-01.  This module:
   * expands the ``{app}``/``{zone}`` placeholders in a manifest request,
   * enforces that every requested SAN lives under ``{app}.{zone}`` (an app
     can never obtain a cert for another app's hostname or the bare zone),
-  * reuses the already-acquired zone wildcard cert when it covers every
-    requested SAN (cheap, no new ACME order), otherwise issues a dedicated
-    cert via DNS-01,
+  * issues a dedicated cert via DNS-01 with its own freshly-generated private
+    key for exactly the requested SANs.  The zone wildcard cert is NOT reused:
+    its key is also valid for the bare zone and every sibling app's subdomain,
+    so giving it to a container would let the app impersonate the whole zone,
   * writes the cert/key under a router-owned per-app directory that is
     bind-mounted read-only into the container, and
   * decides when an existing cert is close enough to expiry to renew.
@@ -39,6 +40,7 @@ from compute_space.config import Config
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import TlsCertRequest
+from compute_space.core.manifest import is_valid_dns_name
 from compute_space.core.tls.acquire_cert import GTS_PRODUCTION
 from compute_space.core.tls.util import _acquire_cert_dns01
 from compute_space.core.tls.util import load_account_key
@@ -86,13 +88,11 @@ def render_cert_request(req: TlsCertRequest, app_name: str, zone: str) -> Render
     Raises ``ValueError`` if any requested SAN falls outside ``{app}.{zone}``
     or renders to something that isn't a valid DNS name.
     """
-    from compute_space.core.manifest import _DNS_NAME_RE  # noqa: PLC0415 — avoid import cycle
-
     domains: list[str] = []
     seen: set[str] = set()
     for raw in req.domains:
         d = expand_template(raw, app_name, zone).lower()
-        if not _DNS_NAME_RE.match(d):
+        if not is_valid_dns_name(d):
             raise ValueError(f"[[tls_certs]] '{req.label}' domain {raw!r} rendered to invalid DNS name {d!r}")
         if not _is_within_zone_subtree(d, app_name, zone):
             raise ValueError(
@@ -109,25 +109,6 @@ def render_cert_request(req: TlsCertRequest, app_name: str, zone: str) -> Render
         if os.path.isabs(rel) or rel.startswith(".."):
             raise ValueError(f"[[tls_certs]] '{req.label}' resolved to an out-of-bounds path {rel!r}")
     return RenderedCertRequest(label=req.label, domains=domains, cert_rel_path=cert_rel, key_rel_path=key_rel)
-
-
-def cert_covered_by_wildcard(domains: list[str], zone: str) -> bool:
-    """True iff the zone cert (``zone`` + ``*.zone``) covers every domain.
-
-    ``*.zone`` matches exactly one label below the zone, so ``a.zone`` is
-    covered but ``a.b.zone`` is not.
-    """
-    zone = zone.lower()
-    for d in domains:
-        d = d.lower()
-        if d == zone:
-            continue
-        if d.endswith("." + zone):
-            label = d[: -(len(zone) + 1)]
-            if "." not in label and label:
-                continue  # single-label subdomain -> covered by *.zone
-        return False
-    return True
 
 
 def cert_present_and_current(
@@ -200,8 +181,6 @@ def provision_app_certs(
     requests: list[TlsCertRequest],
     zone: str,
     openhost_data_path: Path,
-    wildcard_cert_path: Path,
-    wildcard_key_path: Path,
     acme_account_key_path: Path | None,
     coredns_zonefile_path: Path,
     *,
@@ -214,8 +193,12 @@ def provision_app_certs(
     """Ensure every requested cert exists, is in scope, and is current.
 
     Returns the list of rendered requests (used by the caller to build the
-    container's env vars and bind mount).  Reuses the zone wildcard cert when
-    it covers all SANs; otherwise issues a dedicated cert via DNS-01.  Already
+    container's env vars and bind mount).  Always issues a **dedicated** cert
+    via DNS-01 with its own freshly-generated private key, covering exactly the
+    app's requested SANs.  The zone wildcard cert is deliberately NOT reused:
+    its private key is also valid for the bare zone and every sibling app's
+    subdomain, so handing it to a container would let the app impersonate the
+    whole zone — defeating the per-app scoping this module enforces.  Already
     valid, non-expiring certs are left untouched unless ``force`` is set.
 
     Raises ``ValueError`` for out-of-scope requests, ``RuntimeError`` if a
@@ -232,22 +215,6 @@ def provision_app_certs(
         if not force and cert_present_and_current(cert_path, key_path, r.domains):
             logger.info("App %s cert '%s' is current; reusing", app_name, r.label)
             continue
-
-        if cert_covered_by_wildcard(r.domains, zone):
-            if wildcard_cert_path.exists() and wildcard_key_path.exists():
-                logger.info("App %s cert '%s' covered by zone wildcard; copying wildcard cert", app_name, r.label)
-                _write_pair(
-                    cert_path,
-                    key_path,
-                    wildcard_cert_path.read_bytes(),
-                    wildcard_key_path.read_bytes(),
-                )
-                continue
-            logger.warning(
-                "App %s cert '%s' is wildcard-covered but no zone wildcard cert exists; issuing dedicated cert",
-                app_name,
-                r.label,
-            )
 
         if not coredns_enabled:
             raise RuntimeError(
@@ -300,8 +267,6 @@ def provision_app_certs_for_deploy(
         requests=manifest.tls_certs,
         zone=zone,
         openhost_data_path=config.openhost_data_path,
-        wildcard_cert_path=config.tls_cert_path,
-        wildcard_key_path=config.tls_key_path,
         acme_account_key_path=Path(config.acme_account_key_path) if config.acme_account_key_path else None,
         coredns_zonefile_path=config.coredns_zonefile_path,
         acme_email=config.acme_email,

@@ -15,7 +15,6 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from compute_space.core.manifest import TlsCertRequest
-from compute_space.core.tls.app_certs import cert_covered_by_wildcard
 from compute_space.core.tls.app_certs import cert_present_and_current
 from compute_space.core.tls.app_certs import expand_template
 from compute_space.core.tls.app_certs import provision_app_certs
@@ -90,17 +89,6 @@ class TestRenderCertRequest:
             render_cert_request(req, APP, ZONE)
 
 
-class TestWildcardCoverage:
-    def test_base_and_single_label_covered(self):
-        assert cert_covered_by_wildcard([ZONE, f"app.{ZONE}"], ZONE)
-
-    def test_two_level_not_covered(self):
-        assert not cert_covered_by_wildcard([f"conference.{APP}.{ZONE}"], ZONE)
-
-    def test_single_level_app_covered(self):
-        assert cert_covered_by_wildcard([f"{APP}.{ZONE}"], ZONE)
-
-
 class TestCertPresentAndCurrent:
     def test_missing_files(self, tmp_path):
         assert not cert_present_and_current(tmp_path / "c.crt", tmp_path / "c.key", [f"{APP}.{ZONE}"])
@@ -135,14 +123,23 @@ class TestCertPresentAndCurrent:
         assert not cert_present_and_current(tmp_path / "c.crt", tmp_path / "c.key", [f"{APP}.{ZONE}"])
 
 
-class TestProvisionWildcardReuse:
-    def test_reuses_wildcard_for_single_label(self, tmp_path):
-        # Wildcard zone cert on disk; app requests only xmpp.{zone} -> reuse, no ACME.
-        wc_cert, wc_key = _make_cert([ZONE, f"*.{ZONE}"])
-        wildcard_cert = tmp_path / "openhost-tls-cert.pem"
-        wildcard_key = tmp_path / "openhost-tls-key.pem"
-        wildcard_cert.write_bytes(wc_cert)
-        wildcard_key.write_bytes(wc_key)
+class TestProvisionAppCerts:
+    """Provisioning always issues a DEDICATED cert with its own key — the zone
+    wildcard (and its zone-wide private key) is never copied into an app."""
+
+    def test_issues_dedicated_cert_with_own_key(self, tmp_path, monkeypatch):
+        acme_calls = []
+
+        def fake_acquire(*, domains, **kwargs):
+            acme_calls.append(list(domains))
+            return _make_cert(domains)
+
+        monkeypatch.setattr("compute_space.core.tls.app_certs._acquire_cert_dns01", fake_acquire)
+        monkeypatch.setattr(
+            "compute_space.core.tls.app_certs.load_account_key", lambda p: object()
+        )
+        acct = tmp_path / "acct.json"
+        acct.write_text("{}")
 
         req = TlsCertRequest(label="main", domains=["{app}.{zone}"])
         rendered = provision_app_certs(
@@ -150,27 +147,48 @@ class TestProvisionWildcardReuse:
             requests=[req],
             zone=ZONE,
             openhost_data_path=tmp_path,
-            wildcard_cert_path=wildcard_cert,
-            wildcard_key_path=wildcard_key,
-            acme_account_key_path=None,
+            acme_account_key_path=acct,
             coredns_zonefile_path=tmp_path / "zonefile",
-            coredns_enabled=False,
+            coredns_enabled=True,
         )
-        assert len(rendered) == 1
+        # A dedicated ACME order was placed even for a single-label subdomain.
+        assert acme_calls == [[f"{APP}.{ZONE}"]]
         cert_dir = tmp_path / "app_certs" / APP
-        written_cert = cert_dir / rendered[0].cert_rel_path
         written_key = cert_dir / rendered[0].key_rel_path
-        assert written_cert.read_bytes() == wc_cert
-        assert written_key.read_bytes() == wc_key
-        # Key permissions tightened.
-        assert oct((written_key.stat().st_mode) & 0o777) == "0o640"
+        assert oct(written_key.stat().st_mode & 0o777) == "0o640"
 
-    def test_two_level_without_coredns_raises(self, tmp_path):
-        wc_cert, wc_key = _make_cert([ZONE, f"*.{ZONE}"])
-        wildcard_cert = tmp_path / "cert.pem"
-        wildcard_key = tmp_path / "key.pem"
-        wildcard_cert.write_bytes(wc_cert)
-        wildcard_key.write_bytes(wc_key)
+    def test_never_reads_wildcard_key(self, tmp_path, monkeypatch):
+        """Regression guard: provisioning must not read the zone wildcard key."""
+
+        def fake_acquire(*, domains, **kwargs):
+            return _make_cert(domains)
+
+        monkeypatch.setattr("compute_space.core.tls.app_certs._acquire_cert_dns01", fake_acquire)
+        monkeypatch.setattr("compute_space.core.tls.app_certs.load_account_key", lambda p: object())
+        acct = tmp_path / "acct.json"
+        acct.write_text("{}")
+        req = TlsCertRequest(label="main", domains=["{app}.{zone}"])
+        rendered = provision_app_certs(
+            app_name=APP,
+            requests=[req],
+            zone=ZONE,
+            openhost_data_path=tmp_path,
+            acme_account_key_path=acct,
+            coredns_zonefile_path=tmp_path / "zonefile",
+            coredns_enabled=True,
+        )
+        # The written key is the freshly generated one (matches the fake cert),
+        # not any shared wildcard key.
+        cert = x509.load_pem_x509_certificate((tmp_path / "app_certs" / APP / rendered[0].cert_rel_path).read_bytes())
+        san = set(
+            cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
+                x509.DNSName
+            )
+        )
+        assert san == {f"{APP}.{ZONE}"}
+        assert "*." + ZONE not in san  # never a wildcard
+
+    def test_without_coredns_raises(self, tmp_path):
         req = TlsCertRequest(label="main", domains=["conference.{app}.{zone}"])
         with pytest.raises(RuntimeError, match="CoreDNS is disabled"):
             provision_app_certs(
@@ -178,11 +196,22 @@ class TestProvisionWildcardReuse:
                 requests=[req],
                 zone=ZONE,
                 openhost_data_path=tmp_path,
-                wildcard_cert_path=wildcard_cert,
-                wildcard_key_path=wildcard_key,
                 acme_account_key_path=None,
                 coredns_zonefile_path=tmp_path / "zonefile",
                 coredns_enabled=False,
+            )
+
+    def test_no_acme_key_raises(self, tmp_path):
+        req = TlsCertRequest(label="main", domains=["{app}.{zone}"])
+        with pytest.raises(RuntimeError, match="no ACME account key"):
+            provision_app_certs(
+                app_name=APP,
+                requests=[req],
+                zone=ZONE,
+                openhost_data_path=tmp_path,
+                acme_account_key_path=None,
+                coredns_zonefile_path=tmp_path / "zonefile",
+                coredns_enabled=True,
             )
 
     def test_out_of_scope_request_raises(self, tmp_path):
@@ -193,34 +222,32 @@ class TestProvisionWildcardReuse:
                 requests=[req],
                 zone=ZONE,
                 openhost_data_path=tmp_path,
-                wildcard_cert_path=tmp_path / "cert.pem",
-                wildcard_key_path=tmp_path / "key.pem",
                 acme_account_key_path=None,
                 coredns_zonefile_path=tmp_path / "zonefile",
                 coredns_enabled=False,
             )
 
-    def test_current_cert_not_reprovisioned(self, tmp_path):
-        wc_cert, wc_key = _make_cert([ZONE, f"*.{ZONE}"])
-        wildcard_cert = tmp_path / "cert.pem"
-        wildcard_key = tmp_path / "key.pem"
-        wildcard_cert.write_bytes(wc_cert)
-        wildcard_key.write_bytes(wc_key)
-        req = TlsCertRequest(label="main", domains=["{app}.{zone}"])
+    def test_current_cert_not_reprovisioned(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_acquire(*, domains, **kwargs):
+            calls.append(list(domains))
+            return _make_cert(domains)
+
+        monkeypatch.setattr("compute_space.core.tls.app_certs._acquire_cert_dns01", fake_acquire)
+        monkeypatch.setattr("compute_space.core.tls.app_certs.load_account_key", lambda p: object())
+        acct = tmp_path / "acct.json"
+        acct.write_text("{}")
         kwargs = dict(
             app_name=APP,
-            requests=[req],
+            requests=[TlsCertRequest(label="main", domains=["{app}.{zone}"])],
             zone=ZONE,
             openhost_data_path=tmp_path,
-            wildcard_cert_path=wildcard_cert,
-            wildcard_key_path=wildcard_key,
-            acme_account_key_path=None,
+            acme_account_key_path=acct,
             coredns_zonefile_path=tmp_path / "zonefile",
-            coredns_enabled=False,
+            coredns_enabled=True,
         )
-        rendered = provision_app_certs(**kwargs)
-        written = tmp_path / "app_certs" / APP / rendered[0].cert_rel_path
-        first_mtime = written.stat().st_mtime_ns
-        # Re-run: should be a no-op (cert still current).
         provision_app_certs(**kwargs)
-        assert written.stat().st_mtime_ns == first_mtime
+        provision_app_certs(**kwargs)
+        # Second run reused the current cert -> only one ACME order total.
+        assert len(calls) == 1

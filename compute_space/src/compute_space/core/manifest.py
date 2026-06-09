@@ -31,6 +31,11 @@ _TLS_CERT_PLACEHOLDER_RE = re.compile(r"\{(app|zone)\}")
 # concrete SAN list, never a wildcard).
 _DNS_NAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$")
 
+
+def is_valid_dns_name(name: str) -> bool:
+    """True iff ``name`` is a syntactically valid, lowercase, non-wildcard DNS name."""
+    return bool(_DNS_NAME_RE.match(name))
+
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/containers.yml.
 # host_port values below this are rejected at parse time.
 UNPRIVILEGED_PORT_FLOOR = 25
@@ -118,9 +123,10 @@ class TlsCertRequest:
 
     ``domains`` entries and ``cert_path``/``key_path`` may contain the
     ``{app}`` and ``{zone}`` placeholders, expanded at provision time.
-    ``cert_path``/``key_path`` are relative to ``OPENHOST_APP_DATA_DIR``;
-    the router also injects ``OPENHOST_TLS_CERT``/``OPENHOST_TLS_KEY``
-    pointing at the in-container paths.
+    ``cert_path``/``key_path`` are relative paths within the read-only TLS
+    mount (``/data/tls`` in the container); the router also injects
+    ``OPENHOST_TLS_CERT``/``OPENHOST_TLS_KEY`` pointing at the resulting
+    in-container paths.
     """
 
     label: str
