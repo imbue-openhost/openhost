@@ -46,7 +46,7 @@ def _add_app(config, app_id, name, status, repo_path):
 
 def _write_manifest(repo_dir, *, with_tls):
     os.makedirs(repo_dir, exist_ok=True)
-    toml = "[app]\nname = \"x\"\nversion = \"0.1.0\"\n\n[runtime.container]\nimage = \"Dockerfile\"\nport = 8080\n"
+    toml = '[app]\nname = "x"\nversion = "0.1.0"\n\n[runtime.container]\nimage = "Dockerfile"\nport = 8080\n'
     if with_tls:
         toml += '\n[[tls_certs]]\nlabel = "main"\ndomains = ["{app}.{zone}"]\n'
     with open(os.path.join(repo_dir, "openhost.toml"), "w") as f:

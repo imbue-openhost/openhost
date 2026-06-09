@@ -143,7 +143,10 @@ def _write_pair(cert_path: Path, key_path: Path, cert_pem: bytes, key_pem: bytes
     tmp_key = key_path.with_suffix(key_path.suffix + ".partial")
     tmp_cert.write_bytes(cert_pem)
     tmp_key.write_bytes(key_pem)
-    os.chmod(tmp_key, 0o640)
+    # Private key 0600 (owner-only), matching the zone key in acquire_cert.py.
+    # The container reads it through the idmapped read-only bind mount, where
+    # the host owner maps to the container's user, so owner-only is sufficient.
+    os.chmod(tmp_key, 0o600)
     os.replace(tmp_cert, cert_path)
     os.replace(tmp_key, key_path)
 

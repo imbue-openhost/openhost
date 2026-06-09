@@ -29,12 +29,15 @@ _TLS_CERT_PLACEHOLDER_RE = re.compile(r"\{(app|zone)\}")
 # A rendered DNS name must look like a hostname: labels of letters/digits/
 # hyphens separated by dots, wildcards not permitted (apps only ever get a
 # concrete SAN list, never a wildcard).
-_DNS_NAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$")
+_DNS_NAME_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$"
+)
 
 
 def is_valid_dns_name(name: str) -> bool:
     """True iff ``name`` is a syntactically valid, lowercase, non-wildcard DNS name."""
     return bool(_DNS_NAME_RE.match(name))
+
 
 # Must match net.ipv4.ip_unprivileged_port_start from ansible/tasks/containers.yml.
 # host_port values below this are rejected at parse time.

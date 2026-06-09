@@ -448,9 +448,7 @@ class TestAccountKey:
 class TestProvisionAppCerts:
     """Integration tests for per-app [[tls_certs]] provisioning via DNS-01."""
 
-    def test_dedicated_cert_for_two_level_subdomain(
-        self, pebble_server, acme_account_key, zonefile_path, tls_tmpdir
-    ):
+    def test_dedicated_cert_for_two_level_subdomain(self, pebble_server, acme_account_key, zonefile_path, tls_tmpdir):
         """A request needing conference.<app>.<zone> (not covered by *.<zone>)
         issues a dedicated cert via DNS-01 covering all requested SANs."""
         data_path = tls_tmpdir / "openhost_data_app"

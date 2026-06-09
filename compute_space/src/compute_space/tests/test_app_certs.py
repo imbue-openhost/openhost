@@ -134,9 +134,7 @@ class TestProvisionAppCerts:
             return _make_cert(domains)
 
         monkeypatch.setattr("compute_space.core.tls.app_certs._acquire_cert_dns01", fake_acquire)
-        monkeypatch.setattr(
-            "compute_space.core.tls.app_certs.load_account_key", lambda p: object()
-        )
+        monkeypatch.setattr("compute_space.core.tls.app_certs.load_account_key", lambda p: object())
         acct = tmp_path / "acct.json"
         acct.write_text("{}")
 
@@ -154,7 +152,7 @@ class TestProvisionAppCerts:
         assert acme_calls == [[f"{APP}.{ZONE}"]]
         cert_dir = tmp_path / "app_certs" / APP
         written_key = cert_dir / rendered[0].key_rel_path
-        assert oct(written_key.stat().st_mode & 0o777) == "0o640"
+        assert oct(written_key.stat().st_mode & 0o777) == "0o600"
 
     def test_never_reads_wildcard_key(self, tmp_path, monkeypatch):
         """Regression guard: provisioning must not read the zone wildcard key."""
