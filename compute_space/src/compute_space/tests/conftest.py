@@ -61,6 +61,10 @@ def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
         zone_domain=overrides.pop("zone_domain", "testzone.local"),
         tls_enabled=overrides.pop("tls_enabled", False),
         start_caddy=overrides.pop("start_caddy", False),
+        # Off by default in tests so existing test setup flows keep working;
+        # the integration test that exercises the gate sets it to True
+        # explicitly.
+        claim_token_required=overrides.pop("claim_token_required", False),
         **overrides,
     )
     cfg.make_all_dirs()

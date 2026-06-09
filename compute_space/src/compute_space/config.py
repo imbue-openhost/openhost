@@ -52,6 +52,14 @@ class Config:
     port_range_start: int
     port_range_end: int
 
+    # First-boot claim-token gate. When True, /setup rejects any request that
+    # doesn't supply a token matching the one in claim_token_path — preventing
+    # a MITM from racing the operator to set the owner password. When True but
+    # no token file is present, /setup rejects everyone (fail-safe). Set this
+    # explicitly to False only when /setup is reachable only by the operator
+    # (e.g. loopback-only local dev).
+    claim_token_required: bool
+
     # Apps to deploy at /setup completion (set to [] to opt out).
     # Each entry is either:
     #   - a bare dirname under apps_dir (vendored builtin, e.g. "secrets_v2"), or
@@ -192,6 +200,10 @@ class DefaultConfig(Config):
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int = 0
+
+    # Fail-safe default: require a claim token at /setup. Callers that want
+    # the open-setup behavior (local-dev loopback) must set this False.
+    claim_token_required: bool = True
 
     # Ports
     port_range_start: int = 9000

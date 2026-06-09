@@ -41,6 +41,10 @@ if [ -n "${E2E_HOSTED_ZONE_ID:-}" ] && [ -n "${E2E_BASE_DOMAIN:-}" ]; then
     DOMAIN="openhost-e2e-${RUN_ID}.${E2E_BASE_DOMAIN}"
 fi
 
+# Known claim token so the python test can drive /setup. run_ansible_setup
+# threads this into the playbook; the test reads OPENHOST_CLAIM_TOKEN.
+export CLAIM_TOKEN="${CLAIM_TOKEN:-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')}"
+
 echo "=== Setting up OpenHost on $PROVIDER ==="
 if $USE_TLS; then
     echo "  Domain: $DOMAIN (TLS mode)"
@@ -74,6 +78,7 @@ export OPENHOST_SSH_KEY="$SSH_KEY"
 export OPENHOST_SSH_USER="host"
 export E2E_HOSTED_ZONE_ID="${E2E_HOSTED_ZONE_ID:-}"
 export E2E_BASE_DOMAIN="${E2E_BASE_DOMAIN:-}"
+export OPENHOST_CLAIM_TOKEN="$CLAIM_TOKEN"
 EOF
 provider_env_vars
 } > "$ENV_FILE"

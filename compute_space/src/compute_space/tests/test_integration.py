@@ -459,14 +459,14 @@ class TestRouterCore:
 # ---------------------------------------------------------------------------
 
 
-def test_claim_token_deleted_after_setup(tmp_path):
-    """Claim token file is deleted from disk after a successful /setup call."""
+def test_claim_token_gate_and_delete(tmp_path):
+    """With claim_token_required=True, /setup rejects bad/missing tokens, accepts the right
+    one, and deletes the on-disk token after a successful claim."""
     ROUTER_PORT = 18083
     base_url = f"http://127.0.0.1:{ROUTER_PORT}"
 
-    config, env = _make_config_and_env(tmp_path, port=ROUTER_PORT)
+    config, env = _make_config_and_env(tmp_path, port=ROUTER_PORT, claim_token_required=True)
 
-    # Write a claim token file so /setup requires it
     claim_token = "test-claim-token-abc123"
     claim_token_path = config.claim_token_path
     with open(claim_token_path, "w") as f:
@@ -476,10 +476,24 @@ def test_claim_token_deleted_after_setup(tmp_path):
     try:
         router = _start_router_process(base_url, env)
 
-        # Claim token file should exist before setup
-        assert os.path.isfile(claim_token_path), "Claim token file should exist before setup"
+        # No token → 403
+        r = requests.post(
+            f"{base_url}/setup",
+            data={"password": "testpass123", "confirm_password": "testpass123"},
+            allow_redirects=False,
+        )
+        assert r.status_code == 403, f"Expected 403 without token, got {r.status_code}"
 
-        # POST /setup with the correct claim token (must appear in both URL args and form body)
+        # Wrong token → 403
+        r = requests.post(
+            f"{base_url}/setup",
+            params={"claim": "nope"},
+            data={"password": "testpass123", "confirm_password": "testpass123", "claim": "nope"},
+            allow_redirects=False,
+        )
+        assert r.status_code == 403, f"Expected 403 with wrong token, got {r.status_code}"
+
+        # Correct token → 200/302; file deleted afterwards
         r = requests.post(
             f"{base_url}/setup",
             params={"claim": claim_token},
@@ -491,9 +505,29 @@ def test_claim_token_deleted_after_setup(tmp_path):
             allow_redirects=False,
         )
         assert r.status_code in (200, 302), f"Setup failed: {r.status_code} {r.text[:200]}"
-
-        # Claim token file must be deleted after successful setup
         assert not os.path.isfile(claim_token_path), "Claim token file should be deleted after setup"
+    finally:
+        if router is not None:
+            _stop_router_process(router)
+
+
+def test_setup_open_when_claim_token_not_required(tmp_path):
+    """With claim_token_required=False, /setup accepts a caller with no token (legacy/local
+    dev behavior)."""
+    ROUTER_PORT = 18084
+    base_url = f"http://127.0.0.1:{ROUTER_PORT}"
+
+    _config, env = _make_config_and_env(tmp_path, port=ROUTER_PORT, claim_token_required=False)
+
+    router = None
+    try:
+        router = _start_router_process(base_url, env)
+        r = requests.post(
+            f"{base_url}/setup",
+            data={"password": "testpass123", "confirm_password": "testpass123"},
+            allow_redirects=False,
+        )
+        assert r.status_code in (200, 302), f"Expected open setup to succeed, got {r.status_code}"
     finally:
         if router is not None:
             _stop_router_process(router)
