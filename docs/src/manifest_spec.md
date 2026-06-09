@@ -43,6 +43,15 @@ Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejec
 | `health_check` | string | no | — | Health check path |
 | `public_paths` | string[] | no | `[]` | Route prefixes accessible without authentication |
 
+### `[[links]]` — optional, repeatable
+
+User-facing links the app advertises for paths on its own URL that aren't the bare root — for example an admin console at `/_openhost/admin`. The dashboard displays these on the app's detail page. The `path` is taken at face value: OpenHost does not check that it exists, is reachable, or is (or isn't) behind auth — it just shows it to the user.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | Display name for the link (e.g., `"admin"`) |
+| `path` | string | yes | — | Path on the app's URL (e.g., `"/_openhost/admin"`) |
+
 ### `[resources]` — optional
 
 | Field | Type | Required | Default | Description |
@@ -175,4 +184,20 @@ command = "/data -A"
 [data]
 access_all_app_data = true
 access_all_archive = true
+```
+
+### App advertising user-facing links
+
+```toml
+[app]
+name = "synapse"
+version = "0.1.0"
+
+[runtime.container]
+image = "Dockerfile"
+port = 3000
+
+[[links]]
+name = "admin"
+path = "/_openhost/admin"
 ```

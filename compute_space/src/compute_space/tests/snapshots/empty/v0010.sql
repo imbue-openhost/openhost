@@ -52,7 +52,7 @@ CREATE TABLE "apps" (
                 installed_by TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
+            , links TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE archive_backend (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 's3')),
@@ -80,7 +80,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,9);
+INSERT INTO "schema_version" VALUES(1,10);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
