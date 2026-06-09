@@ -36,6 +36,18 @@ def _call_system_agent_sync[ResultT](result_type: type[ResultT], *args: str, tim
             error = body.get("error", result.stderr)
         except (json.JSONDecodeError, ValueError):
             error = result.stderr or result.stdout
+        # sudo prints `sudo: openhost_system_agent: command not found` when
+        # the symlink at /usr/local/bin/openhost_system_agent is missing.
+        # ansible installs it (setup_openhost_service.yml); pre-symlink
+        # installs hit this and need to re-run ansible to fix it.
+        if "openhost_system_agent: command not found" in str(error):
+            raise SystemAgentError(
+                f"{str(error).strip()}\n"
+                "\n"
+                "The openhost_system_agent binary is not on sudo's PATH. "
+                "Re-running the ansible deploy against this host will reinstall it — "
+                "see https://github.com/imbue-openhost/openhost/blob/main/ansible/readme.md"
+            )
         raise SystemAgentError(str(error))
 
     try:
