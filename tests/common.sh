@@ -166,6 +166,10 @@ run_ansible_setup() {
         extra_vars+=(-e "openhost_commit=$OPENHOST_COMMIT")
         echo "  (deploying commit $OPENHOST_COMMIT)"
     fi
+    if [ -n "${CLAIM_TOKEN:-}" ]; then
+        extra_vars+=(-e "claim_token=$CLAIM_TOKEN")
+        echo "  (claim token wired through)"
+    fi
 
     # Run the full setup playbook.
     ANSIBLE_HOST_KEY_CHECKING=false \

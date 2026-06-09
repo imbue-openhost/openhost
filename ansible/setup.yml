@@ -8,6 +8,11 @@
 #   -e public_ip=1.2.3.4         (defaults to target IP)
 #   -e initial_user=ubuntu        (defaults to root)
 #   -e openhost_commit=<sha>      (git commit to deploy; defaults to main)
+#   -e claim_token=<secret>       (gates /setup until the human supplies this
+#                                  token; URL-safe: letters, digits, '-', '_'.
+#                                  If omitted, the play generates a random
+#                                  token and prints the claim URL. Hand the
+#                                  URL to whoever will claim the instance.)
 
 - name: Bootstrap host user
   hosts: all

@@ -61,6 +61,7 @@ def config(tmp_path_factory):
         zone_domain=ZONE_DOMAIN,
         tls_enabled=False,
         start_caddy=False,
+        claim_token_required=False,
     )
     cfg.make_all_dirs()
     return cfg

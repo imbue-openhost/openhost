@@ -55,7 +55,10 @@ def _verify_claim_token(claim_token: str, claim_token_path: str) -> bool:
 
 
 def _claim_token_required(config: Config) -> bool:
-    return os.path.isfile(config.claim_token_path)
+    # Driven by config (fail-safe: defaults to True). When required but no
+    # token file is present, _verify_claim_token returns False and the route
+    # 403s — meaning a misconfigured deploy fails closed instead of open.
+    return config.claim_token_required
 
 
 def _claim_unauthorized() -> Response[str]:

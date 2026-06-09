@@ -1,5 +1,7 @@
 import json
 import sqlite3
+from pathlib import Path
+from urllib.parse import urlencode
 
 from litestar import Router
 from litestar import get
@@ -11,9 +13,17 @@ from compute_space.core.app_id import is_valid_app_name
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.git_ops import get_head_sha
+from compute_space.core.git_ops import get_remote_url
+from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest_from_string
+from compute_space.core.services_v2 import ServiceNotAvailable
+from compute_space.core.services_v2 import resolve_provider
 from compute_space.web.auth.auth import require_owner_auth
+
+EDIT_APP_SERVICE_URL = "github.com/imbue-openhost/claude-code-container/services/open-workspace"
+EDIT_APP_VERSION_SPEC = "<1.0"
 
 
 @get(["/", "/dashboard"], guards=[require_owner_auth])
@@ -66,6 +76,8 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
         except Exception:
             logger.opt(exception=True).warning("Failed to parse manifest for permission display (app %s)", app_id)
 
+    edit_app = await _resolve_edit_app(app_row["repo_url"], app_row["repo_path"], db, config)
+
     return Template(
         template_name="app_detail.html",
         context={
@@ -77,8 +89,73 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
             "next_url": next,
             "granted_permissions": granted_perms,
             "ungranted_permissions": ungranted_perms,
+            "edit_app": edit_app,
         },
     )
+
+
+async def _resolve_edit_app(
+    repo_url: str | None,
+    repo_path: str,
+    db: sqlite3.Connection,
+    config: Config,
+) -> dict[str, str] | None:
+    """Describe an "Edit this app" affordance for the template.
+
+    Returns one of:
+      - ``{"mode": "service", "action": ..., "repo": ..., "ref": ...}`` — POST to
+        a provider of the open-workspace service (see
+        github.com/imbue-openhost/claude-code-container/services/open-workspace).
+      - ``{"mode": "repo", "href": ...}`` — fallback link to the repo URL.
+      - ``None`` — no actionable URL available.
+    """
+    if not repo_url:
+        return None
+    if repo_url.startswith("file://"):
+        # Builtin apps live in the openhost checkout itself (file:// to
+        # apps/<name>). A browser can't do anything useful with that path and
+        # the open-workspace provider can't clone it, so substitute the
+        # enclosing openhost repo — the user lands in the openhost checkout at
+        # the same commit and can navigate to apps/<name> from there.
+        try:
+            openhost_remote = await get_remote_url(config.openhost_repo_path)
+        except Exception:
+            logger.opt(exception=True).warning("Failed to read openhost remote URL for builtin app")
+            openhost_remote = None
+        if not openhost_remote:
+            return None
+        repo_url = openhost_remote
+        repo_path = str(config.openhost_repo_path)
+    base_url, ref_from_url = parse_repo_url(repo_url)
+    repo_link_fallback = {"mode": "repo", "href": base_url}
+    ref = ref_from_url
+    if not ref:
+        try:
+            ref = await get_head_sha(Path(repo_path))
+        except Exception:
+            logger.opt(exception=True).warning("Failed to read HEAD sha for %s", repo_path)
+
+    try:
+        provider_app_id, _, _, endpoint = resolve_provider(EDIT_APP_SERVICE_URL, EDIT_APP_VERSION_SPEC, db)
+    except ServiceNotAvailable:
+        return repo_link_fallback
+
+    if not ref:
+        return repo_link_fallback
+
+    provider_row = db.execute("SELECT name FROM apps WHERE app_id = ?", (provider_app_id,)).fetchone()
+    if not provider_row:
+        logger.warning("resolve_provider returned unknown app_id %s", provider_app_id)
+        return repo_link_fallback
+
+    proto = "https" if config.tls_enabled else "http"
+    # Pass repo+ref in the query string too: the openhost router 302's
+    # unauthenticated POSTs to /login, and the post-login redirect comes back
+    # as a GET (only 307/308 preserve method), dropping the form body. Query
+    # params survive the bounce, and the provider falls back to them.
+    qs = urlencode({"repo": base_url, "ref": ref})
+    action = f"{proto}://{provider_row['name']}.{config.zone_domain}{endpoint}?{qs}"
+    return {"mode": "service", "action": action, "repo": base_url, "ref": ref}
 
 
 @get("/add_app", guards=[require_owner_auth])

@@ -52,8 +52,8 @@ Legend: [x] = automated, [ ] = manual/not yet automated
 - [x] /setup sets auth cookies (auto-login after setup) — `test_e2e.py::test_02`, `test_full_stack.py::TestRouter`
 - [x] /dashboard requires authentication — `test_e2e.py::test_03`, `test_full_stack.py::TestRouter`
 - [x] Unauthenticated requests redirect to /login — `test_e2e.py::test_03`, `test_full_stack.py::TestRouter`
-- [ ] Claim token is validated against on-disk file
-- [x] Claim token file is deleted after successful setup — `test_integration.py::test_claim_token_deleted_after_setup`
+- [x] Claim token gates /setup and is deleted after successful claim — `test_integration.py::test_claim_token_gate_and_delete`
+- [x] /setup accepts callers when claim_token_required=False — `test_integration.py::test_setup_open_when_claim_token_not_required`
 - [x] Login with wrong password rejected — `test_e2e.py::test_11`, `test_full_stack.py::TestLoginLogout`
 - [x] Login with correct password sets cookies — `test_e2e.py::test_11b`, `test_full_stack.py::TestLoginLogout`
 - [x] Logout clears session — `test_e2e.py::test_11c`, `test_full_stack.py::TestLoginLogout`
