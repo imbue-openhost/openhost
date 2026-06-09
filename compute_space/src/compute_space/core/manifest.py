@@ -332,6 +332,11 @@ def _parse_tls_certs(certs_list: list[Any]) -> list[TlsCertRequest]:
     if len(certs_list) > MAX_TLS_CERT_REQUESTS:
         raise ValueError(f"At most {MAX_TLS_CERT_REQUESTS} [[tls_certs]] entries are allowed")
     seen_labels: set[str] = set()
+    # Track the sanitized env-var suffix (uppercase, hyphens->underscores) so
+    # two distinct labels that collapse to the same suffix (e.g. "web-a" and
+    # "web_a" both -> "WEB_A") are rejected rather than silently clobbering
+    # each other's OPENHOST_TLS_*_<SUFFIX> env vars at run time.
+    seen_env_suffixes: dict[str, str] = {}
     result: list[TlsCertRequest] = []
     for entry in certs_list:
         if not isinstance(entry, dict):
@@ -344,6 +349,13 @@ def _parse_tls_certs(certs_list: list[Any]) -> list[TlsCertRequest]:
         if label in seen_labels:
             raise ValueError(f"Duplicate [[tls_certs]] label: '{label}'")
         seen_labels.add(label)
+        env_suffix = label.upper().replace("-", "_")
+        if env_suffix in seen_env_suffixes:
+            raise ValueError(
+                f"[[tls_certs]] label {label!r} collides with {seen_env_suffixes[env_suffix]!r} after "
+                f"env-var normalization (both map to suffix {env_suffix!r}); use distinct labels"
+            )
+        seen_env_suffixes[env_suffix] = label
 
         domains_raw = entry.get("domains")
         if not isinstance(domains_raw, list) or not domains_raw:

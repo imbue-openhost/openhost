@@ -815,3 +815,12 @@ class TestTlsCerts:
         toml = MINIMAL + ('\n[[tls_certs]]\nlabel = "x"\ndomains = ["{app}.{zone}", "{app}.{zone}"]\n')
         with pytest.raises(ValueError, match="duplicate domain"):
             parse_manifest_from_string(toml)
+
+    def test_env_suffix_collision_rejected(self):
+        # "web-a" and "web_a" both normalize to env suffix "WEB_A".
+        toml = MINIMAL + (
+            '\n[[tls_certs]]\nlabel = "web-a"\ndomains = ["a.{app}.{zone}"]\n'
+            '\n[[tls_certs]]\nlabel = "web_a"\ndomains = ["b.{app}.{zone}"]\n'
+        )
+        with pytest.raises(ValueError, match="env-var normalization"):
+            parse_manifest_from_string(toml)
