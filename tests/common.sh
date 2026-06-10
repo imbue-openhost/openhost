@@ -170,6 +170,14 @@ run_ansible_setup() {
         extra_vars+=(-e "claim_token=$CLAIM_TOKEN")
         echo "  (claim token wired through)"
     fi
+    # The default cert_provider is "eab_mint", which mints an EAB from the
+    # cert-api (openhost-cert-api.<zone>) at startup. That service isn't
+    # reachable from the e2e instance, so deploy with the BYO ACME account key
+    # written by the workflow instead. Override via CERT_PROVIDER if needed.
+    if [ -n "${CERT_PROVIDER:-}" ]; then
+        extra_vars+=(-e "cert_provider=$CERT_PROVIDER")
+        echo "  (cert_provider=$CERT_PROVIDER)"
+    fi
 
     # Run the full setup playbook.
     ANSIBLE_HOST_KEY_CHECKING=false \

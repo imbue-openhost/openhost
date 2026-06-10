@@ -38,6 +38,10 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       SKIP_APT_UPGRADE: "1"
       OPENHOST_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Deploy with the bring-your-own ACME account key written below rather than
+      # the default "eab_mint" provider, which would mint an EAB from the
+      # cert-api service (not reachable from the e2e instance).
+      CERT_PROVIDER: byo
       # GCP-specific
       GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
       GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
