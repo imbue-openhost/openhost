@@ -49,6 +49,17 @@ jobs:
       - name: Run all tests, including containerized tests
         run: |
           pixi run -e dev pytest --run-containers -v
+      # Pasta shares the host's IP with containers, so host-gateway can't reach
+      # host services; mirror the prod setup from ansible/tasks/containers.yml —
+      # a dummy interface that containers use to reach the router (start.py
+      # auto-binds 10.200.0.1 when the interface exists).
+      - name: Create openhost0 dummy interface for container-to-router traffic
+        run: |
+          sudo ip link add openhost0 type dummy
+          sudo ip addr add 10.200.0.1/32 dev openhost0
+          sudo ip link set openhost0 up
+          mkdir -p ~/.config/containers
+          printf '[network]\nhost_containers_internal_ip = "10.200.0.1"\n' >> ~/.config/containers/containers.conf
       - name: Run local full-stack service e2e tests
         run: |
           pixi run -e dev pytest --run-containers -v tests/test_services_e2e.py

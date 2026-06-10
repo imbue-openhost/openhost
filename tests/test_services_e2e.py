@@ -8,6 +8,9 @@ service proxy, including the permission-denied and grant flows.
 Prerequisites:
     - Rootless podman working (``podman info`` succeeds; on macOS ``podman machine`` running)
     - Network access to github.com (the secrets app is cloned as part of the test)
+    - On Linux, the openhost0 dummy interface + host_containers_internal_ip setup from
+      ansible/tasks/containers.yml (see the CI test-containers job), so containers can
+      reach the router; macOS needs nothing (gvproxy maps host.containers.internal)
 
 Run:
     pixi run -e dev pytest tests/test_services_e2e.py -v -s -x --run-containers --timeout=900
