@@ -13,6 +13,13 @@
 #                                  If omitted, the play generates a random
 #                                  token and prints the claim URL. Hand the
 #                                  URL to whoever will claim the instance.)
+#   -e initial_api_token_hash=<sha256-hex>
+#                                 (pre-installs an owner API token: the SHA-256
+#                                  hex digest of the raw token is written to the
+#                                  instance and imported into the api_tokens
+#                                  table at boot. The raw token never touches
+#                                  the instance; it becomes usable once the
+#                                  owner claims the instance via /setup.)
 
 - name: Bootstrap host user
   hosts: all

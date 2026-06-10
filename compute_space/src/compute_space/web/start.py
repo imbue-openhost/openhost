@@ -14,6 +14,7 @@ import hypercorn.config
 from compute_space.config import Config
 from compute_space.config import load_config
 from compute_space.config import set_active_config
+from compute_space.core.auth.initial_token import import_initial_api_token_hashes
 from compute_space.core.auth.keys import load_keys
 from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
@@ -48,6 +49,13 @@ def _bootstrap(config: Config) -> None:
     setup_file_logging(Path(os.path.dirname(config.db_path)) / "compute_space.log")
     load_keys(config.keys_dir)
     init_db(config.db_path)
+
+    # Pre-provisioned API tokens (e.g. installed by vm-manager's ansible run).
+    db = sqlite3.connect(config.db_path)
+    try:
+        import_initial_api_token_hashes(Path(config.initial_api_token_hash_path), db)
+    finally:
+        db.close()
 
 
 def _owner_exists(config: Config) -> bool:

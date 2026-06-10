@@ -155,6 +155,13 @@ class Config:
         return str(Path(self.openhost_data_path) / "claim_token")
 
     @property
+    def initial_api_token_hash_path(self) -> str:
+        # Optional file written by provisioning tooling (e.g. vm-manager's
+        # ansible run): a SHA-256 hex digest of an API token to pre-install.
+        # Imported into the api_tokens table at boot, then deleted.
+        return str(Path(self.openhost_data_path) / "initial_api_token_hash")
+
+    @property
     def default_apps_sentinel_path(self) -> str:
         return str(Path(self.openhost_data_path) / "default_apps.json")
 

@@ -48,6 +48,19 @@
   debug:
     msg: "Claim URL: https://{{ domain }}/setup?claim={{ effective_claim_token }}"
 
+# Optional pre-provisioned API token. Provisioning tooling (e.g. vm-manager)
+# passes `-e initial_api_token_hash=<sha256-hex>` — the digest of a raw token
+# it keeps on its side. The router imports the hash into the api_tokens table
+# at boot and deletes this file. Only the hash ever touches the instance.
+- name: Write initial API token hash
+  copy:
+    content: "{{ initial_api_token_hash }}"
+    dest: /home/host/.openhost/local_compute_space/persistent_data/openhost/initial_api_token_hash
+    owner: host
+    group: host
+    mode: "0600"
+  when: initial_api_token_hash is defined and initial_api_token_hash | length > 0
+
 # Look up the host user's UID so the service template can reference
 # the right /run/user/<uid> path and user@<uid>.service unit. The
 # host user is created without a fixed UID so the value varies by
