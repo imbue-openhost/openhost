@@ -9,6 +9,20 @@ import cattrs
 import tomli_w
 import typed_settings
 
+# Cert provider modes (see the `cert_provider` config field).
+# "eab_mint": mint a single-use EAB from the cert-api and create this instance's
+#   own ACME account, then issue from Google Trust Services (the managed default).
+# "byo": operator brings their own acme_account_key_path + acme_directory_url.
+CERT_PROVIDER_EAB_MINT = "eab_mint"
+CERT_PROVIDER_BYO = "byo"
+_VALID_CERT_PROVIDERS = frozenset({CERT_PROVIDER_EAB_MINT, CERT_PROVIDER_BYO})
+
+# Default cert-api EAB minter endpoint (Imbue hosted). Self-hosters running their
+# own minter override this via the `cert_api_url` config field.
+# TODO(cert-api contract): confirm the real hosted endpoint + path with the
+#   ~/openhost-cert-api service once its contract is finalized.
+DEFAULT_CERT_API_URL = "https://cert-api.selfhost.imbue.com"
+
 
 def _lowercase(s: str) -> str:
     # mypy can't handle str.lower apparently
@@ -30,8 +44,18 @@ class Config:
     tls_enabled: bool
     acquire_tls_cert_if_missing: bool
     acme_email: str | None
+    # Operator-supplied ACME account key (used only in "byo" cert_provider mode).
+    # In "eab_mint" mode the instance generates and persists its own account key
+    # at `managed_acme_account_key_path`; this field is ignored.
     acme_account_key_path: str | None
     acme_directory_url: str | None
+
+    # Cert provider mode: "eab_mint" (default) or "byo". See CERT_PROVIDER_* above.
+    cert_provider: str = attr.ib(validator=attr.validators.in_(_VALID_CERT_PROVIDERS))
+    # cert-api EAB minter endpoint (eab_mint mode only). Override to self-host.
+    cert_api_url: str | None
+    # Optional bearer token for authenticating to the cert-api minter (eab_mint mode).
+    cert_api_token: str | None
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
@@ -135,6 +159,12 @@ class Config:
         return self.openhost_data_path / "openhost-tls-key.pem"
 
     @property
+    def managed_acme_account_key_path(self) -> Path:
+        # Where "eab_mint" mode persists this instance's own ACME account key so
+        # renewals reuse it.  A lost key means a fresh EAB is minted next boot.
+        return self.openhost_data_path / "acme-account-key.json"
+
+    @property
     def coredns_corefile_path(self) -> Path:
         return self.openhost_data_path / "Corefile"
 
@@ -189,6 +219,13 @@ class DefaultConfig(Config):
     acme_email: str | None = None
     acme_account_key_path: str | None = None
     acme_directory_url: str | None = None
+
+    # Cert provider: default to the managed EAB-mint path (targets GTS).
+    # Re-declare with the validator: a subclass override drops the base attr.ib,
+    # and DefaultConfig is the class actually loaded at runtime.
+    cert_provider: str = attr.ib(default=CERT_PROVIDER_EAB_MINT, validator=attr.validators.in_(_VALID_CERT_PROVIDERS))
+    cert_api_url: str | None = DEFAULT_CERT_API_URL
+    cert_api_token: str | None = None
 
     start_caddy: bool = True
 

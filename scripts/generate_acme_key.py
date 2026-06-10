@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Generate and register an ACME account key in certbot JWK format.
 
+LEGACY / bring-your-own only. The default cert provider ("eab_mint") makes each
+instance mint a single-use EAB from the cert-api and create its OWN ACME account
+on first boot, so no pre-registered key is needed. This script is for the "byo"
+cert provider mode (non-managed domains): point `acme_account_key_path` at the
+key it produces.
+
 Usage: python3 generate_acme_key.py <output-path> [--email <email>]
 
 Generates an RSA-2048 key, registers it with Let's Encrypt, and saves

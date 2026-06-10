@@ -16,10 +16,13 @@
   register: git_clean_result
   changed_when: git_clean_result.stdout | length > 0
 
-- name: Copy ACME account key
+# Only needed for bring-your-own cert provider. The default (eab_mint) generates
+# a per-instance ACME account key on the box and never ships a shared key.
+- name: Copy ACME account key (bring-your-own only)
   copy:
     src: "{{ playbook_dir }}/secrets/certbot_private_key.json"
     dest: /home/host/openhost/ansible/secrets/certbot_private_key.json
     owner: host
     group: host
     mode: "0600"
+  when: (cert_provider | default('eab_mint')) == 'byo'

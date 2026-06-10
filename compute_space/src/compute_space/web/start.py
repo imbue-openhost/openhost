@@ -11,6 +11,7 @@ from typing import Any
 import hypercorn.asyncio
 import hypercorn.config
 
+from compute_space.config import CERT_PROVIDER_BYO
 from compute_space.config import Config
 from compute_space.config import load_config
 from compute_space.config import set_active_config
@@ -80,17 +81,29 @@ def main() -> None:
         if not check_if_cert_exists(config.tls_cert_path, config.tls_key_path):
             if not config.coredns_enabled:
                 raise RuntimeError("CoreDNS must be enabled to acquire TLS cert via DNS-01 challenge")
-            if not config.acme_account_key_path:
-                raise RuntimeError("ACME account key path must be set in config to acquire TLS cert")
             if not config.acquire_tls_cert_if_missing:
                 raise RuntimeError("TLS cert not found and acquire_tls_cert_if_missing is False")
+
+            # The account key path depends on the provider mode: bring-your-own
+            # uses the operator-supplied key; eab_mint generates and persists the
+            # instance's own key under the managed data dir (so renewals reuse it).
+            if config.cert_provider == CERT_PROVIDER_BYO:
+                if not config.acme_account_key_path:
+                    raise RuntimeError("cert_provider='byo' requires acme_account_key_path to be set in config")
+                account_key_path = Path(config.acme_account_key_path)
+            else:
+                account_key_path = config.managed_acme_account_key_path
+
             asyncio.run(
                 acquire_tls_cert(
                     domain=config.zone_domain,
                     cert_path=config.tls_cert_path,
                     key_path=config.tls_key_path,
-                    acme_account_key_path=Path(config.acme_account_key_path),
+                    acme_account_key_path=account_key_path,
                     coredns_zonefile_path=config.coredns_zonefile_path,
+                    cert_provider=config.cert_provider,
+                    cert_api_url=config.cert_api_url,
+                    cert_api_token=config.cert_api_token,
                     acme_email=config.acme_email,
                     directory_url=config.acme_directory_url,
                 )

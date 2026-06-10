@@ -15,6 +15,7 @@ Run:
 """
 
 import asyncio
+import base64
 import datetime
 import ipaddress
 import json
@@ -34,7 +35,9 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_module
 from josepy import JWKRSA
 
+from compute_space.config import CERT_PROVIDER_EAB_MINT
 from compute_space.core.tls.acquire_cert import acquire_tls_cert
+from compute_space.core.tls.cert_api_client import EABCredential
 from compute_space.core.tls.util import _acquire_cert_dns01
 from compute_space.core.tls.util import load_account_key
 from compute_space.tests.utils import kill_tree
@@ -49,6 +52,15 @@ PEBBLE_ACME_PORT = 14000
 PEBBLE_MGMT_PORT = 15000
 COREDNS_PORT = 15353
 ZONE_DOMAIN = "tls-test.localhost"
+
+# A second Pebble instance that REQUIRES External Account Binding, used to test
+# the eab_mint provider end-to-end.  Distinct ACME/management ports so it can run
+# alongside the plain pebble_server; both share the same CoreDNS for DNS-01.
+EAB_PEBBLE_ACME_PORT = 14100
+EAB_PEBBLE_MGMT_PORT = 15100
+EAB_KID = "openhost-test-kid"
+# base64url-encoded HMAC key shared between Pebble's config and the minted EAB.
+EAB_MAC_KEY = base64.urlsafe_b64encode(b"openhost-eab-test-mac-key-32bytes!!").rstrip(b"=").decode()
 
 requires_tls = pytest.mark.requires_tls
 
@@ -435,3 +447,136 @@ class TestAccountKey:
         original = _generate_acme_account_key(str(key_path))
         loaded = load_account_key(key_path)
         assert original.to_json() == loaded.to_json()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures + tests — eab_mint provider (per-instance account via EAB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def eab_pebble_server(tls_tmpdir, pebble_certs, coredns_server):
+    """Start a Pebble that REQUIRES EAB, with a known kid/MAC key.
+
+    NOTE: the EAB config keys (externalAccountBindingRequired / externalAccountMACKeys)
+    must match the Pebble version in PATH.  base64url MAC keys per RFC 8555.
+    """
+    assert _port_free(EAB_PEBBLE_ACME_PORT), f"Port {EAB_PEBBLE_ACME_PORT} already in use"
+
+    config_path = str(tls_tmpdir / "pebble-eab-config.json")
+    with open(config_path, "w") as f:
+        json.dump(
+            {
+                "pebble": {
+                    "listenAddress": f"0.0.0.0:{EAB_PEBBLE_ACME_PORT}",
+                    "managementListenAddress": f"0.0.0.0:{EAB_PEBBLE_MGMT_PORT}",
+                    "certificate": pebble_certs["cert"],
+                    "privateKey": pebble_certs["key"],
+                    "httpPort": 5002,
+                    "tlsPort": 5001,
+                    "externalAccountBindingRequired": True,
+                    "externalAccountMACKeys": {EAB_KID: EAB_MAC_KEY},
+                }
+            },
+            f,
+        )
+
+    env = os.environ.copy()
+    env["PEBBLE_VA_NOSLEEP"] = "1"
+    env["PEBBLE_WFE_NONCEREJECT"] = "0"
+
+    log_path = tls_tmpdir / "pebble-eab.log"
+    log_file = open(log_path, "w")
+
+    proc = subprocess.Popen(
+        ["pebble", "-config", config_path, "-dnsserver", f"127.0.0.1:{COREDNS_PORT}"],
+        env=env,
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,
+    )
+
+    directory_url = f"https://127.0.0.1:{EAB_PEBBLE_ACME_PORT}/dir"
+    try:
+        poll(
+            lambda: port_connectable("127.0.0.1", EAB_PEBBLE_ACME_PORT),
+            timeout=10,
+            interval=0.3,
+            fail_msg="EAB Pebble did not start",
+        )
+        yield {"proc": proc, "directory_url": directory_url}
+    except Exception as exc:
+        with open(log_path) as f:
+            raise RuntimeError(f"EAB Pebble failed to start:\n{f.read()}") from exc
+    finally:
+        kill_tree(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc, signal.SIGKILL)
+            proc.wait(timeout=5)
+        log_file.close()
+
+
+@requires_tls
+class TestEabMintProvider:
+    """End-to-end: mint EAB -> create own account -> persist key -> issue cert."""
+
+    def _acquire(self, *, eab_pebble_server, zonefile_path, account_key_path, cert_path, key_path):
+        asyncio.run(
+            acquire_tls_cert(
+                domain=ZONE_DOMAIN,
+                cert_path=cert_path,
+                key_path=key_path,
+                acme_account_key_path=account_key_path,
+                coredns_zonefile_path=zonefile_path,
+                cert_provider=CERT_PROVIDER_EAB_MINT,
+                cert_api_url="https://cert-api.invalid",
+                directory_url=eab_pebble_server["directory_url"],
+                verify_ssl=False,
+            )
+        )
+
+    def test_eab_mint_registers_persists_and_issues(self, eab_pebble_server, zonefile_path, tls_tmpdir, monkeypatch):
+        account_key_path = tls_tmpdir / "managed-acme-account-key.json"
+        cert_path = tls_tmpdir / "eab-cert.pem"
+        key_path = tls_tmpdir / "eab-key.pem"
+
+        mint_calls = []
+
+        def fake_mint(cert_api_url, zone_domain, *, token=None, timeout=30.0, verify_ssl=True):
+            mint_calls.append(zone_domain)
+            return EABCredential(kid=EAB_KID, hmac_key=EAB_MAC_KEY)
+
+        # account.py imported mint_eab into its own namespace; patch it there.
+        monkeypatch.setattr("compute_space.core.tls.account.mint_eab", fake_mint)
+
+        self._acquire(
+            eab_pebble_server=eab_pebble_server,
+            zonefile_path=zonefile_path,
+            account_key_path=account_key_path,
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+
+        # The instance generated and persisted its OWN account key (0600).
+        assert account_key_path.exists()
+        assert oct(account_key_path.stat().st_mode & 0o777) == "0o600"
+        # EAB minted exactly once, and a wildcard cert was issued.
+        assert mint_calls == [ZONE_DOMAIN]
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        dns_names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
+            x509.DNSName
+        )
+        assert ZONE_DOMAIN in dns_names
+        assert f"*.{ZONE_DOMAIN}" in dns_names
+
+        # A renewal reuses the persisted key and does NOT mint another EAB.
+        self._acquire(
+            eab_pebble_server=eab_pebble_server,
+            zonefile_path=zonefile_path,
+            account_key_path=account_key_path,
+            cert_path=cert_path,
+            key_path=key_path,
+        )
+        assert mint_calls == [ZONE_DOMAIN]
