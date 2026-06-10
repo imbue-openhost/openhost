@@ -16,8 +16,13 @@ Routes:
 
 import json
 import os
+import re
 
 import aiohttp.web
+
+# matches the router's manifest shortname rule
+SHORTNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+SERVICE_PATH_RE = re.compile(r"^[A-Za-z0-9_/-]*$")
 
 
 async def handle_health(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -57,6 +62,10 @@ async def handle_call_service(request: aiohttp.web.Request) -> aiohttp.web.Respo
     method = body.get("method", "POST")
     path = body.get("path", "")
     payload = body.get("payload")
+    if not SHORTNAME_RE.match(shortname):
+        return _json_response({"error": "invalid shortname"}, status=400)
+    if not SERVICE_PATH_RE.match(path):
+        return _json_response({"error": "invalid path"}, status=400)
     url = f"{router_url}/api/services/v2/call/{shortname}/{path}"
     async with aiohttp.ClientSession() as session:
         async with session.request(
