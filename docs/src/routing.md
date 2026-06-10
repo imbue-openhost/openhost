@@ -32,8 +32,8 @@ the cert and key are stored on disk and reused across restarts. the router only 
 the DNS-01 issuance above is shared across both modes. what differs is *how the instance gets its ACME account key*, selected by the `cert_provider` config field:
 
 **`eab_mint` (default, managed).** each instance creates its OWN ACME account:
-- on first boot (no account key on disk yet), the router calls the central **cert-api** (`cert_api_url`, default = Imbue hosted) to mint a single-use [External Account Binding](https://datatracker.ietf.org/doc/html/rfc8555#section-7.3.4) credential.
-- it generates its own ACME account key locally, registers a new account with Google Trust Services using that EAB, and persists the key to disk (`acme-account-key.json` under the openhost data dir).
+- on first boot (no account key on disk yet), the router calls the central **cert-api** — `POST {cert_api_url}/v1/eab` with a per-instance `Authorization: Bearer` token (`cert_api_token`) — to mint a single-use [External Account Binding](https://datatracker.ietf.org/doc/html/rfc8555#section-7.3.4) credential. `cert_api_url` defaults to the Imbue-hosted minter (the `openhost-cert-api` app); self-hosters override it. The minter is the separate `openhost-cert-api` service.
+- it generates its own ACME account key locally, registers a new account with Google Trust Services using that EAB (against the `directory_url` the cert-api returns), and persists the key to disk (`acme-account-key.json` under the openhost data dir).
 - renewals reuse the persisted key and never call the cert-api again. a lost key just means a fresh EAB is minted on the next boot.
 - the EAB only authorizes *creating one account* — it does not grant cert issuance. the instance still has to pass DNS-01, so it can only get certs for domains its own CoreDNS is authoritative for.
 - this is the default for managed domains (e.g. `selfhost.imbue.com` subdomains). self-hosters can point `cert_api_url` at their own minter (see the `openhost-cert-api` repo).

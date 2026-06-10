@@ -52,8 +52,10 @@ async def acquire_tls_cert(
 
     # Resolve the ACME account key.  This is the only step that differs between
     # provider modes (eab_mint mints+registers a new account; byo/renewal loads
-    # the persisted key); the DNS-01 issuance below is shared.
-    account_key = await asyncio.to_thread(
+    # the persisted key); the DNS-01 issuance below is shared.  In eab_mint mode
+    # the cert-api also dictates the directory, so issue against the one the
+    # account was created with.
+    resolved = await asyncio.to_thread(
         ensure_account_key,
         mode=cert_provider,
         account_key_path=acme_account_key_path,
@@ -67,13 +69,13 @@ async def acquire_tls_cert(
 
     domains = [domain, f"*.{domain}"]
     _assert_domains_within_zone(domains, domain)
-    logger.info(f"Requesting wildcard TLS cert for {domains} from {directory_url} (DNS-01)")
+    logger.info(f"Requesting wildcard TLS cert for {domains} from {resolved.directory_url} (DNS-01)")
     cert_pem, key_pem = await asyncio.to_thread(
         _acquire_cert_dns01,
         domains=domains,
-        directory_url=directory_url,
+        directory_url=resolved.directory_url,
         coredns_zonefile_path=coredns_zonefile_path,
-        account_key=account_key,
+        account_key=resolved.account_key,
         verify_ssl=verify_ssl,
         acme_email=acme_email,
     )

@@ -6,6 +6,7 @@ import pytest
 
 from compute_space.config import CERT_PROVIDER_BYO
 from compute_space.config import CERT_PROVIDER_EAB_MINT
+from compute_space.core.tls.account import ResolvedAccount
 from compute_space.core.tls.account import _generate_account_key
 from compute_space.core.tls.account import ensure_account_key
 from compute_space.core.tls.account import persist_account_key
@@ -43,8 +44,11 @@ def test_persisted_key_is_reused_without_minting(tmp_path: Path, monkeypatch: py
 
     monkeypatch.setattr("compute_space.core.tls.account.mint_eab", _boom)
 
-    loaded = _ensure(CERT_PROVIDER_EAB_MINT, key_path)
-    assert loaded.to_json() == original.to_json()
+    resolved = _ensure(CERT_PROVIDER_EAB_MINT, key_path)
+    assert isinstance(resolved, ResolvedAccount)
+    assert resolved.account_key.to_json() == original.to_json()
+    # On the load path the directory comes from the caller's config, unchanged.
+    assert resolved.directory_url == "https://acme.example.test/dir"
 
 
 def test_byo_missing_key_raises(tmp_path: Path) -> None:
@@ -78,14 +82,23 @@ def test_persist_account_key_round_trip_and_perms(tmp_path: Path) -> None:
 
 
 class _FakeResponse:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, status_code: int = 200, headers: dict[str, str] | None = None) -> None:
         self._payload = payload
-
-    def raise_for_status(self) -> None:
-        return None
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def json(self) -> object:
         return self._payload
+
+
+# A representative POST /v1/eab success body (see openhost-cert-api README).
+_EAB_OK = {
+    "key_id": "key-123",
+    "b64_mac_key": "bWFjLWtleQ",
+    "directory_url": "https://dv.acme-v02.api.pki.goog/directory",
+    "ca": "google-trust-services",
+    "key_algorithm": "HS256",
+}
 
 
 def test_mint_eab_parses_response_and_sends_auth(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,15 +108,20 @@ def test_mint_eab_parses_response_and_sends_auth(monkeypatch: pytest.MonkeyPatch
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
-        return _FakeResponse({"kid": "kid-1", "hmac_key": "bWFjLWtleQ"})
+        return _FakeResponse(_EAB_OK)
 
     monkeypatch.setattr("compute_space.core.tls.cert_api_client.httpx.post", fake_post)
 
     cred = mint_eab("https://cert-api.example.test/", "host.example.com", token="secret-token")
 
-    assert cred == EABCredential(kid="kid-1", hmac_key="bWFjLWtleQ")
-    assert captured["url"] == "https://cert-api.example.test/eab"
-    assert captured["json"] == {"zone_domain": "host.example.com"}
+    assert cred == EABCredential(
+        kid="key-123",
+        hmac_key="bWFjLWtleQ",
+        directory_url="https://dv.acme-v02.api.pki.goog/directory",
+        hmac_alg="HS256",
+    )
+    assert captured["url"] == "https://cert-api.example.test/v1/eab"
+    assert captured["json"] == {"domain": "host.example.com"}
     assert captured["headers"] == {"Authorization": "Bearer secret-token"}
 
 
@@ -112,7 +130,7 @@ def test_mint_eab_omits_auth_header_without_token(monkeypatch: pytest.MonkeyPatc
 
     def fake_post(url: str, *, json: object, headers: dict[str, str], timeout: float, verify: bool) -> _FakeResponse:
         captured["headers"] = headers
-        return _FakeResponse({"kid": "kid-1", "hmac_key": "bWFjLWtleQ"})
+        return _FakeResponse(_EAB_OK)
 
     monkeypatch.setattr("compute_space.core.tls.cert_api_client.httpx.post", fake_post)
 
@@ -123,9 +141,20 @@ def test_mint_eab_omits_auth_header_without_token(monkeypatch: pytest.MonkeyPatc
 def test_mint_eab_missing_fields_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "compute_space.core.tls.cert_api_client.httpx.post",
-        lambda url, **kwargs: _FakeResponse({"kid": "only-kid"}),
+        lambda url, **kwargs: _FakeResponse({"key_id": "only-id"}),
     )
     with pytest.raises(RuntimeError, match="missing expected fields"):
+        mint_eab("https://cert-api.example.test", "host.example.com")
+
+
+def test_mint_eab_non_200_raises_with_error_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "compute_space.core.tls.cert_api_client.httpx.post",
+        lambda url, **kwargs: _FakeResponse(
+            {"error": "unauthorized", "message": "Missing or invalid bearer token."}, status_code=401
+        ),
+    )
+    with pytest.raises(RuntimeError, match="401.*unauthorized"):
         mint_eab("https://cert-api.example.test", "host.example.com")
 
 

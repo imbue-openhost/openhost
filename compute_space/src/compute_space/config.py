@@ -17,11 +17,12 @@ CERT_PROVIDER_EAB_MINT = "eab_mint"
 CERT_PROVIDER_BYO = "byo"
 _VALID_CERT_PROVIDERS = frozenset({CERT_PROVIDER_EAB_MINT, CERT_PROVIDER_BYO})
 
-# Default cert-api EAB minter endpoint (Imbue hosted). Self-hosters running their
-# own minter override this via the `cert_api_url` config field.
-# TODO(cert-api contract): confirm the real hosted endpoint + path with the
-#   ~/openhost-cert-api service once its contract is finalized.
-DEFAULT_CERT_API_URL = "https://cert-api.selfhost.imbue.com"
+# Default cert-api EAB minter endpoint (Imbue hosted). The minter is the
+# openhost-cert-api service deployed as an OpenHost app (app name
+# "openhost-cert-api"), so it lives at that subdomain of the managed zone.
+# Self-hosters running their own minter override this via `cert_api_url`.
+# The client appends "/v1/eab" (see core/tls/cert_api_client.py).
+DEFAULT_CERT_API_URL = "https://openhost-cert-api.selfhost.imbue.com"
 
 
 def _lowercase(s: str) -> str:
@@ -54,7 +55,9 @@ class Config:
     cert_provider: str = attr.ib(validator=attr.validators.in_(_VALID_CERT_PROVIDERS))
     # cert-api EAB minter endpoint (eab_mint mode only). Override to self-host.
     cert_api_url: str | None
-    # Optional bearer token for authenticating to the cert-api minter (eab_mint mode).
+    # Per-instance bearer token for the cert-api minter (eab_mint mode). The
+    # operator provisions this; the service requires it under its current auth
+    # scheme (missing/invalid -> the mint call fails loudly with HTTP 401).
     cert_api_token: str | None
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)

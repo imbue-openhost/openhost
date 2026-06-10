@@ -544,9 +544,13 @@ class TestEabMintProvider:
 
         mint_calls = []
 
-        def fake_mint(cert_api_url, zone_domain, *, token=None, timeout=30.0, verify_ssl=True):
-            mint_calls.append(zone_domain)
-            return EABCredential(kid=EAB_KID, hmac_key=EAB_MAC_KEY)
+        def fake_mint(cert_api_url, domain, *, token=None, timeout=30.0, verify_ssl=True):
+            mint_calls.append(domain)
+            return EABCredential(
+                kid=EAB_KID,
+                hmac_key=EAB_MAC_KEY,
+                directory_url=eab_pebble_server["directory_url"],
+            )
 
         # account.py imported mint_eab into its own namespace; patch it there.
         monkeypatch.setattr("compute_space.core.tls.account.mint_eab", fake_mint)
