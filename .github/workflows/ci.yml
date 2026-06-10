@@ -49,3 +49,6 @@ jobs:
       - name: Run all tests, including containerized tests
         run: |
           pixi run -e dev pytest --run-containers -v
+      - name: Run local full-stack service e2e tests
+        run: |
+          pixi run -e dev pytest --run-containers -v tests/test_services_e2e.py
