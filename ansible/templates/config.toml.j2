@@ -3,10 +3,24 @@ zone_domain = "{{ domain }}"
 host = "127.0.0.1"
 tls_enabled = true
 acquire_tls_cert_if_missing = true
-acme_account_key_path = "/home/host/openhost/ansible/secrets/certbot_private_key.json"
 acme_email = "{{ acme_email | default('openhost@' + domain) }}"
+cert_provider = "{{ cert_provider | default('eab_mint') }}"
+{% if cert_provider | default('eab_mint') == 'byo' %}
+# Bring-your-own: operator supplies their own ACME account key + CA (non-managed domains).
+acme_account_key_path = "{{ acme_account_key_path | default('/home/host/openhost/ansible/secrets/certbot_private_key.json') }}"
 {% if acme_directory_url is defined %}
 acme_directory_url = "{{ acme_directory_url }}"
+{% endif %}
+{% else %}
+# Managed (eab_mint): the instance mints a single-use EAB from the cert-api and
+# creates its own ACME account against Google Trust Services. Override cert_api_url
+# to point at your own minter.
+{% if cert_api_url is defined %}
+cert_api_url = "{{ cert_api_url }}"
+{% endif %}
+{% if cert_api_token is defined %}
+cert_api_token = "{{ cert_api_token }}"
+{% endif %}
 {% endif %}
 coredns_enabled = true
 public_ip = "{{ public_ip | default(inventory_hostname) }}"
