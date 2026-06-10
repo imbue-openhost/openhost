@@ -1,16 +1,3 @@
-"""Import pre-provisioned API tokens written by provisioning tooling.
-
-Provisioning tools (e.g. vm-manager) can install an API token on an instance
-before its first boot by writing the token's SHA-256 hex digest to
-``config.initial_api_token_hash_path`` (the raw token never touches the
-instance).  At boot the hash is inserted into the ``api_tokens`` table and the
-file is deleted.
-
-Pre-provisioned tokens are owner-level and never expire, but they are only
-usable once the owner claims the instance: until then the setup-only app is
-served, which exposes no API routes.
-"""
-
 import re
 import sqlite3
 from pathlib import Path
@@ -23,15 +10,17 @@ _TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def import_initial_api_token_hashes(token_hash_file: Path, db: sqlite3.Connection) -> int:
-    """Import API token hashes from ``token_hash_file`` and delete the file.
+    """Import pre-provisioned API token hashes from ``token_hash_file`` and delete the file.
 
-    Each non-empty line is ``<sha256-hex>[ <token name>]``.  Lines with a
-    malformed hash are logged and skipped.  Inserts are idempotent (the hash
-    column is unique), so re-running ansible against an already-provisioned
-    instance is a no-op.  Returns the number of tokens newly inserted.
+    Provisioning tooling (e.g. vm-manager) can install an API token on an instance before its first boot by
+    writing the token's SHA-256 hex digest to this file — the raw token never touches the instance.  Each
+    non-empty line is ``<sha256-hex>[ <token name>]``; malformed lines are logged and skipped.  Inserts are
+    idempotent (the hash column is unique), so re-running ansible against an already-provisioned instance is a
+    no-op.  Imported tokens are owner-level with no expiry, but only become usable once the owner claims the
+    instance (the setup-only app exposes no API routes).  Returns the number of tokens newly inserted.
     """
     try:
-        content = token_hash_file.read_text()
+        content = token_hash_file.read_text(errors="replace")
     except FileNotFoundError:
         return 0
     except OSError as exc:

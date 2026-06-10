@@ -76,6 +76,18 @@ class TestImportInitialApiTokenHashes:
         assert count == 1
         db.close()
 
+    def test_binary_garbage_file_does_not_raise(self, tmp_path: Path) -> None:
+        """A corrupt/binary token file must not brick the boot — it's logged,
+        skipped, and deleted."""
+        db = _make_db(tmp_path)
+        token_file = tmp_path / "initial_api_token_hash"
+        token_file.write_bytes(b"\xff\xfe\x00garbage\x80\x81\n" + _hash("tok-ok").encode() + b"\n")
+
+        assert import_initial_api_token_hashes(token_file, db) == 1
+        assert not token_file.exists()
+        assert validate_api_token("tok-ok", db) is not None
+        db.close()
+
     def test_uppercase_hash_is_normalized(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         token_file = tmp_path / "initial_api_token_hash"

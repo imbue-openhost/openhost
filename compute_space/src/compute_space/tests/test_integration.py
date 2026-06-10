@@ -511,6 +511,80 @@ def test_claim_token_gate_and_delete(tmp_path):
             _stop_router_process(router)
 
 
+def test_initial_api_token_imported_at_boot(tmp_path):
+    """A pre-provisioned token hash file is imported at boot (file deleted), the token is
+    inert while the setup-only app is served, and authenticates owner APIs after setup."""
+    import hashlib  # noqa: PLC0415
+
+    ROUTER_PORT = 18085
+    base_url = f"http://127.0.0.1:{ROUTER_PORT}"
+
+    config, env = _make_config_and_env(tmp_path, port=ROUTER_PORT, claim_token_required=False)
+
+    raw_token = "pre-provisioned-token-for-boot-test"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    with open(config.initial_api_token_hash_path, "w") as f:
+        f.write(f"{token_hash} boot-test-token\n")
+
+    router = None
+    try:
+        router = _start_router_process(base_url, env)
+
+        # Imported at boot: the hash file is gone.
+        assert not os.path.isfile(config.initial_api_token_hash_path), (
+            "initial_api_token_hash file should be deleted after import"
+        )
+
+        # Pre-claim, the setup-only app serves no API routes — the token is inert.
+        r = requests.get(
+            f"{base_url}/api/tokens",
+            headers={"Authorization": f"Bearer {raw_token}"},
+            allow_redirects=False,
+        )
+        assert r.status_code == 404, f"Expected 404 pre-claim, got {r.status_code}"
+
+        # Claim the instance.
+        r = requests.post(
+            f"{base_url}/setup",
+            data={"password": "testpass123", "confirm_password": "testpass123"},
+            allow_redirects=False,
+        )
+        assert r.status_code in (200, 302), f"Setup failed: {r.status_code} {r.text[:200]}"
+
+        # The same process restarts into the full app; poll until the
+        # pre-provisioned token authenticates an owner-level API route.
+        deadline = time.time() + 30
+        last_status = None
+        while time.time() < deadline:
+            try:
+                r = requests.get(
+                    f"{base_url}/api/tokens",
+                    headers={"Authorization": f"Bearer {raw_token}"},
+                    allow_redirects=False,
+                    timeout=2,
+                )
+                last_status = r.status_code
+                if r.status_code == 200:
+                    break
+            except (requests.ConnectionError, requests.ReadTimeout):
+                pass
+            time.sleep(0.5)
+        assert last_status == 200, f"Pre-provisioned token never authenticated: {last_status}"
+        names = [t["name"] for t in r.json()]
+        assert "boot-test-token" in names
+
+        # A wrong token is still rejected.
+        r = requests.get(
+            f"{base_url}/api/tokens",
+            headers={"Authorization": "Bearer wrong-token"},
+            allow_redirects=False,
+        )
+        assert r.status_code in (302, 401), f"Wrong token not rejected: {r.status_code}"
+    finally:
+        if router is not None:
+            _stop_router_process(router)
+
+
 def test_setup_open_when_claim_token_not_required(tmp_path):
     """With claim_token_required=False, /setup accepts a caller with no token (legacy/local
     dev behavior)."""
