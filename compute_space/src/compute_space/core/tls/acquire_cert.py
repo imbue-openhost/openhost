@@ -16,6 +16,19 @@ def check_if_cert_exists(cert_path: Path, key_path: Path) -> bool:
     return False
 
 
+def write_cert_and_key(cert_path: Path, key_path: Path, cert_pem: bytes, key_pem: bytes) -> None:
+    """Write the cert chain and private key to disk, locking the key to 0600.
+
+    This is the single cert-install path used by every cert provider so Caddy
+    always finds the pair at the same place with the same permissions.
+    """
+    with open(cert_path, "wb") as f:
+        f.write(cert_pem)
+    with open(key_path, "wb") as f:
+        f.write(key_pem)
+    os.chmod(key_path, 0o600)
+
+
 async def acquire_tls_cert(
     domain: str,
     cert_path: Path,
@@ -48,8 +61,4 @@ async def acquire_tls_cert(
 
     logger.info(f"TLS cert acquired for {domain}, writing to {cert_path} and {key_path}")
 
-    with open(cert_path, "wb") as f:
-        f.write(cert_pem)
-    with open(key_path, "wb") as f:
-        f.write(key_pem)
-    os.chmod(key_path, 0o600)
+    write_cert_and_key(cert_path, key_path, cert_pem, key_pem)
