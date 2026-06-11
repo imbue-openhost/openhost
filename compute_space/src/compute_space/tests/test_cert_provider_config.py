@@ -21,7 +21,7 @@ def test_default_provider_is_acme() -> None:
     # The broker URL defaults to a host but is only used by the cert_api
     # provider, so the default acme path is unaffected by it.
     # TODO: revert to "https://api.selfhost.imbue.com" once the broker is deployed.
-    assert cfg.cert_api_base_url == "https://openhost-cert-api.kilo-dev-3.selfhost.imbue.com/"
+    assert cfg.cert_api_base_url == "https://openhost-cert-api.openhost-qa.selfhost.imbue.com/"
     assert cfg.cert_api_token is None
 
 

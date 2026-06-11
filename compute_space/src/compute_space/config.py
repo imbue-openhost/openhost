@@ -211,9 +211,9 @@ class DefaultConfig(Config):
     cert_provider: str = CERT_PROVIDER_ACME
     # TODO: swap back to the canonical broker "https://api.selfhost.imbue.com" once the
     # service is deployed (a DNS record will be added when it goes up).  For now this points
-    # at kilo's test instance so the cert_api path can be exercised end-to-end.
+    # at the QA broker instance so the cert_api path can be exercised end-to-end.
     # Only consulted when cert_provider == CERT_PROVIDER_CERT_API.
-    cert_api_base_url: str | None = "https://openhost-cert-api.kilo-dev-3.selfhost.imbue.com/"
+    cert_api_base_url: str | None = "https://openhost-cert-api.openhost-qa.selfhost.imbue.com/"
     cert_api_token: str | None = None
 
     start_caddy: bool = True
