@@ -17,6 +17,7 @@ from compute_space.config import Config
 from compute_space.config import DefaultConfig
 from compute_space.config import set_active_config
 from compute_space.db.schema import schema_path
+from compute_space.local_stack import make_router_env
 from compute_space.tests.utils import kill_tree
 from compute_space.tests.utils import managed_router
 from compute_space.tests.utils import router_cmd
@@ -74,13 +75,7 @@ def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
 
 def _make_test_env(config_path: str) -> dict[str, str]:
     """Build an env dict for launching a router subprocess."""
-    env = os.environ.copy()
-    # Strip OPENHOST_* vars from the host environment so they don't
-    # override test config (e.g. OPENHOST_ZONE_DOMAIN from a container).
-    for key in list(env):
-        if key.startswith("OPENHOST_"):
-            del env[key]
-    env["OPENHOST_CONFIG"] = config_path
+    env = make_router_env(config_path)
     env["SECRET_KEY"] = "test-secret-key"
     return env
 

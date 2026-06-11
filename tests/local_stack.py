@@ -1,9 +1,9 @@
-"""Helpers for running a full local OpenHost stack (router + podman apps) in tests.
+"""Test-side helpers for a full local OpenHost stack (router + podman apps).
 
-The stack is HTTP-only and uses a ``*.localhost`` zone domain, which resolves to loopback
-on Linux and macOS without any DNS setup.  All owner requests must go through the zone
-domain (not 127.0.0.1) so the session cookie — scoped to the zone domain — is accepted
-by the client and sent to app subdomains.
+Config building lives in compute_space.local_stack; this module adds the requests-based
+setup/deploy flows used by tests.  All owner requests must go through the zone domain
+(not 127.0.0.1) so the session cookie — scoped to the zone domain — is accepted by the
+client and sent to app subdomains.
 """
 
 import subprocess
@@ -11,13 +11,10 @@ import subprocess
 import attr
 import requests
 
-from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
-from compute_space.config import DefaultConfig
+from compute_space.core.auth.auth import SESSION_COOKIE_NAME
 from compute_space.tests.utils import poll
 from compute_space.tests.utils import wait_app_running
-
-SESSION_COOKIE_NAME = "session_token"
 
 OWNER_PASSWORD = "localstackpass123"
 
@@ -45,31 +42,6 @@ class LocalStack:
         """
         for app_name in self.deployed_app_names:
             subprocess.run(["podman", "rm", "-f", f"openhost-{app_name}"], capture_output=True, timeout=60)
-
-
-def make_local_stack_config(
-    data_root_dir: str,
-    port: int,
-    zone_name: str,
-    port_range_start: int,
-    port_range_end: int,
-) -> Config:
-    """Config for a loopback-only, HTTP-only router suitable for local tests."""
-    config = DefaultConfig(
-        zone_domain=f"{zone_name}.localhost:{port}",
-        host="127.0.0.1",
-        port=port,
-        data_root_dir=data_root_dir,
-        apps_dir_override=str(OPENHOST_PROJECT_DIR / "apps"),
-        port_range_start=port_range_start,
-        port_range_end=port_range_end,
-        tls_enabled=False,
-        start_caddy=False,
-        claim_token_required=False,
-        default_apps=[],
-    )
-    config.make_all_dirs()
-    return config
 
 
 def complete_setup(stack: LocalStack, timeout: float = 60) -> requests.Session:

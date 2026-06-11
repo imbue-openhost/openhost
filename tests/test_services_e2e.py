@@ -19,11 +19,11 @@ Run:
 import pytest
 
 from compute_space import OPENHOST_PROJECT_DIR
+from compute_space.local_stack import make_local_stack_config
 from compute_space.tests.utils import managed_router
 from tests.local_stack import LocalStack
 from tests.local_stack import complete_setup
 from tests.local_stack import deploy_app
-from tests.local_stack import make_local_stack_config
 
 ROUTER_PORT = 28180
 
@@ -45,6 +45,7 @@ def stack(tmp_path_factory):
         zone_name="svczone",
         port_range_start=29100,
         port_range_end=29199,
+        default_apps=[],
     )
     local_stack = LocalStack(config=config)
     with managed_router(config):

@@ -16,21 +16,14 @@ on restart); use ``podman ps`` / ``podman rm -f openhost-<app>`` to stop them ma
 """
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
-from compute_space import OPENHOST_PROJECT_DIR
-from compute_space.config import DefaultConfig
-
-DEFAULT_APPS = [
-    "https://github.com/imbue-openhost/secrets",
-    "file_browser",
-    "https://github.com/imbue-openhost/openhost-catalog",
-]
+from compute_space.local_stack import make_local_stack_config
+from compute_space.local_stack import make_router_env
 
 
 def main() -> int:
@@ -54,41 +47,27 @@ def main() -> int:
         shutil.rmtree(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    zone_domain = f"{args.zone_name}.localhost:{args.port}"
-    config = DefaultConfig(
-        zone_domain=zone_domain,
-        host="127.0.0.1",
-        port=args.port,
+    config = make_local_stack_config(
         data_root_dir=str(data_dir),
-        apps_dir_override=str(OPENHOST_PROJECT_DIR / "apps"),
-        tls_enabled=False,
-        start_caddy=False,
-        claim_token_required=False,
-        default_apps=DEFAULT_APPS if args.default_apps else [],
+        port=args.port,
+        zone_name=args.zone_name,
+        default_apps=None if args.default_apps else [],
     )
-    config.make_all_dirs()
-    config_path = data_dir / "config.toml"
-    config.to_toml(str(config_path))
-
-    env = os.environ.copy()
-    # Strip stray OPENHOST_* vars so they can't override the generated config.
-    for key in list(env):
-        if key.startswith("OPENHOST_"):
-            del env[key]
-    env["OPENHOST_ROUTER_CONFIG"] = str(config_path)
+    config_path = str(data_dir / "config.toml")
+    config.to_toml(config_path)
 
     print(f"data dir:  {data_dir}")
-    print(f"zone:      {zone_domain}")
+    print(f"zone:      {config.zone_domain}")
     print()
-    print(f"  first run:  http://{zone_domain}/setup   (pick an owner password)")
-    print(f"  dashboard:  http://{zone_domain}/dashboard")
-    print(f"  apps:       http://<app-name>.{zone_domain}/")
-    print()
+    print(f"  first run:  http://{config.zone_domain}/setup   (pick an owner password)")
+    print(f"  dashboard:  http://{config.zone_domain}/dashboard")
+    print(f"  apps:       http://<app-name>.{config.zone_domain}/")
+    print(flush=True)
 
     proc = subprocess.run(
         [sys.executable, "-m", "compute_space"],
         cwd=str(COMPUTE_SPACE_PACKAGE_DIR),
-        env=env,
+        env=make_router_env(config_path),
     )
     return proc.returncode
 
