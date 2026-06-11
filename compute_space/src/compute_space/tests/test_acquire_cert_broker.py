@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from compute_space.core.tls.acquire_cert_broker import CertAcquisitionTimeoutError
 from compute_space.core.tls.acquire_cert_broker import acquire_tls_cert_via_broker
 from compute_space.core.tls.cert_api_client import CertApiClient
+from compute_space.core.tls.keycloak import StaticTokenProvider
 
 DOMAIN = "app.example.com"
 FAKE_CHAIN = "-----BEGIN CERTIFICATE-----\nFAKECHAINBYTES\n-----END CERTIFICATE-----\n"
@@ -66,12 +67,8 @@ def _order_payload() -> dict[str, object]:
 
 def _client_from_handler(handler: object) -> CertApiClient:
     transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
-    http_client = httpx.Client(
-        base_url="https://broker.test",
-        headers={"Authorization": "Bearer tok"},
-        transport=transport,
-    )
-    return CertApiClient(http_client=http_client)
+    http_client = httpx.Client(base_url="https://broker.test", transport=transport)
+    return CertApiClient(http_client=http_client, token_provider=StaticTokenProvider("tok"))
 
 
 @attr.s(auto_attribs=True)

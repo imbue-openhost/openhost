@@ -22,7 +22,10 @@ def test_default_provider_is_acme() -> None:
     # provider, so the default acme path is unaffected by it.
     # TODO: revert to "https://api.selfhost.imbue.com" once the broker is deployed.
     assert cfg.cert_api_base_url == "https://openhost-cert-api.openhost-qa.selfhost.imbue.com/"
-    assert cfg.cert_api_token is None
+    # Keycloak auth is injected per instance — no defaults.
+    assert cfg.cert_api_keycloak_issuer_url is None
+    assert cfg.cert_api_keycloak_client_id is None
+    assert cfg.cert_api_keycloak_client_secret is None
 
 
 def test_legacy_config_without_cert_fields_still_loads(tmp_path: Path) -> None:
@@ -51,12 +54,16 @@ def test_cert_api_provider_config_loads(tmp_path: Path) -> None:
         "coredns_enabled = true\n"
         'cert_provider = "cert_api"\n'
         'cert_api_base_url = "https://cert-api.example.com"\n'
-        'cert_api_token = "instance-token"\n'
+        'cert_api_keycloak_issuer_url = "https://keycloak.example.com/realms/openhost-customers"\n'
+        'cert_api_keycloak_client_id = "instance-alice"\n'
+        'cert_api_keycloak_client_secret = "s3cr3t"\n'
     )
     cfg = typed_settings.load(DefaultConfig, appname="openhost", config_files=[str(config_path)])
     assert cfg.cert_provider == CERT_PROVIDER_CERT_API
     assert cfg.cert_api_base_url == "https://cert-api.example.com"
-    assert cfg.cert_api_token == "instance-token"
+    assert cfg.cert_api_keycloak_issuer_url == "https://keycloak.example.com/realms/openhost-customers"
+    assert cfg.cert_api_keycloak_client_id == "instance-alice"
+    assert cfg.cert_api_keycloak_client_secret == "s3cr3t"
 
 
 def test_cert_provider_round_trips_through_toml() -> None:
@@ -64,9 +71,13 @@ def test_cert_provider_round_trips_through_toml() -> None:
         zone_domain="alice.host.example.com",
         cert_provider=CERT_PROVIDER_CERT_API,
         cert_api_base_url="https://cert-api.example.com",
-        cert_api_token="instance-token",
+        cert_api_keycloak_issuer_url="https://keycloak.example.com/realms/openhost-customers",
+        cert_api_keycloak_client_id="instance-alice",
+        cert_api_keycloak_client_secret="s3cr3t",
     )
     rendered = cfg.to_toml_str()
     assert 'cert_provider = "cert_api"' in rendered
     assert 'cert_api_base_url = "https://cert-api.example.com"' in rendered
-    assert 'cert_api_token = "instance-token"' in rendered
+    assert 'cert_api_keycloak_issuer_url = "https://keycloak.example.com/realms/openhost-customers"' in rendered
+    assert 'cert_api_keycloak_client_id = "instance-alice"' in rendered
+    assert 'cert_api_keycloak_client_secret = "s3cr3t"' in rendered

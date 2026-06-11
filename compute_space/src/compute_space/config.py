@@ -47,8 +47,15 @@ class Config:
     cert_provider: str
     # openhost-cert-api broker base URL, e.g. "https://cert-api.example.com" (cert_api provider only).
     cert_api_base_url: str | None
-    # Per-instance bearer token presented to the broker (cert_api provider only).
-    cert_api_token: str | None
+    # Keycloak client-credentials auth for the broker (cert_api provider only).  The instance
+    # fetches a bearer token from this issuer and presents it to cert-api, so no shared secret
+    # or ACME account key lives on the instance.  Provisioning injects these per instance.
+    #   issuer URL, e.g. "https://keycloak.<zone>/realms/openhost-customers"
+    cert_api_keycloak_issuer_url: str | None
+    #   per-instance client id, e.g. "instance-<subdomain>"
+    cert_api_keycloak_client_id: str | None
+    #   per-instance client secret (the only sensitive value — treat like the ACME account key)
+    cert_api_keycloak_client_secret: str | None
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
@@ -214,7 +221,10 @@ class DefaultConfig(Config):
     # at the QA broker instance so the cert_api path can be exercised end-to-end.
     # Only consulted when cert_provider == CERT_PROVIDER_CERT_API.
     cert_api_base_url: str | None = "https://openhost-cert-api.openhost-qa.selfhost.imbue.com/"
-    cert_api_token: str | None = None
+    # Keycloak client-credentials config — all injected by provisioning, no safe default.
+    cert_api_keycloak_issuer_url: str | None = None
+    cert_api_keycloak_client_id: str | None = None
+    cert_api_keycloak_client_secret: str | None = None
 
     start_caddy: bool = True
 

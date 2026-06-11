@@ -4,6 +4,10 @@ The broker holds the ACME account and issues certs for a CSR after the instance
 proves DNS control.  The instance never sees ACME account credentials — it only
 sends a CSR and publishes the DNS-01 TXT records the broker hands back.
 
+Requests are authenticated with a per-instance bearer token from a TokenProvider
+(Keycloak client-credentials in production); the header is set per-request so a
+token can refresh mid-flow during the long finalize-poll loop.
+
 See the broker contract: github.com/imbue-openhost/openhost-cert-api.
 """
 
@@ -13,6 +17,8 @@ from types import TracebackType
 
 import attr
 import httpx
+
+from compute_space.core.tls.keycloak import TokenProvider
 
 # finalize_order status values returned by the broker.
 FINALIZE_STATUS_VALID = "valid"
@@ -87,20 +93,20 @@ def _raise_for_unexpected(response: httpx.Response, expected: set[int]) -> None:
 class CertApiClient:
     """Thin synchronous client over the broker's REST API.
 
-    Construct via ``CertApiClient.create(base_url, token)`` in production; tests
-    inject an ``httpx.Client`` backed by a MockTransport.
+    Construct via ``CertApiClient.create(base_url, token_provider)`` in production;
+    tests inject an ``httpx.Client`` backed by a MockTransport plus a StaticTokenProvider.
     """
 
     http_client: httpx.Client
+    token_provider: TokenProvider
 
     @classmethod
-    def create(cls, base_url: str, token: str, timeout: float = 30.0) -> CertApiClient:
+    def create(cls, base_url: str, token_provider: TokenProvider, timeout: float = 30.0) -> CertApiClient:
         http_client = httpx.Client(
             base_url=base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
         )
-        return cls(http_client=http_client)
+        return cls(http_client=http_client, token_provider=token_provider)
 
     def __enter__(self) -> CertApiClient:
         return self
@@ -113,6 +119,10 @@ class CertApiClient:
     ) -> None:
         self.http_client.close()
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Bearer header built fresh per request so the token can refresh mid-flow."""
+        return {"Authorization": f"Bearer {self.token_provider.get_token()}"}
+
     def health(self) -> bool:
         """Return True if the broker reports healthy.  Does not require auth."""
         response = self.http_client.get("/health")
@@ -123,7 +133,7 @@ class CertApiClient:
 
     def create_order(self, csr_pem: str) -> CreateOrderResult:
         """Submit a CSR and receive the DNS-01 challenge record(s) to publish."""
-        response = self.http_client.post("/v1/orders", json={"csr": csr_pem})
+        response = self.http_client.post("/v1/orders", json={"csr": csr_pem}, headers=self._auth_headers())
         _raise_for_unexpected(response, {200})
         body = response.json()
         challenges = [
@@ -138,7 +148,7 @@ class CertApiClient:
 
     def finalize_order(self, order_id: str) -> FinalizeResult:
         """Poll the order.  200 -> issued (certificate present); 202 -> still pending."""
-        response = self.http_client.post(f"/v1/orders/{order_id}/finalize")
+        response = self.http_client.post(f"/v1/orders/{order_id}/finalize", headers=self._auth_headers())
         _raise_for_unexpected(response, {200, 202})
         if response.status_code == 202:
             return FinalizeResult(status=FINALIZE_STATUS_PENDING, certificate=None)
