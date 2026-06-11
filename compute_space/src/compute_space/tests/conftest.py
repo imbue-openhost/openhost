@@ -17,8 +17,8 @@ from compute_space.config import Config
 from compute_space.config import DefaultConfig
 from compute_space.config import set_active_config
 from compute_space.db.schema import schema_path
-from compute_space.local_stack import make_router_env
 from compute_space.tests.utils import kill_tree
+from compute_space.tests.utils import make_router_env
 from compute_space.tests.utils import managed_router
 from compute_space.tests.utils import router_cmd
 
@@ -73,19 +73,12 @@ def _make_test_config(tmp_path: Path, **overrides: Any) -> Config:
     return cfg
 
 
-def _make_test_env(config_path: str) -> dict[str, str]:
-    """Build an env dict for launching a router subprocess."""
-    env = make_router_env(config_path)
-    env["SECRET_KEY"] = "test-secret-key"
-    return env
-
-
 def _make_config_and_env(tmp_path: Path, **overrides: Any) -> tuple[Config, dict[str, str]]:
     """Create a test config + env dict for launching a router subprocess."""
     config = _make_test_config(tmp_path, **overrides)
     config_path = str(tmp_path / "config.toml")
     config.to_toml(config_path)
-    return config, _make_test_env(config_path)
+    return config, make_router_env(config_path)
 
 
 def _start_router_process(base_url: str, env: dict[str, str], startup_timeout: int = 30) -> subprocess.Popen[bytes]:

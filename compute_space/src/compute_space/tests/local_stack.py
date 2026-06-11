@@ -1,9 +1,12 @@
-"""Test-side helpers for a full local OpenHost stack (router + podman apps).
+"""Helpers for running a full local stack: an HTTP-only router on a ``*.localhost`` zone, plus
+requests-based setup/deploy flows.
 
-Config building lives in compute_space.local_stack; this module adds the requests-based
-setup/deploy flows used by tests.  All owner requests must go through the zone domain
-(not 127.0.0.1) so the session cookie — scoped to the zone domain — is accepted by the
-client and sent to app subdomains.
+``*.localhost`` resolves to loopback on Linux and macOS without any DNS setup, so this works
+in browsers, curl, and tests with no real domain.  Used by tests/test_services_e2e.py and
+scripts/run_local_stack.py.
+
+All owner requests must go through the zone domain (not 127.0.0.1) so the session cookie —
+scoped to the zone domain — is accepted by the client and sent to app subdomains.
 """
 
 import subprocess
@@ -11,12 +14,45 @@ import subprocess
 import attr
 import requests
 
+from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
+from compute_space.config import DefaultConfig
 from compute_space.core.auth.auth import SESSION_COOKIE_NAME
 from compute_space.tests.utils import poll
 from compute_space.tests.utils import wait_app_running
 
 OWNER_PASSWORD = "localstackpass123"
+
+
+def make_local_stack_config(
+    data_root_dir: str,
+    port: int,
+    zone_name: str,
+    port_range_start: int = 9000,
+    port_range_end: int = 9999,
+    default_apps: list[str] | None = None,
+) -> Config:
+    """Config for a loopback-only, HTTP-only router suitable for local dev and tests.
+
+    ``default_apps=None`` keeps DefaultConfig's standard set (deployed at /setup completion);
+    pass ``[]`` to deploy nothing.
+    """
+    config: Config = DefaultConfig(
+        zone_domain=f"{zone_name}.localhost:{port}",
+        host="127.0.0.1",
+        port=port,
+        data_root_dir=data_root_dir,
+        apps_dir_override=str(OPENHOST_PROJECT_DIR / "apps"),
+        port_range_start=port_range_start,
+        port_range_end=port_range_end,
+        tls_enabled=False,
+        start_caddy=False,
+        claim_token_required=False,
+    )
+    if default_apps is not None:
+        config = config.evolve(default_apps=default_apps)
+    config.make_all_dirs()
+    return config
 
 
 @attr.s(auto_attribs=True, frozen=True)

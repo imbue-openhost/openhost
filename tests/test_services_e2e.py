@@ -19,11 +19,11 @@ Run:
 import pytest
 
 from compute_space import OPENHOST_PROJECT_DIR
-from compute_space.local_stack import make_local_stack_config
+from compute_space.tests.local_stack import LocalStack
+from compute_space.tests.local_stack import complete_setup
+from compute_space.tests.local_stack import deploy_app
+from compute_space.tests.local_stack import make_local_stack_config
 from compute_space.tests.utils import managed_router
-from tests.local_stack import LocalStack
-from tests.local_stack import complete_setup
-from tests.local_stack import deploy_app
 
 ROUTER_PORT = 28180
 

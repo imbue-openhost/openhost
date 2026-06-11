@@ -21,7 +21,11 @@ import requests
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
 from compute_space.config import Config
-from compute_space.local_stack import make_router_env
+
+
+def make_router_env(config_path: str) -> dict[str, str]:
+    """Subprocess env for launching the router against a generated config."""
+    return {**os.environ, "OPENHOST_ROUTER_CONFIG": config_path}
 
 
 def kill_tree(proc: subprocess.Popen[Any], sig: int = signal.SIGTERM) -> None:
@@ -160,7 +164,6 @@ def managed_router(config: Config, startup_timeout: int = 30) -> Generator[subpr
     config_path = os.path.join(config.temporary_data_dir, "config.toml")
     config.to_toml(config_path)
     env = make_router_env(config_path)
-    env["SECRET_KEY"] = "test-secret-key"
 
     log_path = os.path.join(config.temporary_data_dir, "router.log")
     log_file: IO[str] = open(log_path, "w")

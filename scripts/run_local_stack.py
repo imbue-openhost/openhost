@@ -22,8 +22,8 @@ import sys
 from pathlib import Path
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
-from compute_space.local_stack import make_local_stack_config
-from compute_space.local_stack import make_router_env
+from compute_space.tests.local_stack import make_local_stack_config
+from compute_space.tests.utils import make_router_env
 
 
 def main() -> int:
