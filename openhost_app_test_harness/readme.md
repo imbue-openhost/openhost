@@ -54,6 +54,10 @@ def test_index(stack):
     assert r.status_code == 200
 ```
 
+The app under test deploys from a snapshot of your git working tree (tracked +
+untracked files, minus gitignored ones), so uncommitted changes are what runs — the
+router would otherwise clone the repo at HEAD and silently test stale code.
+
 - `stack.url` — your app through the router (subdomain routing, real auth)
 - `stack.owner_session` — a `requests.Session` authenticated as the zone owner; its cookie
   is scoped to the zone domain so it works on `stack.url` and every other app URL.
@@ -79,6 +83,22 @@ def test_my_app_reads_secrets(stack):
 `OpenhostStack(grant_manifest_permissions=True)` is the default, so grants declared in your
 app's `[[services.v2.consumes]]` are approved at install; pass `False` to test the
 permission-denied flow.
+
+If your app needs a provider at **startup** (e.g. it reads config from the secrets service
+before binding its port), deploy and seed that provider via the `pre_deploy` hook, which runs
+after the router is up but before the app under test deploys — like an owner preparing the
+server before installing the app:
+
+```python
+def _seed(s: OpenhostStack) -> None:
+    s.deploy_app("https://github.com/imbue-openhost/secrets")
+    s.owner_session.post(f"{s.url_for('secrets')}/api/secrets", json={"key": "DB_URL", "value": "..."})
+
+@pytest.fixture(scope="session")
+def stack():
+    with OpenhostStack(pre_deploy=_seed) as s:
+        yield s
+```
 
 ### Your app provides a service
 

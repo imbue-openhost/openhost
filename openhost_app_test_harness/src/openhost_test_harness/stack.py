@@ -28,8 +28,10 @@ import logging
 import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -86,6 +88,33 @@ def _data_base_dir() -> Path:
 
 def _normalize_service_url(url: str) -> str:
     return url.removeprefix("https://").removeprefix("http://").rstrip("/")
+
+
+def _snapshot_working_tree(app_dir: Path, dest: Path) -> None:
+    """Copy ``app_dir``'s git working tree to ``dest``: tracked + untracked files,
+    minus gitignored ones and ``.git`` itself.
+
+    The router clones git repos at HEAD, which would silently deploy stale code while
+    you iterate; deploying a snapshot makes the app under test reflect uncommitted
+    changes, while gitignored build artefacts (.venv, node_modules, ...) stay out of
+    the build context.
+    """
+    listing = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=app_dir,
+        capture_output=True,
+        check=True,
+    )
+    for raw in listing.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode()
+        src = app_dir / rel
+        if not src.is_file():  # staged deletions still appear in ls-files
+            continue
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
 
 
 def _warn_if_linux_gateway_missing() -> None:
@@ -155,6 +184,11 @@ class OpenhostStack:
     """Deploy under this name; defaults to the openhost.toml [app].name."""
     grant_manifest_permissions: bool = True
     """Auto-grant the grants declared in the app's [[services.v2.consumes]] at install."""
+    pre_deploy: Callable[["OpenhostStack"], None] | None = None
+    """Called once the router is up and the owner session exists, before the app under test
+    deploys.  Use it to deploy provider apps and seed config the app needs at startup (e.g.
+    a secrets provider plus its values) — mirroring an owner preparing a server before
+    installing the app.  ``stack.url``/``stack.app_id`` are not available yet inside the hook."""
     zone_name: str = "harness"
     deploy_timeout: float = 300.0
 
@@ -179,8 +213,14 @@ class OpenhostStack:
         try:
             self._exit_stack.enter_context(managed_router(config))
             self._owner = complete_setup(self._local_stack)
+            if self.pre_deploy is not None:
+                self.pre_deploy(self)
+            deploy_src = self.app_dir
+            if (self.app_dir / ".git").exists():
+                deploy_src = self._data_dir / "app-under-test"
+                _snapshot_working_tree(self.app_dir, deploy_src)
             self._app_id = self.deploy_app(
-                f"file://{self.app_dir}",
+                f"file://{deploy_src}",
                 app_name=self.app_name,
                 grant_manifest_permissions=self.grant_manifest_permissions,
             )
