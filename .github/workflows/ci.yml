@@ -63,6 +63,9 @@ jobs:
       - name: Run local full-stack service e2e tests
         run: |
           pixi run -e dev pytest --run-containers -v tests/test_services_e2e.py
+      - name: Run app test harness e2e tests
+        run: |
+          pixi run -e dev pytest --run-containers -v openhost_app_test_harness
       - name: Dump router and app logs on failure
         if: failure()
         run: |
