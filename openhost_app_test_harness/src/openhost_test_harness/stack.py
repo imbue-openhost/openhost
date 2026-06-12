@@ -30,6 +30,7 @@ import socket
 import sqlite3
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -155,6 +156,11 @@ class OpenhostStack:
     """Deploy under this name; defaults to the openhost.toml [app].name."""
     grant_manifest_permissions: bool = True
     """Auto-grant the grants declared in the app's [[services.v2.consumes]] at install."""
+    pre_deploy: Callable[["OpenhostStack"], None] | None = None
+    """Called once the router is up and the owner session exists, before the app under test
+    deploys.  Use it to deploy provider apps and seed config the app needs at startup (e.g.
+    a secrets provider plus its values) — mirroring an owner preparing a server before
+    installing the app.  ``stack.url``/``stack.app_id`` are not available yet inside the hook."""
     zone_name: str = "harness"
     deploy_timeout: float = 300.0
 
@@ -179,6 +185,8 @@ class OpenhostStack:
         try:
             self._exit_stack.enter_context(managed_router(config))
             self._owner = complete_setup(self._local_stack)
+            if self.pre_deploy is not None:
+                self.pre_deploy(self)
             self._app_id = self.deploy_app(
                 f"file://{self.app_dir}",
                 app_name=self.app_name,

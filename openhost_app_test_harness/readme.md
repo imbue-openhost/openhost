@@ -80,6 +80,22 @@ def test_my_app_reads_secrets(stack):
 app's `[[services.v2.consumes]]` are approved at install; pass `False` to test the
 permission-denied flow.
 
+If your app needs a provider at **startup** (e.g. it reads config from the secrets service
+before binding its port), deploy and seed that provider via the `pre_deploy` hook, which runs
+after the router is up but before the app under test deploys — like an owner preparing the
+server before installing the app:
+
+```python
+def _seed(s: OpenhostStack) -> None:
+    s.deploy_app("https://github.com/imbue-openhost/secrets")
+    s.owner_session.post(f"{s.url_for('secrets')}/api/secrets", json={"key": "DB_URL", "value": "..."})
+
+@pytest.fixture(scope="session")
+def stack():
+    with OpenhostStack(pre_deploy=_seed) as s:
+        yield s
+```
+
 ### Your app provides a service
 
 Use a synthetic consumer to call your service through the real proxy:
