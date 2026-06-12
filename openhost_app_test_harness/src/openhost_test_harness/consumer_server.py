@@ -71,6 +71,11 @@ class Handler(BaseHTTPRequestHandler):
                 status, raw = response.status, response.read()
         except urllib.error.HTTPError as e:
             status, raw = e.code, e.read()
+        except (urllib.error.URLError, OSError) as e:
+            # Router unreachable — on Linux usually the missing openhost0 /
+            # host_containers_internal_ip setup (see harness docs).
+            self._json(502, {"error": "router unreachable from app container", "detail": str(e)})
+            return
         try:
             service_body = json.loads(raw)
         except ValueError:
