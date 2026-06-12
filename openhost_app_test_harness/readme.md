@@ -1,12 +1,10 @@
 # openhost_test_harness
 
-Test scaffolding for OpenHost apps, **running the real OpenHost router locally** — no mocks.
+Test scaffolding for OpenHost apps, running the **real OpenHost router** locally.
 The harness starts an HTTP-only router on a `*.localhost` zone (resolves to loopback on
 Linux and macOS, no DNS setup), deploys your app through the real install path with rootless
 podman, and gives your tests authenticated access. Routing, auth, identity env vars, and the
 v2 service interface behave exactly as on a real server.
-
-This supersedes the mock-router harness at `imbue-openhost/openhost-app-test-harness`.
 
 ## Install (in an app repo)
 
@@ -18,12 +16,23 @@ dev = [
 ```
 
 Requirements:
-- python 3.12 (the openhost package pins `==3.12.*`)
+- python >= 3.12
 - rootless podman (on macOS, a running `podman machine`)
-- Linux only: the `openhost0` dummy interface + `host_containers_internal_ip`
-  containers.conf override, so app containers can reach the router for service calls —
-  see `ansible/tasks/containers.yml`, or the minimal version in `.github/workflows/ci.yml`.
-  macOS needs nothing (gvproxy maps `host.containers.internal` to the host loopback).
+- Linux only: app containers reach the router through a dummy interface (pasta shares the
+  host's IP with containers, so `host.containers.internal` can't otherwise reach
+  loopback-bound host services). One-time setup:
+
+  ```bash
+  sudo ip link add openhost0 type dummy
+  sudo ip addr add 10.200.0.1/32 dev openhost0
+  sudo ip link set openhost0 up
+  mkdir -p ~/.config/containers
+  printf '[containers]\nhost_containers_internal_ip = "10.200.0.1"\n' >> ~/.config/containers/containers.conf
+  ```
+
+  The interface doesn't survive reboots; see `ansible/tasks/containers.yml` in the openhost
+  repo for the persistent systemd-networkd version. macOS needs nothing (gvproxy maps
+  `host.containers.internal` to the host loopback).
 
 ## Use
 
@@ -41,24 +50,24 @@ def stack():
 ```python
 # tests/test_thing.py
 def test_index(stack):
-    r = stack.owner.get(f"{stack.url}/")
+    r = stack.owner_session.get(f"{stack.url}/")
     assert r.status_code == 200
 ```
 
 - `stack.url` — your app through the router (subdomain routing, real auth)
-- `stack.owner` — a `requests.Session` authenticated as the zone owner; its cookie is scoped
-  to the zone domain so it works on `stack.url` and every other app URL
+- `stack.owner_session` — a `requests.Session` authenticated as the zone owner; its cookie
+  is scoped to the zone domain so it works on `stack.url` and every other app URL.
+  Unauthenticated requests to `stack.url` redirect to `/login`, like production.
 - `stack.app_url` — direct to your app's container, bypassing the router (for tests that
   forge `X-OpenHost-*` headers or check unauthenticated behavior)
+- `stack.url_for(app_name)` — any other deployed app, through the router
 - `stack.router_url` — the router itself (dashboard, owner APIs)
-
-Because auth is real, unauthenticated requests to `stack.url` redirect to `/login` — use
-`stack.owner` (this is the main migration step from the mock harness, which injected the
-owner header into every request).
 
 ## Testing the service interface
 
-Your app **consumes** a service: deploy a real provider next to it and grant permissions.
+### Your app consumes a service
+
+Deploy a real provider next to it and grant permissions:
 
 ```python
 def test_my_app_reads_secrets(stack):
@@ -67,11 +76,13 @@ def test_my_app_reads_secrets(stack):
     ...  # exercise your app; its service calls go through the real router proxy
 ```
 
-(`OpenhostStack(grant_manifest_permissions=True)` is the default, so grants declared in your
+`OpenhostStack(grant_manifest_permissions=True)` is the default, so grants declared in your
 app's `[[services.v2.consumes]]` are approved at install; pass `False` to test the
-permission-denied flow.)
+permission-denied flow.
 
-Your app **provides** a service: deploy a synthetic consumer and call through the real proxy.
+### Your app provides a service
+
+Use a synthetic consumer to call your service through the real proxy:
 
 ```python
 def test_my_service(stack):
@@ -85,14 +96,16 @@ def test_my_service(stack):
 The consumer is a generated stdlib-only app; the router injects `X-OpenHost-Permissions` and
 `X-OpenHost-Consumer-*` headers into proxied calls exactly as in production.
 
-## Differences from the mock harness
+Or test against a real consumer app — deploy it like any other app, grant it access, and
+drive it through the router:
 
-- Real router: real owner auth, real subdomain routing, real `OPENHOST_*` env provisioning,
-  real service proxy with permissions. `extra_env` / `health_path` / `zone_domain` overrides
-  are gone — the router provisions apps from `openhost.toml` like production does.
-- `stack.url` requires auth (`stack.owner`); `stack.app_url` is still direct and header-forgeable.
-- Startup builds your app's image via the router (~seconds when cached) and runs a router
-  subprocess (~3-5s).
+```python
+def test_my_service_with_real_consumer(stack):
+    consumer_app_id = stack.deploy_app("https://github.com/me/my-consumer-app")
+    stack.grant(consumer_app_id, "github.com/me/my-service", {"key": "FOO"})
+    r = stack.owner_session.get(f"{stack.url_for('my-consumer-app')}/page-that-uses-my-service")
+    assert r.status_code == 200
+```
 
 ## Self-tests
 

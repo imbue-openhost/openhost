@@ -12,11 +12,11 @@ Typical use in an app repo's ``conftest.py``::
         with OpenhostStack() as s:
             yield s
 
-Unlike the original mock-router harness, this starts the real OpenHost router (HTTP-only,
-on a ``*.localhost`` zone) and deploys the app through the real install path, so routing,
-auth, identity env vars, and the v2 service interface all behave exactly as in production.
+This starts the real OpenHost router (HTTP-only, on a ``*.localhost`` zone) and deploys the
+app through the real install path, so routing, auth, identity env vars, and the v2 service
+interface all behave exactly as in production.
 
-Requirements: rootless podman (a running ``podman machine`` on macOS), python 3.12.
+Requirements: rootless podman (a running ``podman machine`` on macOS), python >= 3.12.
 On Linux, container→router traffic additionally needs the ``openhost0`` dummy interface +
 ``host_containers_internal_ip`` containers.conf setting that openhost servers get from
 ansible/tasks/containers.yml (see the openhost repo's CI workflow for a minimal version);
@@ -125,8 +125,8 @@ class ServiceConsumer:
         ``path`` is appended to the provider's endpoint (e.g. ``"get"``); it must be
         non-empty or the router's service-call route doesn't match.
         """
-        r = self.stack.owner.post(
-            f"{self.stack.local_stack.app_url(self.name)}/call-service",
+        r = self.stack.owner_session.post(
+            f"{self.stack.url_for(self.name)}/call-service",
             json={"shortname": self.shortname, "path": path, "payload": payload, "method": method},
             timeout=30,
         )
@@ -143,8 +143,9 @@ class OpenhostStack:
     ``openhost.toml``, found by walking up from the current working directory.
 
     - ``stack.url`` — the app through the router (subdomain routing, real auth)
-    - ``stack.owner`` — a requests.Session authenticated as the zone owner; its cookie is
-      scoped to the zone domain, so it works on ``stack.url`` and all other app URLs
+    - ``stack.owner_session`` — a requests.Session authenticated as the zone owner; its
+      cookie is scoped to the zone domain, so it works on ``stack.url`` and all other
+      app URLs
     - ``stack.app_url`` — direct to the app container, bypassing the router (for tests
       that forge ``X-OpenHost-*`` headers or check unauthenticated behavior)
     """
@@ -209,7 +210,7 @@ class OpenhostStack:
         return self._local_stack
 
     @property
-    def owner(self) -> requests.Session:
+    def owner_session(self) -> requests.Session:
         """Session authenticated as the zone owner (cookie valid for all app subdomains)."""
         assert self._owner is not None, "OpenhostStack must be entered first"
         return self._owner
@@ -225,7 +226,11 @@ class OpenhostStack:
     @property
     def url(self) -> str:
         """The app under test, through the router (real subdomain routing and auth)."""
-        return self._local_stack.app_url(self._deployed_app_name)
+        return self.url_for(self._deployed_app_name)
+
+    def url_for(self, app_name: str) -> str:
+        """Any deployed app's URL through the router."""
+        return self._local_stack.app_url(app_name)
 
     @property
     def app_url(self) -> str:
@@ -259,7 +264,7 @@ class OpenhostStack:
         ``repo_url`` can be a git URL or ``file:///path`` (non-git dirs are copied).
         """
         return deploy_app(
-            self.owner,
+            self.owner_session,
             self._local_stack,
             repo_url,
             app_name=app_name,
@@ -269,7 +274,7 @@ class OpenhostStack:
 
     def grant(self, app_id: str, service: str, grant: Grant) -> None:
         """Owner-grant a global-scoped v2 permission to ``app_id`` for ``service``."""
-        r = self.owner.post(
+        r = self.owner_session.post(
             f"{self.router_url}/api/permissions/v2/grant_global_scoped",
             json={"app_id": app_id, "service_url": _normalize_service_url(service), "grant": grant},
             timeout=10,
@@ -309,6 +314,6 @@ class OpenhostStack:
 
     def app_logs(self, app_id: str | None = None) -> str:
         """Build + container logs for an app (default: the app under test)."""
-        r = self.owner.get(f"{self.router_url}/app_logs/{app_id or self._app_id}", timeout=10)
+        r = self.owner_session.get(f"{self.router_url}/app_logs/{app_id or self._app_id}", timeout=10)
         assert r.status_code == 200, f"app_logs failed: {r.status_code}"
         return r.text

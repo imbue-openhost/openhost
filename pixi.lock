@@ -1803,7 +1803,7 @@ packages:
   - websockets
   - pytest>=8.0 ; extra == 'test-harness'
   - requests>=2.31 ; extra == 'test-harness'
-  requires_python: ==3.12.*
+  requires_python: '>=3.12'
 - pypi: https://files.pythonhosted.org/packages/00/e9/1e1fd7fae559bfd07704991e9a59dd1349b72423c904256c073ce88a9940/pyflakes-3.1.0-py2.py3-none-any.whl
   name: pyflakes
   version: 3.1.0

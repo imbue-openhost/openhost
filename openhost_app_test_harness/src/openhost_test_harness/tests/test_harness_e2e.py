@@ -33,7 +33,7 @@ def consumer(stack: OpenhostStack) -> ServiceConsumer:
 @requires_containers
 class TestHarness:
     def test_app_through_router(self, stack: OpenhostStack) -> None:
-        r = stack.owner.get(f"{stack.url}/", timeout=10)
+        r = stack.owner_session.get(f"{stack.url}/", timeout=10)
         assert r.status_code == 200
         assert r.json() == {"app": "echo-provider"}
 
@@ -71,8 +71,8 @@ class TestHarness:
         assert result.body["permissions"] == [{"grant": {"key": "FOO"}, "scope": "global"}]
 
     def test_undeclared_shortname(self, stack: OpenhostStack, consumer: ServiceConsumer) -> None:
-        r = stack.owner.post(
-            f"{stack.local_stack.app_url(consumer.name)}/call-service",
+        r = stack.owner_session.post(
+            f"{stack.url_for(consumer.name)}/call-service",
             json={"shortname": "nope", "path": "anything", "payload": None, "method": "POST"},
             timeout=30,
         )
