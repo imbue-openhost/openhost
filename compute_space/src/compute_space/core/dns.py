@@ -17,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 
+import attr
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
 
@@ -121,6 +122,33 @@ def set_txt(
     with open(zone_file_path, "w") as f:
         f.write(content)
     logger.info(f"Set {len(values)} TXT record(s) {name}")
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class TxtRecord:
+    """A TXT record to publish, addressed by its fully-qualified name."""
+
+    record_name: str
+    record_value: str
+
+
+def set_txt_records(zone_file_path: Path, records: list[TxtRecord]) -> None:
+    """Append TXT record(s) addressed by fully-qualified name and bump the SOA serial.
+
+    Unlike set_txt (which takes a name relative to $ORIGIN), this writes each
+    record_name as an absolute FQDN — appending a trailing dot if missing — so
+    CoreDNS does not re-append $ORIGIN.  Used for openhost-cert-api broker
+    challenges, whose record_name values are full FQDNs to honor verbatim.
+    """
+    with open(zone_file_path) as f:
+        content = f.read()
+    content = _bump_serial(content)
+    for record in records:
+        name = record.record_name if record.record_name.endswith(".") else f"{record.record_name}."
+        content += f'{name}   IN TXT  "{record.record_value}"\n'
+    with open(zone_file_path, "w") as f:
+        f.write(content)
+    logger.info(f"Set {len(records)} absolute TXT record(s)")
 
 
 def clear_txt(zone_file_path: Path) -> None:

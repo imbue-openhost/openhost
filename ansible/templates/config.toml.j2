@@ -14,3 +14,14 @@ start_caddy = true
 claim_token_required = true
 data_root_dir = "/home/host/.openhost/local_compute_space"
 apps_dir_override = "/home/host/openhost/apps"
+{% if cert_provider is defined and cert_provider == 'cert_api' %}
+# Opt-in: fetch TLS certs from the openhost-cert-api broker instead of the
+# bring-your-own ACME account key above (which is then ignored).  The broker
+# holds the ACME account, so this instance never sees ACME credentials.
+# cert_api_base_url defaults to the canonical broker; only set it to override.
+cert_provider = "cert_api"
+{% if cert_api_base_url is defined %}
+cert_api_base_url = "{{ cert_api_base_url }}"
+{% endif %}
+cert_api_token = "{{ cert_api_token }}"
+{% endif %}

@@ -215,12 +215,15 @@ def _acquire_cert_dns01(
     raise RuntimeError(f"Failed to get cert for {domains} after {max_attempts} attempts")
 
 
-def _extract_cert_and_key(order: messages.OrderResource, tls_key: ec.EllipticCurvePrivateKey) -> tuple[bytes, bytes]:
-    """Extract PEM cert and key from a finalized ACME order."""
-    cert_pem = order.fullchain_pem.encode()
-    key_pem = tls_key.private_bytes(
+def tls_private_key_to_pem(tls_key: ec.EllipticCurvePrivateKey) -> bytes:
+    """Serialize a TLS private key to unencrypted PEM bytes."""
+    return tls_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.TraditionalOpenSSL,
         serialization.NoEncryption(),
     )
-    return cert_pem, key_pem
+
+
+def _extract_cert_and_key(order: messages.OrderResource, tls_key: ec.EllipticCurvePrivateKey) -> tuple[bytes, bytes]:
+    """Extract PEM cert and key from a finalized ACME order."""
+    return order.fullchain_pem.encode(), tls_private_key_to_pem(tls_key)
