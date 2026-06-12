@@ -16,6 +16,7 @@ from compute_space.core.tls.cert_api_client import CertApiBadRequest
 from compute_space.core.tls.cert_api_client import CertApiClient
 from compute_space.core.tls.cert_api_client import CertApiError
 from compute_space.core.tls.cert_api_client import CertApiNotFound
+from compute_space.core.tls.cert_api_client import CertApiOrderFailed
 from compute_space.core.tls.cert_api_client import CertApiUnauthorized
 from compute_space.core.tls.keycloak import StaticTokenProvider
 
@@ -160,6 +161,24 @@ def test_finalize_unknown_order_raises_not_found() -> None:
     with _make_client(handler) as client:
         with pytest.raises(CertApiNotFound):
             client.finalize_order("nope")
+
+
+def test_finalize_failed_order_raises_with_acme_detail() -> None:
+    # The broker passes the ACME problem document's `detail` through on a 409.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "error": "order_failed",
+                "detail": "DNS problem: NXDOMAIN looking up TXT for _acme-challenge.app.example.com",
+            },
+        )
+
+    with _make_client(handler) as client:
+        with pytest.raises(CertApiOrderFailed) as exc_info:
+            client.finalize_order("order-123")
+    assert "order_failed" in str(exc_info.value)
+    assert "NXDOMAIN" in str(exc_info.value)
 
 
 def test_unexpected_status_raises_generic_error() -> None:

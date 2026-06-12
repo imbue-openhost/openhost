@@ -41,6 +41,15 @@ class CertApiNotFound(CertApiError):
     """The referenced order does not exist (HTTP 404)."""
 
 
+class CertApiOrderFailed(CertApiError):
+    """The order failed validation/issuance (HTTP 409).
+
+    Terminal, not retryable: the broker drove the ACME order to a failed state
+    (e.g. DNS-01 validation or CAA failed).  The response body carries the ACME
+    error detail, which is surfaced in the exception message for debugging.
+    """
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class CertChallenge:
     """A single DNS-01 challenge the instance must publish, verbatim, via CoreDNS."""
@@ -71,6 +80,7 @@ _STATUS_TO_ERROR: dict[int, type[CertApiError]] = {
     400: CertApiBadRequest,
     401: CertApiUnauthorized,
     404: CertApiNotFound,
+    409: CertApiOrderFailed,
 }
 
 
@@ -84,7 +94,10 @@ def _raise_for_unexpected(response: httpx.Response, expected: set[int]) -> None:
     except ValueError:
         body = None
     if isinstance(body, dict):
-        message = f"{body.get('error', 'error')}: {body.get('message', response.text)}"
+        # Accept either the broker's own {error, message} shape or a passed-through
+        # ACME problem document ({type, detail, ...}); fall back to the raw body.
+        detail = body.get("message") or body.get("detail") or response.text
+        message = f"{body.get('error', 'error')}: {detail}"
     error_cls = _STATUS_TO_ERROR.get(response.status_code, CertApiError)
     raise error_cls(message)
 
@@ -147,7 +160,11 @@ class CertApiClient:
         return CreateOrderResult(order_id=body["order_id"], challenges=challenges)
 
     def finalize_order(self, order_id: str) -> FinalizeResult:
-        """Poll the order.  200 -> issued (certificate present); 202 -> still pending."""
+        """Poll the order.
+
+        200 -> issued (certificate present); 202 -> still pending; 409 -> the order
+        failed terminally (raises CertApiOrderFailed with the ACME error detail).
+        """
         response = self.http_client.post(f"/v1/orders/{order_id}/finalize", headers=self._auth_headers())
         _raise_for_unexpected(response, {200, 202})
         if response.status_code == 202:

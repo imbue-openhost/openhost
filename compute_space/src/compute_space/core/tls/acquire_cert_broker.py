@@ -9,12 +9,14 @@ Flow:
   1. generate keypair + CSR locally
   2. POST the CSR -> broker returns DNS-01 challenge record(s)
   3. publish those TXT record(s) verbatim via the existing CoreDNS write path
-  4. poll finalize (202 = keep waiting) until issued, then install cert + local key
+  4. wait for CoreDNS to reload + the records to be externally visible
+  5. poll finalize (202 = keep waiting) until issued, then install cert + local key
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -30,7 +32,12 @@ from compute_space.core.tls.cert_api_client import CertApiClient
 from compute_space.core.tls.cert_api_client import CertApiError
 from compute_space.core.tls.util import _create_csr
 from compute_space.core.tls.util import _generate_tls_key
+from compute_space.core.tls.util import _wait_for_txt_propagation
 from compute_space.core.tls.util import tls_private_key_to_pem
+
+# CoreDNS reloads the zone file on a ~2s interval; give it a beat before we expect
+# the new records to be servable.  Mirrors the BYO-ACME path in core/tls/util.py.
+_COREDNS_RELOAD_SECONDS = 3.0
 
 
 class CertAcquisitionTimeoutError(RuntimeError):
@@ -57,6 +64,18 @@ class RealClock:
 REAL_CLOCK = RealClock()
 
 
+def _wait_for_dns_propagation(zone_domain: str, expected_values: list[str]) -> None:
+    """Let CoreDNS reload, then wait until an external resolver sees the records.
+
+    Same safeguard the BYO-ACME path applies before validation: the broker asks the
+    CA to validate during finalize, so the records must be live first or the first
+    attempt fails.  ``_wait_for_txt_propagation`` logs and proceeds on timeout, so a
+    delegation that never propagates still falls through to the broker's own retries.
+    """
+    time.sleep(_COREDNS_RELOAD_SECONDS)
+    _wait_for_txt_propagation(zone_domain, expected_values)
+
+
 def acquire_tls_cert_via_broker(
     domain: str,
     cert_path: Path,
@@ -69,6 +88,7 @@ def acquire_tls_cert_via_broker(
     poll_max_interval_seconds: float = 30.0,
     poll_timeout_seconds: float = 600.0,
     clock: Clock = REAL_CLOCK,
+    wait_for_propagation: Callable[[str, list[str]], None] = _wait_for_dns_propagation,
 ) -> None:
     """Acquire and install a wildcard TLS cert for ``domain`` via the broker."""
     domains = [domain, f"*.{domain}"]
@@ -84,6 +104,9 @@ def acquire_tls_cert_via_broker(
     records = [TxtRecord(record_name=c.record_name, record_value=c.record_value) for c in order.challenges]
     dns_module.set_txt_records(coredns_zonefile_path, records)
     try:
+        # Don't poll finalize until the records are actually live: the broker drives
+        # CA validation during finalize, so a not-yet-visible record fails the order.
+        wait_for_propagation(domain, [c.record_value for c in order.challenges])
         certificate = _poll_until_issued(
             client,
             order.order_id,
