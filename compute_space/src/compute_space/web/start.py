@@ -12,7 +12,6 @@ import hypercorn.asyncio
 import hypercorn.config
 
 from compute_space.config import CERT_PROVIDER_ACME
-from compute_space.config import CERT_PROVIDER_CERT_API
 from compute_space.config import Config
 from compute_space.config import load_config
 from compute_space.config import set_active_config
@@ -64,19 +63,16 @@ def _owner_exists(config: Config) -> bool:
         db.close()
 
 
-def _require_cert_api_setting(value: str | None, name: str) -> str:
-    """Return a required cert_api config value, failing loudly if unset."""
-    if not value:
-        raise RuntimeError(f"{name} must be set in config to use the cert_api provider")
-    return value
-
-
 def _acquire_missing_tls_cert(config: Config) -> None:
     """Acquire a missing TLS cert using the configured provider.
 
     Caller has already verified the cert is missing, CoreDNS is enabled, and
     acquire_tls_cert_if_missing is set.  The default "acme" provider is the
     unchanged BYO-ACME path; "cert_api" fetches from the openhost-cert-api broker.
+
+    The cert_provider value and its required settings are validated when the
+    Config is constructed (Config.__attrs_post_init__), so here we only narrow
+    the optional fields for the type checker.
     """
     if config.cert_provider == CERT_PROVIDER_ACME:
         if not config.acme_account_key_path:
@@ -92,19 +88,22 @@ def _acquire_missing_tls_cert(config: Config) -> None:
                 directory_url=config.acme_directory_url,
             )
         )
-    elif config.cert_provider == CERT_PROVIDER_CERT_API:
-        base_url = _require_cert_api_setting(config.cert_api_base_url, "cert_api_base_url")
+    else:
+        # cert_provider is guaranteed to be CERT_PROVIDER_CERT_API with all of
+        # the cert_api settings populated (validated in Config.__attrs_post_init__).
+        assert config.cert_api_base_url is not None
+        assert config.cert_api_keycloak_issuer_url is not None
+        assert config.cert_api_keycloak_client_id is not None
+        assert config.cert_api_keycloak_client_secret is not None
         credentials = KeycloakClientCredentials(
-            issuer_url=_require_cert_api_setting(config.cert_api_keycloak_issuer_url, "cert_api_keycloak_issuer_url"),
-            client_id=_require_cert_api_setting(config.cert_api_keycloak_client_id, "cert_api_keycloak_client_id"),
-            client_secret=_require_cert_api_setting(
-                config.cert_api_keycloak_client_secret, "cert_api_keycloak_client_secret"
-            ),
+            issuer_url=config.cert_api_keycloak_issuer_url,
+            client_id=config.cert_api_keycloak_client_id,
+            client_secret=config.cert_api_keycloak_client_secret,
         )
         # The token provider fetches a bearer from Keycloak (client-credentials) and
         # refreshes it transparently across the broker's finalize-poll loop.
         with KeycloakTokenProvider.create(credentials) as token_provider:
-            with CertApiClient.create(base_url, token_provider) as client:
+            with CertApiClient.create(config.cert_api_base_url, token_provider) as client:
                 acquire_tls_cert_via_broker(
                     domain=config.zone_domain,
                     cert_path=config.tls_cert_path,
@@ -112,11 +111,6 @@ def _acquire_missing_tls_cert(config: Config) -> None:
                     coredns_zonefile_path=config.coredns_zonefile_path,
                     client=client,
                 )
-    else:
-        raise RuntimeError(
-            f"Unknown cert_provider {config.cert_provider!r} (expected "
-            f"{CERT_PROVIDER_ACME!r} or {CERT_PROVIDER_CERT_API!r})"
-        )
 
 
 def main() -> None:
