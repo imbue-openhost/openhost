@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 from compute_space import COMPUTE_SPACE_PACKAGE_DIR
+from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.tests.local_stack import make_local_stack_config
 from compute_space.tests.utils import make_router_env
 
@@ -52,6 +53,8 @@ def main() -> int:
         port=args.port,
         zone_name=args.zone_name,
         default_apps=None if args.default_apps else [],
+        # vendored builtins (e.g. file_browser in default_apps) live in the repo's apps/
+        apps_dir_override=str(OPENHOST_PROJECT_DIR / "apps"),
     )
     config_path = str(data_dir / "config.toml")
     config.to_toml(config_path)
