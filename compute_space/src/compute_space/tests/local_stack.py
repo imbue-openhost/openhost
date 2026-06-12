@@ -14,7 +14,6 @@ import subprocess
 import attr
 import requests
 
-from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
 from compute_space.core.auth.auth import SESSION_COOKIE_NAME
@@ -31,18 +30,20 @@ def make_local_stack_config(
     port_range_start: int = 9000,
     port_range_end: int = 9999,
     default_apps: list[str] | None = None,
+    apps_dir_override: str | None = None,
 ) -> Config:
     """Config for a loopback-only, HTTP-only router suitable for local dev and tests.
 
     ``default_apps=None`` keeps DefaultConfig's standard set (deployed at /setup completion);
-    pass ``[]`` to deploy nothing.
+    pass ``[]`` to deploy nothing.  ``apps_dir_override`` points at a vendored-builtins dir
+    (e.g. the repo's apps/); None keeps the default under data_root_dir.
     """
     config: Config = DefaultConfig(
         zone_domain=f"{zone_name}.localhost:{port}",
         host="127.0.0.1",
         port=port,
         data_root_dir=data_root_dir,
-        apps_dir_override=str(OPENHOST_PROJECT_DIR / "apps"),
+        apps_dir_override=apps_dir_override,
         port_range_start=port_range_start,
         port_range_end=port_range_end,
         tls_enabled=False,
