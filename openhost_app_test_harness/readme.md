@@ -54,6 +54,10 @@ def test_index(stack):
     assert r.status_code == 200
 ```
 
+The app under test deploys from a snapshot of your git working tree (tracked +
+untracked files, minus gitignored ones), so uncommitted changes are what runs — the
+router would otherwise clone the repo at HEAD and silently test stale code.
+
 - `stack.url` — your app through the router (subdomain routing, real auth)
 - `stack.owner_session` — a `requests.Session` authenticated as the zone owner; its cookie
   is scoped to the zone domain so it works on `stack.url` and every other app URL.
