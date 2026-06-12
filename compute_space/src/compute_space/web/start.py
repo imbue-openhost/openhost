@@ -26,6 +26,8 @@ from compute_space.core.tls.acquire_cert import acquire_tls_cert
 from compute_space.core.tls.acquire_cert import check_if_cert_exists
 from compute_space.core.tls.acquire_cert_broker import acquire_tls_cert_via_broker
 from compute_space.core.tls.cert_api_client import CertApiClient
+from compute_space.core.tls.keycloak import KeycloakClientCredentials
+from compute_space.core.tls.keycloak import KeycloakTokenProvider
 from compute_space.core.updates import RESTART_EXIT_CODE
 from compute_space.core.updates import initialize_shutdown_event
 from compute_space.db import init_db
@@ -62,6 +64,13 @@ def _owner_exists(config: Config) -> bool:
         db.close()
 
 
+def _require_cert_api_setting(value: str | None, name: str) -> str:
+    """Return a required cert_api config value, failing loudly if unset."""
+    if not value:
+        raise RuntimeError(f"{name} must be set in config to use the cert_api provider")
+    return value
+
+
 def _acquire_missing_tls_cert(config: Config) -> None:
     """Acquire a missing TLS cert using the configured provider.
 
@@ -84,18 +93,25 @@ def _acquire_missing_tls_cert(config: Config) -> None:
             )
         )
     elif config.cert_provider == CERT_PROVIDER_CERT_API:
-        if not config.cert_api_base_url:
-            raise RuntimeError("cert_api_base_url must be set in config to use the cert_api provider")
-        if not config.cert_api_token:
-            raise RuntimeError("cert_api_token must be set in config to use the cert_api provider")
-        with CertApiClient.create(config.cert_api_base_url, config.cert_api_token) as client:
-            acquire_tls_cert_via_broker(
-                domain=config.zone_domain,
-                cert_path=config.tls_cert_path,
-                key_path=config.tls_key_path,
-                coredns_zonefile_path=config.coredns_zonefile_path,
-                client=client,
-            )
+        base_url = _require_cert_api_setting(config.cert_api_base_url, "cert_api_base_url")
+        credentials = KeycloakClientCredentials(
+            issuer_url=_require_cert_api_setting(config.cert_api_keycloak_issuer_url, "cert_api_keycloak_issuer_url"),
+            client_id=_require_cert_api_setting(config.cert_api_keycloak_client_id, "cert_api_keycloak_client_id"),
+            client_secret=_require_cert_api_setting(
+                config.cert_api_keycloak_client_secret, "cert_api_keycloak_client_secret"
+            ),
+        )
+        # The token provider fetches a bearer from Keycloak (client-credentials) and
+        # refreshes it transparently across the broker's finalize-poll loop.
+        with KeycloakTokenProvider.create(credentials) as token_provider:
+            with CertApiClient.create(base_url, token_provider) as client:
+                acquire_tls_cert_via_broker(
+                    domain=config.zone_domain,
+                    cert_path=config.tls_cert_path,
+                    key_path=config.tls_key_path,
+                    coredns_zonefile_path=config.coredns_zonefile_path,
+                    client=client,
+                )
     else:
         raise RuntimeError(
             f"Unknown cert_provider {config.cert_provider!r} (expected "

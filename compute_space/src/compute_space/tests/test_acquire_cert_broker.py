@@ -20,6 +20,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from compute_space.core.tls.acquire_cert_broker import CertAcquisitionTimeoutError
 from compute_space.core.tls.acquire_cert_broker import acquire_tls_cert_via_broker
 from compute_space.core.tls.cert_api_client import CertApiClient
+from compute_space.core.tls.cert_api_client import CertApiOrderFailed
+from compute_space.core.tls.keycloak import StaticTokenProvider
 
 DOMAIN = "app.example.com"
 FAKE_CHAIN = "-----BEGIN CERTIFICATE-----\nFAKECHAINBYTES\n-----END CERTIFICATE-----\n"
@@ -66,12 +68,12 @@ def _order_payload() -> dict[str, object]:
 
 def _client_from_handler(handler: object) -> CertApiClient:
     transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
-    http_client = httpx.Client(
-        base_url="https://broker.test",
-        headers={"Authorization": "Bearer tok"},
-        transport=transport,
-    )
-    return CertApiClient(http_client=http_client)
+    http_client = httpx.Client(base_url="https://broker.test", transport=transport)
+    return CertApiClient(http_client=http_client, token_provider=StaticTokenProvider("tok"))
+
+
+def _noop_wait(zone_domain: str, expected_values: list[str]) -> None:
+    """Stub out the real CoreDNS-reload sleep + external dig so tests stay fast."""
 
 
 @attr.s(auto_attribs=True)
@@ -79,6 +81,7 @@ class _BrokerState:
     finalize_calls: int = 0
     sent_csr: str | None = None
     txt_when_first_polled: str | None = None
+    waited_with: tuple[str, list[str]] | None = None
 
 
 def test_full_flow_installs_cert_and_key(tmp_path: Path) -> None:
@@ -97,12 +100,17 @@ def test_full_flow_installs_cert_and_key(tmp_path: Path) -> None:
             state.finalize_calls += 1
             if state.finalize_calls == 1:
                 # The broker validates DNS; assert our TXT records are already
-                # published (verbatim, absolute) before we are asked to finalize.
+                # published (verbatim, absolute) and propagation was awaited
+                # before we are asked to finalize.
                 state.txt_when_first_polled = zonefile.read_text()
+                assert state.waited_with is not None, "must wait for DNS propagation before polling finalize"
             if state.finalize_calls < 3:
                 return httpx.Response(202, json={"status": "pending"})
             return httpx.Response(200, json={"status": "valid", "certificate": FAKE_CHAIN})
         return httpx.Response(404, json={"error": "not_found", "message": request.url.path})
+
+    def record_wait(zone_domain: str, expected_values: list[str]) -> None:
+        state.waited_with = (zone_domain, expected_values)
 
     with _client_from_handler(handler) as client:
         acquire_tls_cert_via_broker(
@@ -114,7 +122,11 @@ def test_full_flow_installs_cert_and_key(tmp_path: Path) -> None:
             poll_interval_seconds=1.0,
             poll_timeout_seconds=600.0,
             clock=FakeClock(),
+            wait_for_propagation=record_wait,
         )
+
+    # Propagation was awaited for the base domain with both challenge values.
+    assert state.waited_with == (DOMAIN, ["base-value", "wildcard-value"])
 
     # Polled until issued.
     assert state.finalize_calls == 3
@@ -160,6 +172,7 @@ def test_csr_covers_base_and_wildcard(tmp_path: Path) -> None:
             coredns_zonefile_path=zonefile,
             client=client,
             clock=FakeClock(),
+            wait_for_propagation=_noop_wait,
         )
 
     csr = x509.load_pem_x509_csr(captured["csr"].encode())
@@ -190,7 +203,34 @@ def test_timeout_raises_and_clears_txt(tmp_path: Path) -> None:
                 poll_interval_seconds=5.0,
                 poll_timeout_seconds=30.0,
                 clock=FakeClock(),
+                wait_for_propagation=_noop_wait,
             )
 
     # TXT records cleaned up even on timeout.
+    assert "IN TXT" not in zonefile.read_text()
+
+
+def test_failed_order_raises_and_clears_txt(tmp_path: Path) -> None:
+    zonefile = tmp_path / "zonefile"
+    _write_zonefile(zonefile)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/orders":
+            return httpx.Response(200, json=_order_payload())
+        # Broker drove the ACME order to a terminal failure.
+        return httpx.Response(409, json={"error": "order_failed", "detail": "DNS-01 validation failed"})
+
+    with _client_from_handler(handler) as client:
+        with pytest.raises(CertApiOrderFailed):
+            acquire_tls_cert_via_broker(
+                domain=DOMAIN,
+                cert_path=tmp_path / "cert.pem",
+                key_path=tmp_path / "key.pem",
+                coredns_zonefile_path=zonefile,
+                client=client,
+                clock=FakeClock(),
+                wait_for_propagation=_noop_wait,
+            )
+
+    # A failed order fails fast (no full-timeout spin) and still cleans up TXT.
     assert "IN TXT" not in zonefile.read_text()

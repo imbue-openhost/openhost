@@ -16,7 +16,9 @@ from compute_space.core.tls.cert_api_client import CertApiBadRequest
 from compute_space.core.tls.cert_api_client import CertApiClient
 from compute_space.core.tls.cert_api_client import CertApiError
 from compute_space.core.tls.cert_api_client import CertApiNotFound
+from compute_space.core.tls.cert_api_client import CertApiOrderFailed
 from compute_space.core.tls.cert_api_client import CertApiUnauthorized
+from compute_space.core.tls.keycloak import StaticTokenProvider
 
 BASE_URL = "https://broker.test"
 TOKEN = "per-instance-token"
@@ -25,12 +27,8 @@ TOKEN = "per-instance-token"
 def _make_client(handler: object) -> CertApiClient:
     """Build a CertApiClient backed by a MockTransport using the given request handler."""
     transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
-    http_client = httpx.Client(
-        base_url=BASE_URL,
-        headers={"Authorization": f"Bearer {TOKEN}"},
-        transport=transport,
-    )
-    return CertApiClient(http_client=http_client)
+    http_client = httpx.Client(base_url=BASE_URL, transport=transport)
+    return CertApiClient(http_client=http_client, token_provider=StaticTokenProvider(TOKEN))
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +163,24 @@ def test_finalize_unknown_order_raises_not_found() -> None:
             client.finalize_order("nope")
 
 
+def test_finalize_failed_order_raises_with_acme_detail() -> None:
+    # The broker passes the ACME problem document's `detail` through on a 409.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "error": "order_failed",
+                "detail": "DNS problem: NXDOMAIN looking up TXT for _acme-challenge.app.example.com",
+            },
+        )
+
+    with _make_client(handler) as client:
+        with pytest.raises(CertApiOrderFailed) as exc_info:
+            client.finalize_order("order-123")
+    assert "order_failed" in str(exc_info.value)
+    assert "NXDOMAIN" in str(exc_info.value)
+
+
 def test_unexpected_status_raises_generic_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
@@ -172,3 +188,40 @@ def test_unexpected_status_raises_generic_error() -> None:
     with _make_client(handler) as client:
         with pytest.raises(CertApiError):
             client.create_order("csr")
+
+
+# ---------------------------------------------------------------------------
+# auth header is rebuilt per request (so a refreshing token provider takes effect)
+# ---------------------------------------------------------------------------
+
+
+def test_auth_token_fetched_fresh_per_request() -> None:
+    """The bearer is pulled from the provider on each call, not cached at construct time."""
+
+    class _RotatingTokenProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_token(self) -> str:
+            self.calls += 1
+            return f"token-{self.calls}"
+
+    seen_auth: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth.append(request.headers.get("Authorization"))
+        if request.url.path == "/v1/orders":
+            return httpx.Response(200, json={"order_id": "o1", "challenges": []})
+        return httpx.Response(202, json={"status": "pending"})
+
+    provider = _RotatingTokenProvider()
+    transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
+    http_client = httpx.Client(base_url=BASE_URL, transport=transport)
+    with CertApiClient(http_client=http_client, token_provider=provider) as client:
+        client.create_order("csr")
+        client.finalize_order("o1")
+
+    # Each request asked the provider for a token, and the rotated value was used.
+    assert seen_auth == ["Bearer token-1", "Bearer token-2"]
+    # health() needs no auth, so the provider was consulted exactly twice.
+    assert provider.calls == 2
