@@ -40,6 +40,11 @@ from compute_space.core.tls.util import tls_private_key_to_pem
 _COREDNS_RELOAD_SECONDS = 3.0
 
 
+def _as_fqdn(name: str) -> str:
+    """Return ``name`` as an absolute FQDN, appending a trailing dot if missing."""
+    return name if name.endswith(".") else f"{name}."
+
+
 class CertAcquisitionTimeoutError(RuntimeError):
     """The broker did not issue the certificate before the overall timeout."""
 
@@ -101,8 +106,10 @@ def acquire_tls_cert_via_broker(
     order = client.create_order(csr_pem)
     logger.info(f"Broker order {order.order_id} created with {len(order.challenges)} challenge(s)")
 
-    records = [TxtRecord(record_name=c.record_name, record_value=c.record_value) for c in order.challenges]
-    dns_module.set_txt_records(coredns_zonefile_path, records)
+    # Broker challenge names are full FQDNs; write them absolute (trailing dot) so
+    # CoreDNS does not re-append $ORIGIN.
+    records = [TxtRecord(record_name=_as_fqdn(c.record_name), record_value=c.record_value) for c in order.challenges]
+    dns_module.append_txt_records(coredns_zonefile_path, records)
     try:
         # Don't poll finalize until the records are actually live: the broker drives
         # CA validation during finalize, so a not-yet-visible record fails the order.
