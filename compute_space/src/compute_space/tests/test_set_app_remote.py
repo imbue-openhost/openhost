@@ -13,10 +13,12 @@ import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 from litestar.testing import TestClient
 
+import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core.app_id import new_app_id
 from compute_space.core.apps import git_pull
 from compute_space.db.connection import init_db
@@ -184,3 +186,40 @@ def test_git_pull_returns_to_default_branch_when_ref_cleared(tmp_path: Path) -> 
     ).stdout.strip()
     assert head == "main"
     assert (clone / "f.txt").read_text() == "main"
+
+
+def test_reload_update_pins_resolved_default_branch(cfg: Any, tmp_path: Path) -> None:
+    """A refless update records the branch it landed on back into repo_url, so
+    the app pins to a concrete branch (visible, deterministic) rather than
+    re-resolving the remote default on every future pull."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-b", "main")
+    (origin / "f.txt").write_text("main")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-m", "main commit")
+    _git(origin, "checkout", "-b", "feature")
+    _git(origin, "commit", "--allow-empty", "-m", "feature commit")
+    _git(origin, "checkout", "main")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "--branch", "feature", f"file://{origin}", str(clone))
+
+    # Stored upstream has no @ref (operator cleared it).
+    app_id = _seed_git_app(cfg, "myapp", str(clone), repo_url=f"file://{origin}")
+
+    cookies = auth_cookie(cfg)
+    with (
+        mock.patch.object(apps_routes, "stop_app_process"),
+        mock.patch.object(apps_routes, "reload_app_background"),
+        TestClient(app=make_test_app(api_apps_routes)) as client,
+    ):
+        resp = client.post(f"/reload_app/{app_id}", json={"update": True}, cookies=cookies)
+    assert resp.status_code == 200, resp.text
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        stored = db.execute("SELECT repo_url FROM apps WHERE app_id = ?", (app_id,)).fetchone()[0]
+    finally:
+        db.close()
+    assert stored == f"file://{origin}@main", stored

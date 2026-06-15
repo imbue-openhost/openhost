@@ -561,6 +561,24 @@ async def _reload_app_impl(
                     return Redirect(path=f"/app_detail/{app_name}")
                 return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
 
+            # The pull succeeded. If the upstream had no pinned ``@ref`` (the
+            # operator cleared it, or it was never set), git_pull resolved and
+            # checked out origin's default branch. Record that concrete branch
+            # back into repo_url so the app stays on it deterministically and
+            # the detail page shows which branch it tracks — rather than
+            # silently re-resolving (and following) a moving remote default on
+            # every future update.
+            base_url, pinned_ref = parse_repo_url(repo_url) if repo_url else ("", "")
+            if repo_url and not pinned_ref:
+                landed = await get_branch_name(Path(app_row["repo_path"]))
+                if landed:
+                    db.execute(
+                        "UPDATE apps SET repo_url = ? WHERE app_id = ?",
+                        (f"{base_url}@{landed}", app_id),
+                    )
+                    db.commit()
+                    lf.write(f"Pinned upstream to resolved default branch: {landed}\n")
+
     await asyncio.to_thread(stop_app_process, app_row)
     db.execute(
         "UPDATE apps SET status = 'building', container_id = NULL, error_message = NULL WHERE app_id = ?",
