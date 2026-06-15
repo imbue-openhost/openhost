@@ -2,7 +2,7 @@
 name = "openhost"
 version = "0.1.0"
 description = "OpenHost – run open-source apps on your own compute"
-requires-python = "==3.12.*"
+requires-python = ">=3.12"
 dependencies = [
     "PyJWT[crypto]",
     "acme>=5.4.0",
@@ -19,6 +19,7 @@ dependencies = [
     "hypercorn",
     "jinja2",
     "josepy",
+    "litestar>=2.21.1,<3",
     "loguru",
     "markdown-it-py",
     "mdit-py-plugins",
@@ -27,6 +28,13 @@ dependencies = [
     "tomli-w",
     "typed-settings>=25.3.0",
     "websockets",
+]
+
+[project.optional-dependencies]
+# For app developers using openhost_test_harness as a test dependency.
+test-harness = [
+    "pytest>=8.0",
+    "requests>=2.31",
 ]
 
 [project.scripts]
@@ -39,7 +47,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["routerd_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "openhost_system_agent/src/openhost_system_agent"]
+packages = ["routerd_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "openhost_system_agent/src/openhost_system_agent", "openhost_app_test_harness/src/openhost_test_harness"]
 
 [tool.pytest.ini_options]
 testpaths = [
@@ -48,6 +56,7 @@ testpaths = [
     "routerd_cli/src/self_host_cli/tests",
     "apps/oauth/src/oauth/tests",
     "openhost_system_agent/src/openhost_system_agent/tests",
+    "openhost_app_test_harness/src/openhost_test_harness/tests",
 ]
 # do NOT set --import-mode=importlib or change the import-mode.
 addopts = "-p no:randomly -v"
@@ -84,13 +93,14 @@ known-first-party = [
     "compute_space",
     "compute_space_cli",
     "openhost_system_agent",
+    "openhost_test_harness",
     "self_host_cli",
     "oauth",
 ]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "openhost_system_agent/src/openhost_system_agent", "apps/oauth_provider/src/oauth_provider"]
+files = ["compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "openhost_system_agent/src/openhost_system_agent", "apps/oauth_provider/src/oauth_provider", "openhost_app_test_harness/src/openhost_test_harness"]
 strict = true
 ignore_missing_imports = true
 exclude = ["compute_space/src/compute_space/tests/"]

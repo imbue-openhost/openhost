@@ -11,5 +11,21 @@ acme_directory_url = "{{ acme_directory_url }}"
 coredns_enabled = true
 public_ip = "{{ public_ip | default(inventory_hostname) }}"
 start_caddy = true
+claim_token_required = true
 data_root_dir = "/home/host/.openhost/local_compute_space"
 apps_dir_override = "/home/host/openhost/apps"
+{% if cert_provider is defined and cert_provider == 'cert_api' %}
+# Opt-in: fetch TLS certs from the openhost-cert-api broker instead of the
+# bring-your-own ACME account key above (which is then ignored).  The broker
+# holds the ACME account, so this instance never sees ACME credentials.
+# cert_api_base_url defaults to the canonical broker; only set it to override.
+# Auth is Keycloak client-credentials: this instance's confidential client in
+# the openhost-customers realm.  client_secret is the only sensitive value.
+cert_provider = "cert_api"
+{% if cert_api_base_url is defined %}
+cert_api_base_url = "{{ cert_api_base_url }}"
+{% endif %}
+cert_api_keycloak_issuer_url = "{{ cert_api_keycloak_issuer_url }}"
+cert_api_keycloak_client_id = "{{ cert_api_keycloak_client_id }}"
+cert_api_keycloak_client_secret = "{{ cert_api_keycloak_client_secret }}"
+{% endif %}

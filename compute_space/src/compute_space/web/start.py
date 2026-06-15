@@ -11,6 +11,8 @@ from typing import Any
 import hypercorn.asyncio
 import hypercorn.config
 
+from compute_space.config import CERT_PROVIDER_ACME
+from compute_space.config import CERT_PROVIDER_CERT_API
 from compute_space.config import Config
 from compute_space.config import load_config
 from compute_space.config import set_active_config
@@ -22,6 +24,10 @@ from compute_space.core.logging import setup_file_logging
 from compute_space.core.terminal import cleanup_all as cleanup_terminal_sessions
 from compute_space.core.tls.acquire_cert import acquire_tls_cert
 from compute_space.core.tls.acquire_cert import check_if_cert_exists
+from compute_space.core.tls.acquire_cert_broker import acquire_tls_cert_via_broker
+from compute_space.core.tls.cert_api_client import CertApiClient
+from compute_space.core.tls.keycloak import KeycloakClientCredentials
+from compute_space.core.tls.keycloak import KeycloakTokenProvider
 from compute_space.core.updates import RESTART_EXIT_CODE
 from compute_space.core.updates import initialize_shutdown_event
 from compute_space.db import init_db
@@ -58,6 +64,61 @@ def _owner_exists(config: Config) -> bool:
         db.close()
 
 
+def _require_cert_api_setting(value: str | None, name: str) -> str:
+    """Return a required cert_api config value, failing loudly if unset."""
+    if not value:
+        raise RuntimeError(f"{name} must be set in config to use the cert_api provider")
+    return value
+
+
+def _acquire_missing_tls_cert(config: Config) -> None:
+    """Acquire a missing TLS cert using the configured provider.
+
+    Caller has already verified the cert is missing, CoreDNS is enabled, and
+    acquire_tls_cert_if_missing is set.  The default "acme" provider is the
+    unchanged BYO-ACME path; "cert_api" fetches from the openhost-cert-api broker.
+    """
+    if config.cert_provider == CERT_PROVIDER_ACME:
+        if not config.acme_account_key_path:
+            raise RuntimeError("ACME account key path must be set in config to acquire TLS cert")
+        asyncio.run(
+            acquire_tls_cert(
+                domain=config.zone_domain,
+                cert_path=config.tls_cert_path,
+                key_path=config.tls_key_path,
+                acme_account_key_path=Path(config.acme_account_key_path),
+                coredns_zonefile_path=config.coredns_zonefile_path,
+                acme_email=config.acme_email,
+                directory_url=config.acme_directory_url,
+            )
+        )
+    elif config.cert_provider == CERT_PROVIDER_CERT_API:
+        base_url = _require_cert_api_setting(config.cert_api_base_url, "cert_api_base_url")
+        credentials = KeycloakClientCredentials(
+            issuer_url=_require_cert_api_setting(config.cert_api_keycloak_issuer_url, "cert_api_keycloak_issuer_url"),
+            client_id=_require_cert_api_setting(config.cert_api_keycloak_client_id, "cert_api_keycloak_client_id"),
+            client_secret=_require_cert_api_setting(
+                config.cert_api_keycloak_client_secret, "cert_api_keycloak_client_secret"
+            ),
+        )
+        # The token provider fetches a bearer from Keycloak (client-credentials) and
+        # refreshes it transparently across the broker's finalize-poll loop.
+        with KeycloakTokenProvider.create(credentials) as token_provider:
+            with CertApiClient.create(base_url, token_provider) as client:
+                acquire_tls_cert_via_broker(
+                    domain=config.zone_domain,
+                    cert_path=config.tls_cert_path,
+                    key_path=config.tls_key_path,
+                    coredns_zonefile_path=config.coredns_zonefile_path,
+                    client=client,
+                )
+    else:
+        raise RuntimeError(
+            f"Unknown cert_provider {config.cert_provider!r} (expected "
+            f"{CERT_PROVIDER_ACME!r} or {CERT_PROVIDER_CERT_API!r})"
+        )
+
+
 def main() -> None:
     # Allow group members to write files/dirs we create (files 664, dirs 775).
     os.umask(0o002)
@@ -80,21 +141,9 @@ def main() -> None:
         if not check_if_cert_exists(config.tls_cert_path, config.tls_key_path):
             if not config.coredns_enabled:
                 raise RuntimeError("CoreDNS must be enabled to acquire TLS cert via DNS-01 challenge")
-            if not config.acme_account_key_path:
-                raise RuntimeError("ACME account key path must be set in config to acquire TLS cert")
             if not config.acquire_tls_cert_if_missing:
                 raise RuntimeError("TLS cert not found and acquire_tls_cert_if_missing is False")
-            asyncio.run(
-                acquire_tls_cert(
-                    domain=config.zone_domain,
-                    cert_path=config.tls_cert_path,
-                    key_path=config.tls_key_path,
-                    acme_account_key_path=Path(config.acme_account_key_path),
-                    coredns_zonefile_path=config.coredns_zonefile_path,
-                    acme_email=config.acme_email,
-                    directory_url=config.acme_directory_url,
-                )
-            )
+            _acquire_missing_tls_cert(config)
 
     # Caddy reverse proxy. mainly for TLS termination, but also some other features
     if config.start_caddy:

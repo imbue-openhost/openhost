@@ -9,6 +9,13 @@ import cattrs
 import tomli_w
 import typed_settings
 
+# TLS cert provider selection (see Config.cert_provider).
+# "acme" is the default bring-your-own-ACME-credentials path (unchanged, fully
+# backward compatible). "cert_api" fetches certs from the openhost-cert-api
+# broker, which holds the ACME account so the instance never sees ACME creds.
+CERT_PROVIDER_ACME = "acme"
+CERT_PROVIDER_CERT_API = "cert_api"
+
 
 def _lowercase(s: str) -> str:
     # mypy can't handle str.lower apparently
@@ -33,6 +40,23 @@ class Config:
     acme_account_key_path: str | None
     acme_directory_url: str | None
 
+    # Which cert provider to use when acquiring a missing TLS cert:
+    #   CERT_PROVIDER_ACME ("acme", default) — bring-your-own ACME account key (BYO-ACME).
+    #   CERT_PROVIDER_CERT_API ("cert_api")  — fetch from the openhost-cert-api broker.
+    # The broker path still uses CoreDNS for the DNS-01 write, but needs no ACME account key.
+    cert_provider: str
+    # openhost-cert-api broker base URL, e.g. "https://cert-api.example.com" (cert_api provider only).
+    cert_api_base_url: str | None
+    # Keycloak client-credentials auth for the broker (cert_api provider only).  The instance
+    # fetches a bearer token from this issuer and presents it to cert-api, so no shared secret
+    # or ACME account key lives on the instance.  Provisioning injects these per instance.
+    #   issuer URL, e.g. "https://keycloak.<zone>/realms/openhost-customers"
+    cert_api_keycloak_issuer_url: str | None
+    #   per-instance client id, e.g. "instance-<subdomain>"
+    cert_api_keycloak_client_id: str | None
+    #   per-instance client secret (the only sensitive value — treat like the ACME account key)
+    cert_api_keycloak_client_secret: str | None
+
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
     public_ip: str | None
@@ -51,6 +75,14 @@ class Config:
     ## Ports
     port_range_start: int
     port_range_end: int
+
+    # First-boot claim-token gate. When True, /setup rejects any request that
+    # doesn't supply a token matching the one in claim_token_path — preventing
+    # a MITM from racing the operator to set the owner password. When True but
+    # no token file is present, /setup rejects everyone (fail-safe). Set this
+    # explicitly to False only when /setup is reachable only by the operator
+    # (e.g. loopback-only local dev).
+    claim_token_required: bool
 
     # Apps to deploy at /setup completion (set to [] to opt out).
     # Each entry is either:
@@ -182,6 +214,18 @@ class DefaultConfig(Config):
     acme_account_key_path: str | None = None
     acme_directory_url: str | None = None
 
+    # Default to the BYO-ACME path so existing deployments are unaffected.
+    cert_provider: str = CERT_PROVIDER_ACME
+    # TODO: swap back to the canonical broker "https://api.selfhost.imbue.com" once the
+    # service is deployed (a DNS record will be added when it goes up).  For now this points
+    # at the QA broker instance so the cert_api path can be exercised end-to-end.
+    # Only consulted when cert_provider == CERT_PROVIDER_CERT_API.
+    cert_api_base_url: str | None = "https://openhost-cert-api.openhost-qa.selfhost.imbue.com/"
+    # Keycloak client-credentials config — all injected by provisioning, no safe default.
+    cert_api_keycloak_issuer_url: str | None = None
+    cert_api_keycloak_client_id: str | None = None
+    cert_api_keycloak_client_secret: str | None = None
+
     start_caddy: bool = True
 
     my_openhost_redirect_domain: str = "my.selfhost.imbue.com"
@@ -192,6 +236,10 @@ class DefaultConfig(Config):
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int = 0
+
+    # Fail-safe default: require a claim token at /setup. Callers that want
+    # the open-setup behavior (local-dev loopback) must set this False.
+    claim_token_required: bool = True
 
     # Ports
     port_range_start: int = 9000

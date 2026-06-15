@@ -32,6 +32,8 @@ APP_DEPLOY_TIMEOUT_S = 300
 TEST_APP_PATH = "/home/host/openhost/apps/test_app"
 # Generate a random password per test run since instances are publicly routable.
 OWNER_PASSWORD = "E2e!" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20))
+# Claim token written by ansible at deploy time; required to POST /setup.
+CLAIM_TOKEN = os.environ.get("OPENHOST_CLAIM_TOKEN", "")
 
 
 # ---------------------------------------------------------------------------
@@ -95,15 +97,19 @@ class TestSelfHost:
     # -- 2. Setup (create owner) -------------------------------------------
 
     def test_02_setup(self, session, router_url, healthy_router):
-        """First visitor to /setup becomes the owner."""
-        r = session.get(f"{router_url}/setup", timeout=10)
+        """First visitor to /setup becomes the owner (after passing the claim token)."""
+        assert CLAIM_TOKEN, "OPENHOST_CLAIM_TOKEN must be set by e2e-setup.sh"
+        claim_params = {"claim": CLAIM_TOKEN}
+        r = session.get(f"{router_url}/setup", params=claim_params, timeout=10)
         assert r.status_code == 200, f"/setup returned {r.status_code}: {r.text[:500]}"
 
         r = session.post(
             f"{router_url}/setup",
+            params=claim_params,
             data={
                 "password": OWNER_PASSWORD,
                 "confirm_password": OWNER_PASSWORD,
+                "claim": CLAIM_TOKEN,
             },
             timeout=30,
             allow_redirects=False,

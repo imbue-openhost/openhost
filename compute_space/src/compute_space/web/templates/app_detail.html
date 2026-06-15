@@ -131,6 +131,17 @@
   <button class="btn" onclick="appAction('/stop_app/{{ app.app_id }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', null, {label: 'Reloading'})">Reload App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
+  {% if edit_app %}
+    {% if edit_app.mode == 'service' %}
+      <form method="POST" action="{{ edit_app.action }}" target="_blank" style="display:contents;">
+        <input type="hidden" name="repo" value="{{ edit_app.repo }}">
+        <input type="hidden" name="ref" value="{{ edit_app.ref }}">
+        <button class="btn" type="submit">Edit App</button>
+      </form>
+    {% else %}
+      <a href="{{ edit_app.href }}" class="btn" target="_blank" rel="noopener">Edit App</a>
+    {% endif %}
+  {% endif %}
   <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('/remove_app/{{ app.app_id }}', {keep_data: true}, {isRemove: true, label: 'Removing (keeping data)'})">Remove App (Keep Data)</button>
   <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('/remove_app/{{ app.app_id }}', {}, {isRemove: true, label: 'Removing'})">Remove App &amp; Data</button>
   <span id="app-action-msg" style="margin-left:0.5em;"></span>
