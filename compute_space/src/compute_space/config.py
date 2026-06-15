@@ -121,13 +121,16 @@ class Config:
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
 
+    def _to_toml_dict(self) -> dict[str, dict[str, Any]]:
+        return {"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}}
+
     def to_toml_str(self) -> str:
-        return tomli_w.dumps({"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}})
+        return tomli_w.dumps(self._to_toml_dict())
 
     def to_toml(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
-            tomli_w.dump({"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}}, f)
+            tomli_w.dump(self._to_toml_dict(), f)
 
     @classmethod
     def from_toml(cls, path: str) -> Self:
