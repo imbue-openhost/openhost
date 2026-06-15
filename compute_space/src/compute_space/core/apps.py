@@ -765,6 +765,17 @@ def git_pull(
         except Exception:
             pass
 
+    def _run(cmd: list[str]) -> tuple[bool, str | None]:
+        _log("$ " + " ".join(cmd))
+        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=60)
+        if result.stdout.strip():
+            _log(result.stdout.strip())
+        if result.stderr.strip():
+            _log(result.stderr.strip())
+        if result.returncode != 0:
+            return False, result.stderr.strip() or result.stdout.strip() or f"{' '.join(cmd)} failed"
+        return True, None
+
     try:
         if not ref:
             # No pinned ref: resolve origin's default branch and switch to it.
@@ -772,35 +783,31 @@ def git_pull(
             if default_err:
                 # Likely auth/network — surface so the caller can retry with a token.
                 return False, default_err
-        if ref:
-            # Fetch the ref and hard-reset the working branch to the remote tip.
-            # Mirrors the system-agent update flow's
-            # ``git checkout -fB <ref> origin/<ref>`` so switching branches
-            # (not just pulling) works.
-            commands = [
-                ["git", "fetch", "origin", ref],
-                ["git", "checkout", "-fB", ref, f"origin/{ref}"],
-            ]
-        else:
+        if not ref:
             # Couldn't determine a default branch; pull the current one.
-            commands = [["git", "pull"]]
-        for cmd in commands:
-            _log("$ " + " ".join(cmd))
-            result = subprocess.run(
-                cmd,
+            return _run(["git", "pull"])
+
+        # Fetch the pinned ref and hard-reset the working tree to it.
+        ok, err = _run(["git", "fetch", "origin", ref])
+        if not ok:
+            return False, err
+        # A branch ref materialises as the remote-tracking ``origin/<ref>``;
+        # check it out as a local branch so it tracks and future pulls update
+        # cleanly (mirrors the system-agent update flow). A tag or commit SHA
+        # has no ``origin/<ref>`` branch, so fall back to a detached checkout
+        # of the just-fetched FETCH_HEAD.
+        is_branch = (
+            subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{ref}"],
                 cwd=repo_path,
                 capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result.stdout.strip():
-                _log(result.stdout.strip())
-            if result.stderr.strip():
-                _log(result.stderr.strip())
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() or result.stdout.strip() or f"{' '.join(cmd)} failed"
-                return False, error_msg
-        return True, None
+                timeout=10,
+            ).returncode
+            == 0
+        )
+        if is_branch:
+            return _run(["git", "checkout", "-fB", ref, f"origin/{ref}"])
+        return _run(["git", "checkout", "-f", "FETCH_HEAD"])
     except Exception as e:
         _log(f"git update failed: {e}")
         return False, str(e)

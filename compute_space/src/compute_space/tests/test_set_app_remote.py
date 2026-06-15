@@ -154,6 +154,27 @@ def test_git_pull_switches_branch_via_ref(tmp_path: Path) -> None:
     assert (clone / "f.txt").read_text() == "feature"
 
 
+def test_git_pull_checks_out_tag_ref(tmp_path: Path) -> None:
+    """A pinned ``@tag`` (or commit) ref — which has no ``origin/<ref>``
+    branch — is checked out detached at the fetched ref rather than erroring."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-b", "main")
+    (origin / "f.txt").write_text("v1")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-m", "v1")
+    _git(origin, "tag", "v1.0")
+    (origin / "f.txt").write_text("v2")
+    _git(origin, "commit", "-am", "v2")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", f"file://{origin}", str(clone))
+
+    ok, err = git_pull(str(clone), "myapp", repo_url=f"file://{origin}@v1.0")
+    assert ok, err
+    assert (clone / "f.txt").read_text() == "v1"
+
+
 def test_git_pull_returns_to_default_branch_when_ref_cleared(tmp_path: Path) -> None:
     """With no ``@ref`` in the repo_url, git_pull switches back to origin's
     default branch instead of staying on whatever branch was checked out."""
@@ -265,3 +286,43 @@ def test_add_app_pins_default_branch_at_install(cfg: Any, tmp_path: Path) -> Non
         )
     assert resp.status_code == 200, resp.text
     assert captured["repo_url"] == "https://github.com/owner/repo@main", captured
+
+
+def test_add_app_non_git_clone_does_not_pin_or_error(cfg: Any, tmp_path: Path) -> None:
+    """A ``file://`` URL pointing at a plain directory is copied verbatim, so the
+    landed clone has no ``.git``. Install must not try to read a branch from it
+    (which would raise InvalidGitRepositoryError → HTTP 500); repo_url stays
+    refless."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "openhost.toml").write_text(
+        '[app]\nname = "myapp"\nversion = "0.1.0"\n[runtime.container]\nimage = "Dockerfile"\nport = 8080\n'
+    )
+    assert not (clone / ".git").exists()
+
+    manifest = parse_manifest(str(clone))
+
+    captured: dict[str, Any] = {}
+
+    def fake_insert_and_deploy(*args: Any, **kwargs: Any) -> str:
+        captured["repo_url"] = kwargs.get("repo_url")
+        return new_app_id()
+
+    async def fake_clone(repo_url: str, return_to: str) -> tuple[Any, str, None, None]:
+        return manifest, str(clone), None, None
+
+    cookies = auth_cookie(cfg)
+    with (
+        mock.patch.object(apps_routes, "clone_with_github_fallback", side_effect=fake_clone),
+        mock.patch.object(apps_routes, "validate_manifest", return_value=None),
+        mock.patch.object(apps_routes, "move_clone_to_app_temp_dir", return_value=str(clone)),
+        mock.patch.object(apps_routes, "insert_and_deploy", side_effect=fake_insert_and_deploy),
+        TestClient(app=make_test_app(api_apps_routes)) as client,
+    ):
+        resp = client.post(
+            "/api/add_app",
+            json={"repo_url": f"file://{clone}"},
+            cookies=cookies,
+        )
+    assert resp.status_code == 200, resp.text
+    assert captured["repo_url"] == f"file://{clone}", captured

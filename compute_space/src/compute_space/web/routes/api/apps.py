@@ -334,8 +334,11 @@ async def api_add_app(
     # (origin's default), so the stored URL and detail page show which branch
     # the app tracks from the start — matching what a later Update & Reload
     # records. The clone is already on that branch, so this needs no network.
+    # Only git-backed clones have a branch to read: a ``file://`` URL pointing
+    # at a non-git directory is copied verbatim (no ``.git``), so skip pinning
+    # there rather than letting get_branch_name raise InvalidGitRepositoryError.
     base_url, ref = parse_repo_url(repo_url)
-    if not ref:
+    if not ref and os.path.isdir(os.path.join(final_dir, ".git")):
         landed = await get_branch_name(Path(final_dir))
         if landed:
             repo_url = f"{base_url}@{landed}"
@@ -579,7 +582,7 @@ async def _reload_app_impl(
             # silently re-resolving (and following) a moving remote default on
             # every future update.
             base_url, pinned_ref = parse_repo_url(repo_url) if repo_url else ("", "")
-            if repo_url and not pinned_ref:
+            if repo_url and not pinned_ref and os.path.isdir(os.path.join(app_row["repo_path"], ".git")):
                 landed = await get_branch_name(Path(app_row["repo_path"]))
                 if landed:
                     db.execute(
