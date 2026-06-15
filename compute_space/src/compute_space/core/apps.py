@@ -788,6 +788,13 @@ def git_pull(
             return _run(["git", "pull"])
 
         # Fetch the pinned ref and hard-reset the working tree to it.
+        # TODO: this duplicates the branch-vs-tag checkout in
+        # git_ops.hard_checkout_ref (the system-agent update path), which also
+        # runs ``git clean -fd`` to drop untracked files that can shadow modules
+        # removed/renamed between revisions. We omit the clean (parity with the
+        # old ``git pull`` behaviour). Decide whether to converge the two paths
+        # and/or add ``git clean -fd`` here so stale untracked files don't leak
+        # into the Docker build context.
         ok, err = _run(["git", "fetch", "origin", ref])
         if not ok:
             return False, err
