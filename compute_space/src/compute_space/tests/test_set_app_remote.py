@@ -21,6 +21,7 @@ from litestar.testing import TestClient
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core.app_id import new_app_id
 from compute_space.core.apps import git_pull
+from compute_space.core.manifest import parse_manifest
 from compute_space.db.connection import init_db
 from compute_space.web.routes.api.apps import api_apps_routes
 
@@ -223,3 +224,44 @@ def test_reload_update_pins_resolved_default_branch(cfg: Any, tmp_path: Path) ->
     finally:
         db.close()
     assert stored == f"file://{origin}@main", stored
+
+
+def test_add_app_pins_default_branch_at_install(cfg: Any, tmp_path: Path) -> None:
+    """Installing a refless upstream records the cloned default branch into
+    repo_url, so the app is pinned and the branch is visible from first deploy
+    — not only after the first Update & Reload."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    _git(clone, "init", "-b", "main")
+    (clone / "openhost.toml").write_text(
+        '[app]\nname = "myapp"\nversion = "0.1.0"\n[runtime.container]\nimage = "Dockerfile"\nport = 8080\n'
+    )
+    _git(clone, "add", ".")
+    _git(clone, "commit", "-m", "init")
+
+    manifest = parse_manifest(str(clone))
+
+    captured: dict[str, Any] = {}
+
+    def fake_insert_and_deploy(*args: Any, **kwargs: Any) -> str:
+        captured["repo_url"] = kwargs.get("repo_url")
+        return new_app_id()
+
+    async def fake_clone(repo_url: str, return_to: str) -> tuple[Any, str, None, None]:
+        return manifest, str(clone), None, None
+
+    cookies = auth_cookie(cfg)
+    with (
+        mock.patch.object(apps_routes, "clone_with_github_fallback", side_effect=fake_clone),
+        mock.patch.object(apps_routes, "validate_manifest", return_value=None),
+        mock.patch.object(apps_routes, "move_clone_to_app_temp_dir", return_value=str(clone)),
+        mock.patch.object(apps_routes, "insert_and_deploy", side_effect=fake_insert_and_deploy),
+        TestClient(app=make_test_app(api_apps_routes)) as client,
+    ):
+        resp = client.post(
+            "/api/add_app",
+            json={"repo_url": "https://github.com/owner/repo"},
+            cookies=cookies,
+        )
+    assert resp.status_code == 200, resp.text
+    assert captured["repo_url"] == "https://github.com/owner/repo@main", captured

@@ -330,6 +330,16 @@ async def api_add_app(
 
     final_dir = move_clone_to_app_temp_dir(clone_dir, app_name, config)
 
+    # Pin a refless upstream to the concrete branch the fresh clone landed on
+    # (origin's default), so the stored URL and detail page show which branch
+    # the app tracks from the start — matching what a later Update & Reload
+    # records. The clone is already on that branch, so this needs no network.
+    base_url, ref = parse_repo_url(repo_url)
+    if not ref:
+        landed = await get_branch_name(Path(final_dir))
+        if landed:
+            repo_url = f"{base_url}@{landed}"
+
     port_overrides: dict[str, int] | None = dict(data.port_overrides) if data.port_overrides else None
 
     # Resolve permissions to grant: explicit list from the deploy page,
