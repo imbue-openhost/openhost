@@ -1,0 +1,151 @@
+"""Tests for editing an app's git upstream.
+
+Covers the ``/set_app_remote/<app_id>`` route (persisting a new repo_url with
+optional ``@ref``) and the branch-switching behaviour added to ``git_pull`` so
+that changing the upstream ref actually checks out a different branch on the
+next update.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+from litestar.testing import TestClient
+
+from compute_space.core.app_id import new_app_id
+from compute_space.core.apps import git_pull
+from compute_space.db.connection import init_db
+from compute_space.web.routes.api.apps import api_apps_routes
+
+from ._litestar_helpers import auth_cookie
+from ._litestar_helpers import make_test_app
+from .conftest import _make_test_config
+
+
+@pytest.fixture
+def cfg(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    c = _make_test_config(tmp_path_factory.mktemp("set-remote"), port=20400)
+    init_db(c.db_path)
+    return c
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+
+
+def _seed_git_app(cfg: Any, name: str, repo_path: str, repo_url: str | None = None) -> str:
+    app_id = new_app_id()
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            """INSERT INTO apps (app_id, name, version, repo_path, repo_url, local_port, status)
+               VALUES (?, ?, '1.0', ?, ?, ?, 'stopped')""",
+            (app_id, name, repo_path, repo_url, 20401),
+        )
+        db.commit()
+    finally:
+        db.close()
+    return app_id
+
+
+def test_set_app_remote_persists_normalized_url(cfg: Any, tmp_path: Path) -> None:
+    """Posting a new upstream stores it on the row; a bare host gets https:// and
+    the ``@ref`` suffix is preserved."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+
+    app_id = _seed_git_app(cfg, "myapp", str(repo), repo_url="https://github.com/old/repo")
+    cookies = auth_cookie(cfg)
+    with TestClient(app=make_test_app(api_apps_routes)) as client:
+        resp = client.post(
+            f"/set_app_remote/{app_id}",
+            json={"repo_url": "github.com/new/repo@dev"},
+            cookies=cookies,
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["repo_url"] == "https://github.com/new/repo@dev"
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        stored = db.execute("SELECT repo_url FROM apps WHERE app_id = ?", (app_id,)).fetchone()[0]
+    finally:
+        db.close()
+    assert stored == "https://github.com/new/repo@dev"
+
+
+def test_set_app_remote_rejects_builtin_without_git(cfg: Any, tmp_path: Path) -> None:
+    """An app whose repo_path has no .git (builtin/copied app) cannot have its
+    upstream edited."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    app_id = _seed_git_app(cfg, "builtin", str(plain), repo_url=None)
+    cookies = auth_cookie(cfg)
+    with TestClient(app=make_test_app(api_apps_routes)) as client:
+        resp = client.post(
+            f"/set_app_remote/{app_id}",
+            json={"repo_url": "https://github.com/new/repo"},
+            cookies=cookies,
+        )
+    assert resp.status_code == 400, resp.text
+    assert "no git repository" in resp.json()["error"].lower()
+
+
+def test_set_app_remote_rejects_empty(cfg: Any, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    app_id = _seed_git_app(cfg, "myapp", str(repo), repo_url="https://github.com/old/repo")
+    cookies = auth_cookie(cfg)
+    with TestClient(app=make_test_app(api_apps_routes)) as client:
+        resp = client.post(f"/set_app_remote/{app_id}", json={"repo_url": "  "}, cookies=cookies)
+    assert resp.status_code == 400, resp.text
+
+
+def test_git_pull_switches_branch_via_ref(tmp_path: Path) -> None:
+    """git_pull given a repo_url with an ``@ref`` checks out that branch even
+    when the clone is currently on a different one."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-b", "main")
+    (origin / "f.txt").write_text("main")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-m", "main commit")
+    _git(origin, "checkout", "-b", "feature")
+    (origin / "f.txt").write_text("feature")
+    _git(origin, "commit", "-am", "feature commit")
+    _git(origin, "checkout", "main")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", f"file://{origin}", str(clone))
+    # Clone starts on main.
+    head = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=clone, capture_output=True, text=True
+    ).stdout.strip()
+    assert head == "main"
+
+    ok, err = git_pull(str(clone), "myapp", repo_url=f"file://{origin}@feature")
+    assert ok, err
+
+    head = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=clone, capture_output=True, text=True
+    ).stdout.strip()
+    assert head == "feature"
+    assert (clone / "f.txt").read_text() == "feature"

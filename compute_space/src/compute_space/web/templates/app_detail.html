@@ -29,7 +29,19 @@
   <tr><th>Memory</th><td>{{ app.memory_mb }} MB</td></tr>
   <tr><th>CPU</th><td>{{ app.cpu_millicores }} millicores</td></tr>
   {% if app.repo_url %}
-  <tr><th>Git URL</th><td><a href="{{ app.repo_url }}" target="_blank">{{ app.repo_url }}</a></td></tr>
+  <tr><th>Git URL</th><td>
+    <span id="remote-display">
+      <code>{{ app.repo_url }}</code>
+      <button class="btn" onclick="editRemote()" style="margin-left:0.5em;padding:0.1em 0.5em;font-size:0.85em;">Edit</button>
+    </span>
+    <span id="remote-edit" style="display:none;">
+      <input type="text" id="remote-input" value="{{ app.repo_url }}" style="font-family:monospace;width:28em;" placeholder="https://github.com/owner/repo@branch">
+      <button class="btn btn-primary" onclick="saveRemote()" style="padding:0.1em 0.5em;font-size:0.85em;">Save &amp; update</button>
+      <button class="btn" onclick="cancelRemote()" style="padding:0.1em 0.5em;font-size:0.85em;">Cancel</button>
+      <div style="color:#666;font-size:0.8em;margin-top:0.25em;">Append <code>@branch</code> (or a tag/commit) to change the ref. Saving re-points the upstream and pulls the latest code.</div>
+      <span id="remote-error" style="color:#c00;font-size:0.85em;"></span>
+    </span>
+  </td></tr>
   {% endif %}
   <tr><th>Repo Path</th><td>{{ app.repo_path }}</td></tr>
   <tr><th>Created</th><td>{{ app.created_at }}</td></tr>
@@ -168,6 +180,7 @@ async function grantPermission(btn) {
   "appStatus": {{ app.status | tojson }},
   "nextUrl": {{ next_url | default("", true) | tojson }},
   "reloadAppUrl": "/reload_app/{{ app.app_id }}",
+  "setAppRemoteUrl": "/set_app_remote/{{ app.app_id }}",
   "dropBuildCacheUrl": "/api/drop-docker-cache"
 }
 </script>

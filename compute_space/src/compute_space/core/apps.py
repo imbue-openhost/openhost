@@ -690,8 +690,13 @@ def git_pull(
             with open(log_file, "a") as f:
                 f.write(msg + "\n")
 
+    # ``ref`` is the branch/tag/commit pinned via the ``url@ref`` suffix of the
+    # stored repo_url. When set, we fetch and hard-checkout it so that editing
+    # the upstream branch actually switches branches; otherwise we plain-pull
+    # the currently checked-out branch.
+    ref: str | None = None
     if repo_url:
-        base_url, _ref = parse_repo_url(repo_url)
+        base_url, ref = parse_repo_url(repo_url)
         try:
             subprocess.run(
                 ["git", "remote", "set-url", "origin", base_url],
@@ -726,24 +731,36 @@ def git_pull(
             pass
 
     try:
-        _log("$ git pull")
-        result = subprocess.run(
-            ["git", "pull"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.stdout.strip():
-            _log(result.stdout.strip())
-        if result.stderr.strip():
-            _log(result.stderr.strip())
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() or result.stdout.strip() or "git pull failed"
-            return False, error_msg
+        if ref:
+            # Pinned ref: fetch it and hard-reset the working branch to the
+            # remote tip. Mirrors the system-agent update flow's
+            # ``git checkout -fB <ref> origin/<ref>`` so switching branches
+            # (not just pulling) works.
+            commands = [
+                ["git", "fetch", "origin", ref],
+                ["git", "checkout", "-fB", ref, f"origin/{ref}"],
+            ]
+        else:
+            commands = [["git", "pull"]]
+        for cmd in commands:
+            _log("$ " + " ".join(cmd))
+            result = subprocess.run(
+                cmd,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.stdout.strip():
+                _log(result.stdout.strip())
+            if result.stderr.strip():
+                _log(result.stderr.strip())
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip() or f"{' '.join(cmd)} failed"
+                return False, error_msg
         return True, None
     except Exception as e:
-        _log(f"git pull failed: {e}")
+        _log(f"git update failed: {e}")
         return False, str(e)
     finally:
         if github_token and original_url:

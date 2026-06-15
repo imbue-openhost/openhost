@@ -39,6 +39,7 @@ from compute_space.core.containers import stop_container
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
+from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.oauth import OAuthAuthorizationRequired
@@ -161,6 +162,17 @@ class RenameAppResponse:
     ok: bool
     name: str
     app_id: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetAppRemoteRequest:
+    repo_url: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetAppRemoteResponse:
+    ok: bool
+    repo_url: str
 
 
 # ─── helpers ───────────────────────────────────────────────────────────────
@@ -842,6 +854,52 @@ async def rename_app(
     )
 
 
+@post("/set_app_remote/{app_id:str}", status_code=200, guards=[require_owner_auth])
+async def set_app_remote(
+    app_id: str,
+    data: SetAppRemoteRequest,
+    db: sqlite3.Connection,
+    config: Config,
+) -> Response[SetAppRemoteResponse] | Response[ErrorResponse]:
+    """Edit an app's git upstream (repo URL and/or ``@branch`` ref).
+
+    Persists the new value to ``apps.repo_url``; the next ``Update & Reload``
+    (``/reload_app`` with ``update=true``) re-points origin and checks out the
+    pinned ref. Only git-backed apps can have an upstream — builtin apps copied
+    from the apps/ directory have no ``.git`` to update.
+    """
+    repo_url = data.repo_url.strip()
+    if not repo_url:
+        return Response(content=ErrorResponse(error="Repo URL is required"), status_code=400)
+
+    app_row, err = _resolve_app_or_error(app_id, db)
+    if err is not None:
+        return err
+    assert app_row is not None
+    if _is_removing(app_row):
+        return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
+
+    if not app_row["repo_path"] or not os.path.isdir(os.path.join(app_row["repo_path"], ".git")):
+        return Response(
+            content=ErrorResponse(error="This app has no git repository, so its upstream cannot be edited."),
+            status_code=400,
+        )
+
+    # Normalise via parse_repo_url so a bare hostname gets an https:// scheme
+    # and the stored value matches what git_pull will re-point origin to.
+    base_url, ref = parse_repo_url(repo_url)
+    normalized = f"{base_url}@{ref}" if ref else base_url
+
+    db.execute("UPDATE apps SET repo_url = ? WHERE app_id = ?", (normalized, app_id))
+    db.commit()
+
+    return Response(
+        content=SetAppRemoteResponse(ok=True, repo_url=normalized),
+        status_code=200,
+        media_type=MediaType.JSON,
+    )
+
+
 api_apps_routes = Router(
     path="/",
     route_handlers=[
@@ -856,5 +914,6 @@ api_apps_routes = Router(
         reload_app_after_oauth,
         remove_app,
         rename_app,
+        set_app_remote,
     ],
 )
