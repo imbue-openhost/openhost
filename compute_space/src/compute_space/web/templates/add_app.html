@@ -199,6 +199,13 @@ function renderManifest(m, url) {
     row('Accessible without login', m.public_paths.map(p => `<code>${esc(p)}</code>`).join(', '));
   }
 
+  if (m.links && m.links.length) {
+    section('Links', '#e8f0fe');
+    for (const link of m.links) {
+      row(esc(link.name), `<code>${esc(link.path)}</code>`);
+    }
+  }
+
   if (m.network_host) {
     section('Host Networking', '#f8d7da');
     row('<strong>WARNING</strong>',

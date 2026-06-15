@@ -285,6 +285,73 @@ host_port = 0
         ]
 
 
+class TestLinks:
+    """Parsing of [[links]] (user-facing links advertised to the dashboard)."""
+
+    def test_links_default_is_empty(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.links == []
+
+    def test_single_link(self):
+        toml = MINIMAL + '\n[[links]]\nname = "admin"\npath = "/_openhost/admin"\n'
+        manifest = parse_manifest_from_string(toml)
+        assert len(manifest.links) == 1
+        link = manifest.links[0]
+        assert link.name == "admin"
+        assert link.path == "/_openhost/admin"
+
+    def test_multiple_links_preserve_order(self):
+        toml = (
+            MINIMAL
+            + """
+[[links]]
+name = "admin"
+path = "/_openhost/admin"
+
+[[links]]
+name = "metrics"
+path = "/metrics"
+"""
+        )
+        manifest = parse_manifest_from_string(toml)
+        assert [(link.name, link.path) for link in manifest.links] == [
+            ("admin", "/_openhost/admin"),
+            ("metrics", "/metrics"),
+        ]
+
+    def test_missing_name_raises(self):
+        toml = MINIMAL + '\n[[links]]\npath = "/_openhost/admin"\n'
+        with pytest.raises(ValueError, match="requires a non-empty string 'name'"):
+            parse_manifest_from_string(toml)
+
+    def test_empty_name_raises(self):
+        toml = MINIMAL + '\n[[links]]\nname = ""\npath = "/_openhost/admin"\n'
+        with pytest.raises(ValueError, match="requires a non-empty string 'name'"):
+            parse_manifest_from_string(toml)
+
+    def test_missing_path_raises(self):
+        toml = MINIMAL + '\n[[links]]\nname = "admin"\n'
+        with pytest.raises(ValueError, match="requires a non-empty string 'path'"):
+            parse_manifest_from_string(toml)
+
+    def test_empty_path_raises(self):
+        toml = MINIMAL + '\n[[links]]\nname = "admin"\npath = ""\n'
+        with pytest.raises(ValueError, match="requires a non-empty string 'path'"):
+            parse_manifest_from_string(toml)
+
+    def test_arbitrary_path_not_validated(self):
+        """Paths are taken at face value — no scheme/prefix/existence checks."""
+        toml = MINIMAL + '\n[[links]]\nname = "weird"\npath = "no-leading-slash"\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.links[0].path == "no-leading-slash"
+
+    def test_manifest_with_links_is_json_serializable(self):
+        toml = MINIMAL + '\n[[links]]\nname = "admin"\npath = "/_openhost/admin"\n'
+        manifest = parse_manifest_from_string(toml)
+        decoded = json.loads(json.dumps(attr.asdict(manifest)))
+        assert decoded["links"] == [{"name": "admin", "path": "/_openhost/admin"}]
+
+
 class TestContainerParsing:
     """Verify container fields are parsed correctly."""
 

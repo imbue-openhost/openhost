@@ -89,6 +89,22 @@ class PortMapping:
 
 
 @attr.s(auto_attribs=True, frozen=True)
+class AppLink:
+    """A user-facing link declared in [[links]].
+
+    Apps use this to advertise interesting paths on their own URL that
+    aren't the bare root — e.g. an admin console at ``/_openhost/admin``.
+    The dashboard renders these as clickable links under the app. The
+    ``path`` is taken at face value: OpenHost does not validate that it
+    exists, that it is reachable, or that it is (or isn't) gated by auth.
+    It is simply advertised to the user.
+    """
+
+    name: str
+    path: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
 class ServiceProvides:
     service: str = attr.ib(converter=_normalize_service_url)
     version: str
@@ -141,6 +157,9 @@ class AppManifest:
     # [routing]
     health_check: str | None = None
     public_paths: list[str] = attr.Factory(list)
+
+    # [[links]]
+    links: list[AppLink] = attr.Factory(list)
 
     # [resources]
     memory_mb: int = 128
@@ -256,6 +275,29 @@ def _parse_ports(ports_list: list[Any]) -> list[PortMapping]:
     return result
 
 
+def _parse_links(links_list: Any) -> list[AppLink]:
+    """Parse [[links]] entries from manifest data.
+
+    Each entry needs a non-empty ``name`` and ``path``. The path is not
+    validated beyond being a non-empty string — OpenHost trusts the app
+    to advertise its own paths and only displays them to the user.
+    """
+    if not isinstance(links_list, list):
+        raise ValueError("[[links]] must be a list of tables")
+    result: list[AppLink] = []
+    for entry in links_list:
+        if not isinstance(entry, dict):
+            raise ValueError("Each [[links]] entry must be a table")
+        name = entry.get("name")
+        if not name or not isinstance(name, str):
+            raise ValueError("Each [[links]] entry requires a non-empty string 'name'")
+        path = entry.get("path")
+        if not path or not isinstance(path, str):
+            raise ValueError(f"[[links]] '{name}' requires a non-empty string 'path'")
+        result.append(AppLink(name=name, path=path))
+    return result
+
+
 def _structure_list(data: list[Any], cls: type[Any], label: str) -> list[Any]:
     try:
         return [cattrs.structure(entry, cls) for entry in data]
@@ -367,6 +409,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         shm_mb=shm_mb,
         health_check=routing.get("health_check"),
         public_paths=routing.get("public_paths", []),
+        links=_parse_links(data.get("links", [])),
         memory_mb=resources.get("memory_mb", 128),
         cpu_millicores=resources.get("cpu_millicores", 100),
         gpu=resources.get("gpu", False),

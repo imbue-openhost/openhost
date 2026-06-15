@@ -10,6 +10,7 @@ from litestar.response import Template
 
 from compute_space.config import Config
 from compute_space.core.app_id import is_valid_app_name
+from compute_space.core.apps import deserialize_links
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
@@ -51,6 +52,9 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
     ).fetchall()
     logs = get_docker_logs(app_name, config.temporary_data_dir, app_row["container_id"])
 
+    # User-facing links the app advertised in its manifest's [[links]].
+    links = deserialize_links(app_row["links"])
+
     # Permissions: granted + manifest-declared but not yet granted
     granted_perms = [
         {"service_url": p.service_url, "grant": p.grant, "scope": p.scope}
@@ -82,6 +86,7 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
         template_name="app_detail.html",
         context={
             "app": app_row,
+            "links": links,
             "databases": databases,
             "port_mappings": port_mappings,
             "services_provided": services_provided,
