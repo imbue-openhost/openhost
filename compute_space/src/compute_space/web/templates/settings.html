@@ -36,6 +36,9 @@
 <div id="update-status">
   <p>Checking for updates&hellip;</p>
 </div>
+<div id="restart-overlay" style="display:none;">
+  <p id="restart-status"><strong>Waiting for shutdown&hellip;</strong></p>
+</div>
 
 <h3>Change Password</h3>
 <div>
@@ -44,10 +47,6 @@
   <input type="password" id="confirm-pw" placeholder="Confirm new password" style="margin-bottom:0.3em;">
   <button onclick="changePassword()" class="btn btn-primary">Change Password</button>
   <p id="pw-msg" style="display:none; margin-top:0.3em;"></p>
-</div>
-
-<div id="restart-overlay" style="display:none;">
-  <p id="restart-status"><strong>Waiting for shutdown&hellip;</strong></p>
 </div>
 
 <h2>Archive Backend</h2>
