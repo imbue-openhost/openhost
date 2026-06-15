@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 
 import attr
 import httpx
@@ -675,6 +676,38 @@ def app_log_path(app_name: str, config: Config) -> str:
     return os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "docker.log")
 
 
+def _remote_default_branch(repo_path: str, log: Callable[[str], None]) -> tuple[str | None, str | None]:
+    """Resolve origin's default branch (e.g. ``main``/``master``).
+
+    Returns ``(branch, error)``. ``git remote set-head --auto`` queries the
+    remote, so on auth/network failure we return an error string for the
+    caller's token-retry path to act on; ``(None, None)`` means the remote was
+    reachable but the default branch couldn't be read (caller falls back to a
+    plain pull on the current branch).
+    """
+    log("$ git remote set-head origin --auto")
+    set_head = subprocess.run(
+        ["git", "remote", "set-head", "origin", "--auto"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if set_head.returncode != 0:
+        return None, set_head.stderr.strip() or set_head.stdout.strip() or "failed to query remote default branch"
+    sym = subprocess.run(
+        ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if sym.returncode != 0:
+        return None, None
+    name = sym.stdout.strip().removeprefix("origin/")
+    return (name or None), None
+
+
 def git_pull(
     repo_path: str,
     app_name: str,
@@ -692,8 +725,10 @@ def git_pull(
 
     # ``ref`` is the branch/tag/commit pinned via the ``url@ref`` suffix of the
     # stored repo_url. When set, we fetch and hard-checkout it so that editing
-    # the upstream branch actually switches branches; otherwise we plain-pull
-    # the currently checked-out branch.
+    # the upstream branch actually switches branches. When unset (the operator
+    # cleared the ``@ref``), we fall back to origin's default branch so that
+    # clearing it returns to main/master rather than sticking on whatever branch
+    # happened to be checked out.
     ref: str | None = None
     if repo_url:
         base_url, ref = parse_repo_url(repo_url)
@@ -731,9 +766,15 @@ def git_pull(
             pass
 
     try:
+        if not ref:
+            # No pinned ref: resolve origin's default branch and switch to it.
+            ref, default_err = _remote_default_branch(repo_path, _log)
+            if default_err:
+                # Likely auth/network — surface so the caller can retry with a token.
+                return False, default_err
         if ref:
-            # Pinned ref: fetch it and hard-reset the working branch to the
-            # remote tip. Mirrors the system-agent update flow's
+            # Fetch the ref and hard-reset the working branch to the remote tip.
+            # Mirrors the system-agent update flow's
             # ``git checkout -fB <ref> origin/<ref>`` so switching branches
             # (not just pulling) works.
             commands = [
@@ -741,6 +782,7 @@ def git_pull(
                 ["git", "checkout", "-fB", ref, f"origin/{ref}"],
             ]
         else:
+            # Couldn't determine a default branch; pull the current one.
             commands = [["git", "pull"]]
         for cmd in commands:
             _log("$ " + " ".join(cmd))

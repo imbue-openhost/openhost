@@ -149,3 +149,38 @@ def test_git_pull_switches_branch_via_ref(tmp_path: Path) -> None:
     ).stdout.strip()
     assert head == "feature"
     assert (clone / "f.txt").read_text() == "feature"
+
+
+def test_git_pull_returns_to_default_branch_when_ref_cleared(tmp_path: Path) -> None:
+    """With no ``@ref`` in the repo_url, git_pull switches back to origin's
+    default branch instead of staying on whatever branch was checked out."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-b", "main")
+    (origin / "f.txt").write_text("main")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-m", "main commit")
+    _git(origin, "checkout", "-b", "feature")
+    (origin / "f.txt").write_text("feature")
+    _git(origin, "commit", "-am", "feature commit")
+    # Leave origin's HEAD pointing at the default branch (main).
+    _git(origin, "checkout", "main")
+
+    clone = tmp_path / "clone"
+    # Clone and pin the working copy to the feature branch, as if the app had
+    # previously been installed with ``@feature``.
+    _git(tmp_path, "clone", "--branch", "feature", f"file://{origin}", str(clone))
+    head = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=clone, capture_output=True, text=True
+    ).stdout.strip()
+    assert head == "feature"
+
+    # Clearing the @ref (plain URL) should bring it back to main.
+    ok, err = git_pull(str(clone), "myapp", repo_url=f"file://{origin}")
+    assert ok, err
+
+    head = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=clone, capture_output=True, text=True
+    ).stdout.strip()
+    assert head == "main"
+    assert (clone / "f.txt").read_text() == "main"
