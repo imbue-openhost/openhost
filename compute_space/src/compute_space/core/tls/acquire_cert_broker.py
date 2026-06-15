@@ -141,7 +141,7 @@ def _poll_until_issued(
     """
     deadline = clock.monotonic() + poll_timeout_seconds
     interval = poll_interval_seconds
-    while True:
+    while clock.monotonic() < deadline:
         result = client.finalize_order(order_id)
         if result.status == FINALIZE_STATUS_VALID:
             if not result.certificate:
@@ -149,11 +149,11 @@ def _poll_until_issued(
             logger.info(f"Broker issued certificate for order {order_id}")
             return result.certificate
 
-        remaining = deadline - clock.monotonic()
-        if remaining <= 0:
-            raise CertAcquisitionTimeoutError(
-                f"Broker did not issue cert for order {order_id} within {poll_timeout_seconds}s"
-            )
-        logger.info(f"Broker order {order_id} still pending; retrying in {min(interval, remaining):.0f}s")
-        clock.sleep(min(interval, remaining))
+        sleep_for = min(interval, deadline - clock.monotonic())
+        if sleep_for <= 0:
+            break
+        logger.info(f"Broker order {order_id} still pending; retrying in {sleep_for:.0f}s")
+        clock.sleep(sleep_for)
         interval = min(interval * poll_backoff_factor, poll_max_interval_seconds)
+
+    raise CertAcquisitionTimeoutError(f"Broker did not issue cert for order {order_id} within {poll_timeout_seconds}s")
