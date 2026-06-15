@@ -18,8 +18,7 @@ from compute_space.core.archive_backend import configure_backend
 from compute_space.core.archive_backend import juicefs_mount_dir
 from compute_space.core.archive_backend import read_state
 from compute_space.db.connection import init_db
-
-from .conftest import _make_test_config
+from compute_space.tests.conftest import _make_test_config
 
 
 @pytest.fixture

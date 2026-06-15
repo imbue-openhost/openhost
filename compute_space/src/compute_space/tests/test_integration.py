@@ -24,14 +24,13 @@ from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
+from compute_space.tests.conftest import _make_config_and_env
+from compute_space.tests.conftest import _start_router_process
+from compute_space.tests.conftest import _stop_router_process
+from compute_space.tests.container import container_cleanup
 from compute_space.tests.utils import app_id_for
 from compute_space.tests.utils import wait_app_removed
 from compute_space.tests.utils import wait_app_running
-
-from .conftest import _make_config_and_env
-from .conftest import _start_router_process
-from .conftest import _stop_router_process
-from .container import container_cleanup
 
 _APPS_DIR = str(OPENHOST_PROJECT_DIR / "apps")
 
