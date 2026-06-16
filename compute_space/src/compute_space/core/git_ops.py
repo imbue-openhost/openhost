@@ -1,3 +1,4 @@
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -14,14 +15,57 @@ class NoRemoteBranchForLocalBranch(Exception):
     pass
 
 
+class UnsupportedRepoUrlError(ValueError):
+    """A repo URL whose transport we recognise but deliberately don't support.
+
+    Currently only SSH (``ssh://`` and SCP-style ``git@host:path``) — clones
+    over SSH would need a deploy key, known_hosts, and an SSH agent that the
+    compute_space process doesn't have, so we reject them up front with a clear
+    message rather than letting ``git clone`` fail cryptically.
+    """
+
+
 _KNOWN_SCHEMES = {"http", "https", "ssh", "git", "file"}
+
+# SCP-style SSH shorthand: ``[user@]host:path`` with no URL scheme, e.g.
+# ``git@github.com:user/repo.git``. We require a ``user@`` and a ``host:``
+# before the first slash so we don't misfire on credential URLs like
+# ``oauth2:TOKEN@host/path`` (where the ``@`` follows the colon).
+_SCP_STYLE_SSH_RE = re.compile(r"^[^/@]+@[^/:]+:")
+
+_SSH_URL_ERROR = (
+    "SSH git URLs are not supported (e.g. 'git@github.com:user/repo.git' or "
+    "'ssh://git@github.com/user/repo.git'). Please use the HTTPS clone URL "
+    "instead, e.g. 'https://github.com/user/repo.git'."
+)
+
+
+def is_ssh_url(repo_url: str) -> bool:
+    """True if ``repo_url`` uses the SSH transport.
+
+    Matches both the ``ssh://`` scheme and git's SCP-style shorthand
+    (``git@host:path``). Credential-bearing HTTPS-ish URLs such as
+    ``oauth2:TOKEN@host/path`` are not SSH and return False.
+    """
+    if urllib.parse.urlparse(repo_url).scheme == "ssh":
+        return True
+    return bool(_SCP_STYLE_SSH_RE.match(repo_url))
 
 
 def parse_repo_url(repo_url: str) -> tuple[str, str | None]:
     """Parse a repo URL with optional @ref suffix (pip-style).
 
     Returns (base_url, ref) where ref is a branch, tag, or commit hash, or None.
+
+    Raises:
+        UnsupportedRepoUrlError: if the URL uses the SSH transport.
     """
+    # Reject SSH URLs before the bare-hostname fallback below: an SCP-style
+    # URL like "git@github.com:user/repo.git" has no scheme, so it would
+    # otherwise be rewritten to a malformed "https://git@github.com:user/..."
+    # (git reads "user" as a port) and fail cryptically.
+    if is_ssh_url(repo_url):
+        raise UnsupportedRepoUrlError(_SSH_URL_ERROR)
     # Allow bare hostnames like "github.com/user/repo" without a scheme.
     # urlparse misidentifies credentials (e.g. "oauth2:TOKEN@host") as a scheme,
     # so we only trust schemes we actually recognise.

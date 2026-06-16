@@ -14,6 +14,7 @@ from compute_space.core.apps import deserialize_links
 from compute_space.core.apps import list_builtin_apps
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.git_ops import UnsupportedRepoUrlError
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import get_remote_url
 from compute_space.core.git_ops import parse_repo_url
@@ -131,7 +132,12 @@ async def _resolve_edit_app(
             return None
         repo_url = openhost_remote
         repo_path = str(config.openhost_repo_path)
-    base_url, ref_from_url = parse_repo_url(repo_url)
+    try:
+        base_url, ref_from_url = parse_repo_url(repo_url)
+    except UnsupportedRepoUrlError:
+        # Legacy SSH upstream (set_app_remote rejects these now): fall back to a
+        # plain link to the raw URL rather than failing the detail page render.
+        return {"mode": "repo", "href": repo_url}
     repo_link_fallback = {"mode": "repo", "href": base_url}
     ref = ref_from_url
     if not ref:

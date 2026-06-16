@@ -5,7 +5,11 @@ parse_repo_url must correctly handle URLs with embedded credentials
 is not a real URL scheme and prepending https://.
 """
 
+import pytest
+
 from compute_space.core.apps import parse_repo_url
+from compute_space.core.git_ops import UnsupportedRepoUrlError
+from compute_space.core.git_ops import is_ssh_url
 
 
 class TestParseRepoUrlCredentialUrls:
@@ -31,7 +35,7 @@ class TestParseRepoUrlCredentialUrls:
 
 
 class TestParseRepoUrlKnownSchemes:
-    """Known schemes (http, https, ssh, git, file) should be preserved."""
+    """Supported schemes (http, https, git, file) should be preserved."""
 
     def test_https_url(self):
         url, ref = parse_repo_url("https://github.com/user/repo.git")
@@ -43,11 +47,6 @@ class TestParseRepoUrlKnownSchemes:
         assert url == "http://github.com/user/repo.git"
         assert ref is None
 
-    def test_ssh_url(self):
-        url, ref = parse_repo_url("ssh://git@github.com/user/repo.git")
-        assert url == "ssh://git@github.com/user/repo.git"
-        assert ref is None
-
     def test_git_url(self):
         url, ref = parse_repo_url("git://github.com/user/repo.git")
         assert url == "git://github.com/user/repo.git"
@@ -57,6 +56,63 @@ class TestParseRepoUrlKnownSchemes:
         url, ref = parse_repo_url("file:///home/user/repo")
         assert url == "file:///home/user/repo"
         assert ref is None
+
+
+class TestParseRepoUrlSshRejected:
+    """SSH URLs are unsupported; parse_repo_url rejects them with a clear error."""
+
+    @pytest.mark.parametrize(
+        "ssh_url",
+        [
+            "git@github.com:user/repo.git",
+            "git@github.com:user/repo.git@main",
+            "git@gitlab.com:group/subgroup/repo.git",
+            "ssh://git@github.com/user/repo.git",
+            "ssh://git@github.com:22/user/repo.git",
+        ],
+    )
+    def test_ssh_urls_raise(self, ssh_url):
+        with pytest.raises(UnsupportedRepoUrlError):
+            parse_repo_url(ssh_url)
+
+    def test_error_message_points_to_https(self):
+        with pytest.raises(UnsupportedRepoUrlError) as excinfo:
+            parse_repo_url("git@github.com:user/repo.git")
+        assert "HTTPS" in str(excinfo.value)
+
+
+class TestIsSshUrl:
+    """is_ssh_url distinguishes SSH transport from HTTPS/credential URLs."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "git@github.com:user/repo.git",
+            "git@github.com:user/repo.git@main",
+            "git@gitlab.com:group/subgroup/repo.git",
+            "ssh://git@github.com/user/repo.git",
+            "ssh://git@github.com:22/user/repo.git",
+        ],
+    )
+    def test_ssh(self, url):
+        assert is_ssh_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/user/repo.git",
+            "http://github.com/user/repo.git",
+            "https://git@github.com/user/repo.git",
+            "git://github.com/user/repo.git",
+            "file:///home/user/repo",
+            "github.com/user/repo.git",
+            # Credential-bearing URLs: the '@' follows the colon, not an scp host.
+            "oauth2:glpat-xxxx@gitlab.com/user/repo.git",
+            "user:pass@github.com/user/repo.git",
+        ],
+    )
+    def test_not_ssh(self, url):
+        assert is_ssh_url(url) is False
 
 
 class TestParseRepoUrlBareHostname:

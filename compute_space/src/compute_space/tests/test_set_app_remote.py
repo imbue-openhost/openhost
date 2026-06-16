@@ -111,6 +111,53 @@ def test_set_app_remote_rejects_builtin_without_git(cfg: Any, tmp_path: Path) ->
     assert "no git repository" in resp.json()["error"].lower()
 
 
+@pytest.mark.parametrize(
+    "ssh_url",
+    ["git@github.com:user/repo.git", "ssh://git@github.com/user/repo.git"],
+)
+def test_set_app_remote_rejects_ssh_url(cfg: Any, tmp_path: Path, ssh_url: str) -> None:
+    """The remote-update box rejects SSH URLs with an HTTPS-pointing error and
+    leaves the stored upstream unchanged."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    app_id = _seed_git_app(cfg, "myapp", str(repo), repo_url="https://github.com/old/repo")
+    cookies = auth_cookie(cfg)
+    with TestClient(app=make_test_app(api_apps_routes)) as client:
+        resp = client.post(f"/set_app_remote/{app_id}", json={"repo_url": ssh_url}, cookies=cookies)
+    assert resp.status_code == 400, resp.text
+    assert "HTTPS" in resp.json()["error"]
+
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        stored = db.execute("SELECT repo_url FROM apps WHERE app_id = ?", (app_id,)).fetchone()[0]
+    finally:
+        db.close()
+    assert stored == "https://github.com/old/repo"
+
+
+@pytest.mark.parametrize(
+    "ssh_url",
+    ["git@github.com:user/repo.git", "ssh://git@github.com/user/repo.git"],
+)
+def test_clone_and_get_app_info_rejects_ssh_url(cfg: Any, ssh_url: str) -> None:
+    """The deploy page (clone-and-inspect) rejects SSH URLs up front with a
+    clear error — no clone attempt, no GitHub OAuth bounce."""
+    cookies = auth_cookie(cfg)
+    with TestClient(app=make_test_app(api_apps_routes)) as client:
+        resp = client.post("/api/clone_and_get_app_info", json={"repo_url": ssh_url}, cookies=cookies)
+    assert resp.status_code == 400, resp.text
+    assert "HTTPS" in resp.json()["error"]
+
+
+def test_git_pull_rejects_ssh_url(tmp_path: Path) -> None:
+    """git_pull (the Update & Reload path) fails cleanly on an SSH upstream
+    rather than mangling it into a broken HTTPS URL."""
+    ok, err = git_pull(str(tmp_path), "myapp", repo_url="git@github.com:user/repo.git")
+    assert ok is False
+    assert err is not None and "HTTPS" in err
+
+
 def test_set_app_remote_rejects_empty(cfg: Any, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
