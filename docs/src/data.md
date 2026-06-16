@@ -13,7 +13,7 @@
         - examples: source jpegs / RAWs in a photo library, original video files, attachment uploads, large model weights.
     - **temporary data (`app_temp_data`)** — local disk scratch, not backed up, recreatable on demand.
         - examples: low-res thumbnails generated from source photos, transcoding work files, in-flight upload chunks.
-- there’s also a folder for router-level data, eg the sqlite database used by the router.
+- there’s also VM-level / router data (eg the sqlite database used by the router). apps see this in-container as `/data/vm_data/` (only with the `access_vm_data` permission); on the host the router db lives at `persistent_data/openhost/router.db`.
 - where do app build artifacts go? probably in app temp data?
 - folder structure (as seen inside containers, mounted at `/data/`)
     - /data/
@@ -23,8 +23,7 @@
             - app_name/
         - app_archive/
             - app_name/
-        - router_data/
-            - router.db
+        - vm_data/          # VM-level / router shared data (only with access_vm_data)
 - regardless of permissions, apps should see the same folder structure, just only with folders they have access to. that way the structure doesn't change if the permissions change. without any special permissions, apps will just have basically `/data/app_data/APP_NAME` and `/data/app_temp_data/APP_NAME` (and `/data/app_archive/APP_NAME` if requested).
 
 ### Why three tiers, not two

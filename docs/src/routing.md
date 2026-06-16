@@ -75,18 +75,15 @@ when TLS is enabled:
 when TLS is not enabled (e.g. Cloudflare Tunnel setups):
 - **:80** — reverse proxies to the router on `:8080`
 
-in dev mode (`openhost up --dev`), Caddy does not run at all — the router serves HTTP directly on `:8080`.
+in a local setup (`openhost up` without `--domain`), Caddy does not run at all — the router serves HTTP directly on `:8080`. (TLS + Caddy are opted into by passing `--domain`; there is no `--dev` flag.)
 
-the Caddyfile is generated dynamically by `compute_space/compute_space/core/caddy.py`. no static Caddyfile is checked in.
+the Caddyfile is generated dynamically by `compute_space/src/compute_space/core/caddy.py`. no static Caddyfile is checked in.
 
 ## app routing
 
-the router (Hypercorn on :8080) handles all app routing. two mechanisms:
+the router (Hypercorn on :8080) handles all app routing via **subdomain routing**: `my-app.host.imbue.com` — the router extracts `my-app` from the Host header and proxies to the app's container port.
 
-1. **subdomain routing**: `my-app.host.imbue.com` — the router extracts `my-app` from the Host header and proxies to the app's container port.
-2. **path prefix routing**: `host.imbue.com/my-app/...` — fallback when subdomains aren't available. the router strips the prefix before proxying.
-
-both HTTP and WebSocket requests are proxied. auth (JWT cookie) is checked before proxying to non-public paths.
+both HTTP and WebSocket requests are proxied. auth (an opaque, DB-backed `session_token` cookie — not a JWT) is checked before proxying to non-public paths.
 
 ## latency
 
@@ -100,4 +97,4 @@ for a single server setup, there's some optimizations you can do:
 - TLS session resumption: after the first TLS handshake, the client and server can cache the session parameters. then on subsequent connections, they can do a shorter handshake that just references the cached session, which saves roundtrips. this is tricky because it is only properly secure on GET requests.
 - TLS 1.3 has less roundtrips
 - HTTP/3 has less roundtrips
-- use fast ECDSA P-256 keys (we do this — see `compute_space/compute_space/core/tls/util.py`)
+- use fast ECDSA P-256 keys (we do this — see `compute_space/src/compute_space/core/tls/util.py`)
