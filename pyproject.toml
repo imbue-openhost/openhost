@@ -46,6 +46,11 @@ openhost_system_agent = "openhost_system_agent.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+# Dependency cooldown: ignore package versions uploaded in the last week, so we never
+# pick up brand-new releases. Rolling window (resolved relative to lock time) — no manual bumps.
+exclude-newer = "7 days"
+
 [tool.hatch.build.targets.wheel]
 packages = ["routerd_cli/src/self_host_cli", "compute_space/src/compute_space", "compute_space_cli/src/compute_space_cli", "openhost_system_agent/src/openhost_system_agent", "openhost_app_test_harness/src/openhost_test_harness"]
 
@@ -108,6 +113,9 @@ exclude = ["compute_space/src/compute_space/tests/"]
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64"]
+# Dependency cooldown: ignore conda/pypi releases from the last week (matches the uv
+# `exclude-newer` above). Rolling window — resolved relative to lock time.
+exclude-newer = "7 days"
 
 [tool.pixi.dependencies]
 python = "3.12.*"
