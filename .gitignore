@@ -41,3 +41,6 @@ specs/
 # Beads (local only — not shared via git)
 .beads/
 
+# mdBook build output
+docs/book/
+
