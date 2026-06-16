@@ -52,6 +52,28 @@ def is_ssh_url(repo_url: str) -> bool:
     return bool(_SCP_STYLE_SSH_RE.match(repo_url))
 
 
+def _repo_url_hostname(repo_url: str) -> str:
+    """Lowercased hostname of ``repo_url``, applying the same bare-hostname
+    normalisation as :func:`parse_repo_url` (a scheme-less URL is treated as
+    https). Returns "" when no host can be parsed."""
+    parsed = urllib.parse.urlparse(repo_url)
+    if parsed.scheme not in _KNOWN_SCHEMES:
+        parsed = urllib.parse.urlparse("https://" + repo_url)
+    return (parsed.hostname or "").lower()
+
+
+def is_github_repo_url(repo_url: str) -> bool:
+    """True if ``repo_url``'s host is github.com (or a subdomain of it).
+
+    Matches on the parsed hostname rather than a substring so a look-alike
+    host like ``github.com.evil.example`` or ``notgithub.com`` doesn't gate
+    the GitHub OAuth clone fallback (which would otherwise attach a GitHub
+    token to a request bound for the wrong host).
+    """
+    host = _repo_url_hostname(repo_url)
+    return host == "github.com" or host.endswith(".github.com")
+
+
 def parse_repo_url(repo_url: str) -> tuple[str, str | None]:
     """Parse a repo URL with optional @ref suffix (pip-style).
 

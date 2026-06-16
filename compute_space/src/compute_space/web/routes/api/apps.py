@@ -40,6 +40,7 @@ from compute_space.core.git_ops import UnsupportedRepoUrlError
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
+from compute_space.core.git_ops import is_github_repo_url
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
@@ -557,7 +558,7 @@ async def _reload_app_impl(
                     repo_url=repo_url,
                 )
 
-            if not pull_ok and "github.com" in repo_url:
+            if not pull_ok and is_github_repo_url(repo_url):
                 lf.write("Attempting git pull with github oauth\n")
                 lf.flush()
                 return_to = f"//{config.zone_domain}/reload_app/{app_id}?continue_oauth_update=1"

@@ -9,6 +9,7 @@ import pytest
 
 from compute_space.core.apps import parse_repo_url
 from compute_space.core.git_ops import UnsupportedRepoUrlError
+from compute_space.core.git_ops import is_github_repo_url
 from compute_space.core.git_ops import is_ssh_url
 
 
@@ -113,6 +114,38 @@ class TestIsSshUrl:
     )
     def test_not_ssh(self, url):
         assert is_ssh_url(url) is False
+
+
+class TestIsGithubRepoUrl:
+    """is_github_repo_url matches on the parsed host, not a substring, so
+    look-alike hosts don't gate the GitHub OAuth fallback."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/user/repo.git",
+            "https://github.com/user/repo.git@main",
+            "http://github.com/user/repo",
+            "https://x-access-token:TOKEN@github.com/user/repo.git",
+            "github.com/user/repo.git",  # bare host normalised to https
+            "https://api.github.com/repos/user/repo",  # subdomain
+        ],
+    )
+    def test_github(self, url):
+        assert is_github_repo_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com.evil.example/user/repo.git",
+            "https://notgithub.com/user/repo.git",
+            "https://github.community/user/repo.git",
+            "https://gitlab.com/user/repo.git",
+            "https://evil.example/?github.com",
+        ],
+    )
+    def test_not_github(self, url):
+        assert is_github_repo_url(url) is False
 
 
 class TestParseRepoUrlBareHostname:
