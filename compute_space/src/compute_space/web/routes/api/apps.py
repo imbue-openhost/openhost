@@ -39,6 +39,7 @@ from compute_space.core.containers import stop_container
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
+from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.oauth import OAuthAuthorizationRequired
@@ -163,6 +164,17 @@ class RenameAppResponse:
     app_id: str | None = None
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class SetAppRemoteRequest:
+    repo_url: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetAppRemoteResponse:
+    ok: bool
+    repo_url: str
+
+
 # ─── helpers ───────────────────────────────────────────────────────────────
 
 
@@ -192,6 +204,28 @@ def _resolve_app_or_error(
     if not row:
         return None, Response(content=ErrorResponse(error="App not found"), status_code=404, media_type=MediaType.JSON)
     return row, None
+
+
+async def _pin_refless_to_landed_branch(repo_url: str | None, repo_path: str) -> str | None:
+    """Return ``repo_url`` with ``@<branch>`` appended for the branch ``repo_path``
+    is on, or ``None`` when there's nothing to pin.
+
+    Pins only when ``repo_url`` has no ``@ref`` yet and ``repo_path`` is a git
+    checkout sitting on a (non-detached) branch. Used at install and after a
+    refless update so the stored upstream names a concrete branch — visible on
+    the detail page and deterministic across future pulls — rather than
+    re-resolving a moving remote default. A ``file://`` URL pointing at a
+    non-git directory is copied verbatim (no ``.git``), so it's skipped here
+    rather than letting get_branch_name raise InvalidGitRepositoryError. Reads
+    local HEAD only, so no network.
+    """
+    if not repo_url:
+        return None
+    base_url, ref = parse_repo_url(repo_url)
+    if ref or not os.path.isdir(os.path.join(repo_path, ".git")):
+        return None
+    landed = await get_branch_name(Path(repo_path))
+    return f"{base_url}@{landed}" if landed else None
 
 
 # ─── routes ────────────────────────────────────────────────────────────────
@@ -317,6 +351,13 @@ async def api_add_app(
             )
 
     final_dir = move_clone_to_app_temp_dir(clone_dir, app_name, config)
+
+    # Pin a refless upstream to the concrete branch the fresh clone landed on
+    # (origin's default), so the stored URL and detail page show which branch
+    # the app tracks from the start — matching what a later Update & Reload records.
+    pinned = await _pin_refless_to_landed_branch(repo_url, final_dir)
+    if pinned:
+        repo_url = pinned
 
     port_overrides: dict[str, int] | None = dict(data.port_overrides) if data.port_overrides else None
 
@@ -548,6 +589,19 @@ async def _reload_app_impl(
                 if continue_oauth:
                     return Redirect(path=f"/app_detail/{app_name}")
                 return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
+
+            # The pull succeeded. If the upstream had no pinned ``@ref`` (the
+            # operator cleared it, or it was never set), git_pull resolved and
+            # checked out origin's default branch. Record that concrete branch
+            # back into repo_url so the app stays on it deterministically and
+            # the detail page shows which branch it tracks — rather than
+            # silently re-resolving (and following) a moving remote default on
+            # every future update.
+            pinned = await _pin_refless_to_landed_branch(repo_url, app_row["repo_path"])
+            if pinned:
+                db.execute("UPDATE apps SET repo_url = ? WHERE app_id = ?", (pinned, app_id))
+                db.commit()
+                lf.write(f"Pinned upstream to {pinned}\n")
 
     await asyncio.to_thread(stop_app_process, app_row)
     db.execute(
@@ -842,6 +896,51 @@ async def rename_app(
     )
 
 
+@post("/set_app_remote/{app_id:str}", status_code=200, guards=[require_owner_auth])
+async def set_app_remote(
+    app_id: str,
+    data: SetAppRemoteRequest,
+    db: sqlite3.Connection,
+) -> Response[SetAppRemoteResponse] | Response[ErrorResponse]:
+    """Edit an app's git upstream (repo URL and/or ``@branch`` ref).
+
+    Persists the new value to ``apps.repo_url``; the next ``Update & Reload``
+    (``/reload_app`` with ``update=true``) re-points origin and checks out the
+    pinned ref. Only git-backed apps can have an upstream — builtin apps copied
+    from the apps/ directory have no ``.git`` to update.
+    """
+    repo_url = data.repo_url.strip()
+    if not repo_url:
+        return Response(content=ErrorResponse(error="Repo URL is required"), status_code=400)
+
+    app_row, err = _resolve_app_or_error(app_id, db)
+    if err is not None:
+        return err
+    assert app_row is not None
+    if _is_removing(app_row):
+        return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
+
+    if not app_row["repo_path"] or not os.path.isdir(os.path.join(app_row["repo_path"], ".git")):
+        return Response(
+            content=ErrorResponse(error="This app has no git repository, so its upstream cannot be edited."),
+            status_code=400,
+        )
+
+    # Normalise via parse_repo_url so a bare hostname gets an https:// scheme
+    # and the stored value matches what git_pull will re-point origin to.
+    base_url, ref = parse_repo_url(repo_url)
+    normalized = f"{base_url}@{ref}" if ref else base_url
+
+    db.execute("UPDATE apps SET repo_url = ? WHERE app_id = ?", (normalized, app_id))
+    db.commit()
+
+    return Response(
+        content=SetAppRemoteResponse(ok=True, repo_url=normalized),
+        status_code=200,
+        media_type=MediaType.JSON,
+    )
+
+
 api_apps_routes = Router(
     path="/",
     route_handlers=[
@@ -856,5 +955,6 @@ api_apps_routes = Router(
         reload_app_after_oauth,
         remove_app,
         rename_app,
+        set_app_remote,
     ],
 )

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 
 import attr
 import httpx
@@ -703,6 +704,38 @@ def app_log_path(app_name: str, config: Config) -> str:
     return os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "docker.log")
 
 
+def _remote_default_branch(repo_path: str, log: Callable[[str], None]) -> tuple[str | None, str | None]:
+    """Resolve origin's default branch (e.g. ``main``/``master``).
+
+    Returns ``(branch, error)``. ``git remote set-head --auto`` queries the
+    remote, so on auth/network failure we return an error string for the
+    caller's token-retry path to act on; ``(None, None)`` means the remote was
+    reachable but the default branch couldn't be read (caller falls back to a
+    plain pull on the current branch).
+    """
+    log("$ git remote set-head origin --auto")
+    set_head = subprocess.run(
+        ["git", "remote", "set-head", "origin", "--auto"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if set_head.returncode != 0:
+        return None, set_head.stderr.strip() or set_head.stdout.strip() or "failed to query remote default branch"
+    sym = subprocess.run(
+        ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if sym.returncode != 0:
+        return None, None
+    name = sym.stdout.strip().removeprefix("origin/")
+    return (name or None), None
+
+
 def git_pull(
     repo_path: str,
     app_name: str,
@@ -718,8 +751,15 @@ def git_pull(
             with open(log_file, "a") as f:
                 f.write(msg + "\n")
 
+    # ``ref`` is the branch/tag/commit pinned via the ``url@ref`` suffix of the
+    # stored repo_url. When set, we fetch and hard-checkout it so that editing
+    # the upstream branch actually switches branches. When unset (the operator
+    # cleared the ``@ref``), we fall back to origin's default branch so that
+    # clearing it returns to main/master rather than sticking on whatever branch
+    # happened to be checked out.
+    ref: str | None = None
     if repo_url:
-        base_url, _ref = parse_repo_url(repo_url)
+        base_url, ref = parse_repo_url(repo_url)
         try:
             subprocess.run(
                 ["git", "remote", "set-url", "origin", base_url],
@@ -753,25 +793,58 @@ def git_pull(
         except Exception:
             pass
 
-    try:
-        _log("$ git pull")
-        result = subprocess.run(
-            ["git", "pull"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+    def _run(cmd: list[str]) -> tuple[bool, str | None]:
+        _log("$ " + " ".join(cmd))
+        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=60)
         if result.stdout.strip():
             _log(result.stdout.strip())
         if result.stderr.strip():
             _log(result.stderr.strip())
         if result.returncode != 0:
-            error_msg = result.stderr.strip() or result.stdout.strip() or "git pull failed"
-            return False, error_msg
+            return False, result.stderr.strip() or result.stdout.strip() or f"{' '.join(cmd)} failed"
         return True, None
+
+    try:
+        if not ref:
+            # No pinned ref: resolve origin's default branch and switch to it.
+            ref, default_err = _remote_default_branch(repo_path, _log)
+            if default_err:
+                # Likely auth/network — surface so the caller can retry with a token.
+                return False, default_err
+        if not ref:
+            # Couldn't determine a default branch; pull the current one.
+            return _run(["git", "pull"])
+
+        # Fetch the pinned ref and hard-reset the working tree to it.
+        # TODO: this duplicates the branch-vs-tag checkout in
+        # git_ops.hard_checkout_ref (the system-agent update path), which also
+        # runs ``git clean -fd`` to drop untracked files that can shadow modules
+        # removed/renamed between revisions. We omit the clean (parity with the
+        # old ``git pull`` behaviour). Decide whether to converge the two paths
+        # and/or add ``git clean -fd`` here so stale untracked files don't leak
+        # into the Docker build context.
+        ok, err = _run(["git", "fetch", "origin", ref])
+        if not ok:
+            return False, err
+        # A branch ref materialises as the remote-tracking ``origin/<ref>``;
+        # check it out as a local branch so it tracks and future pulls update
+        # cleanly (mirrors the system-agent update flow). A tag or commit SHA
+        # has no ``origin/<ref>`` branch, so fall back to a detached checkout
+        # of the just-fetched FETCH_HEAD.
+        is_branch = (
+            subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{ref}"],
+                cwd=repo_path,
+                capture_output=True,
+                timeout=10,
+            ).returncode
+            == 0
+        )
+        if is_branch:
+            return _run(["git", "checkout", "-fB", ref, f"origin/{ref}"])
+        return _run(["git", "checkout", "-f", "FETCH_HEAD"])
     except Exception as e:
-        _log(f"git pull failed: {e}")
+        _log(f"git update failed: {e}")
         return False, str(e)
     finally:
         if github_token and original_url:
