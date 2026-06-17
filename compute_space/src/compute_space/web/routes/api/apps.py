@@ -36,9 +36,11 @@ from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
+from compute_space.core.git_ops import UnsupportedRepoUrlError
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
+from compute_space.core.git_ops import is_github_repo_url
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
@@ -221,7 +223,12 @@ async def _pin_refless_to_landed_branch(repo_url: str | None, repo_path: str) ->
     """
     if not repo_url:
         return None
-    base_url, ref = parse_repo_url(repo_url)
+    try:
+        base_url, ref = parse_repo_url(repo_url)
+    except UnsupportedRepoUrlError:
+        # A stored SSH upstream can't be pinned (and shouldn't exist after the
+        # set_app_remote guard); leave it untouched rather than crashing.
+        return None
     if ref or not os.path.isdir(os.path.join(repo_path, ".git")):
         return None
     landed = await get_branch_name(Path(repo_path))
@@ -551,7 +558,7 @@ async def _reload_app_impl(
                     repo_url=repo_url,
                 )
 
-            if not pull_ok and "github.com" in repo_url:
+            if not pull_ok and is_github_repo_url(repo_url):
                 lf.write("Attempting git pull with github oauth\n")
                 lf.flush()
                 return_to = f"//{config.zone_domain}/reload_app/{app_id}?continue_oauth_update=1"
@@ -928,7 +935,10 @@ async def set_app_remote(
 
     # Normalise via parse_repo_url so a bare hostname gets an https:// scheme
     # and the stored value matches what git_pull will re-point origin to.
-    base_url, ref = parse_repo_url(repo_url)
+    try:
+        base_url, ref = parse_repo_url(repo_url)
+    except UnsupportedRepoUrlError as e:
+        return Response(content=ErrorResponse(error=str(e)), status_code=400)
     normalized = f"{base_url}@{ref}" if ref else base_url
 
     db.execute("UPDATE apps SET repo_url = ? WHERE app_id = ?", (normalized, app_id))

@@ -32,6 +32,9 @@ from compute_space.core.data import deprovision_data
 from compute_space.core.data import deprovision_temp_data
 from compute_space.core.data import provision_data
 from compute_space.core.data import rmtree_with_sudo_fallback
+from compute_space.core.git_ops import UnsupportedRepoUrlError
+from compute_space.core.git_ops import is_github_repo_url
+from compute_space.core.git_ops import is_ssh_url
 from compute_space.core.git_ops import parse_repo_url
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppLink
@@ -188,7 +191,10 @@ async def clone_and_read_manifest(
 
     Returns (manifest, clone_dir, error). On success error is None.
     """
-    base_url, ref = parse_repo_url(repo_url)
+    try:
+        base_url, ref = parse_repo_url(repo_url)
+    except UnsupportedRepoUrlError as e:
+        return None, None, str(e)
     clone_url = base_url
 
     # For file:// URLs, copy the directory if it's not a git repo
@@ -275,7 +281,10 @@ async def clone_with_github_fallback(
     """
     manifest, tmp_dir, error = await clone_and_read_manifest(repo_url)
 
-    if error and "github.com" in repo_url:
+    # An SSH URL never clones over HTTPS-authenticated OAuth, so don't bounce
+    # the owner through the GitHub authorize flow only to fail again — the
+    # error from clone_and_read_manifest already explains to use HTTPS.
+    if error and is_github_repo_url(repo_url) and not is_ssh_url(repo_url):
         clone_error = error
         try:
             token = await get_oauth_token("github", ["repo"], return_to=return_to)
@@ -759,7 +768,11 @@ def git_pull(
     # happened to be checked out.
     ref: str | None = None
     if repo_url:
-        base_url, ref = parse_repo_url(repo_url)
+        try:
+            base_url, ref = parse_repo_url(repo_url)
+        except UnsupportedRepoUrlError as e:
+            _log(str(e))
+            return False, str(e)
         try:
             subprocess.run(
                 ["git", "remote", "set-url", "origin", base_url],
