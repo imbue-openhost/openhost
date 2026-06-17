@@ -9,7 +9,7 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Unique app identifier (lowercase, hyphens ok) |
-| `version` | string | yes | Semver version string |
+| `version` | string | yes | Version string. Conventionally semver, but only checked for non-emptiness (not validated as semver). |
 | `description` | string | no | Short description |
 | `authors` | string[] | no | List of author names |
 
@@ -28,7 +28,7 @@ Apps declare how they should be deployed on OpenHost by placing an `openhost.tom
 
 Declares additional port mappings for the container. Each entry binds a container port to a host port (TCP+UDP on 0.0.0.0). Set `host_port = 0` for auto-assignment from the 9000-9999 range.
 
-Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejected at parse time. Ports `80` and `443` are claimed by the built-in Caddy front-door and will fail to bind if an app requests them. For public HTTP/HTTPS, route through the router proxy (apps live under `https://{app_name}.{zone_domain}/`); for other protocols (e.g. SMTP on `25`), pick `host_port = 25` or any port in the 9000-9999 auto-assign range.
+Rootless podman can bind ports >= 25 only; `host_port` values below 25 are rejected at parse time. Ports `80` and `443` are not rejected by the manifest parser, but they are claimed at runtime by the built-in Caddy front-door, so an app that requests them will fail to bind. For public HTTP/HTTPS, route through the router proxy (apps live under `https://{app_name}.{zone_domain}/`); for other protocols (e.g. SMTP on `25`), pick `host_port = 25` or any port in the 9000-9999 auto-assign range.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -97,9 +97,10 @@ The host provisions requested data services and injects connection info as envir
 - `OPENHOST_APP_DATA_DIR` — `/data/app_data/{app_name}` (only if app_data access granted)
 - `OPENHOST_APP_TEMP_DIR` — `/data/app_temp_data/{app_name}` (only if app_temp_data access granted)
 - `OPENHOST_APP_ARCHIVE_DIR` — `/data/app_archive/{app_name}` (only if app_archive access granted)
-- `OPENHOST_AUTH_PUBLIC_KEY` — PEM-encoded JWT public key for token verification (only if signing keys are available)
 - `OPENHOST_ROUTER_URL` — URL of the router's HTTP server, reachable from inside the container.
 - `OPENHOST_OWNER_USERNAME` — the compute space owner's chosen display name; use to seed SSO account names. Defaults to `owner` if not explicitly configured.
+
+The host also injects identity/routing variables (`OPENHOST_APP_NAME`, `OPENHOST_APP_ID`, `OPENHOST_APP_TOKEN`, `OPENHOST_ZONE_DOMAIN`, `OPENHOST_MY_REDIRECT_DOMAIN`); see the full table in [Creating an App](creating_an_app.md). The zone's identity public key is **not** injected as an environment variable — it is served over HTTP at `/.well-known/jwks.json` (JWKS) and `/.well-known/openhost-identity` (PEM).
 
 ## Examples
 

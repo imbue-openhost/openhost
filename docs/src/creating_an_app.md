@@ -114,6 +114,7 @@ The router injects these environment variables into your app:
 | `OPENHOST_MY_REDIRECT_DOMAIN` | `my.selfhost.imbue.com` | The shared `my.*` OAuth redirect domain. This hosts a browser-local page that redirects the user to their zone. |
 | `OPENHOST_APP_DATA_DIR` | `/data/app_data/my-app` | Path to the app's persistent data directory. Set when `app_data` (default on), `sqlite`, or `access_all_app_data` is requested   |
 | `OPENHOST_APP_TEMP_DIR` | `/data/app_temp_data/my-app` | Path to the app's temporary data directory. Set when `app_temp_data` or `access_all_app_data` is requested          |
+| `OPENHOST_APP_ARCHIVE_DIR` | `/data/app_archive/my-app` | Path to the app's elastic archive directory. Set when `app_archive` or `access_all_archive` is requested |
 | `OPENHOST_SQLITE_<NAME>` | `/data/app_data/my-app/sqlite/main.db` (for `sqlite = ["main"]`) | Path to a provisioned SQLite database file. Set once per entry in `sqlite`                                      |
 | `OPENHOST_OWNER_USERNAME` | `alice` | The compute space owner's chosen display name. Use to seed SSO account names. Defaults to `owner` if not explicitly configured. |
 
@@ -157,7 +158,7 @@ In general, the debugging flow is something like:
 6. Retest and repeat
 
 We find AI tools work best when they can directly reference openhost code+docs. So we'd suggest:
-```cd some_dir && git clone https://github.com/imbue-ai/openhost.git```
+```cd some_dir && git clone https://github.com/imbue-openhost/openhost.git```
 then point them at that checkout and tell them to read this doc.
 
 ## CLI
@@ -172,7 +173,7 @@ this will automatically get updates if you pull new changes from the openhost re
 
 or if not,
 ```bash
-uv tool install "oh @ git+https://github.com/imbue-ai/openhost.git#subdirectory=compute_space_cli"
+uv tool install "oh @ git+https://github.com/imbue-openhost/openhost.git#subdirectory=compute_space_cli"
 ```
 Run `oh instance login` to login to your compute space.
 
