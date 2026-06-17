@@ -31,5 +31,18 @@
     <input type="password" name="confirm_password" required>
     <input type="submit" id="submit-btn" value="Set Password">
   </form>
+  <script>
+    // Guard against double-submit: provisioning the owner is a one-time,
+    // non-idempotent POST, so a double-click would fire a second /setup
+    // request that races the first. Disable the button once the form is
+    // actually submitting. Using the 'submit' event (not 'click') means a
+    // failed HTML5 validation pass never disables the button, and because
+    // the button has no 'name' it's never part of the posted form data.
+    document.getElementById('setup-form').addEventListener('submit', function () {
+      var btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+      btn.value = 'Setting up\u2026';
+    });
+  </script>
 </body>
 </html>
