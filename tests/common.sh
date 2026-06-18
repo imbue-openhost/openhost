@@ -145,6 +145,8 @@ EOF
 # Environment:
 #   SKIP_APT_UPGRADE=1    — skip apt dist-upgrade (speeds up ephemeral CI instances)
 #   OPENHOST_COMMIT=<sha> — deploy a specific git commit (defaults to main)
+#   OPENHOST_REFSPEC=<ref> — extra refspec to fetch so OPENHOST_COMMIT is reachable
+#                            (e.g. refs/pull/N/merge for a PR merge commit)
 run_ansible_setup() {
     local ip="$1" ssh_key="$2" domain="$3" ssh_user="${4:-ubuntu}"
     local repo_dir
@@ -165,6 +167,10 @@ run_ansible_setup() {
     if [ -n "${OPENHOST_COMMIT:-}" ]; then
         extra_vars+=(-e "openhost_commit=$OPENHOST_COMMIT")
         echo "  (deploying commit $OPENHOST_COMMIT)"
+    fi
+    if [ -n "${OPENHOST_REFSPEC:-}" ]; then
+        extra_vars+=(-e "openhost_refspec=$OPENHOST_REFSPEC")
+        echo "  (fetching refspec $OPENHOST_REFSPEC)"
     fi
     if [ -n "${CLAIM_TOKEN:-}" ]; then
         extra_vars+=(-e "claim_token=$CLAIM_TOKEN")
