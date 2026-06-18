@@ -10,44 +10,56 @@ from compute_space.core.logging import logger
 
 
 def check_app_status(config: Config) -> None:
-    """On startup, verify apps marked 'running' are still alive.
+    """On startup, verify apps that should be up are still alive.
 
-    Apps that need rebuilding are restarted sequentially in a single
-    background thread to avoid concurrent image builds against the same
-    containers-storage instance.
+    Covers 'running' apps plus apps left mid-restart in 'starting'/'building':
+    a reboot kills every container, and if a prior restart sweep was interrupted
+    (e.g. the service restarted mid-rebuild) those apps stay in 'starting'.
+    Looking only at 'running' would strand them forever.
+
+    Apps that need rebuilding are restarted sequentially in a single background
+    thread to avoid concurrent image builds against the same containers-storage
+    instance.
     """
     db = sqlite3.connect(config.db_path)
     db.row_factory = sqlite3.Row
     apps_to_restart: list[str] = []
     try:
-        rows = db.execute("SELECT * FROM apps WHERE status = 'running'").fetchall()
+        rows = db.execute("SELECT * FROM apps WHERE status IN ('running', 'starting', 'building')").fetchall()
         for row in rows:
-            alive = False
-            if row["container_id"]:
-                alive = is_container_running(row["container_id"])
+            alive = bool(row["container_id"]) and is_container_running(row["container_id"])
 
-            if not alive:
-                if row["container_id"]:
-                    repo_path = row["repo_path"]
-                    if not repo_path or not os.path.isdir(repo_path):
-                        db.execute(
-                            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
-                            (
-                                f"Cannot restart: repo path missing ({repo_path})",
-                                row["app_id"],
-                            ),
-                        )
-                        continue
+            if alive:
+                # Container survived, or a prior sweep restarted it but the
+                # status never advanced past 'starting'/'building'. Heal it.
+                if row["status"] != "running":
                     db.execute(
-                        "UPDATE apps SET status = 'starting' WHERE app_id = ?",
+                        "UPDATE apps SET status = 'running' WHERE app_id = ?",
                         (row["app_id"],),
                     )
-                    apps_to_restart.append(row["app_id"])
-                else:
+                continue
+
+            if row["container_id"]:
+                repo_path = row["repo_path"]
+                if not repo_path or not os.path.isdir(repo_path):
                     db.execute(
-                        "UPDATE apps SET status = 'stopped' WHERE app_id = ?",
-                        (row["app_id"],),
+                        "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                        (
+                            f"Cannot restart: repo path missing ({repo_path})",
+                            row["app_id"],
+                        ),
                     )
+                    continue
+                db.execute(
+                    "UPDATE apps SET status = 'starting' WHERE app_id = ?",
+                    (row["app_id"],),
+                )
+                apps_to_restart.append(row["app_id"])
+            else:
+                db.execute(
+                    "UPDATE apps SET status = 'stopped' WHERE app_id = ?",
+                    (row["app_id"],),
+                )
         db.commit()
     finally:
         db.close()
