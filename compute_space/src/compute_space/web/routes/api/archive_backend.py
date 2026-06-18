@@ -139,7 +139,7 @@ async def get_archive_backend(db: sqlite3.Connection, config: Config) -> Backend
             state.s3_endpoint,
             state.s3_access_key_id,
             state.s3_secret_access_key,
-            state.s3_prefix,
+            state.juicefs_volume_name,
         )
         if summary is not None:
             meta_dumps = MetaDumpsSummary(
