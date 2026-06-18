@@ -164,3 +164,18 @@ the page is enough to see the change.
 
 `docs/src/SUMMARY.md` is the sidebar table of contents — add new
 pages there to surface them in the manual.
+
+## agent skill
+
+an agent skill that gives an AI coding agent context for deploying and debugging apps on openhost (via the `oh` CLI). install it with:
+
+```bash
+npx skills add imbue-openhost/openhost --skill openhost-context
+```
+
+the skill works best with the `oh` CLI installed and logged in:
+
+```bash
+uv tool install "oh @ git+https://github.com/imbue-openhost/openhost.git#subdirectory=compute_space_cli"
+oh instance login
+```
