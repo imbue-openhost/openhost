@@ -229,9 +229,11 @@ class TestSelfHost:
         # X-Forwarded-* are set by the proxy
         assert "x-forwarded-for" in headers
         assert "x-forwarded-host" in headers
-        # Spoofed values are overwritten
+        # The client connected over HTTPS (Caddy terminates TLS); the app must
+        # see that, even though the router talks plain HTTP to Caddy internally.
+        assert headers.get("x-forwarded-proto") == "https"
+        # Spoofed values are overwritten (Caddy drops them before the router).
         assert "attacker-ip" not in headers.get("x-forwarded-for", "")
-        assert headers.get("x-forwarded-proto") != "evil"
         assert headers.get("x-forwarded-host") != "evil.example.com"
 
     def test_07e_subdomain_unauth_rejected(self, domain):
