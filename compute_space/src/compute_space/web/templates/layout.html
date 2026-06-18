@@ -1,7 +1,10 @@
+{#- Owner username (if set) takes precedence over the zone subdomain for the
+   instance name shown in the title + heading. Computed once and reused below. -#}
+{%- set display_name = owner_name() or zone_name -%}
 <!DOCTYPE html>
 <html>
 <head>
-  <title>{% if zone_name %}{{ zone_name }}'s Private Compute Space{% else %}OpenHost{% endif %}{% block title_suffix %}{% endblock %}</title>
+  <title>{% if display_name %}{{ display_name }}'s Private Compute Space{% else %}OpenHost{% endif %}{% block title_suffix %}{% endblock %}</title>
   <style>
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
     table { border-collapse: collapse; width: 100%; margin: 1em 0; }
@@ -35,7 +38,7 @@
   </style>
 </head>
 <body>
-  <h1>{% if zone_name %}{{ zone_name }}'s Private Compute Space{% else %}OpenHost{% endif %}</h1>
+  <h1>{% if display_name %}{{ display_name }}'s Private Compute Space{% else %}OpenHost{% endif %}</h1>
   <nav>
     <a href="/dashboard">Dashboard</a>
     <a href="/docs/" target="_blank" rel="noopener">Docs</a>

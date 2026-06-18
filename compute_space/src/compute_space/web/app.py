@@ -22,12 +22,14 @@ from compute_space.config import Config
 from compute_space.config import get_config
 from compute_space.config import provide_config
 from compute_space.core import archive_backend
+from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.identity import load_identity_keys
 from compute_space.core.logging import logger
 from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
 from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
+from compute_space.db import get_db
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
@@ -74,10 +76,29 @@ def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
         proto = "https" if config.tls_enabled else "http"
         return f"{proto}://{app_name}.{zone_domain}/"
 
+    def owner_name() -> str | None:
+        """The owner's configured username, or None if unset / pre-setup.
+
+        Read live (not cached) because the owner can change it from Settings at
+        any time. Exposed as a callable template global so templates can prefer
+        it over ``zone_name`` for headings.
+        """
+        try:
+            db = get_db()
+            try:
+                return read_owner_username(db)
+            finally:
+                db.close()
+        except Exception:
+            # Never let a heading lookup break page rendering (e.g. pre-init DB).
+            logger.exception("failed to read owner username for template")
+            return None
+
     return {
         "zone_name": zone_name,
         "zone_domain": zone_domain,
         "app_url": app_url,
+        "owner_name": owner_name,
         "static_url": _make_static_url(static_dir),
     }
 
