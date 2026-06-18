@@ -133,6 +133,25 @@ def test_get_meta_dumps_null_on_s3_list_failure(
     assert body["meta_dumps"] is None
 
 
+def test_get_meta_dumps_lists_by_volume_name(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    """Regression: dumps live under ``<volume>/meta/``, so the route must pass
+    the JuiceFS volume name (not the often-null s3_prefix) to ``list_meta_dumps``."""
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_prefix=NULL, "
+            "juicefs_volume_name='openhost', s3_access_key_id='AKIA', s3_secret_access_key='hunter2'"
+        )
+        db.commit()
+    finally:
+        db.close()
+    spy = mock.MagicMock(return_value=archive_backend.MetaDumpSummary(count=0, latest_at=None, latest_key=None))
+    with mock.patch.object(archive_backend, "list_meta_dumps", spy):
+        client.get("/api/storage/archive_backend", cookies=cookies)
+    # last positional arg is the object prefix JuiceFS actually writes under
+    assert spy.call_args.args[-1] == "openhost"
+
+
 # --- configure route ------------------------------------------------------
 
 
