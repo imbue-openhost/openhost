@@ -25,6 +25,28 @@ from compute_space.web.helpers.proxy import proxy_websocket_request
 
 IS_OWNER_HEADER = ("X-OpenHost-Is-Owner", "true")
 
+# Caddy (our front proxy) reaches hypercorn over loopback and, by default,
+# strips client-spoofed X-Forwarded-* before forwarding.  So we trust the
+# X-Forwarded-For it sets; any other peer (e.g. a container reaching us via the
+# 10.200.0.1 gateway) is untrusted and can't dictate the chain.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
+
+
+def _resolve_forwarded_for(connection: ASGIConnection[Any, Any, Any, Any]) -> str | None:
+    """The X-Forwarded-For value to pass to the backend app.
+
+    When the peer is the loopback front proxy (Caddy), forward the
+    X-Forwarded-For it set — it carries the real client IP.  For any other peer,
+    use the peer's own address so an untrusted source can't spoof the chain.
+    """
+    if connection.client is None:
+        return None
+    if connection.client.host in _LOOPBACK_HOSTS:
+        # the real client IP, as recorded by Caddy. port should not be included.
+        if inbound := connection.headers.get("x-forwarded-for"):
+            return inbound
+    return connection.client.host
+
 
 async def _send_bad_request(scope: Scope, send: Send) -> None:
     """Best-effort 400/close for malformed requests where Litestar's response
@@ -130,13 +152,21 @@ class SubdomainProxyMiddleware:
 
         # TODO: maybe behave differently for apps that are not in running state. not sure
 
-        # add forwarding headers for the openhost app, so it can tell where the request came from.
-        # these are annoying but unavoidable - we can't spoof the IP or proto in the forwarded request.
-        # X-Forwarded-Host preserves the original Host so apps that build absolute URLs don't use the proxy's internal hostname
-        extra_headers = [("X-Forwarded-Host", netloc)]
-        if connection.client:
-            # client IP; for some reason this is allowed to be None in ASGI. port should not be included.
-            extra_headers.append(("X-Forwarded-For", f"{connection.client.host}"))
+        # Forwarding headers so the app can tell where the request originated.
+        # Caddy terminates TLS and speaks plain HTTP to us on loopback, so we
+        # can't read the client's real proto or IP off this hop:
+        #  - proto: scope["scheme"] is always "http"; derive it from config
+        #    instead (the :80->:443 redirect means nothing is proxied in the
+        #    clear when TLS is on), matching build_login_url.
+        #  - client IP: connection.client is always Caddy; recover the real one
+        #    from the X-Forwarded-For Caddy set (see _resolve_forwarded_for).
+        # X-Forwarded-Host preserves the original Host so apps that build absolute URLs don't use the proxy's internal hostname.
+        extra_headers = [
+            ("X-Forwarded-Host", netloc),
+            ("X-Forwarded-Proto", "https" if get_config().tls_enabled else "http"),
+        ]
+        if forwarded_for := _resolve_forwarded_for(connection):
+            extra_headers.append(("X-Forwarded-For", forwarded_for))
 
         try:
             verify_owner_auth(connection)
@@ -159,7 +189,6 @@ class SubdomainProxyMiddleware:
                 return
 
         if scope["type"] == ScopeType.HTTP:
-            extra_headers.append(("X-Forwarded-Proto", scope["scheme"]))
             proxied = await proxy_http_request(
                 Request(scope, receive, send),
                 target_port=app.local_port,

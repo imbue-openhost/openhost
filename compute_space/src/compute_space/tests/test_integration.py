@@ -1103,23 +1103,28 @@ class TestContainerE2E:
         assert headers_ci.get("x-custom-test") == "test-value"
         assert "x-forwarded-for" in headers_ci
         assert "x-forwarded-host" in headers_ci
+        assert headers_ci.get("x-forwarded-proto") == "http"  # tls_enabled is False in tests
 
-    def test_proxy_strips_spoofed_forwarded_headers(self, admin_session, config):
-        """Client-supplied X-Forwarded-* headers are overwritten, not forwarded."""
+    def test_proxy_forwarded_headers_trust_model(self, admin_session, config):
+        """X-Forwarded-Proto/Host are derived by the router, never taken from the
+        client.  X-Forwarded-For is trusted only from the loopback front proxy —
+        which the test client is — so its value is passed through to the app."""
         r = admin_session.get(
             f"{_app_url(config, 'test-app')}/echo-headers",
             headers={
-                "X-Forwarded-For": "attacker-ip",
+                "X-Forwarded-For": "203.0.113.7",
                 "X-Forwarded-Proto": "evil",
                 "X-Forwarded-Host": "evil.example.com",
             },
         )
         assert r.status_code == 200
-        headers = r.json()["headers"]
-        # Router must overwrite, not append to, client-supplied values
-        assert "attacker-ip" not in headers.get("X-Forwarded-For", "")
-        assert headers.get("X-Forwarded-Proto") != "evil"
-        assert headers.get("X-Forwarded-Host") != "evil.example.com"
+        headers = {k.lower(): v for k, v in r.json()["headers"].items()}
+        # proto/host come from the router (config + Host), not the client
+        assert headers.get("x-forwarded-proto") == "http"  # tls_enabled is False in tests
+        assert headers.get("x-forwarded-host") != "evil.example.com"
+        # the caller reaches us over loopback, so it's the trusted front proxy:
+        # its X-Forwarded-For (the real client IP) is honored.
+        assert headers.get("x-forwarded-for") == "203.0.113.7"
 
     def test_proxy_strips_zone_auth_cookies(self, admin_session, config):
         """The owner's zone_auth / zone_refresh cookies must not reach the backend app."""
