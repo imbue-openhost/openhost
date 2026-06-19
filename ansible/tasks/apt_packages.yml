@@ -30,6 +30,21 @@
       - fuse3
     state: present
 
+# coredns is not published for linux-aarch64 on conda-forge; install via apt on
+# that arch.  On x86-64 it is managed by pixi (see pixi.yml).
+- name: Install coredns via apt (aarch64 only)
+  apt:
+    name: coredns
+    state: present
+  when: ansible_architecture == "aarch64"
+
+# networkd-dispatcher runs the boot-time script that re-applies the hairpin NAT
+# iptables rules.  Ubuntu ships it by default; Debian may not.
+- name: Install networkd-dispatcher
+  apt:
+    name: networkd-dispatcher
+    state: present
+
 # JuiceFS mounts the archive tier with -o allow_other so apps
 # running under rootless-podman's subuid namespace can traverse
 # it.  fusermount refuses allow_other unless this option is set

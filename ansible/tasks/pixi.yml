@@ -24,12 +24,26 @@
   register: caddy_path
   changed_when: false
 
-- name: Find coredns binary path
+# On linux-64 coredns is pixi-managed; on aarch64 it is installed via apt.
+- name: Find coredns binary path (pixi-managed, linux-64)
   shell: /home/host/.pixi/bin/pixi run which coredns
   args:
     chdir: /home/host/openhost
-  register: coredns_path
+  register: _coredns_pixi_path
   changed_when: false
+  when: ansible_architecture != "aarch64"
+
+- name: Find coredns binary path (apt-managed, aarch64)
+  shell: which coredns
+  register: _coredns_apt_path
+  changed_when: false
+  when: ansible_architecture == "aarch64"
+
+- name: Resolve coredns binary path
+  set_fact:
+    coredns_bin: >-
+      {{ (_coredns_pixi_path.stdout | default('')) if ansible_architecture != 'aarch64'
+         else (_coredns_apt_path.stdout | default('')) }}
 
 - name: Set cap_net_bind_service on caddy
   become: yes
@@ -39,7 +53,7 @@
 - name: Set cap_net_bind_service on coredns
   become: yes
   become_user: root
-  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_path.stdout }}
+  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_bin | trim }}
 
 - name: Create resolved.conf.d directory
   become: yes
