@@ -30,12 +30,27 @@
       - fuse3
     state: present
 
-# coredns is not published for linux-aarch64 on conda-forge; install via apt on
-# that arch.  On x86-64 it is managed by pixi (see pixi.yml).
-- name: Install coredns via apt (aarch64 only)
-  apt:
-    name: coredns
-    state: present
+# coredns is not published for linux-aarch64 on conda-forge, and is not in the
+# Raspberry Pi OS apt repos.  Download the official binary from GitHub releases.
+# On x86-64 it is managed by pixi (see pixi.yml).
+- name: Download coredns binary from GitHub releases (aarch64 only)
+  get_url:
+    url: "https://github.com/coredns/coredns/releases/download/v1.14.4/coredns_1.14.4_linux_arm64.tgz"
+    dest: /tmp/coredns.tgz
+    mode: "0644"
+  when: ansible_architecture == "aarch64"
+
+- name: Extract coredns binary (aarch64 only)
+  unarchive:
+    src: /tmp/coredns.tgz
+    dest: /usr/local/bin/
+    remote_src: yes
+  when: ansible_architecture == "aarch64"
+
+- name: Remove coredns archive (aarch64 only)
+  file:
+    path: /tmp/coredns.tgz
+    state: absent
   when: ansible_architecture == "aarch64"
 
 # networkd-dispatcher runs the boot-time script that re-applies the hairpin NAT
