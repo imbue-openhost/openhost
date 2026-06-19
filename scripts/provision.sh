@@ -24,13 +24,15 @@ DOMAIN=""
 BRANCH="main"
 REPO_URL="https://github.com/imbue-openhost/openhost.git"
 OPENHOST_DIR="/home/host/openhost"
+NO_TLS=false
 
 usage() {
-    echo "Usage: $0 --domain <domain> [--branch <branch>] [--repo <repo-url>]"
+    echo "Usage: $0 --domain <domain> [--branch <branch>] [--repo <repo-url>] [--no-tls]"
     echo ""
-    echo "  --domain   Required. Domain name (e.g., myhost.example.com)"
+    echo "  --domain   Required. Domain name or local IP (e.g., myhost.example.com, 192.168.1.10)"
     echo "  --branch   Git branch to deploy (default: main)"
     echo "  --repo     Git repo URL (default: imbue-openhost/openhost)"
+    echo "  --no-tls   Disable TLS and CoreDNS (useful for local/LAN testing)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --domain)   DOMAIN="$2"; shift 2 ;;
         --branch)   BRANCH="$2"; shift 2 ;;
         --repo)     REPO_URL="$2"; shift 2 ;;
+        --no-tls)   NO_TLS=true; shift ;;
         -h|--help)  usage; exit 0 ;;
         *)          echo "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -104,17 +107,20 @@ echo "  Public IP: ${PUBLIC_IP:-unknown}"
 # ---- Run ansible (but skip the service start — we need ACME key first) ----
 echo "--- Running setup playbook ---"
 cd "$OPENHOST_DIR"
+ANSIBLE_EXTRA_ARGS="-e domain=$DOMAIN -e public_ip=${PUBLIC_IP:-127.0.0.1} -e skip_service_start=true"
+if [ "$NO_TLS" = "true" ]; then
+    ANSIBLE_EXTRA_ARGS="$ANSIBLE_EXTRA_ARGS -e tls_enabled=false"
+else
+    ANSIBLE_EXTRA_ARGS="$ANSIBLE_EXTRA_ARGS -e acme_directory_url=https://acme-v02.api.letsencrypt.org/directory"
+fi
 ansible-playbook ansible/local_setup.yml \
-    -e "domain=$DOMAIN" \
-    -e "public_ip=${PUBLIC_IP:-127.0.0.1}" \
-    -e "acme_directory_url=https://acme-v02.api.letsencrypt.org/directory" \
-    -e "skip_service_start=true" \
+    $ANSIBLE_EXTRA_ARGS \
     --connection=local \
     -i "localhost,"
 
 # ---- Generate ACME account key if missing ----
 ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
-if [ ! -f "$ACME_KEY_PATH" ]; then
+if [ "$NO_TLS" = "false" ] && [ ! -f "$ACME_KEY_PATH" ]; then
     echo "--- Generating ACME account key ---"
     mkdir -p "$(dirname "$ACME_KEY_PATH")"
     su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 scripts/generate_acme_key.py $ACME_KEY_PATH"
