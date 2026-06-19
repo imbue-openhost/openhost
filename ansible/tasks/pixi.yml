@@ -55,25 +55,32 @@
   become_user: root
   shell: setcap 'cap_net_bind_service=+ep' {{ coredns_bin | trim }}
 
-- name: Create resolved.conf.d directory
+- name: Check if systemd-resolved is active
   become: yes
   become_user: root
-  file:
-    path: /etc/systemd/resolved.conf.d
-    state: directory
+  shell: systemctl is-active systemd-resolved
+  register: _resolved_active
+  changed_when: false
+  failed_when: false
 
 - name: Disable systemd-resolved stub listener (frees port 53 for coredns)
   become: yes
   become_user: root
-  copy:
-    content: "[Resolve]\nDNSStubListener=no\n"
-    dest: /etc/systemd/resolved.conf.d/no-stub.conf
-  register: resolved_conf
+  block:
+    - name: Create resolved.conf.d directory
+      file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
 
-- name: Restart systemd-resolved
-  become: yes
-  become_user: root
-  systemd:
-    name: systemd-resolved
-    state: restarted
-  when: resolved_conf.changed
+    - name: Write stub listener config
+      copy:
+        content: "[Resolve]\nDNSStubListener=no\n"
+        dest: /etc/systemd/resolved.conf.d/no-stub.conf
+      register: resolved_conf
+
+    - name: Restart systemd-resolved
+      systemd:
+        name: systemd-resolved
+        state: restarted
+      when: resolved_conf.changed
+  when: _resolved_active.stdout == "active"
