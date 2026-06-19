@@ -502,11 +502,16 @@ def list_meta_dumps(
     s3_endpoint: str | None,
     s3_access_key_id: str,
     s3_secret_access_key: str,
-    s3_prefix: str | None,
+    juicefs_volume_name: str,
 ) -> MetaDumpSummary | None:
-    """Summarise JuiceFS meta-dump objects.  None on error.  Caps at 1000 dumps."""
-    prefix = (s3_prefix or "").strip("/")
-    list_prefix = f"{prefix}/meta/" if prefix else "meta/"
+    """Summarise JuiceFS meta-dump objects.  None on error.  Caps at 1000 dumps.
+
+    JuiceFS prefixes every object it writes with the volume name, so dumps land
+    at ``<volume>/meta/`` — not under ``s3_prefix`` (which only ever *feeds* the
+    volume name, and is null whenever the operator didn't set one).
+    """
+    volume = (juicefs_volume_name or "").strip("/")
+    list_prefix = f"{volume}/meta/" if volume else "meta/"
     try:
         client = _s3_client(s3_region, s3_endpoint, s3_access_key_id, s3_secret_access_key)
         resp = client.list_objects_v2(Bucket=s3_bucket, Prefix=list_prefix, MaxKeys=1000)

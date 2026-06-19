@@ -476,7 +476,7 @@ function renderArchiveBackend(state) {
       dumpLine = '<span class="error">No metadata dumps in bucket yet.</span> <span class="hint">JuiceFS writes one within an hour of mount.</span>';
     } else {
       dumpLine = '<span class="hint">unavailable; could not list <code>'
-        + escSettingsHtml((state.s3_prefix ? state.s3_prefix + '/' : '') + 'meta/')
+        + escSettingsHtml((state.juicefs_volume_name ? state.juicefs_volume_name + '/' : '') + 'meta/')
         + '</code></span>';
     }
     rows += '<tr><th>Latest meta dump</th><td>' + dumpLine + '</td></tr>';

@@ -1,12 +1,15 @@
 ---
 # Clone repo from GitHub and optionally checkout a specific commit.
 # Pass -e openhost_commit=<sha> to pin a specific version.
+# Pass -e openhost_refspec=<ref> to also fetch a ref that the commit lives on
+# (e.g. refs/pull/N/merge), for commits not reachable from any branch.
 
 - name: Clone or update openhost repo
   ansible.builtin.git:
     repo: https://github.com/imbue-openhost/openhost.git
     dest: /home/host/openhost
     version: "{{ openhost_commit | default('main') }}"
+    refspec: "{{ openhost_refspec | default(omit) }}"
     force: true
 
 - name: Remove untracked files from openhost repo

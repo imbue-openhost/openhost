@@ -416,6 +416,18 @@ def test_setup_invalid_username_re_renders_form(cfg: Any, setup_client: TestClie
         conn.close()
 
 
+def test_setup_get_disables_submit_button_to_prevent_double_submit(setup_client: TestClient[Litestar]) -> None:
+    """Owner provisioning is a one-time, non-idempotent POST, so a double-click
+    must not be able to fire a second /setup request. The rendered form wires a
+    submit handler that disables the submit button on first submit."""
+    resp = setup_client.get("/setup")
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert 'id="setup-form"' in body
+    assert "addEventListener('submit'" in body
+    assert "btn.disabled = true" in body
+
+
 # ---------------------------------------------------------------------------
 # /login: session resolves to persisted username (mirror invariant of /setup)
 # ---------------------------------------------------------------------------

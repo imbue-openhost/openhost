@@ -250,8 +250,9 @@ def test_list_meta_dumps_returns_none_on_s3_failure():
         assert archive_backend.list_meta_dumps("b", "us-east-1", None, "ak", "sk", "p") is None
 
 
-def test_list_meta_dumps_handles_no_prefix():
-    """Empty prefix lists at meta/ (no leading slash, no double /)."""
+def test_list_meta_dumps_lists_under_volume_name():
+    """Regression: JuiceFS writes dumps to ``<volume>/meta/``, so the listing
+    must use the volume name — not s3_prefix, which is null on most installs."""
     captured = {}
 
     def fake_list(*, Bucket, Prefix, MaxKeys):
@@ -263,7 +264,24 @@ def test_list_meta_dumps_handles_no_prefix():
         "_s3_client",
         return_value=mock.MagicMock(list_objects_v2=fake_list),
     ):
-        archive_backend.list_meta_dumps("b", "us-east-1", None, "ak", "sk", None)
+        archive_backend.list_meta_dumps("b", "us-east-1", None, "ak", "sk", "openhost")
+    assert captured["prefix"] == "openhost/meta/"
+
+
+def test_list_meta_dumps_handles_empty_volume_name():
+    """Defensive: a blank volume name lists at meta/ (no leading slash, no double /)."""
+    captured = {}
+
+    def fake_list(*, Bucket, Prefix, MaxKeys):
+        captured["prefix"] = Prefix
+        return {"Contents": []}
+
+    with mock.patch.object(
+        archive_backend,
+        "_s3_client",
+        return_value=mock.MagicMock(list_objects_v2=fake_list),
+    ):
+        archive_backend.list_meta_dumps("b", "us-east-1", None, "ak", "sk", "")
     assert captured["prefix"] == "meta/"
 
 

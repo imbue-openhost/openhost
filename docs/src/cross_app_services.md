@@ -61,7 +61,7 @@ This endpoint is app-specific - the router loads the consumer's manifest, finds 
 
 The router identifies and authenticates the calling app two ways:
 - **Server-side calls:** must include `Authorization: Bearer $OPENHOST_APP_TOKEN`. Each app gets a unique `OPENHOST_APP_TOKEN` injected as an env var at deploy time.
-- **Browser calls:** the request's `Origin` is matched against the app's subdomain, with the JWT cookie authenticating the user. No bearer token is needed for these — the browser provides the cookie automatically.
+- **Browser calls:** the request's `Origin` is matched against the app's subdomain, with the owner session cookie authenticating the user. No bearer token is needed for these — the browser provides the cookie automatically.
 
 Service calls should be API-only - the user's browser should never be redirected to a service endpoint, with the exception of permission grant pages.
 
@@ -139,7 +139,7 @@ HTTP 403
   "error": "permission_required",
   "required_grant": {
     "grant": { ... },
-    "scope": "global"
+    "scope": "app"
   },
   "grant_url": GRANT_URL
 }
@@ -161,10 +161,10 @@ Note for `scope: "app"`, the provider must include its own `grant_url`.
    Authorization: Bearer $OPENHOST_APP_TOKEN
    Content-Type: application/json
 
-   {"consumer_app": "<name>", "service_url": "<url>", "grant": <grant>}
+   {"consumer_app_id": "<consumer_app_id>", "service_url": "<url>", "grant": <grant>}
    ```
 
-   The router takes `provider_app` from the bearer token, so the provider can only grant permissions *for itself* — it can't create grants attributed to another provider. The grant body is the same shape the provider will later see in `X-OpenHost-Permissions`. str or json can be used.
+   The consumer's app ID is the value the provider received in the `X-OpenHost-Consumer-Id` header. The router takes the provider's own app ID from the bearer token, so the provider can only grant permissions *for itself* — it can't create grants attributed to another provider. The grant body is the same shape the provider will later see in `X-OpenHost-Permissions`. str or json can be used.
 
 4. **Provider sends the user back.** After the grant call succeeds, the provider should redirect the user's browser to the consumer-supplied `return_to`. The consumer can then retry the original service call, which will now succeed. If the user declines, the provider should also redirect to `return_to` (without creating a grant) so the consumer can show its own "permission denied" UI rather than leaving the user stranded on the provider's page.
 
@@ -175,10 +175,10 @@ These endpoints back the owner-facing UI and are authenticated by the owner logi
 
 **Permissions**
 
-- `GET /api/permissions/v2[?app=<name>]` — list grants, optionally filtered to one consumer app. Returns an array of `{consumer_app, service_url, grant, scope, provider_app}`.
-- `POST /api/permissions/v2/grant_global_scoped` — grant a global-scoped permission. Body: `{app, service_url, grant}`.
-- `POST /api/permissions/v2/grant_app_scoped` — grant an app-scoped permission. **Authenticated with the calling provider's app token** (not the owner cookie); the `provider_app` is taken from the token. Body: `{consumer_app, service_url, grant}`. Used by provider apps after running their own user-facing approval flow (e.g. an OAuth dance).
-- `POST /api/permissions/v2/revoke` — revoke a permission. Body: `{app, service_url, grant, scope?, provider_app?}`. `scope` defaults to `"global"`. 404 if no matching row.
+- `GET /api/permissions/v2[?app_id=<consumer_app_id>]` — list grants, optionally filtered to one consumer app. Returns an array of `{consumer_app_id, service_url, grant, scope, provider_app_id}`.
+- `POST /api/permissions/v2/grant_global_scoped` — grant a global-scoped permission. Body: `{app_id, service_url, grant}`.
+- `POST /api/permissions/v2/grant_app_scoped` — grant an app-scoped permission. **Authenticated with the calling provider's app token** (not the owner cookie); the provider's app ID is taken from the token. Body: `{consumer_app_id, service_url, grant}`. Used by provider apps after running their own user-facing approval flow (e.g. an OAuth dance).
+- `POST /api/permissions/v2/revoke` — revoke a permission. Body: `{app_id, service_url, grant, scope?, provider_app_id?}`. `scope` defaults to `"global"`. 404 if no matching row.
 
 The `grant` field on these endpoints is whatever shape the service defines — passed through the router verbatim.
 
@@ -186,9 +186,9 @@ The `grant` field on these endpoints is whatever shape the service defines — p
 
 Each service URL has at most one default provider (set automatically to the first app to register; the owner can change it). Calls without an explicit provider use this default.
 
-- `GET /api/services/v2/defaults` — list all `(service_url, app_name)` defaults.
+- `GET /api/services/v2/defaults` — list all defaults; each entry includes `service_url`, `app_id`, and `app_name`.
 - `GET /api/services/v2/providers?service=<url>` — list every registered provider for a service, with `is_default`, `service_version`, `endpoint`, and app `status`. Accepts both owner auth and app bearer tokens, so consumer apps can discover providers at runtime.
-- `POST /api/services/v2/defaults` — set the default. Body: `{service_url, app_name}`. 404 if `app_name` doesn't actually provide that service.
+- `POST /api/services/v2/defaults` — set the default. Body: `{service_url, app_id}`. 404 if that app doesn't actually provide the service.
 - `DELETE /api/services/v2/defaults` — clear the default. Body: `{service_url}`. After this, calls to the service return 503 until a new default is set (or another provider is installed).
 
 ### Retrofitting existing apps

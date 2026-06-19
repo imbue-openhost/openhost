@@ -13,5 +13,10 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+# Dependency cooldown: ignore package versions uploaded in the last week, so we never
+# pick up brand-new releases. Rolling window (resolved relative to lock time) — no manual bumps.
+exclude-newer = "7 days"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/oauth_provider"]

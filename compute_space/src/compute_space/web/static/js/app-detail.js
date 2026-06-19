@@ -31,6 +31,43 @@ function saveName() {
     });
 }
 
+// ─── Edit git upstream ───
+
+function editRemote() {
+  document.getElementById('remote-display').style.display = 'none';
+  document.getElementById('remote-edit').style.display = '';
+  document.getElementById('remote-input').focus();
+  document.getElementById('remote-error').textContent = '';
+}
+
+function cancelRemote() {
+  document.getElementById('remote-edit').style.display = 'none';
+  document.getElementById('remote-display').style.display = '';
+}
+
+function saveRemote() {
+  var input = document.getElementById('remote-input');
+  var errEl = document.getElementById('remote-error');
+  errEl.textContent = '';
+  fetch(config.setAppRemoteUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({repo_url: input.value}),
+  })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+    .then(function(res) {
+      if (!res.ok || (res.data && res.data.error)) {
+        errEl.textContent = (res.data && res.data.error) || 'Failed to save';
+        return;
+      }
+      // Upstream persisted; now pull the new ref and rebuild. Reuses the
+      // oauth-aware /reload_app?update flow (it may redirect for github auth).
+      appAction(config.reloadAppUrl, {update: true}, {label: 'Updating & reloading'});
+    })
+    .catch(function() { errEl.textContent = 'Failed to save'; });
+}
+
 // ─── App Actions (stop, reload, remove) ───
 
 function setActionsBusy(label) {
