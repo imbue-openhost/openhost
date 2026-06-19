@@ -96,6 +96,42 @@ else
 fi
 chown -R host:host "$OPENHOST_DIR"
 
+# ---- Enable cgroup memory controller if needed (Raspberry Pi) ----
+# RPi OS disables cgroup memory by default; crun needs it to set memory.max on
+# containers.  If the params are missing we add them and schedule a reboot,
+# installing a oneshot service that re-runs this script automatically afterward.
+_CMDLINE=""
+[ -f "/boot/firmware/cmdline.txt" ] && _CMDLINE="/boot/firmware/cmdline.txt"
+[ -f "/boot/cmdline.txt" ] && [ -z "$_CMDLINE" ] && _CMDLINE="/boot/cmdline.txt"
+if [ -n "$_CMDLINE" ] && ! grep -q "cgroup_memory=1" "$_CMDLINE"; then
+    echo "--- Enabling cgroup memory controller (reboot required) ---"
+    sed -i '$ s/$/ cgroup_memory=1 cgroup_enable=memory/' "$_CMDLINE"
+
+    # Build the args to pass to the resume service so it runs identically.
+    _RESUME_ARGS="--domain $DOMAIN --branch $BRANCH --repo $REPO_URL"
+    [ "$NO_TLS" = "true" ] && _RESUME_ARGS="$_RESUME_ARGS --no-tls"
+
+    cat > /etc/systemd/system/openhost-firstboot.service <<EOF
+[Unit]
+Description=OpenHost provisioning (resumed after cgroup reboot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $OPENHOST_DIR/scripts/provision.sh $_RESUME_ARGS
+ExecStartPost=/bin/systemctl disable openhost-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable openhost-firstboot
+    echo "Rebooting to apply cgroup settings. Provisioning will resume automatically."
+    reboot
+    exit 0
+fi
+
 # ---- Detect public IP ----
 PUBLIC_IP=""
 PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
