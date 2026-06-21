@@ -67,6 +67,29 @@ router would otherwise clone the repo at HEAD and silently test stale code.
 - `stack.url_for(app_name)` — any other deployed app, through the router
 - `stack.router_url` — the router itself (dashboard, owner APIs)
 
+### Testing owner routes in a browser (playwright)
+
+`stack.url` goes through the real router, so an unauthenticated `page.goto(stack.url)`
+redirects to `/login`. `stack.playwright_login(page)` drives the real login form (navigates
+to `/login`, submits the owner password, waits for the redirect) and returns the page
+logged in, so it can then reach owner-only pages. Playwright and pytest-playwright come
+with the `test-harness` extra; pass pytest-playwright's `page` fixture:
+
+```python
+# tests/test_pages.py
+from playwright.sync_api import expect
+from openhost_test_harness import OpenhostStack
+
+def test_dashboard_renders(stack: OpenhostStack, page) -> None:
+    stack.playwright_login(page)
+    page.goto(stack.url)                             # authenticated, no /login redirect
+    expect(page.get_by_role("heading", name="My App")).to_be_visible()
+```
+
+To test the unauthenticated experience instead, use pytest-playwright's plain `page`
+fixture (no cookies) and assert the `/login` redirect, or hit `stack.app_url` to bypass
+the router entirely.
+
 ## Testing the service interface
 
 ### Your app consumes a service

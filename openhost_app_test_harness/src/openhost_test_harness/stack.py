@@ -39,6 +39,7 @@ from typing import Self
 
 import attr
 import requests
+from playwright.sync_api import Page
 
 from compute_space.core.auth.permissions_v2 import Grant
 from compute_space.core.manifest import parse_manifest
@@ -254,6 +255,24 @@ class OpenhostStack:
         """Session authenticated as the zone owner (cookie valid for all app subdomains)."""
         assert self._owner is not None, "OpenhostStack must be entered first"
         return self._owner
+
+    def playwright_login(self, page: Page) -> Page:
+        """Log ``page`` in as the zone owner through the real /login form, and return it.
+
+        Drives the actual login flow — navigate to the router's login page, submit the
+        owner password, wait for the post-login redirect — so the session cookie lands on
+        the page's context and the page (and any others in that context) can then reach
+        owner-only routes::
+
+            def test_dashboard(stack, page):
+                stack.playwright_login(page)
+                page.goto(stack.url)
+        """
+        page.goto(f"{self.router_url}/login")
+        page.fill("input[name=password]", self.local_stack.owner_password)
+        page.click("input[type=submit]")
+        page.wait_for_url(lambda url: "/login" not in url)
+        return page
 
     @property
     def app_id(self) -> str:
