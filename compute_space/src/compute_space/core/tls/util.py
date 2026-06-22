@@ -166,7 +166,10 @@ def _acquire_cert_dns01(
             if pending_challenges:
                 # Write all TXT records to the zone file at once
                 logger.info(f"Setting {len(validation_values)} DNS-01 challenge TXT record(s)")
-                dns_module.set_txt(coredns_zonefile_path, "_acme-challenge", validation_values)
+                dns_module.append_txt_records(
+                    coredns_zonefile_path,
+                    [dns_module.TxtRecord(record_name="_acme-challenge", record_value=v) for v in validation_values],
+                )
 
                 # Wait for CoreDNS to pick up the zone file change (reload interval = 2s)
                 time.sleep(3)

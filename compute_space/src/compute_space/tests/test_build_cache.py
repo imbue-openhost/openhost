@@ -17,12 +17,11 @@ from litestar.testing import TestClient
 
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.db.connection import init_db
+from compute_space.tests._litestar_helpers import auth_cookie
+from compute_space.tests._litestar_helpers import make_test_app
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.api import system as system_routes
 from compute_space.web.routes.api.system import system_routes as system_router
-
-from ._litestar_helpers import auth_cookie
-from ._litestar_helpers import make_test_app
-from .conftest import _make_test_config
 
 
 @pytest.fixture

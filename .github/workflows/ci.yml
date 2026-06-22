@@ -58,6 +58,8 @@ jobs:
           sudo ip link set openhost0 up
           mkdir -p ~/.config/containers
           printf '[containers]\nhost_containers_internal_ip = "10.200.0.1"\n' >> ~/.config/containers/containers.conf
+      - name: Install playwright browsers
+        run: pixi run -e dev playwright install --with-deps chromium
       - name: Run all tests, including containerized tests
         run: |
           pixi run -e dev pytest --run-containers -v

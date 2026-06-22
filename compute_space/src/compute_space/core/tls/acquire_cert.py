@@ -24,9 +24,11 @@ def write_cert_and_key(cert_path: Path, key_path: Path, cert_pem: bytes, key_pem
     """
     with open(cert_path, "wb") as f:
         f.write(cert_pem)
-    with open(key_path, "wb") as f:
+    # Create the key with 0o600 from the start so the private key is never
+    # briefly readable by other users between write and chmod.
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
         f.write(key_pem)
-    os.chmod(key_path, 0o600)
 
 
 async def acquire_tls_cert(

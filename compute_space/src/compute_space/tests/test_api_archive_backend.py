@@ -18,12 +18,11 @@ from compute_space.core import archive_backend
 from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import AppManifest
 from compute_space.db.connection import init_db
+from compute_space.tests._litestar_helpers import auth_cookie
+from compute_space.tests._litestar_helpers import make_test_app
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.api.apps import api_apps_routes
 from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
-
-from ._litestar_helpers import auth_cookie
-from ._litestar_helpers import make_test_app
-from .conftest import _make_test_config
 
 
 @pytest.fixture
