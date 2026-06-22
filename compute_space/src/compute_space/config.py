@@ -93,6 +93,27 @@ class Config:
     # /api/add_app and do not need to be present on disk ahead of time.
     default_apps: list[str]
 
+    def __attrs_post_init__(self) -> None:
+        # Validate cert provider selection up front so any Config object can be
+        # trusted as valid by the rest of the system (rather than discovering a
+        # misconfiguration only at cert-acquisition time).
+        if self.cert_provider not in (CERT_PROVIDER_ACME, CERT_PROVIDER_CERT_API):
+            raise ValueError(
+                f"Unknown cert_provider {self.cert_provider!r} (expected "
+                f"{CERT_PROVIDER_ACME!r} or {CERT_PROVIDER_CERT_API!r})"
+            )
+        if self.cert_provider == CERT_PROVIDER_CERT_API:
+            # The cert_api broker path needs the broker URL plus the per-instance
+            # Keycloak client-credentials; none have a usable default.
+            for name in (
+                "cert_api_base_url",
+                "cert_api_keycloak_issuer_url",
+                "cert_api_keycloak_client_id",
+                "cert_api_keycloak_client_secret",
+            ):
+                if not getattr(self, name):
+                    raise ValueError(f"{name} must be set in config to use the cert_api provider")
+
     @property
     def zone_domain_no_port(self) -> str:
         return self.zone_domain.split(":")[0]
@@ -100,13 +121,16 @@ class Config:
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
 
+    def _to_toml_dict(self) -> dict[str, dict[str, Any]]:
+        return {"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}}
+
     def to_toml_str(self) -> str:
-        return tomli_w.dumps({"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}})
+        return tomli_w.dumps(self._to_toml_dict())
 
     def to_toml(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
-            tomli_w.dump({"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}}, f)
+            tomli_w.dump(self._to_toml_dict(), f)
 
     @classmethod
     def from_toml(cls, path: str) -> Self:

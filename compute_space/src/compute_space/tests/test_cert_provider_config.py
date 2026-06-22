@@ -8,11 +8,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import typed_settings
 
 from compute_space.config import CERT_PROVIDER_ACME
 from compute_space.config import CERT_PROVIDER_CERT_API
 from compute_space.config import DefaultConfig
+
+
+def _full_cert_api_kwargs() -> dict[str, str]:
+    return dict(
+        cert_provider=CERT_PROVIDER_CERT_API,
+        cert_api_base_url="https://cert-api.example.com",
+        cert_api_keycloak_issuer_url="https://keycloak.example.com/realms/openhost-customers",
+        cert_api_keycloak_client_id="instance-alice",
+        cert_api_keycloak_client_secret="s3cr3t",
+    )
 
 
 def test_default_provider_is_acme() -> None:
@@ -81,3 +92,36 @@ def test_cert_provider_round_trips_through_toml() -> None:
     assert 'cert_api_keycloak_issuer_url = "https://keycloak.example.com/realms/openhost-customers"' in rendered
     assert 'cert_api_keycloak_client_id = "instance-alice"' in rendered
     assert 'cert_api_keycloak_client_secret = "s3cr3t"' in rendered
+
+
+def test_unknown_cert_provider_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Unknown cert_provider"):
+        DefaultConfig(zone_domain="alice.host.example.com", cert_provider="bogus")
+
+
+def test_complete_cert_api_config_is_valid() -> None:
+    cfg = DefaultConfig(zone_domain="alice.host.example.com", **_full_cert_api_kwargs())
+    assert cfg.cert_provider == CERT_PROVIDER_CERT_API
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "cert_api_base_url",
+        "cert_api_keycloak_issuer_url",
+        "cert_api_keycloak_client_id",
+        "cert_api_keycloak_client_secret",
+    ],
+)
+def test_cert_api_provider_requires_all_settings(missing_field: str) -> None:
+    kwargs = _full_cert_api_kwargs()
+    kwargs[missing_field] = None  # type: ignore[assignment]
+    with pytest.raises(ValueError, match=f"{missing_field} must be set"):
+        DefaultConfig(zone_domain="alice.host.example.com", **kwargs)
+
+
+def test_acme_provider_ignores_cert_api_settings() -> None:
+    # The default acme path must not require any cert_api settings, even though
+    # cert_api_keycloak_* default to None.
+    cfg = DefaultConfig(zone_domain="alice.host.example.com")
+    assert cfg.cert_provider == CERT_PROVIDER_ACME

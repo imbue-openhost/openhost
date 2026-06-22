@@ -40,9 +40,8 @@ from litestar.testing import TestClient
 import compute_space.web.routes.docs as docs_routes
 from compute_space.config import set_active_config
 from compute_space.core.apps import RESERVED_PATHS
+from compute_space.tests._litestar_helpers import make_test_app
 from compute_space.web.routes.docs import docs_routes as docs_router
-
-from ._litestar_helpers import make_test_app
 
 
 class _FakeCfg:

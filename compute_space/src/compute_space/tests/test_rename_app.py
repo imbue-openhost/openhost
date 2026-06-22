@@ -15,11 +15,10 @@ from litestar.testing import TestClient
 import compute_space.web.routes.api.apps as apps_routes
 from compute_space.core.app_id import new_app_id
 from compute_space.db.connection import init_db
+from compute_space.tests._litestar_helpers import auth_cookie
+from compute_space.tests._litestar_helpers import make_test_app
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.api.apps import api_apps_routes
-
-from ._litestar_helpers import auth_cookie
-from ._litestar_helpers import make_test_app
-from .conftest import _make_test_config
 
 
 @pytest.fixture
