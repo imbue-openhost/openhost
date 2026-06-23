@@ -286,7 +286,7 @@ def _basic_manifest(**overrides) -> AppManifest:  # type: ignore[no-untyped-def]
         container_image="Dockerfile",
         container_port=8080,
         memory_mb=256,
-        cpu_millicores=500,
+        cpu_cores=0.5,
     )
     kwargs.update(overrides)
     return AppManifest(**kwargs)  # type: ignore[arg-type]

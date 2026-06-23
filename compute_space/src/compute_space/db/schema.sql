@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS apps (
     status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,
-    cpu_millicores INTEGER NOT NULL DEFAULT 100,
+    cpu_cores REAL NOT NULL DEFAULT 0.1,
     gpu INTEGER NOT NULL DEFAULT 0,
     public_paths TEXT NOT NULL DEFAULT '[]',
     links TEXT NOT NULL DEFAULT '[]',

@@ -100,7 +100,7 @@ def _bare_manifest() -> AppManifest:
         container_image="Dockerfile",
         container_port=8080,
         memory_mb=128,
-        cpu_millicores=100,
+        cpu_cores=0.1,
         app_data=True,
     )
 

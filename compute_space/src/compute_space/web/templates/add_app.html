@@ -161,7 +161,7 @@ function renderManifest(m, url) {
 
   section('Resources', '#e8f0fe');
   row('Memory', m.memory_mb + ' MB');
-  row('CPU', m.cpu_millicores + ' millicores');
+  row('CPU', m.cpu_cores + ' cores');
   if (m.gpu) row('GPU', 'Yes');
 
   if (m.sqlite_dbs.length) {

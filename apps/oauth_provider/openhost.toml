@@ -12,7 +12,7 @@ public_paths = ["/callback", "/device", "/grant"]
 
 [resources]
 memory_mb = 256
-cpu_millicores = 1000
+cpu_cores = 1.0
 
 [data]
 sqlite = ["main"]
