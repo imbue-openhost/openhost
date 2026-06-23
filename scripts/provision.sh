@@ -24,15 +24,13 @@ DOMAIN=""
 BRANCH="main"
 REPO_URL="https://github.com/imbue-openhost/openhost.git"
 OPENHOST_DIR="/home/host/openhost"
-NO_TLS=false
 
 usage() {
-    echo "Usage: $0 --domain <domain> [--branch <branch>] [--repo <repo-url>] [--no-tls]"
+    echo "Usage: $0 --domain <domain> [--branch <branch>] [--repo <repo-url>]"
     echo ""
-    echo "  --domain   Required. Domain name or local IP (e.g., myhost.example.com, 192.168.1.10)"
+    echo "  --domain   Required. Domain name (e.g., myhost.example.com)"
     echo "  --branch   Git branch to deploy (default: main)"
     echo "  --repo     Git repo URL (default: imbue-openhost/openhost)"
-    echo "  --no-tls   Disable TLS and CoreDNS (useful for local/LAN testing)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -40,7 +38,6 @@ while [[ $# -gt 0 ]]; do
         --domain)   DOMAIN="$2"; shift 2 ;;
         --branch)   BRANCH="$2"; shift 2 ;;
         --repo)     REPO_URL="$2"; shift 2 ;;
-        --no-tls)   NO_TLS=true; shift ;;
         -h|--help)  usage; exit 0 ;;
         *)          echo "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -96,42 +93,6 @@ else
 fi
 chown -R host:host "$OPENHOST_DIR"
 
-# ---- Enable cgroup memory controller if needed (Raspberry Pi) ----
-# RPi OS disables cgroup memory by default; crun needs it to set memory.max on
-# containers.  If the params are missing we add them and schedule a reboot,
-# installing a oneshot service that re-runs this script automatically afterward.
-_CMDLINE=""
-[ -f "/boot/firmware/cmdline.txt" ] && _CMDLINE="/boot/firmware/cmdline.txt"
-[ -f "/boot/cmdline.txt" ] && [ -z "$_CMDLINE" ] && _CMDLINE="/boot/cmdline.txt"
-if [ -n "$_CMDLINE" ] && ! grep -q "cgroup_memory=1" "$_CMDLINE"; then
-    echo "--- Enabling cgroup memory controller (reboot required) ---"
-    sed -i '$ s/$/ cgroup_memory=1 cgroup_enable=memory/' "$_CMDLINE"
-
-    # Build the args to pass to the resume service so it runs identically.
-    _RESUME_ARGS="--domain $DOMAIN --branch $BRANCH --repo $REPO_URL"
-    [ "$NO_TLS" = "true" ] && _RESUME_ARGS="$_RESUME_ARGS --no-tls"
-
-    cat > /etc/systemd/system/openhost-firstboot.service <<EOF
-[Unit]
-Description=OpenHost provisioning (resumed after cgroup reboot)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash $OPENHOST_DIR/scripts/provision.sh $_RESUME_ARGS
-ExecStartPost=/bin/systemctl disable openhost-firstboot
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl enable openhost-firstboot
-    echo "Rebooting to apply cgroup settings. Provisioning will resume automatically."
-    reboot
-    exit 0
-fi
-
 # ---- Detect public IP ----
 PUBLIC_IP=""
 PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
@@ -143,20 +104,17 @@ echo "  Public IP: ${PUBLIC_IP:-unknown}"
 # ---- Run ansible (but skip the service start — we need ACME key first) ----
 echo "--- Running setup playbook ---"
 cd "$OPENHOST_DIR"
-ANSIBLE_EXTRA_ARGS="-e domain=$DOMAIN -e public_ip=${PUBLIC_IP:-127.0.0.1} -e skip_service_start=true"
-if [ "$NO_TLS" = "true" ]; then
-    ANSIBLE_EXTRA_ARGS="$ANSIBLE_EXTRA_ARGS -e tls_enabled=false"
-else
-    ANSIBLE_EXTRA_ARGS="$ANSIBLE_EXTRA_ARGS -e acme_directory_url=https://acme-v02.api.letsencrypt.org/directory"
-fi
 ansible-playbook ansible/local_setup.yml \
-    $ANSIBLE_EXTRA_ARGS \
+    -e "domain=$DOMAIN" \
+    -e "public_ip=${PUBLIC_IP:-127.0.0.1}" \
+    -e "acme_directory_url=https://acme-v02.api.letsencrypt.org/directory" \
+    -e "skip_service_start=true" \
     --connection=local \
     -i "localhost,"
 
 # ---- Generate ACME account key if missing ----
 ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
-if [ "$NO_TLS" = "false" ] && [ ! -f "$ACME_KEY_PATH" ]; then
+if [ ! -f "$ACME_KEY_PATH" ]; then
     echo "--- Generating ACME account key ---"
     mkdir -p "$(dirname "$ACME_KEY_PATH")"
     su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 scripts/generate_acme_key.py $ACME_KEY_PATH"
