@@ -163,7 +163,7 @@ class AppManifest:
 
     # [resources]
     memory_mb: int = 128
-    cpu_millicores: int = 100
+    cpu_cores: float = 0.1
     gpu: bool = False
 
     # [data]
@@ -298,6 +298,24 @@ def _parse_links(links_list: Any) -> list[AppLink]:
     return result
 
 
+def _parse_cpu_cores(resources: dict[str, Any], app_name: str) -> float:
+    """Read [resources].cpu_cores, falling back to the deprecated cpu_millicores key.
+
+    cpu_millicores (1000 = 1 core) was the old unit; cpu_cores expresses the
+    same allocation as fractional cores. When only the old key is present we
+    convert it (millicores / 1000) and warn.
+    """
+    if "cpu_cores" in resources:
+        return float(resources["cpu_cores"])
+    if "cpu_millicores" in resources:
+        logger.warning(
+            "App '%s' uses deprecated 'cpu_millicores' in [resources]. Use 'cpu_cores' (fractional cores) instead.",
+            app_name,
+        )
+        return float(resources["cpu_millicores"]) / 1000.0
+    return 0.1
+
+
 def _structure_list(data: list[Any], cls: type[Any], label: str) -> list[Any]:
     try:
         return [cattrs.structure(entry, cls) for entry in data]
@@ -411,7 +429,7 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         public_paths=routing.get("public_paths", []),
         links=_parse_links(data.get("links", [])),
         memory_mb=resources.get("memory_mb", 128),
-        cpu_millicores=resources.get("cpu_millicores", 100),
+        cpu_cores=_parse_cpu_cores(resources, app_name),
         gpu=resources.get("gpu", False),
         sqlite_dbs=data_section.get("sqlite", []),
         app_data=data_section.get("app_data", True),

@@ -53,7 +53,7 @@ public_paths = ["/webhook"]   # routes accessible without auth
 
 [resources]
 memory_mb = 128
-cpu_millicores = 100
+cpu_cores = 0.1
 
 [data]
 sqlite = ["main"]

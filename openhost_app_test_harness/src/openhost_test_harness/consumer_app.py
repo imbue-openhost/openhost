@@ -39,7 +39,7 @@ def write_consumer_app_dir(
         },
         "runtime": {"container": {"image": "Dockerfile", "port": 5000}},
         "routing": {"health_check": "/health"},
-        "resources": {"memory_mb": 64, "cpu_millicores": 100},
+        "resources": {"memory_mb": 64, "cpu_cores": 0.1},
         "services": {
             "v2": {
                 "consumes": [

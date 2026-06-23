@@ -29,7 +29,7 @@ def _manifest(**kwargs) -> AppManifest:  # type: ignore[no-untyped-def]
         container_image="Dockerfile",
         container_port=8080,
         memory_mb=128,
-        cpu_millicores=100,
+        cpu_cores=0.1,
     )
     base.update(kwargs)
     return AppManifest(**base)  # type: ignore[arg-type]

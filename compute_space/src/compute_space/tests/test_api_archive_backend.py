@@ -342,7 +342,7 @@ def _archive_manifest(name: str, *, app_archive: bool, access_all_archive: bool 
         container_port=8080,
         container_command=None,
         memory_mb=128,
-        cpu_millicores=100,
+        cpu_cores=0.1,
         gpu=False,
         app_data=True,
         app_archive=app_archive,

@@ -24,10 +24,10 @@ port = 8080
 class TestDefaults:
     """Verify default values match the documented manifest spec."""
 
-    def test_cpu_millicores_default_is_100(self):
-        """cpu_millicores should default to 100 when omitted (manifest_spec.md)."""
+    def test_cpu_cores_default_is_point_one(self):
+        """cpu_cores should default to 0.1 when omitted (manifest_spec.md)."""
         manifest = parse_manifest_from_string(MINIMAL)
-        assert manifest.cpu_millicores == 100
+        assert manifest.cpu_cores == 0.1
 
     def test_memory_mb_default_is_128(self):
         manifest = parse_manifest_from_string(MINIMAL)
@@ -86,10 +86,16 @@ port = 8080
 class TestExplicitValues:
     """Verify that explicitly set values override defaults."""
 
-    def test_cpu_millicores_explicit(self):
+    def test_cpu_cores_explicit(self):
+        toml = MINIMAL + "\n[resources]\ncpu_cores = 0.5\n"
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.cpu_cores == 0.5
+
+    def test_cpu_millicores_deprecated_alias_converts_to_cores(self):
+        """The old cpu_millicores key is still accepted and divided by 1000."""
         toml = MINIMAL + "\n[resources]\ncpu_millicores = 500\n"
         manifest = parse_manifest_from_string(toml)
-        assert manifest.cpu_millicores == 500
+        assert manifest.cpu_cores == 0.5
 
     def test_memory_mb_explicit(self):
         toml = MINIMAL + "\n[resources]\nmemory_mb = 256\n"

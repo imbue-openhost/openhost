@@ -125,7 +125,7 @@ class App:
     status: str
     error_message: str | None
     memory_mb: int
-    cpu_millicores: int
+    cpu_cores: float
     gpu: int
     public_paths: list[str]
     links: list[AppLink]
@@ -393,7 +393,7 @@ def insert_and_deploy(
     db.execute(
         """INSERT INTO apps
            (app_id, name, manifest_name, version, description, runtime_type, repo_path, repo_url,
-            health_check, local_port, container_port, memory_mb, cpu_millicores,
+            health_check, local_port, container_port, memory_mb, cpu_cores,
             gpu, public_paths, links, manifest_raw, status, installed_by)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
@@ -409,7 +409,7 @@ def insert_and_deploy(
             local_port,
             manifest.container_port,
             manifest.memory_mb,
-            manifest.cpu_millicores,
+            manifest.cpu_cores,
             int(manifest.gpu),
             json.dumps(manifest.public_paths),
             _serialize_links(manifest.links),
