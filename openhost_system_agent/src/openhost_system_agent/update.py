@@ -120,9 +120,7 @@ def apply_update() -> ApplyResult:
     remote_sha = repo.refs[remote_ref].commit.hexsha
 
     if local_sha == remote_sha:
-        logger.info("Running system migrations...")
-        applied = _run_migrations_reexec()
-        return ApplyResult(ref=local_sha[:8], system_migrations_applied=applied, already_up_to_date=not applied)
+        return _apply_current(repo)
 
     logger.info(f"Checking out {remote_ref}...")
     try:
@@ -132,29 +130,64 @@ def apply_update() -> ApplyResult:
         repo.git.checkout("-f", remote_ref)
     repo.git.clean("-fd")
 
-    logger.info("Running pixi install...")
-    _run_pixi_install()
+    # Re-exec into the freshly checked-out code so the new apply logic
+    # controls the pre_install → pixi install → post_install sequence.
+    # This is the critical handoff: from this point forward, the NEW code
+    # decides what runs and in what order.
+    return _reexec_apply()
 
-    logger.info("Running system migrations...")
+
+def _apply_current(repo: git.Repo) -> ApplyResult:
+    """Code and checkout are at the same ref — just run pending migrations."""
     applied = _run_migrations_reexec()
+    ref = repo.head.commit.hexsha[:8]
+    return ApplyResult(ref=ref, system_migrations_applied=applied, already_up_to_date=not applied)
 
-    return ApplyResult(ref=repo.head.commit.hexsha[:8], system_migrations_applied=applied, already_up_to_date=False)
+
+# ── Re-exec into new code ────────────────────────────────────────────
+
+# Path to the apply entrypoint, relative to the repo root. After checkout
+# this file belongs to the NEW code, so the new code controls the full
+# pre_install → pixi install → post_install sequence.
+#
+# STABILITY CONTRACT: this path is load-bearing for every deployed host.
+# Old hosts invoke it from their frozen _reexec_apply. Do not move or
+# rename it without a migration that updates the caller.
+_APPLY_ENTRYPOINT = _PACKAGE_DIR / "apply_after_checkout.py"
 
 
-def _run_pixi_install() -> None:
+def _reexec_apply() -> ApplyResult:
     try:
         result = subprocess.run(
-            ["/home/host/.pixi/bin/pixi", "install"],
+            [sys.executable, str(_APPLY_ENTRYPOINT)],
             cwd=_PROJECT_DIR,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
         )
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError("pixi install timed out after 300s") from e
-    if result.returncode != 0:
-        raise RuntimeError(f"pixi install failed (exit {result.returncode}):\n{result.stderr}")
+        raise RuntimeError("Re-exec apply timed out after 600s") from e
 
+    if result.returncode != 0:
+        try:
+            body = json.loads(result.stdout)
+            error = body.get("error", result.stderr)
+        except (json.JSONDecodeError, ValueError):
+            error = result.stderr or result.stdout
+        raise RuntimeError(f"Apply failed after checkout:\n{error}")
+
+    try:
+        raw = json.loads(result.stdout)
+        return ApplyResult(
+            ref=raw["ref"],
+            system_migrations_applied=raw["system_migrations_applied"],
+            already_up_to_date=raw["already_up_to_date"],
+        )
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        raise RuntimeError(f"Invalid apply result: {result.stdout}") from e
+
+
+# ── Legacy migration re-exec (for the up-to-date path) ──────────────
 
 _MIGRATE_SCRIPT = (
     "import json; "
@@ -164,7 +197,6 @@ _MIGRATE_SCRIPT = (
 
 
 def _run_migrations_reexec() -> list[int]:
-    """Run migrations in a subprocess so the freshly-installed code is imported."""
     try:
         result = subprocess.run(
             [sys.executable, "-c", _MIGRATE_SCRIPT],
@@ -183,6 +215,9 @@ def _run_migrations_reexec() -> list[int]:
         return parsed
     except (json.JSONDecodeError, ValueError):
         return []
+
+
+# ── Remote management ────────────────────────────────────────────────
 
 
 def set_remote_url(url: str) -> RemoteInfo:
