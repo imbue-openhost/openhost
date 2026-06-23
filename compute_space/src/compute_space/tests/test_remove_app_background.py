@@ -9,8 +9,7 @@ from unittest.mock import patch
 from compute_space.core.app_id import new_app_id
 from compute_space.core.apps import remove_app_background
 from compute_space.db.connection import init_db
-
-from .conftest import _make_test_config
+from compute_space.tests.conftest import _make_test_config
 
 
 def _seed_app_with_children(db_path: str, app_name: str = "myapp") -> str:

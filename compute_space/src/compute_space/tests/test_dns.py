@@ -7,8 +7,8 @@ import pytest
 
 import compute_space.core.dns as dns_mod
 from compute_space.core.dns import TxtRecord
+from compute_space.core.dns import append_txt_records
 from compute_space.core.dns import clear_txt
-from compute_space.core.dns import set_txt_records
 
 
 def _write_zonefile(path: Path, serial: int = 100) -> None:
@@ -58,45 +58,47 @@ def test_coredns_bind_ip_falls_back_to_public_ip(monkeypatch: pytest.MonkeyPatch
     assert dns_mod._coredns_bind_ip("203.0.113.10") == "203.0.113.10"
 
 
-def test_set_txt_records_writes_absolute_fqdn_names(tmp_path: Path) -> None:
+def test_append_txt_records_writes_relative_names_verbatim(tmp_path: Path) -> None:
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile, serial=100)
 
-    # Two challenges sharing one record_name (base + wildcard) plus a distinct one.
-    set_txt_records(
+    # Local DNS-01 path: several values share one relative name, left for CoreDNS
+    # to resolve against $ORIGIN.
+    append_txt_records(
         zonefile,
         [
-            TxtRecord(record_name="_acme-challenge.app.example.com", record_value="base-value"),
-            TxtRecord(record_name="_acme-challenge.app.example.com", record_value="wildcard-value"),
+            TxtRecord(record_name="_acme-challenge", record_value="base-value"),
+            TxtRecord(record_name="_acme-challenge", record_value="wildcard-value"),
         ],
     )
 
     content = zonefile.read_text()
-    # Names are written as absolute FQDNs (trailing dot) so CoreDNS does not
-    # re-append $ORIGIN.
-    assert '_acme-challenge.app.example.com.   IN TXT  "base-value"' in content
-    assert '_acme-challenge.app.example.com.   IN TXT  "wildcard-value"' in content
-    # Not doubled up into _acme-challenge.app.example.com.app.example.com.
-    assert "app.example.com.app.example.com" not in content
+    assert '_acme-challenge   IN TXT  "base-value"' in content
+    assert '_acme-challenge   IN TXT  "wildcard-value"' in content
+    # Relative name is not turned into an absolute FQDN.
+    assert "_acme-challenge.   IN TXT" not in content
     # Serial bumped so CoreDNS reloads.
     assert "101   ; serial" in content
 
 
-def test_set_txt_records_preserves_existing_trailing_dot(tmp_path: Path) -> None:
+def test_append_txt_records_writes_absolute_fqdn_names_verbatim(tmp_path: Path) -> None:
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile)
 
-    set_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge.app.example.com.", record_value="v")])
+    # Broker path: names arrive as absolute FQDNs (trailing dot) so CoreDNS does
+    # not re-append $ORIGIN.
+    append_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge.app.example.com.", record_value="v")])
 
     content = zonefile.read_text()
     assert '_acme-challenge.app.example.com.   IN TXT  "v"' in content
-    assert "app.example.com..   IN TXT" not in content
+    # Not doubled up into _acme-challenge.app.example.com.app.example.com.
+    assert "app.example.com.app.example.com" not in content
 
 
-def test_clear_txt_removes_broker_records(tmp_path: Path) -> None:
+def test_clear_txt_removes_records(tmp_path: Path) -> None:
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile)
-    set_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge.app.example.com", record_value="v")])
+    append_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge.app.example.com.", record_value="v")])
 
     clear_txt(zonefile)
 

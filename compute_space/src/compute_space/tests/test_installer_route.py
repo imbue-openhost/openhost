@@ -30,9 +30,8 @@ from compute_space.core.installer import InstallError
 from compute_space.core.installer import InstallResult
 from compute_space.db import provide_db
 from compute_space.db.connection import init_db
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.services_v2 import services_v2_routes
-
-from .conftest import _make_test_config
 
 CALLER_APP = "openhost-catalog"
 CALLER_TOKEN = "test-installer-caller-token"

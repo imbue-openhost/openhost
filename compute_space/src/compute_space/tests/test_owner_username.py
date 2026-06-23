@@ -39,11 +39,10 @@ from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
 from compute_space.db import provide_db
 from compute_space.db.connection import init_db
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.api.settings import api_settings_routes
 from compute_space.web.routes.pages.login import pages_login_routes
 from compute_space.web.setup_app import create_setup_app
-
-from .conftest import _make_test_config
 
 # ---------------------------------------------------------------------------
 # Shared helpers

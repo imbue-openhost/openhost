@@ -4,8 +4,9 @@ The VM runs CoreDNS authoritative for its zone domain (e.g. alice.host.imbue.com
 This module writes and updates the zone file. CoreDNS watches for SOA serial
 changes and auto-reloads.
 
-For DNS-01 ACME challenges, the router calls set_txt() to add a TXT record,
-waits for CoreDNS to pick it up, then calls clear_txt() after the cert is issued.
+For DNS-01 ACME challenges, the router calls append_txt_records() to add TXT
+records, waits for CoreDNS to pick them up, then calls clear_txt() after the cert
+is issued.
 """
 
 from __future__ import annotations
@@ -101,54 +102,36 @@ def _bump_serial(content: str) -> str:
     return _SERIAL_RE.sub(f"{m.group(1)}{new_serial}{m.group(3)}", content, count=1)
 
 
-def set_txt(
-    zone_file_path: Path,
-    name: str,
-    values: str | list[str],
-) -> None:
-    """Append TXT record(s) to the zone file and bump the SOA serial.
-
-    For ACME DNS-01 challenges, name is typically '_acme-challenge'.
-    values can be a single string or a list of strings (for multiple
-    authorizations, e.g. base domain + wildcard).
-    """
-    if isinstance(values, str):
-        values = [values]
-    with open(zone_file_path) as f:
-        content = f.read()
-    content = _bump_serial(content)
-    for v in values:
-        content += f'{name}   IN TXT  "{v}"\n'
-    with open(zone_file_path, "w") as f:
-        f.write(content)
-    logger.info(f"Set {len(values)} TXT record(s) {name}")
-
-
 @attr.s(auto_attribs=True, frozen=True)
 class TxtRecord:
-    """A TXT record to publish, addressed by its fully-qualified name."""
+    """A TXT record to publish.
+
+    ``record_name`` is written into the zone file verbatim, so the caller chooses
+    the addressing: a name relative to the zone's $ORIGIN (e.g. '_acme-challenge')
+    has CoreDNS append the origin, while an absolute FQDN ending in '.' is honored
+    as-is.
+    """
 
     record_name: str
     record_value: str
 
 
-def set_txt_records(zone_file_path: Path, records: list[TxtRecord]) -> None:
-    """Append TXT record(s) addressed by fully-qualified name and bump the SOA serial.
+def append_txt_records(zone_file_path: Path, records: list[TxtRecord]) -> None:
+    """Append TXT record(s) to the zone file and bump the SOA serial.
 
-    Unlike set_txt (which takes a name relative to $ORIGIN), this writes each
-    record_name as an absolute FQDN — appending a trailing dot if missing — so
-    CoreDNS does not re-append $ORIGIN.  Used for openhost-cert-api broker
-    challenges, whose record_name values are full FQDNs to honor verbatim.
+    Each record's ``record_name`` is written verbatim (see TxtRecord), so this
+    serves both local DNS-01 challenges (relative '_acme-challenge' names) and
+    openhost-cert-api broker challenges (absolute FQDNs). Bumping the SOA serial
+    triggers a CoreDNS reload.
     """
     with open(zone_file_path) as f:
         content = f.read()
     content = _bump_serial(content)
     for record in records:
-        name = record.record_name if record.record_name.endswith(".") else f"{record.record_name}."
-        content += f'{name}   IN TXT  "{record.record_value}"\n'
+        content += f'{record.record_name}   IN TXT  "{record.record_value}"\n'
     with open(zone_file_path, "w") as f:
         f.write(content)
-    logger.info(f"Set {len(records)} absolute TXT record(s)")
+    logger.info(f"Appended {len(records)} TXT record(s)")
 
 
 def clear_txt(zone_file_path: Path) -> None:
