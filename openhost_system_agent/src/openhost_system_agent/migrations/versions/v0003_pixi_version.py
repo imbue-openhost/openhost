@@ -9,7 +9,7 @@ from openhost_system_agent.pixi import ensure_pixi_version
 
 class Migration0003PixiVersion(SystemMigration):
     version = 3
-    phase: ClassVar[Literal["pre_install"]] = "pre_install"
+    phase: ClassVar[Literal["pre_pixi_install"]] = "pre_pixi_install"
 
     def up(self) -> None:
         ensure_pixi_version()

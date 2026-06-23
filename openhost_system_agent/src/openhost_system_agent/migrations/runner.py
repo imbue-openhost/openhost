@@ -24,7 +24,7 @@ from openhost_system_agent.migrations.registry import validate_registry
 def apply_system_migrations(
     migrations_path: str = MIGRATIONS_PATH,
     registry: Sequence[SystemMigration] | None = None,
-    phase: Literal["pre_install", "post_install"] | None = None,
+    phase: Literal["pre_pixi_install", "post_pixi_install"] | None = None,
 ) -> list[int]:
     if registry is None:
         registry = REGISTRY
@@ -46,7 +46,7 @@ def _apply_under_lock(
     migrations_path: str,
     registry: Sequence[SystemMigration],
     highest: int,
-    phase: Literal["pre_install", "post_install"] | None,
+    phase: Literal["pre_pixi_install", "post_pixi_install"] | None,
 ) -> list[int]:
     entries = read_log(migrations_path)
     current = current_host_version(entries)

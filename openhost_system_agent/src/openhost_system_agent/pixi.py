@@ -1,9 +1,4 @@
-"""Pinned pixi version and the helper that enforces it on a host.
-
-A pixi older than the lockfile's format version can't parse the lock, so
-``ensure_pixi_version`` runs before ``pixi install`` (and from the v3
-migration) to keep the host's pixi able to read the checked-out lockfile.
-"""
+"""Pinned pixi version and the helper that enforces it on a host."""
 
 from __future__ import annotations
 
