@@ -1,16 +1,14 @@
 [openhost]
 zone_domain = "{{ domain }}"
 host = "127.0.0.1"
-tls_enabled = {{ tls_enabled | default(true) | lower }}
-acquire_tls_cert_if_missing = {{ tls_enabled | default(true) | lower }}
-{% if tls_enabled | default(true) %}
+tls_enabled = true
+acquire_tls_cert_if_missing = true
 acme_account_key_path = "/home/host/openhost/ansible/secrets/certbot_private_key.json"
 acme_email = "{{ acme_email | default('openhost@' + domain) }}"
 {% if acme_directory_url is defined %}
 acme_directory_url = "{{ acme_directory_url }}"
 {% endif %}
-{% endif %}
-coredns_enabled = {{ tls_enabled | default(true) | lower }}
+coredns_enabled = true
 public_ip = "{{ public_ip | default(inventory_hostname) }}"
 start_caddy = true
 claim_token_required = true

@@ -24,26 +24,12 @@
   register: caddy_path
   changed_when: false
 
-# On linux-64 coredns is pixi-managed; on aarch64 it is installed via apt.
-- name: Find coredns binary path (pixi-managed, linux-64)
+- name: Find coredns binary path
   shell: /home/host/.pixi/bin/pixi run which coredns
   args:
     chdir: /home/host/openhost
-  register: _coredns_pixi_path
+  register: coredns_path
   changed_when: false
-  when: ansible_architecture != "aarch64"
-
-- name: Find coredns binary path (apt-managed, aarch64)
-  shell: which coredns
-  register: _coredns_apt_path
-  changed_when: false
-  when: ansible_architecture == "aarch64"
-
-- name: Resolve coredns binary path
-  set_fact:
-    coredns_bin: >-
-      {{ (_coredns_pixi_path.stdout | default('')) if ansible_architecture != 'aarch64'
-         else (_coredns_apt_path.stdout | default('')) }}
 
 - name: Set cap_net_bind_service on caddy
   become: yes
@@ -53,34 +39,27 @@
 - name: Set cap_net_bind_service on coredns
   become: yes
   become_user: root
-  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_bin | trim }}
+  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_path.stdout }}
 
-- name: Check if systemd-resolved is active
+- name: Create resolved.conf.d directory
   become: yes
   become_user: root
-  shell: systemctl is-active systemd-resolved
-  register: _resolved_active
-  changed_when: false
-  failed_when: false
+  file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
 
 - name: Disable systemd-resolved stub listener (frees port 53 for coredns)
   become: yes
   become_user: root
-  block:
-    - name: Create resolved.conf.d directory
-      file:
-        path: /etc/systemd/resolved.conf.d
-        state: directory
+  copy:
+    content: "[Resolve]\nDNSStubListener=no\n"
+    dest: /etc/systemd/resolved.conf.d/no-stub.conf
+  register: resolved_conf
 
-    - name: Write stub listener config
-      copy:
-        content: "[Resolve]\nDNSStubListener=no\n"
-        dest: /etc/systemd/resolved.conf.d/no-stub.conf
-      register: resolved_conf
-
-    - name: Restart systemd-resolved
-      systemd:
-        name: systemd-resolved
-        state: restarted
-      when: resolved_conf.changed
-  when: _resolved_active.stdout == "active"
+- name: Restart systemd-resolved
+  become: yes
+  become_user: root
+  systemd:
+    name: systemd-resolved
+    state: restarted
+  when: resolved_conf.changed

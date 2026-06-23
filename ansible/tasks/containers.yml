@@ -55,9 +55,7 @@
     mode: "0644"
 
 - name: Apply podman sysctls
-  # --ignore-unknown skips keys that don't exist on this kernel (e.g.
-  # kernel.apparmor_restrict_unprivileged_userns on kernels without AppArmor).
-  command: sysctl --ignore-unknown -p /etc/sysctl.d/90-openhost-podman.conf
+  command: sysctl -p /etc/sysctl.d/90-openhost-podman.conf
   changed_when: false
 
 # Podman has no default registry, unlike Docker.  We need docker.io as the unqualified-search registry so apps'
