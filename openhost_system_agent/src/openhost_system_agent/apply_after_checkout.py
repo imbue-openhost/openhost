@@ -75,7 +75,11 @@ def main() -> None:
     # effect before deps are installed for this checkout.
     apply_system_migrations()
 
-    result = subprocess.run([PIXI_BIN, "install"], cwd=project, timeout=300)
+    # Install as the unprivileged 'host' user, not root. The openhost service
+    # runs as host via `pixi run`, and pixi tracks its PyPI sync per-user; a
+    # root install leaves root-owned files in the env that the host service
+    # then can't update, so its `pixi run` fails with EACCES.
+    result = subprocess.run(["sudo", "-u", "host", "-H", PIXI_BIN, "install"], cwd=project, timeout=300)
     if result.returncode != 0:
         print(f"pixi install failed (exit {result.returncode})", file=sys.stderr)
         sys.exit(1)

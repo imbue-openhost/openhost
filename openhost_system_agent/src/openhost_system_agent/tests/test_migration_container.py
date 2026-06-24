@@ -24,14 +24,18 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _DOCKERFILE = Path(__file__).resolve().parent / "Dockerfile.migration_test"
 _PIXI = "/home/host/.pixi/bin/pixi"
 _REPO = "/home/host/openhost"
+# The env interpreter, invoked directly the way the prod console script is —
+# NOT via `pixi run`, which re-syncs PyPI as the calling user and would leave
+# root-owned files in a host-owned env.
+_ENV_PYTHON = "/home/host/openhost/.pixi/envs/default/bin/python"
 
 
 def _podman(*args: str, timeout: int = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["podman", *args], capture_output=True, text=True, timeout=timeout, check=check)
 
 
-def _exec(container: str, *args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    return _podman("exec", container, *args, timeout=timeout)
+def _exec(container: str, *args: str, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return _podman("exec", container, *args, timeout=timeout, check=check)
 
 
 def _host_sh(container: str, script: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -111,11 +115,7 @@ class TestMigrationContainer:
     def test_migrations_apply(self) -> None:
         result = _exec(
             self.container,
-            _PIXI,
-            "run",
-            "-e",
-            "default",
-            "python",
+            _ENV_PYTHON,
             "-c",
             "from openhost_system_agent.migrations.runner import apply_system_migrations; "
             "print(apply_system_migrations())",
@@ -187,8 +187,8 @@ class TestApplyUpdateWalk:
         # test image, so resolve the console script from the pixi env).
         which = _host_sh(c, f"cd {_REPO} && {_PIXI} run -e default which openhost_system_agent")
         agent = which.stdout.strip().splitlines()[-1]
-        apply = _exec(c, "sudo", agent, "update", "apply", timeout=600)
-        assert apply.returncode == 0, f"update apply failed:\n{apply.stdout}\n{apply.stderr}"
+        apply = _exec(c, "sudo", agent, "update", "apply", timeout=600, check=False)
+        assert apply.returncode == 0, f"update apply failed (exit {apply.returncode}):\n{apply.stdout}\n{apply.stderr}"
 
         # The v3 migration upgraded pixi to the pinned version.
         after = _host_sh(c, f"{_PIXI} --version")
