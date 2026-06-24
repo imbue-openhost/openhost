@@ -9,6 +9,8 @@ On the error path the handler raises ``HTTPException``; we inspect its
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from litestar.exceptions import HTTPException
 
@@ -137,6 +139,35 @@ async def test_apply_update_proceeds_when_migration_behind(monkeypatch: pytest.M
     monkeypatch.setattr(settings_mod, "system_agent_status", fake_status)
 
     await settings_mod.apply_update.fn()
+    assert called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_update_rejects_concurrent_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    in_apply = asyncio.Event()
+    release = asyncio.Event()
+    called = {"n": 0}
+
+    async def fake_apply() -> None:
+        called["n"] += 1
+        in_apply.set()
+        await release.wait()
+
+    async def fake_status() -> MigrationStatus:
+        return MigrationStatus(ok=True, reason="", message="ok", current_host_version=1, expected_version=1)
+
+    monkeypatch.setattr(settings_mod, "system_agent_apply", fake_apply)
+    monkeypatch.setattr(settings_mod, "system_agent_status", fake_status)
+
+    first = asyncio.create_task(settings_mod.apply_update.fn())
+    await in_apply.wait()
+
+    with pytest.raises(HTTPException) as excinfo:
+        await settings_mod.apply_update.fn()
+    assert excinfo.value.status_code == 409
+
+    release.set()
+    await first
     assert called["n"] == 1
 
 

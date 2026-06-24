@@ -68,7 +68,8 @@ def _next_tag(project: str) -> str | None:
 
 
 def main() -> None:
-    project = str(Path(__file__).resolve().parent.parent.parent)
+    # src/openhost_system_agent/apply_after_checkout.py → repo root is four up.
+    project = str(Path(__file__).resolve().parents[3])
 
     # Migrations run before install so a toolchain upgrade (e.g. pixi) takes
     # effect before deps are installed for this checkout.
