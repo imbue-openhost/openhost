@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import datetime
-import fcntl
 import os
 import time
 from collections.abc import Sequence
-from pathlib import Path
 
 from loguru import logger
 
@@ -32,19 +30,6 @@ def apply_system_migrations(
     if os.geteuid() != 0:
         raise RuntimeError("System migrations must be run as root")
 
-    Path(migrations_path).parent.mkdir(parents=True, exist_ok=True)
-
-    lock_path = migrations_path + ".lock"
-    with open(lock_path, "w") as lock_fd:
-        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-        return _apply_under_lock(migrations_path, registry, highest)
-
-
-def _apply_under_lock(
-    migrations_path: str,
-    registry: Sequence[SystemMigration],
-    highest: int,
-) -> list[int]:
     entries = read_log(migrations_path)
     current = current_host_version(entries)
 

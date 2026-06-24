@@ -22,13 +22,6 @@ class DiffResult:
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class ApplyResult:
-    ref: str
-    system_migrations_applied: list[int]
-    already_up_to_date: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
 class RemoteInfo:
     url: str | None
     ref: str

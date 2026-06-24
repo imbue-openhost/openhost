@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import json
-import subprocess
+import os
+import re
 import sys
 import urllib.parse
 from pathlib import Path
+from typing import NoReturn
 
 import git
 from loguru import logger
 
-from openhost_system_agent.protocol import ApplyResult
 from openhost_system_agent.protocol import DiffCommit
 from openhost_system_agent.protocol import DiffResult
 from openhost_system_agent.protocol import FetchResult
@@ -30,13 +30,6 @@ def _get_remote(repo: git.Repo) -> git.Remote:
         raise RuntimeError("remote 'origin' is not set") from e
 
 
-def _branch_name(repo: git.Repo) -> str:
-    try:
-        return repo.active_branch.name
-    except TypeError:
-        return repo.head.commit.hexsha[:8]
-
-
 _KNOWN_SCHEMES = {"http", "https", "ssh", "git", "file"}
 
 
@@ -50,139 +43,119 @@ def _strip_credentials(url: str) -> str:
     return url
 
 
+# ── Tag helpers ──────────────────────────────────────────────────────
+
+
+# A release tag is "v" followed by dot-separated integers (v1, v1.2, v1.2.3).
+# Other v-prefixed tags (e.g. v1.2.0-rc1) are ignored so version parsing
+# can't crash on them.
+_RELEASE_TAG = re.compile(r"v\d+(?:\.\d+)*")
+
+
+def _version_key(tag_name: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in tag_name.lstrip("v").split("."))
+
+
+def _get_sorted_tags(repo: git.Repo) -> list[str]:
+    return sorted([t.name for t in repo.tags if _RELEASE_TAG.fullmatch(t.name)], key=_version_key)
+
+
+def _current_tag(repo: git.Repo) -> str | None:
+    try:
+        result: str = repo.git.describe("--tags", "--exact-match", "HEAD")
+    except git.GitCommandError:
+        return None
+    return result if _RELEASE_TAG.fullmatch(result) else None
+
+
+def _latest_ancestor_tag(repo: git.Repo) -> str | None:
+    try:
+        result: str = repo.git.describe("--tags", "--abbrev=0", "HEAD")
+    except git.GitCommandError:
+        return None
+    return result if _RELEASE_TAG.fullmatch(result) else None
+
+
+# ── Fetch / diff / apply ─────────────────────────────────────────────
+
+
 def fetch_updates() -> FetchResult:
     repo = _repo()
-    remote = _get_remote(repo)
-    remote.fetch()
+    _get_remote(repo)
+    repo.git.fetch("origin", "--tags")
 
     if repo.is_dirty(untracked_files=True):
         return FetchResult(state="DIRTY")
 
-    try:
-        branch = repo.active_branch
-    except TypeError:
+    tags = _get_sorted_tags(repo)
+    if not tags:
         return FetchResult(state="UP_TO_DATE")
 
-    tracking = branch.tracking_branch()
-    if tracking is None:
-        raise RuntimeError(f"Branch {branch.name} has no tracking branch set")
+    latest = tags[-1]
+    current = _current_tag(repo) or _latest_ancestor_tag(repo)
 
-    ahead = int(repo.git.rev_list("--count", f"{tracking}..{branch}"))
-    behind = int(repo.git.rev_list("--count", f"{branch}..{tracking}"))
-
-    if ahead > 0:
-        return FetchResult(state="AHEAD_OF_REMOTE")
-    if behind > 0:
+    if current is None or _version_key(current) < _version_key(latest):
         return FetchResult(state="BEHIND_REMOTE")
     return FetchResult(state="UP_TO_DATE")
 
 
 def show_diff() -> DiffResult:
     repo = _repo()
-    branch = _branch_name(repo)
-    remote_ref = f"origin/{branch}"
+    tags = _get_sorted_tags(repo)
+    current = _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
 
-    try:
-        repo.refs[remote_ref]
-    except IndexError:
-        return DiffResult(commits=[], current_ref=repo.head.commit.hexsha[:8], remote_ref=None)
+    if not tags:
+        return DiffResult(commits=[], current_ref=current, remote_ref=None)
 
-    current_sha = repo.head.commit.hexsha[:8]
-    remote_sha = repo.refs[remote_ref].commit.hexsha[:8]
-
+    latest = tags[-1]
     commits = []
-    for commit in repo.iter_commits(f"HEAD..{remote_ref}"):
+    for commit in repo.iter_commits(f"{current}..{latest}"):
         commits.append(
             DiffCommit(
                 sha=commit.hexsha[:8],
                 message=str(commit.message).strip().split("\n")[0],
             )
         )
+    return DiffResult(commits=commits, current_ref=current, remote_ref=latest)
 
-    return DiffResult(commits=commits, current_ref=current_sha, remote_ref=remote_sha)
+
+# STABILITY CONTRACT: this execs the checked-out tag's apply file by path
+# and depends only on its exit code. Keep the path and that contract
+# stable. Once a new tag is cut, the contract resets to that tag's code.
+_APPLY_ENTRYPOINT = _PACKAGE_DIR / "apply_after_checkout.py"
 
 
-def apply_update() -> ApplyResult:
+def apply_update() -> NoReturn:
     repo = _repo()
 
     if repo.is_dirty(untracked_files=True):
         raise RuntimeError("Working tree has uncommitted changes. Stash or commit first.")
 
-    branch = _branch_name(repo)
-    remote_ref = f"origin/{branch}"
+    repo.git.fetch("origin", "--tags")
+    tags = _get_sorted_tags(repo)
+    if not tags:
+        raise RuntimeError("No tags found on remote. Tag a release first.")
 
-    try:
-        repo.refs[remote_ref]
-    except IndexError as e:
-        raise RuntimeError(f"No remote ref {remote_ref} found. Run 'update fetch' first.") from e
+    latest = tags[-1]
+    current = _current_tag(repo) or _latest_ancestor_tag(repo)
 
-    local_sha = repo.head.commit.hexsha
-    remote_sha = repo.refs[remote_ref].commit.hexsha
+    if current == latest:
+        logger.info(f"Already on {latest}; running pending migrations and restarting...")
+    else:
+        # Step onto the first tag ahead so the new tag's apply code runs;
+        # apply_after_checkout tail-calls forward through the rest itself.
+        next_tag = tags[0] if current is None else next(t for t in tags if _version_key(t) > _version_key(current))
+        logger.info(f"Checking out {next_tag}...")
+        repo.git.checkout(next_tag)
+        repo.git.clean("-fd")
 
-    if local_sha == remote_sha:
-        logger.info("Running system migrations...")
-        applied = _run_migrations_reexec()
-        return ApplyResult(ref=local_sha[:8], system_migrations_applied=applied, already_up_to_date=not applied)
-
-    logger.info(f"Checking out {remote_ref}...")
-    try:
-        repo.git.checkout("-fB", branch, remote_ref)
-        repo.heads[branch].set_tracking_branch(repo.refs[remote_ref])
-    except IndexError:
-        repo.git.checkout("-f", remote_ref)
-    repo.git.clean("-fd")
-
-    logger.info("Running pixi install...")
-    _run_pixi_install()
-
-    logger.info("Running system migrations...")
-    applied = _run_migrations_reexec()
-
-    return ApplyResult(ref=repo.head.commit.hexsha[:8], system_migrations_applied=applied, already_up_to_date=False)
+    # Hand off to the checked-out tag's apply code, replacing this process.
+    # It walks any remaining tags and restarts openhost when done, so this
+    # never returns; the migration log records what happened for the next boot.
+    os.execv(sys.executable, [sys.executable, str(_APPLY_ENTRYPOINT)])
 
 
-def _run_pixi_install() -> None:
-    try:
-        result = subprocess.run(
-            ["/home/host/.pixi/bin/pixi", "install"],
-            cwd=_PROJECT_DIR,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError("pixi install timed out after 300s") from e
-    if result.returncode != 0:
-        raise RuntimeError(f"pixi install failed (exit {result.returncode}):\n{result.stderr}")
-
-
-_MIGRATE_SCRIPT = (
-    "import json; "
-    "from openhost_system_agent.migrations.runner import apply_system_migrations; "
-    "print(json.dumps(apply_system_migrations()))"
-)
-
-
-def _run_migrations_reexec() -> list[int]:
-    """Run migrations in a subprocess so the freshly-installed code is imported."""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", _MIGRATE_SCRIPT],
-            cwd=_PROJECT_DIR,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError("System migrations timed out after 300s") from e
-    if result.returncode != 0:
-        raise RuntimeError(f"System migrations failed:\n{result.stderr}")
-
-    try:
-        parsed: list[int] = json.loads(result.stdout)
-        return parsed
-    except (json.JSONDecodeError, ValueError):
-        return []
+# ── Remote management ────────────────────────────────────────────────
 
 
 def set_remote_url(url: str) -> RemoteInfo:
@@ -213,11 +186,14 @@ def set_remote_url(url: str) -> RemoteInfo:
             repo.git.checkout("-f", ref)
         repo.git.clean("-fd")
 
-    return RemoteInfo(url=_strip_credentials(url), ref=ref or _branch_name(repo))
+    return RemoteInfo(
+        url=_strip_credentials(url), ref=ref or (tags[-1] if (tags := _get_sorted_tags(repo)) else "HEAD")
+    )
 
 
 def get_remote_info() -> RemoteInfo:
     repo = _repo()
     remote = _get_remote(repo)
     url = _strip_credentials(remote.url) if remote.url else None
-    return RemoteInfo(url=url, ref=_branch_name(repo))
+    current = _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
+    return RemoteInfo(url=url, ref=current)
