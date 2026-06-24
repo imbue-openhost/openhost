@@ -1,0 +1,121 @@
+"""Tests for the dashboard/layout heading name.
+
+The top-of-page ``<h1>`` (and ``<title>``) prefers the owner's configured
+username over the zone subdomain, falling back to the zone name (and then to
+"OpenHost") when no username is set. The name is exposed to templates via the
+``owner_name`` callable installed in ``_template_globals``.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from litestar import Litestar
+from litestar.contrib.jinja import JinjaTemplateEngine
+from litestar.di import Provide
+from litestar.template.config import TemplateConfig
+from litestar.testing import TestClient
+
+from compute_space.config import provide_config
+from compute_space.config import set_active_config
+from compute_space.core.auth.auth import update_owner_username
+from compute_space.db import provide_db
+from compute_space.db.connection import init_db
+from compute_space.web.app import _template_globals
+from compute_space.web.routes.pages.apps import dashboard
+
+from ._litestar_helpers import auth_cookie
+from ._litestar_helpers import seed_user
+from .conftest import _make_test_config
+
+
+def _seed_username(db_path: str, username: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        update_owner_username(conn, username)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def cfg(tmp_path: Path) -> Iterator[Any]:
+    config = _make_test_config(tmp_path, zone_domain="alice-zone.example.com")
+    init_db(config.db_path)
+    yield config
+
+
+def _build_app(cfg: Any) -> Litestar:
+    """A minimal app with the real dashboard route + Jinja globals installed."""
+    web_dir = Path(__file__).resolve().parents[1] / "web"
+    template_config: TemplateConfig[JinjaTemplateEngine] = TemplateConfig(
+        directory=web_dir / "templates",
+        engine=JinjaTemplateEngine,
+    )
+
+    def _install_globals(app: Litestar) -> None:
+        engine = app.template_engine
+        if isinstance(engine, JinjaTemplateEngine):
+            engine.engine.globals.update(_template_globals(cfg, web_dir / "static"))
+
+    app = Litestar(
+        route_handlers=[dashboard],
+        template_config=template_config,
+        dependencies={
+            "config": Provide(provide_config, sync_to_thread=False),
+            "db": Provide(provide_db),
+        },
+        on_startup=[_install_globals],
+        openapi_config=None,
+    )
+    # The dashboard route is guarded by require_owner_auth; tests below provide a
+    # real session cookie, so no guard override is needed.
+    return app
+
+
+def test_heading_uses_zone_name_when_no_username(cfg: Any) -> None:
+    set_active_config(cfg)
+    # auth_cookie seeds a user named "owner" (the default), so to exercise the
+    # *fallback* we clear the username to empty after seeding.
+    cookie = auth_cookie(cfg, username="owner")
+    _seed_username(cfg.db_path, "")  # simulate "no username set"
+
+    with TestClient(app=_build_app(cfg)) as client:
+        resp = client.get("/dashboard", cookies=cookie)
+    assert resp.status_code == 200
+    assert "alice-zone's Private Compute Space" in resp.text
+    assert "owner's Private Compute Space" not in resp.text
+
+
+def test_heading_uses_owner_username_when_set(cfg: Any) -> None:
+    set_active_config(cfg)
+    cookie = auth_cookie(cfg, username="owner")
+    _seed_username(cfg.db_path, "alice")
+
+    with TestClient(app=_build_app(cfg)) as client:
+        resp = client.get("/dashboard", cookies=cookie)
+    assert resp.status_code == 200
+    assert "alice's Private Compute Space" in resp.text
+    # The zone subdomain must no longer drive the heading.
+    assert "alice-zone's Private Compute Space" not in resp.text
+
+
+def test_owner_name_global_reads_live(cfg: Any) -> None:
+    set_active_config(cfg)
+    globals_ = _template_globals(cfg, Path("static"))
+    owner_name = globals_["owner_name"]
+
+    # Pre-setup (no user row) -> None so the heading falls back to zone_name.
+    assert owner_name() is None
+
+    seed_user(cfg.db_path, username="bob")
+    assert owner_name() == "bob"
+
+    # Changing the username is reflected immediately (read live, not cached).
+    _seed_username(cfg.db_path, "carol")
+    assert owner_name() == "carol"

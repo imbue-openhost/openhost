@@ -57,7 +57,7 @@ User-facing links the app advertises for paths on its own URL that aren't the ba
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `memory_mb` | integer | no | 128 | Max memory in MB |
-| `cpu_millicores` | integer | no | 100 | CPU allocation (1000 = 1 core) |
+| `cpu_cores` | float | no | 0.1 | CPU allocation in cores (1.0 = 1 core) |
 | `gpu` | boolean | no | false | Whether GPU access is needed |
 
 ### `[data]` — optional
@@ -121,7 +121,7 @@ health_check = "/health"
 
 [resources]
 memory_mb = 128
-cpu_millicores = 100
+cpu_cores = 0.1
 
 [data]
 sqlite = ["main"]
@@ -144,7 +144,7 @@ public_paths = ["/tunnel"]
 
 [resources]
 memory_mb = 128
-cpu_millicores = 100
+cpu_cores = 0.1
 ```
 
 ### App with extra port mappings

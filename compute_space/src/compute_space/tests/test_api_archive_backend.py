@@ -18,12 +18,11 @@ from compute_space.core import archive_backend
 from compute_space.core.app_id import new_app_id
 from compute_space.core.manifest import AppManifest
 from compute_space.db.connection import init_db
+from compute_space.tests._litestar_helpers import auth_cookie
+from compute_space.tests._litestar_helpers import make_test_app
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.api.apps import api_apps_routes
 from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
-
-from ._litestar_helpers import auth_cookie
-from ._litestar_helpers import make_test_app
-from .conftest import _make_test_config
 
 
 @pytest.fixture
@@ -131,6 +130,25 @@ def test_get_meta_dumps_null_on_s3_list_failure(
         resp = client.get("/api/storage/archive_backend", cookies=cookies)
     body = resp.json()
     assert body["meta_dumps"] is None
+
+
+def test_get_meta_dumps_lists_by_volume_name(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    """Regression: dumps live under ``<volume>/meta/``, so the route must pass
+    the JuiceFS volume name (not the often-null s3_prefix) to ``list_meta_dumps``."""
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_prefix=NULL, "
+            "juicefs_volume_name='openhost', s3_access_key_id='AKIA', s3_secret_access_key='hunter2'"
+        )
+        db.commit()
+    finally:
+        db.close()
+    spy = mock.MagicMock(return_value=archive_backend.MetaDumpSummary(count=0, latest_at=None, latest_key=None))
+    with mock.patch.object(archive_backend, "list_meta_dumps", spy):
+        client.get("/api/storage/archive_backend", cookies=cookies)
+    # last positional arg is the object prefix JuiceFS actually writes under
+    assert spy.call_args.args[-1] == "openhost"
 
 
 # --- configure route ------------------------------------------------------
@@ -324,7 +342,7 @@ def _archive_manifest(name: str, *, app_archive: bool, access_all_archive: bool 
         container_port=8080,
         container_command=None,
         memory_mb=128,
-        cpu_millicores=100,
+        cpu_cores=0.1,
         gpu=False,
         app_data=True,
         app_archive=app_archive,

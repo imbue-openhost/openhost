@@ -251,7 +251,7 @@ def run_container(
     cmd.extend(
         [
             f"--memory={manifest.memory_mb}m",
-            f"--cpus={manifest.cpu_millicores / 1000.0}",
+            f"--cpus={manifest.cpu_cores}",
             "--restart=unless-stopped",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges=true",

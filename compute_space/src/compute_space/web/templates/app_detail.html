@@ -27,7 +27,7 @@
   <tr><th>Local Port</th><td>{{ app.local_port }}</td></tr>
   <tr><th>Health Check</th><td>{{ app.health_check or "---" }}</td></tr>
   <tr><th>Memory</th><td>{{ app.memory_mb }} MB</td></tr>
-  <tr><th>CPU</th><td>{{ app.cpu_millicores }} millicores</td></tr>
+  <tr><th>CPU</th><td>{{ app.cpu_cores }} cores</td></tr>
   {% if app.repo_url %}
   <tr><th>Git URL</th><td>
     <span id="remote-display">

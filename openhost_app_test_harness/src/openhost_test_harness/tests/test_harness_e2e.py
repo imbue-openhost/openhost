@@ -4,11 +4,14 @@ Run:
     pixi run -e dev pytest openhost_app_test_harness -x --run-containers --timeout=900
 """
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import requests
+from playwright.sync_api import Page
+from playwright.sync_api import expect
 
 from openhost_test_harness import OpenhostStack
 from openhost_test_harness import ServiceConsumer
@@ -41,6 +44,16 @@ class TestHarness:
         r = requests.get(f"{stack.url}/", allow_redirects=False, timeout=10)
         assert r.status_code == 302
         assert "/login" in r.headers["Location"]
+
+    def test_playwright_login(self, stack: OpenhostStack, page: Page) -> None:
+        """playwright_login drives the real /login form so browser tests reach owner routes."""
+        page.goto(stack.url)
+        expect(page).to_have_url(re.compile(r"/login"))  # gated before login
+
+        stack.playwright_login(page)
+        page.goto(stack.url)
+        expect(page).not_to_have_url(re.compile(r"/login"))
+        assert "echo-provider" in page.content()
 
     def test_app_url_bypasses_router(self, stack: OpenhostStack) -> None:
         """Direct container access, e.g. for provider tests that forge identity headers."""

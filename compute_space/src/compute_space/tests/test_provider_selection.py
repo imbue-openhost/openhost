@@ -18,10 +18,9 @@ from compute_space.config import provide_config
 from compute_space.core.app_id import new_app_id
 from compute_space.db import provide_db
 from compute_space.db.connection import init_db
+from compute_space.tests.conftest import _make_test_config
 from compute_space.web.routes.api.services_v2 import api_services_v2_routes
 from compute_space.web.routes.services_v2 import services_v2_routes
-
-from .conftest import _make_test_config
 
 SVC_DATA = "github.com/org/repo/services/data"
 

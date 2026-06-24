@@ -35,6 +35,8 @@ dependencies = [
 test-harness = [
     "pytest>=8.0",
     "requests>=2.31",
+    "playwright>=1.40",
+    "pytest-playwright>=0.5",
 ]
 
 [project.scripts]
@@ -152,6 +154,7 @@ pytest = ">=8.0"
 requests = ">=2.31"
 pytest-timeout = ">=2.2"
 playwright = "*"
+pytest-playwright = "*"
 pytest-asyncio = "*"
 ruff = "==0.15.5"
 mypy = "*"
