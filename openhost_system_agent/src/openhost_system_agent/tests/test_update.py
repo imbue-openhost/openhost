@@ -6,7 +6,6 @@ import pytest
 from git import GitCommandError
 
 import openhost_system_agent.update as update_mod
-from openhost_system_agent.protocol import ApplyResult
 
 
 def _make_repo(*, tags: list[str], current_tag: str | None = None, dirty: bool = False) -> MagicMock:
@@ -33,30 +32,34 @@ def _make_repo(*, tags: list[str], current_tag: str | None = None, dirty: bool =
 def test_apply_update_already_on_latest_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _make_repo(tags=["v1.0.0"], current_tag="v1.0.0")
     monkeypatch.setattr(update_mod, "_repo", lambda: repo)
-    monkeypatch.setattr(
-        update_mod,
-        "_reexec_apply",
-        lambda: ApplyResult(ref="v1.0.0", system_migrations_applied=[], already_up_to_date=True),
-    )
+    # No migrations applied: host version unchanged across the apply.
+    monkeypatch.setattr(update_mod, "_host_version", MagicMock(side_effect=[2, 2]))
+    monkeypatch.setattr(update_mod, "_run_apply", lambda: None)
 
     result = update_mod.apply_update()
+    repo.git.checkout.assert_not_called()
     assert result.ref == "v1.0.0"
+    assert result.system_migrations_applied == []
     assert result.already_up_to_date is True
 
 
 def test_apply_update_checks_out_next_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _make_repo(tags=["v1.0.0", "v1.1.0"], current_tag="v1.0.0")
     monkeypatch.setattr(update_mod, "_repo", lambda: repo)
-    monkeypatch.setattr(
-        update_mod,
-        "_reexec_apply",
-        lambda: ApplyResult(ref="v1.1.0", system_migrations_applied=[3], already_up_to_date=False),
-    )
+    # Host version advances 2 → 3 across the apply (migration v3 applied).
+    monkeypatch.setattr(update_mod, "_host_version", MagicMock(side_effect=[2, 3]))
+
+    def fake_run_apply() -> None:
+        # The real walk advances HEAD to the latest tag.
+        repo.git.describe.return_value = "v1.1.0"
+
+    monkeypatch.setattr(update_mod, "_run_apply", fake_run_apply)
 
     result = update_mod.apply_update()
     repo.git.checkout.assert_called_with("v1.1.0")
     assert result.ref == "v1.1.0"
     assert result.system_migrations_applied == [3]
+    assert result.already_up_to_date is False
 
 
 def test_fetch_updates_behind(monkeypatch: pytest.MonkeyPatch) -> None:

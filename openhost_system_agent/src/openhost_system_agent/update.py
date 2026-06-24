@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
@@ -10,6 +9,9 @@ from pathlib import Path
 import git
 from loguru import logger
 
+from openhost_system_agent.migrations.migration_log import MIGRATIONS_PATH
+from openhost_system_agent.migrations.migration_log import current_host_version
+from openhost_system_agent.migrations.migration_log import read_log
 from openhost_system_agent.protocol import ApplyResult
 from openhost_system_agent.protocol import DiffCommit
 from openhost_system_agent.protocol import DiffResult
@@ -120,6 +122,10 @@ def show_diff() -> DiffResult:
     return DiffResult(commits=commits, current_ref=current, remote_ref=latest)
 
 
+def _host_version() -> int:
+    return current_host_version(read_log(MIGRATIONS_PATH))
+
+
 def apply_update() -> ApplyResult:
     repo = _repo()
 
@@ -133,64 +139,52 @@ def apply_update() -> ApplyResult:
 
     latest = tags[-1]
     current = _current_tag(repo) or _latest_ancestor_tag(repo)
+    before = _host_version()
 
     if current == latest:
         logger.info(f"Already on {latest}, running pending migrations...")
-        return _reexec_apply()
-
-    # Find the next tag after our current position and start the walk.
-    if current is None:
-        next_tag = tags[0]
     else:
-        later = [t for t in tags if _version_key(t) > _version_key(current)]
-        if not later:
-            logger.info(f"Already on {current}, running pending migrations...")
-            return _reexec_apply()
-        next_tag = later[0]
+        # Step onto the first tag ahead so the new tag's apply code runs;
+        # apply_after_checkout tail-calls forward through the rest itself.
+        next_tag = tags[0] if current is None else next(t for t in tags if _version_key(t) > _version_key(current))
+        logger.info(f"Checking out {next_tag}...")
+        repo.git.checkout(next_tag)
+        repo.git.clean("-fd")
 
-    logger.info(f"Checking out {next_tag}...")
-    repo.git.checkout(next_tag)
-    repo.git.clean("-fd")
+    _run_apply()
 
-    return _reexec_apply()
+    # The walk advanced the migration log and HEAD on disk; read the
+    # result back rather than parsing it from the subprocess.
+    after = _host_version()
+    applied = list(range(before + 1, after + 1))
+    ref = _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
+    return ApplyResult(ref=ref, system_migrations_applied=applied, already_up_to_date=not applied)
 
 
-# ── Re-exec into checked-out code ────────────────────────────────────
+# ── Run checked-out apply code ───────────────────────────────────────
 
-# STABILITY CONTRACT: the prior tag's _reexec_apply calls this file by
-# path. Keep the path stable relative to the prior tag's caller. Once a
-# new tag is cut, the contract resets.
+# STABILITY CONTRACT: this invokes the checked-out tag's apply file by
+# path and depends only on its exit code. Keep the path and that contract
+# stable. Once a new tag is cut, the contract resets to that tag's code.
 _APPLY_ENTRYPOINT = _PACKAGE_DIR / "apply_after_checkout.py"
 
 
-def _reexec_apply() -> ApplyResult:
-    # No aggregate timeout: the walk can span many tags, and each step
-    # already bounds its own work (pixi install, git ops). A single cap
-    # here would kill a long but legitimate multi-tag catch-up partway.
+def _run_apply() -> None:
+    """Run the checked-out tag's apply step in a fresh interpreter.
+
+    apply_after_checkout tail-calls forward through any remaining tags via
+    os.execv, so this is a single subprocess however many tags the host is
+    behind. No aggregate timeout: each step bounds its own work (pixi
+    install, git ops), so a cap here would kill a legitimate long catch-up.
+    """
     result = subprocess.run(
         [sys.executable, str(_APPLY_ENTRYPOINT)],
         cwd=_PROJECT_DIR,
         capture_output=True,
         text=True,
     )
-
     if result.returncode != 0:
-        try:
-            body = json.loads(result.stdout)
-            error = body.get("error", result.stderr)
-        except (json.JSONDecodeError, ValueError):
-            error = result.stderr or result.stdout
-        raise RuntimeError(f"Apply failed after checkout:\n{error}")
-
-    try:
-        raw = json.loads(result.stdout)
-        return ApplyResult(
-            ref=raw["ref"],
-            system_migrations_applied=raw["system_migrations_applied"],
-            already_up_to_date=raw["already_up_to_date"],
-        )
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        raise RuntimeError(f"Invalid apply result: {result.stdout}") from e
+        raise RuntimeError(f"Apply failed after checkout:\n{result.stderr or result.stdout}")
 
 
 # ── Remote management ────────────────────────────────────────────────

@@ -1,22 +1,26 @@
-"""Apply entrypoint: run migrations at the current checkout, install deps,
-then walk forward to the next tag and re-exec self.
+"""Apply entrypoint: run this checkout's migrations, install deps, then
+tail-call into the next tag.
 
-At each tag: migrations → pixi install → find next tag → checkout → re-exec.
+At each tag: migrations → pixi install → checkout next tag → os.execv self.
+Using execv (not a child subprocess) keeps the walk a single process no
+matter how many tags the host is behind, and each step still runs that
+tag's own code.
+
 Migrations run before `pixi install`, so a migration that upgrades the
 toolchain (e.g. pixi) takes effect before deps are installed.
 
-The re-exec at each tag means the next step uses that tag's code, so the
-migration set and apply logic can evolve between tags.
+The caller (update.py at the host's starting tag) reads results back from
+the migration log and git after this exits, so there is no structured
+output contract — success is exit 0, failure is a non-zero exit with the
+error on stderr.
 
-STABILITY CONTRACT: the previous tagged release's _reexec_apply calls this
-file by path. The file path, argv interface, and stdout JSON shape must stay
-compatible with the prior tag's caller. Once a new tag is cut, the contract
-resets — the new tag's _reexec_apply is the new caller.
+STABILITY CONTRACT: the prior tag's update.py invokes this file by path and
+depends only on its exit code. Keep the path and that contract stable. Once
+a new tag is cut, the contract resets to that tag's update.py.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -55,60 +59,33 @@ def _current_tag(project: str) -> str | None:
     return tag if result.returncode == 0 and _RELEASE_TAG.fullmatch(tag) else None
 
 
+def _next_tag(project: str) -> str | None:
+    current = _current_tag(project)
+    if current is None:
+        return None
+    later = [t for t in _get_sorted_tags(project) if _version_key(t) > _version_key(current)]
+    return later[0] if later else None
+
+
 def main() -> None:
     project = str(Path(__file__).resolve().parent.parent.parent)
 
-    # Reserve the real stdout for the JSON result and point this process's
-    # stdout (inherited by every subprocess) at stderr, so migration and
-    # install output can't corrupt the result the parent parses.
-    result_fd = os.dup(sys.stdout.fileno())
-    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-
-    def emit(text: str) -> None:
-        with os.fdopen(result_fd, "w") as out:
-            out.write(text if text.endswith("\n") else text + "\n")
-
-    applied: list[int] = []
-
     # Migrations run before install so a toolchain upgrade (e.g. pixi) takes
     # effect before deps are installed for this checkout.
-    applied += apply_system_migrations()
+    apply_system_migrations()
 
-    result = subprocess.run([PIXI_BIN, "install"], cwd=project, capture_output=True, text=True, timeout=300)
+    result = subprocess.run([PIXI_BIN, "install"], cwd=project, timeout=300)
     if result.returncode != 0:
-        emit(json.dumps({"error": f"pixi install failed (exit {result.returncode}):\n{result.stderr}"}))
+        print(f"pixi install failed (exit {result.returncode})", file=sys.stderr)
         sys.exit(1)
 
-    # Walk to the next tag if one exists.
-    tags = _get_sorted_tags(project)
-    current = _current_tag(project)
-    ref = current or "unknown"
-
-    if current and tags:
-        later = [t for t in tags if _version_key(t) > _version_key(current)]
-        if later:
-            next_tag = later[0]
-            subprocess.run(["git", "checkout", next_tag], cwd=project, capture_output=True, check=True, timeout=60)
-            subprocess.run(["git", "clean", "-fd"], cwd=project, capture_output=True, check=True, timeout=60)
-
-            # No aggregate timeout: each step bounds its own work (pixi
-            # install, git ops), so a host many tags behind can catch up
-            # without a single cap killing the walk partway through.
-            child = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve())],
-                cwd=project,
-                capture_output=True,
-                text=True,
-            )
-            if child.returncode != 0:
-                emit(child.stdout or json.dumps({"error": child.stderr}))
-                sys.exit(1)
-
-            child_result = json.loads(child.stdout)
-            applied += child_result.get("system_migrations_applied", [])
-            ref = child_result["ref"]
-
-    emit(json.dumps({"ref": ref, "system_migrations_applied": applied, "already_up_to_date": not applied}))
+    nxt = _next_tag(project)
+    if nxt:
+        subprocess.run(["git", "checkout", nxt], cwd=project, check=True, timeout=60)
+        subprocess.run(["git", "clean", "-fd"], cwd=project, check=True, timeout=60)
+        # Tail-call into the next tag's code, replacing this process so the
+        # walk stays a single process regardless of how many tags we're behind.
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())])
 
 
 if __name__ == "__main__":
