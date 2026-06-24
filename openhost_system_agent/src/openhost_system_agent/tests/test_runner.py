@@ -30,21 +30,6 @@ class MigrationV3(SystemMigration):
         pass
 
 
-class PreInstallV2(SystemMigration):
-    version = 2
-    phase = "pre_pixi_install"
-
-    def up(self) -> None:
-        pass
-
-
-class PostInstallV3(SystemMigration):
-    version = 3
-
-    def up(self) -> None:
-        pass
-
-
 class FailingMigration(SystemMigration):
     version = 2
 
@@ -225,27 +210,3 @@ class TestApplySystemMigrations:
         entries = read_log(str(path))
         assert entries[-1].version == 2
         assert entries[-1].success is True
-
-    def test_phase_filter_pre_pixi_install(self, tmp_path: Path) -> None:
-        path = tmp_path / "migrations.jsonl"
-        _write_jsonl(path, [{"version": 1, "success": True}])
-        registry = [PreInstallV2(), PostInstallV3()]
-        with patch("os.geteuid", return_value=0):
-            applied = apply_system_migrations(migrations_path=str(path), registry=registry, phase="pre_pixi_install")
-        assert applied == [2]
-
-    def test_phase_filter_post_pixi_install(self, tmp_path: Path) -> None:
-        path = tmp_path / "migrations.jsonl"
-        _write_jsonl(path, [{"version": 1, "success": True}, {"version": 2, "success": True}])
-        registry = [PreInstallV2(), PostInstallV3()]
-        with patch("os.geteuid", return_value=0):
-            applied = apply_system_migrations(migrations_path=str(path), registry=registry, phase="post_pixi_install")
-        assert applied == [3]
-
-    def test_no_phase_filter_runs_all(self, tmp_path: Path) -> None:
-        path = tmp_path / "migrations.jsonl"
-        _write_jsonl(path, [{"version": 1, "success": True}])
-        registry = [PreInstallV2(), PostInstallV3()]
-        with patch("os.geteuid", return_value=0):
-            applied = apply_system_migrations(migrations_path=str(path), registry=registry)
-        assert applied == [2, 3]

@@ -6,7 +6,6 @@ import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
 
 from loguru import logger
 
@@ -24,7 +23,6 @@ from openhost_system_agent.migrations.registry import validate_registry
 def apply_system_migrations(
     migrations_path: str = MIGRATIONS_PATH,
     registry: Sequence[SystemMigration] | None = None,
-    phase: Literal["pre_pixi_install", "post_pixi_install"] | None = None,
 ) -> list[int]:
     if registry is None:
         registry = REGISTRY
@@ -39,14 +37,13 @@ def apply_system_migrations(
     lock_path = migrations_path + ".lock"
     with open(lock_path, "w") as lock_fd:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-        return _apply_under_lock(migrations_path, registry, highest, phase)
+        return _apply_under_lock(migrations_path, registry, highest)
 
 
 def _apply_under_lock(
     migrations_path: str,
     registry: Sequence[SystemMigration],
     highest: int,
-    phase: Literal["pre_pixi_install", "post_pixi_install"] | None,
 ) -> list[int]:
     entries = read_log(migrations_path)
     current = current_host_version(entries)
@@ -66,8 +63,6 @@ def _apply_under_lock(
     applied: list[int] = []
     for migration in registry:
         if migration.version <= current:
-            continue
-        if phase is not None and migration.phase != phase:
             continue
         source = current
         t0 = time.perf_counter()
@@ -103,7 +98,6 @@ def _apply_under_lock(
         applied.append(migration.version)
 
     if not applied:
-        label = f" ({phase})" if phase else ""
-        logger.info(f"System is at version {current}{label} (up to date)")
+        logger.info(f"System is at version {current} (up to date)")
 
     return applied

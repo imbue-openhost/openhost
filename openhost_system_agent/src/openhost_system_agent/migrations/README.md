@@ -13,7 +13,7 @@ intermediate tags one at a time:
 ```
 for each tag after current, up to latest:
     checkout tag → re-exec apply_after_checkout.py →
-    pre_pixi_install migrations → pixi install → post_pixi_install migrations
+    migrations → pixi install
 ```
 
 The **re-exec** at each tag is the critical design choice. The code that
@@ -21,21 +21,9 @@ runs at each step is the code *from that tag*, not the code that started
 the update. This means:
 
 - Each tag's code controls its own migration + install sequence.
-- Toolchain upgrades (like pixi) marked `pre_pixi_install` run before
-  `pixi install`, so the lockfile format can change in the same release.
-
-## Migration phases
-
-Each migration declares a `phase`:
-
-- **`pre_pixi_install`** — runs before `pixi install`. Use for changes
-  that must happen before dependency installation (e.g., upgrading pixi
-  so it can read a new lockfile format). These migrations can only import
-  from stdlib and packages already installed in the env (attr, loguru).
-
-- **`post_pixi_install`** — runs after `pixi install` (the default). Use
-  for everything else: apt packages, systemd units, sysctl changes,
-  config files. These can freely import any dependency in the lockfile.
+- Migrations run *before* `pixi install`, so a toolchain upgrade (like
+  pixi) takes effect before deps are installed and the lockfile format
+  can change in the same release.
 
 ## Writing a migration
 
@@ -46,7 +34,6 @@ from openhost_system_agent.migrations.base import SystemMigration
 
 class Migration{NNNN}{Name}(SystemMigration):
     version = {NNNN}
-    # phase = "post_pixi_install"  (the default; set "pre_pixi_install" if needed)
 
     def up(self) -> None:
         # idempotent host-level changes here
@@ -71,8 +58,8 @@ jumping straight to the latest.
 
 1. `apply_update` fetches tags, finds the next tag after the host's
    current position, checks it out, and re-execs `apply_after_checkout.py`.
-2. `apply_after_checkout.py` runs pre_pixi_install migrations → pixi
-   install → post_pixi_install migrations at that tag's code.
+2. `apply_after_checkout.py` runs migrations → pixi install at that
+   tag's code.
 3. It then checks if there's a next tag. If so, it checks it out and
    re-execs itself (a fresh process using the next tag's code).
 4. This repeats until there are no more tags — the host is on the latest.
@@ -92,17 +79,23 @@ registry at or before the tag being applied.
 
 ## What to be aware of
 
-### Pre-pixi-install migrations have a restricted import surface
+### Migrations run before `pixi install`, with a restricted import surface
 
-Pre-pixi-install migrations run *before* `pixi install`, so they can
-only use:
-- Python stdlib
+Migrations run *before* this tag's `pixi install`, so the env still holds
+the *previous* tag's dependencies. A migration may only use:
+- Python stdlib and `subprocess` (the normal way to do host-level work)
 - Packages already installed in the previous env (attr, loguru, and
   anything else in the prior lockfile)
 
-If your pre-pixi-install migration needs a new dependency, that
-dependency must be added in a *prior* release so it's already installed
-when your migration runs.
+This is rarely a constraint — migrations change host state (apt, sysctls,
+systemd, files) via `subprocess`, not the project's Python deps. Note that
+`registry.py` imports every migration module at startup, so a migration
+module must not import a new dependency at module top level either.
+
+If a migration genuinely needs a new dependency from this tag's lockfile,
+run `subprocess.run([PIXI_BIN, "install"])` at the top of its `up()`
+first. (Adding the dependency in a *prior* release so it's already
+installed is cleaner when possible.)
 
 ### No `down()` migrations
 

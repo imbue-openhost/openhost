@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -46,28 +47,34 @@ def _strip_credentials(url: str) -> str:
 # ── Tag helpers ──────────────────────────────────────────────────────
 
 
+# A release tag is "v" followed by dot-separated integers (v1, v1.2, v1.2.3).
+# Other v-prefixed tags (e.g. v1.2.0-rc1) are ignored so version parsing
+# can't crash on them.
+_RELEASE_TAG = re.compile(r"v\d+(?:\.\d+)*")
+
+
 def _version_key(tag_name: str) -> tuple[int, ...]:
     return tuple(int(x) for x in tag_name.lstrip("v").split("."))
 
 
 def _get_sorted_tags(repo: git.Repo) -> list[str]:
-    return sorted([t.name for t in repo.tags if t.name.startswith("v")], key=_version_key)
+    return sorted([t.name for t in repo.tags if _RELEASE_TAG.fullmatch(t.name)], key=_version_key)
 
 
 def _current_tag(repo: git.Repo) -> str | None:
     try:
         result: str = repo.git.describe("--tags", "--exact-match", "HEAD")
-        return result
     except git.GitCommandError:
         return None
+    return result if _RELEASE_TAG.fullmatch(result) else None
 
 
 def _latest_ancestor_tag(repo: git.Repo) -> str | None:
     try:
         result: str = repo.git.describe("--tags", "--abbrev=0", "HEAD")
-        return result
     except git.GitCommandError:
         return None
+    return result if _RELEASE_TAG.fullmatch(result) else None
 
 
 # ── Fetch / diff / apply ─────────────────────────────────────────────
@@ -157,16 +164,15 @@ _APPLY_ENTRYPOINT = _PACKAGE_DIR / "apply_after_checkout.py"
 
 
 def _reexec_apply() -> ApplyResult:
-    try:
-        result = subprocess.run(
-            [sys.executable, str(_APPLY_ENTRYPOINT)],
-            cwd=_PROJECT_DIR,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError("Re-exec apply timed out after 600s") from e
+    # No aggregate timeout: the walk can span many tags, and each step
+    # already bounds its own work (pixi install, git ops). A single cap
+    # here would kill a long but legitimate multi-tag catch-up partway.
+    result = subprocess.run(
+        [sys.executable, str(_APPLY_ENTRYPOINT)],
+        cwd=_PROJECT_DIR,
+        capture_output=True,
+        text=True,
+    )
 
     if result.returncode != 0:
         try:
