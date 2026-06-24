@@ -21,7 +21,6 @@ runs at each step is the code *from that tag*, not the code that started
 the update. This means:
 
 - Each tag's code controls its own migration + install sequence.
-- `migration_tags.json` is re-read at each step, so its format can evolve.
 - Toolchain upgrades (like pixi) marked `pre_pixi_install` run before
   `pixi install`, so the lockfile format can change in the same release.
 
@@ -56,17 +55,10 @@ class Migration{NNNN}{Name}(SystemMigration):
 
 2. Register it in `migrations/registry.py` (append to `REGISTRY`).
 
-3. Add an entry to `migration_tags.json` (in this directory):
-```json
-{"git_tag_before_migration": "v1.2.0", "migration": {NNNN}}
-```
-`git_tag_before_migration` is the most recent semver tag *before* this
-migration was written. Set `null` if no tags exist yet.
-
-4. Migrations must be **idempotent** — safe to re-run if a previous
+3. Migrations must be **idempotent** — safe to re-run if a previous
    attempt failed partway through and is retried.
 
-5. Versions must be **contiguous** starting at 2 (v1 is the ansible
+4. Versions must be **contiguous** starting at 2 (v1 is the ansible
    baseline).
 
 ## The stepping-stone guarantee
@@ -89,17 +81,14 @@ jumping straight to the latest.
 
 - At each tag, the re-exec'd process imports the code *from that tag*.
 - Each step can only advance forward (tags are sorted by semver).
-- `migration_tags.json` is re-read at each step from the current
-  checkout, so its format can change between tags.
-- Migrations with `git_tag_before_migration = T` were written assuming
-  the host is at state >= T. By construction, all prior tags have been
-  applied before T's migrations run.
+- Migrations are in the registry at the tag where they were added, so
+  they run at the right code version by construction.
 
 ### The invariant to maintain
 
-**All migrations written against tag T must be merged before the next
-tag is cut.** If a migration misses its window, bump its
-`git_tag_before_migration` in `migration_tags.json` before merging.
+**Migrations must be merged before the next tag is cut.** The tag walk
+runs each tag's registry, so a migration only runs if it exists in the
+registry at or before the tag being applied.
 
 ## What to be aware of
 
@@ -114,17 +103,6 @@ only use:
 If your pre-pixi-install migration needs a new dependency, that
 dependency must be added in a *prior* release so it's already installed
 when your migration runs.
-
-### The bootstrap release
-
-The re-exec handoff, phased migrations, and tag-based updates didn't
-exist in the original codebase. The release that introduces them must
-be installable by the old update mechanism (old pixi, old `apply_update`).
-After that one release, all future updates go through the new system.
-
-Concretely: the first release ships with a lockfile the old fleet's pixi
-can read. Once deployed, the pixi upgrade migration brings the fleet
-forward, and subsequent releases can use the new lockfile format.
 
 ### No `down()` migrations
 
@@ -155,12 +133,3 @@ exposed via the CLI and the dashboard API. A system migration is *not*
 the right tool for this: migrations run after fetch, so if the old URL
 is unreachable the fetch fails before migrations even start.
 
-### The `apply_after_checkout.py` stability contract
-
-`apply_after_checkout.py` is the interface between old and new code.
-After checkout, the prior tag's `_reexec_apply` runs the *new*
-checkout's copy of this file. Its file path, argv interface, and stdout
-JSON shape must stay compatible with the prior tag's caller. Once a new
-tag is cut the contract resets — the new tag's `_reexec_apply` becomes
-the caller. So you can change this file freely as long as no untagged
-release is still the "prior tag" for any host in the fleet.
