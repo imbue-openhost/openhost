@@ -32,34 +32,25 @@ def _make_repo(*, tags: list[str], current_tag: str | None = None, dirty: bool =
 def test_apply_update_already_on_latest_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _make_repo(tags=["v1.0.0"], current_tag="v1.0.0")
     monkeypatch.setattr(update_mod, "_repo", lambda: repo)
-    # No migrations applied: host version unchanged across the apply.
-    monkeypatch.setattr(update_mod, "_host_version", MagicMock(side_effect=[2, 2]))
-    monkeypatch.setattr(update_mod, "_run_apply", lambda: None)
+    execv = MagicMock()
+    monkeypatch.setattr("openhost_system_agent.update.os.execv", execv)
 
-    result = update_mod.apply_update()
+    update_mod.apply_update()
+    # Already current: no checkout, hand straight off to the apply walk.
     repo.git.checkout.assert_not_called()
-    assert result.ref == "v1.0.0"
-    assert result.system_migrations_applied == []
-    assert result.already_up_to_date is True
+    execv.assert_called_once()
 
 
 def test_apply_update_checks_out_next_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _make_repo(tags=["v1.0.0", "v1.1.0"], current_tag="v1.0.0")
     monkeypatch.setattr(update_mod, "_repo", lambda: repo)
-    # Host version advances 2 → 3 across the apply (migration v3 applied).
-    monkeypatch.setattr(update_mod, "_host_version", MagicMock(side_effect=[2, 3]))
+    execv = MagicMock()
+    monkeypatch.setattr("openhost_system_agent.update.os.execv", execv)
 
-    def fake_run_apply() -> None:
-        # The real walk advances HEAD to the latest tag.
-        repo.git.describe.return_value = "v1.1.0"
-
-    monkeypatch.setattr(update_mod, "_run_apply", fake_run_apply)
-
-    result = update_mod.apply_update()
+    update_mod.apply_update()
+    # Behind: step onto the next tag, then hand off to the apply walk.
     repo.git.checkout.assert_called_with("v1.1.0")
-    assert result.ref == "v1.1.0"
-    assert result.system_migrations_applied == [3]
-    assert result.already_up_to_date is False
+    execv.assert_called_once()
 
 
 def test_fetch_updates_behind(monkeypatch: pytest.MonkeyPatch) -> None:

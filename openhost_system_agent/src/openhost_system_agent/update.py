@@ -1,18 +1,15 @@
 from __future__ import annotations
 
+import os
 import re
-import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
+from typing import NoReturn
 
 import git
 from loguru import logger
 
-from openhost_system_agent.migrations.migration_log import MIGRATIONS_PATH
-from openhost_system_agent.migrations.migration_log import current_host_version
-from openhost_system_agent.migrations.migration_log import read_log
-from openhost_system_agent.protocol import ApplyResult
 from openhost_system_agent.protocol import DiffCommit
 from openhost_system_agent.protocol import DiffResult
 from openhost_system_agent.protocol import FetchResult
@@ -122,11 +119,13 @@ def show_diff() -> DiffResult:
     return DiffResult(commits=commits, current_ref=current, remote_ref=latest)
 
 
-def _host_version() -> int:
-    return current_host_version(read_log(MIGRATIONS_PATH))
+# STABILITY CONTRACT: this execs the checked-out tag's apply file by path
+# and depends only on its exit code. Keep the path and that contract
+# stable. Once a new tag is cut, the contract resets to that tag's code.
+_APPLY_ENTRYPOINT = _PACKAGE_DIR / "apply_after_checkout.py"
 
 
-def apply_update() -> ApplyResult:
+def apply_update() -> NoReturn:
     repo = _repo()
 
     if repo.is_dirty(untracked_files=True):
@@ -139,10 +138,9 @@ def apply_update() -> ApplyResult:
 
     latest = tags[-1]
     current = _current_tag(repo) or _latest_ancestor_tag(repo)
-    before = _host_version()
 
     if current == latest:
-        logger.info(f"Already on {latest}, running pending migrations...")
+        logger.info(f"Already on {latest}; running pending migrations and restarting...")
     else:
         # Step onto the first tag ahead so the new tag's apply code runs;
         # apply_after_checkout tail-calls forward through the rest itself.
@@ -151,40 +149,10 @@ def apply_update() -> ApplyResult:
         repo.git.checkout(next_tag)
         repo.git.clean("-fd")
 
-    _run_apply()
-
-    # The walk advanced the migration log and HEAD on disk; read the
-    # result back rather than parsing it from the subprocess.
-    after = _host_version()
-    applied = list(range(before + 1, after + 1))
-    ref = _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
-    return ApplyResult(ref=ref, system_migrations_applied=applied, already_up_to_date=not applied)
-
-
-# ── Run checked-out apply code ───────────────────────────────────────
-
-# STABILITY CONTRACT: this invokes the checked-out tag's apply file by
-# path and depends only on its exit code. Keep the path and that contract
-# stable. Once a new tag is cut, the contract resets to that tag's code.
-_APPLY_ENTRYPOINT = _PACKAGE_DIR / "apply_after_checkout.py"
-
-
-def _run_apply() -> None:
-    """Run the checked-out tag's apply step in a fresh interpreter.
-
-    apply_after_checkout tail-calls forward through any remaining tags via
-    os.execv, so this is a single subprocess however many tags the host is
-    behind. No aggregate timeout: each step bounds its own work (pixi
-    install, git ops), so a cap here would kill a legitimate long catch-up.
-    """
-    result = subprocess.run(
-        [sys.executable, str(_APPLY_ENTRYPOINT)],
-        cwd=_PROJECT_DIR,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Apply failed after checkout:\n{result.stderr or result.stdout}")
+    # Hand off to the checked-out tag's apply code, replacing this process.
+    # It walks any remaining tags and restarts openhost when done, so this
+    # never returns; the migration log records what happened for the next boot.
+    os.execv(sys.executable, [sys.executable, str(_APPLY_ENTRYPOINT)])
 
 
 # ── Remote management ────────────────────────────────────────────────

@@ -14,7 +14,6 @@ from litestar.exceptions import HTTPException
 
 import compute_space.web.routes.api.settings as settings_mod
 from compute_space.core.system_agent import SystemAgentError
-from openhost_system_agent.protocol import ApplyResult
 from openhost_system_agent.protocol import FetchResult
 from openhost_system_agent.protocol import MigrationStatus
 
@@ -126,9 +125,8 @@ async def test_apply_update_refuses_with_409_when_not_prepared(monkeypatch: pyte
 async def test_apply_update_proceeds_when_migration_behind(monkeypatch: pytest.MonkeyPatch) -> None:
     called = {"n": 0}
 
-    async def fake_apply() -> ApplyResult:
+    async def fake_apply() -> None:
         called["n"] += 1
-        return ApplyResult(ref="abc1234", system_migrations_applied=[2], already_up_to_date=False)
 
     async def fake_status() -> MigrationStatus:
         return MigrationStatus(
@@ -146,9 +144,8 @@ async def test_apply_update_proceeds_when_migration_behind(monkeypatch: pytest.M
 async def test_apply_update_proceeds_when_prepared(monkeypatch: pytest.MonkeyPatch) -> None:
     called = {"n": 0}
 
-    async def fake_apply() -> ApplyResult:
+    async def fake_apply() -> None:
         called["n"] += 1
-        return ApplyResult(ref="abc1234", system_migrations_applied=[], already_up_to_date=False)
 
     async def fake_status() -> MigrationStatus:
         return MigrationStatus(ok=True, reason="", message="ok", current_host_version=1, expected_version=1)

@@ -1,5 +1,5 @@
 """Apply entrypoint: run this checkout's migrations, install deps, then
-tail-call into the next tag.
+tail-call into the next tag; restart openhost once on the latest tag.
 
 At each tag: migrations → pixi install → checkout next tag → os.execv self.
 Using execv (not a child subprocess) keeps the walk a single process no
@@ -9,12 +9,12 @@ tag's own code.
 Migrations run before `pixi install`, so a migration that upgrades the
 toolchain (e.g. pixi) takes effect before deps are installed.
 
-The caller (update.py at the host's starting tag) reads results back from
-the migration log and git after this exits, so there is no structured
-output contract — success is exit 0, failure is a non-zero exit with the
-error on stderr.
+There is no structured output contract: success restarts openhost (which
+may kill this process — see main()), and the migration log records what
+happened for the freshly-started compute_space to read. Failure is a
+non-zero exit with the error on stderr.
 
-STABILITY CONTRACT: the prior tag's update.py invokes this file by path and
+STABILITY CONTRACT: the prior tag's update.py execs this file by path and
 depends only on its exit code. Keep the path and that contract stable. Once
 a new tag is cut, the contract resets to that tag's update.py.
 """
@@ -86,6 +86,15 @@ def main() -> None:
         # Tail-call into the next tag's code, replacing this process so the
         # walk stays a single process regardless of how many tags we're behind.
         os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())])
+
+    # On the latest tag: restart openhost so the new code takes over. When the
+    # update was triggered from the dashboard this process shares openhost's
+    # cgroup, so the restart's SIGTERM kills us mid-call — that's fine, systemd
+    # still completes the restart and the new compute_space reads the log.
+    result = subprocess.run(["systemctl", "restart", "openhost"], timeout=120)
+    if result.returncode != 0:
+        print(f"failed to restart openhost (exit {result.returncode})", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

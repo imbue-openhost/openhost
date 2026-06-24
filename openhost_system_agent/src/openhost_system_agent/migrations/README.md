@@ -12,6 +12,7 @@ walks forward through intermediate tags one at a time:
 for each tag after current, up to latest:
     checkout tag → run that tag's apply_after_checkout.py →
     migrations → pixi install
+finally: restart openhost
 ```
 
 Running each step under the checked-out tag's code is the critical design choice. This means:
@@ -19,6 +20,11 @@ Running each step under the checked-out tag's code is the critical design choice
 - Each tag's code controls its own migration + install sequence.
 - Migrations run *before* `pixi install`, so a toolchain upgrade (like pixi) takes effect before deps are installed and
   the lockfile format can change in the same release.
+
+`update apply` execs into `apply_after_checkout.py` and never returns a result: on success it restarts openhost so the
+new code takes over (which may kill the apply process itself — that's fine, systemd completes the restart), and on
+failure it exits non-zero with the error on stderr. The freshly-started compute_space reads the migration log to see
+what happened.
 
 ## Writing a migration
 
@@ -53,7 +59,7 @@ intermediate tag rather than jumping straight to the latest.
 2. `apply_after_checkout.py` runs migrations → pixi install at that tag's code.
 3. It then checks if there's a next tag. If so, it checks it out and `os.execv`s into itself — replacing the process
    with the next tag's code.
-4. This repeats until there are no more tags — the host is on the latest.
+4. This repeats until there are no more tags. On the latest tag it restarts openhost and the host is up to date.
 
 ## What to be aware of
 
