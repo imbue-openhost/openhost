@@ -233,6 +233,36 @@ class AppCmd:
         ).json()
         print(f"Renamed {app_name} → {result.get('name', new_name)}")
 
+    @cappa.command(name="ssh")
+    def ssh(
+        self,
+        app_name: Annotated[str, cappa.Arg(help="App name")],
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+        shell: Annotated[str, cappa.Arg(long=True, help="Shell to invoke inside container")] = "bash",
+    ) -> None:
+        """Open an interactive shell inside an app's container."""
+        _SHELL_SHORTHANDS = {"bash": "/usr/bin/bash", "sh": "/bin/sh"}
+        shell = _SHELL_SHORTHANDS.get(shell, shell)
+
+        ssh_bin = shutil.which("ssh")
+        if not ssh_bin:
+            print("ssh not found on PATH", file=sys.stderr)
+            raise SystemExit(1)
+
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
+        status = make_api_request(cfg.url, cfg.token, "GET", f"/api/app_status/{app_id}").json()
+        container_id = status.get("container_id")
+        if not container_id:
+            print(f"No running container for {app_name} (status: {status.get('status')})", file=sys.stderr)
+            raise SystemExit(1)
+
+        remote_cmd = f"cd ~/openhost && /home/host/.pixi/bin/pixi run -e dev podman exec -it {container_id} {shell}"
+        cmd = [ssh_bin, "-t"]
+        if cfg.ssh_key:
+            cmd += ["-i", cfg.ssh_key]
+        cmd += [f"host@{cfg.hostname}", remote_cmd]
+        raise SystemExit(subprocess.call(cmd))
+
     @cappa.command(name="list")
     def list_apps(
         self,
