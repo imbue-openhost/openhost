@@ -238,9 +238,12 @@ class AppCmd:
         self,
         app_name: Annotated[str, cappa.Arg(help="App name")],
         cfg: Annotated[config.Instance, Dep(resolve_instance)],
-        shell: Annotated[str, cappa.Arg(long=True, help="Shell to invoke inside container")] = "/bin/sh",
+        shell: Annotated[str, cappa.Arg(long=True, help="Shell to invoke inside container")] = "bash",
     ) -> None:
         """Open an interactive shell inside an app's container."""
+        _SHELL_SHORTHANDS = {"bash": "/usr/bin/bash", "sh": "/bin/sh"}
+        shell = _SHELL_SHORTHANDS.get(shell, shell)
+
         ssh_bin = shutil.which("ssh")
         if not ssh_bin:
             print("ssh not found on PATH", file=sys.stderr)
