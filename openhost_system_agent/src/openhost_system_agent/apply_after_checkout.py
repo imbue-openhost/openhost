@@ -1,10 +1,14 @@
 """Apply entrypoint: run this checkout's migrations, install deps, then
-tail-call into the next tag; restart openhost once on the latest tag.
+tail-call into the next ref; restart openhost once on the destination.
 
-At each tag: migrations → pixi install → checkout next tag → os.execv self.
+At each step: migrations → pixi install → checkout next ref → os.execv self.
 Using execv (not a child subprocess) keeps the walk a single process no
-matter how many tags the host is behind, and each step still runs that
-tag's own code.
+matter how many steps the host is behind, and each step still runs that
+ref's own code.
+
+The destination is the latest release tag, unless a target ref is pinned
+(git config openhost.target-ref, e.g. a feature branch) — then the tags are
+still walked as stepping stones and the pinned ref is the final hop.
 
 Migrations run before `pixi install`, so a migration that upgrades the
 toolchain (e.g. pixi) takes effect before deps are installed.
@@ -37,39 +41,80 @@ PIXI_BIN = "/home/host/.pixi/bin/pixi"
 _RELEASE_TAG = re.compile(r"v\d+(?:\.\d+)*")
 
 
+# When set, updates end on this ref (a branch tip or commit) instead of the
+# latest tag — kept in sync with update.py's _TARGET_REF_CONFIG.
+_TARGET_REF_CONFIG = "openhost.target-ref"
+
+
+def _git(project: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=project, capture_output=True, text=True, timeout=60)
+
+
+def _ensure_repo_trusted(project: str) -> None:
+    # This runs as root on a host-owned repo; trust it so git doesn't refuse
+    # with "detected dubious ownership".
+    existing = _git(project, "config", "--global", "--get-all", "safe.directory").stdout.split("\n")
+    if project not in existing:
+        _git(project, "config", "--global", "--add", "safe.directory", project)
+
+
 def _version_key(tag_name: str) -> tuple[int, ...]:
     return tuple(int(x) for x in tag_name.lstrip("v").split("."))
 
 
 def _get_sorted_tags(project: str) -> list[str]:
-    result = subprocess.run(["git", "tag", "-l", "v*"], cwd=project, capture_output=True, text=True, timeout=60)
-    tags = [t for t in result.stdout.strip().split("\n") if _RELEASE_TAG.fullmatch(t)]
+    tags = [t for t in _git(project, "tag", "-l", "v*").stdout.strip().split("\n") if _RELEASE_TAG.fullmatch(t)]
     return sorted(tags, key=_version_key)
 
 
 def _current_tag(project: str) -> str | None:
-    result = subprocess.run(
-        ["git", "describe", "--tags", "--exact-match", "HEAD"],
-        cwd=project,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    result = _git(project, "describe", "--tags", "--exact-match", "HEAD")
     tag = result.stdout.strip()
     return tag if result.returncode == 0 and _RELEASE_TAG.fullmatch(tag) else None
 
 
-def _next_tag(project: str) -> str | None:
-    current = _current_tag(project)
-    if current is None:
-        return None
-    later = [t for t in _get_sorted_tags(project) if _version_key(t) > _version_key(current)]
-    return later[0] if later else None
+def _latest_ancestor_tag(project: str) -> str | None:
+    result = _git(project, "describe", "--tags", "--abbrev=0", "HEAD")
+    tag = result.stdout.strip()
+    return tag if result.returncode == 0 and _RELEASE_TAG.fullmatch(tag) else None
+
+
+def _target_ref(project: str) -> str | None:
+    result = _git(project, "config", "--get", _TARGET_REF_CONFIG)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _resolve_ref_sha(project: str, ref: str) -> str | None:
+    """Resolve a ref to a commit sha, preferring the fetched remote branch tip."""
+    for candidate in (f"origin/{ref}", ref):
+        result = _git(project, "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}")
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return None
+
+
+def _next_step(project: str) -> str | None:
+    """The next ref to check out while walking toward the destination, or None
+    when already there. Release tags are walked in order as stepping stones;
+    once they're exhausted a pinned target ref (if any) is the final hop."""
+    base = _current_tag(project) or _latest_ancestor_tag(project)
+    later = [t for t in _get_sorted_tags(project) if base is None or _version_key(t) > _version_key(base)]
+    if later:
+        return later[0]
+
+    target = _target_ref(project)
+    if target is not None:
+        sha = _resolve_ref_sha(project, target)
+        if sha is not None and _git(project, "rev-parse", "HEAD").stdout.strip() != sha:
+            return target
+    return None
 
 
 def main() -> None:
     # src/openhost_system_agent/apply_after_checkout.py → repo root is four up.
     project = str(Path(__file__).resolve().parents[3])
+    _ensure_repo_trusted(project)
 
     # Migrations run before install so a toolchain upgrade (e.g. pixi) takes
     # effect before deps are installed for this checkout.
@@ -84,15 +129,16 @@ def main() -> None:
         print(f"pixi install failed (exit {result.returncode})", file=sys.stderr)
         sys.exit(1)
 
-    nxt = _next_tag(project)
+    nxt = _next_step(project)
     if nxt:
-        subprocess.run(["git", "checkout", nxt], cwd=project, check=True, timeout=60)
+        # Check out the resolved commit (a branch tip becomes detached HEAD).
+        subprocess.run(["git", "checkout", _resolve_ref_sha(project, nxt) or nxt], cwd=project, check=True, timeout=60)
         subprocess.run(["git", "clean", "-fd"], cwd=project, check=True, timeout=60)
-        # Tail-call into the next tag's code, replacing this process so the
-        # walk stays a single process regardless of how many tags we're behind.
+        # Tail-call into the next ref's code, replacing this process so the
+        # walk stays a single process regardless of how many steps we're behind.
         os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())])
 
-    # On the latest tag: restart openhost so the new code takes over. When the
+    # On the destination: restart openhost so the new code takes over. When the
     # update was triggered from the dashboard this process shares openhost's
     # cgroup, so the restart's SIGTERM kills us mid-call — that's fine, systemd
     # still completes the restart and the new compute_space reads the log.

@@ -179,6 +179,11 @@ class TestApplyUpdateWalk:
         r = _host_sh(c, setup, timeout=180)
         assert r.returncode == 0, f"git setup failed:\n{r.stdout}\n{r.stderr}"
 
+        # The file-based origin is host-owned, so let root (which runs the
+        # agent) read it. Prod uses an HTTPS remote, so this dubious-ownership
+        # quirk is test-only; the agent trusts the working repo on its own.
+        _exec(c, "git", "config", "--global", "--add", "safe.directory", "/tmp/origin.git")
+
         # Precondition: the image ships the pre-migration pixi.
         before = _host_sh(c, f"{_PIXI} --version")
         assert "0.69.0" in before.stdout, f"unexpected starting pixi: {before.stdout!r}"

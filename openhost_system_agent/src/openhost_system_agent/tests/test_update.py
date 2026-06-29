@@ -238,3 +238,93 @@ def test_get_remote_info_reports_current_tag(tmp_path: Path, monkeypatch: pytest
 
     assert info.ref == "v1.0.0"
     assert info.url is not None and "remote" in info.url
+
+
+# ── Pinned target ref (run from a branch/commit) ─────────────────────
+
+
+def _branch(remote: Path, name: str, msg: str) -> None:
+    """Create a feature branch one commit ahead of the current HEAD."""
+    _git(remote, "checkout", "-b", name)
+    _commit(remote, msg)
+    _git(remote, "checkout", "main")
+
+
+def test_next_step_walks_tags_first_then_pinned_target(tmp_path: Path) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch(remote, "feature", "feature work")
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(repo, "feature")
+
+    # Behind in tags: still step through the tag stones first.
+    assert update_mod._next_step(repo) == "v1.1.0"
+
+    # On the latest tag: the pinned branch is the final hop.
+    _git(tmp_path / "local", "checkout", "v1.1.0")
+    assert update_mod._next_step(repo) == "feature"
+
+    # On the branch tip: nothing left to do.
+    tip = update_mod._resolve_ref_sha(repo, "feature")
+    assert tip is not None
+    _git(tmp_path / "local", "checkout", tip)
+    assert update_mod._next_step(repo) is None
+
+
+def test_apply_update_pinned_still_steps_through_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch(remote, "feature", "feature work")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "feature")
+    calls = _stub_execv(monkeypatch)
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    update_mod.apply_update()
+
+    # First step is the next tag, not a jump straight to the pinned branch.
+    assert update_mod._current_tag(local) == "v1.1.0"
+    assert len(calls) == 1
+
+
+def test_fetch_updates_pinned_behind_when_branch_advances(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "feature")
+    _git(remote, "checkout", "feature")
+    _commit(remote, "f2")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    assert update_mod.fetch_updates().state == "BEHIND_REMOTE"
+
+
+def test_fetch_updates_pinned_up_to_date_on_branch_tip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="feature")
+    update_mod._set_target_ref(local, "feature")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    assert update_mod.fetch_updates().state == "UP_TO_DATE"
+
+
+def test_set_remote_url_pins_and_clears_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    update_mod.set_remote_url(f"file://{remote}@feature")
+    assert update_mod._get_target_ref(local) == "feature"
+
+    update_mod.set_remote_url(f"file://{remote}")
+    assert update_mod._get_target_ref(local) is None
+
+
+def test_get_remote_info_reports_pinned_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "feature")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    assert update_mod.get_remote_info().ref == "feature"

@@ -19,7 +19,21 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _PACKAGE_DIR.parent.parent.parent
 
 
+def _ensure_repo_trusted() -> None:
+    # The agent runs as root but the repo is owned by 'host'; tell git to trust
+    # it so root operations don't fail with "detected dubious ownership".
+    project = str(_PROJECT_DIR)
+    g = git.Git()
+    try:
+        existing = g.config("--global", "--get-all", "safe.directory").split("\n")
+    except git.GitCommandError:
+        existing = []
+    if project not in existing:
+        g.config("--global", "--add", "safe.directory", project)
+
+
 def _repo() -> git.Repo:
+    _ensure_repo_trusted()
     return git.Repo(_PROJECT_DIR)
 
 
@@ -76,6 +90,60 @@ def _latest_ancestor_tag(repo: git.Repo) -> str | None:
     return result if _RELEASE_TAG.fullmatch(result) else None
 
 
+# ── Target ref (pin to a branch/commit instead of the latest tag) ────
+
+
+# Persisted in git config. When set, updates walk the release tags as usual but
+# end on this ref (a branch tip or commit) instead of the latest tag. Unset →
+# the latest tag is the destination. Kept in sync with apply_after_checkout.py.
+_TARGET_REF_CONFIG = "openhost.target-ref"
+
+
+def _get_target_ref(repo: git.Repo) -> str | None:
+    try:
+        value: str = repo.git.config("--get", _TARGET_REF_CONFIG)
+    except git.GitCommandError:
+        return None
+    return value.strip() or None
+
+
+def _set_target_ref(repo: git.Repo, ref: str | None) -> None:
+    if ref:
+        repo.git.config(_TARGET_REF_CONFIG, ref)
+        return
+    try:
+        repo.git.config("--unset-all", _TARGET_REF_CONFIG)
+    except git.GitCommandError:
+        pass  # already unset
+
+
+def _resolve_ref_sha(repo: git.Repo, ref: str) -> str | None:
+    """Resolve a ref to a commit sha, preferring the fetched remote branch tip."""
+    for candidate in (f"origin/{ref}", ref):
+        try:
+            return str(repo.git.rev_parse("--verify", "--quiet", f"{candidate}^{{commit}}"))
+        except git.GitCommandError:
+            continue
+    return None
+
+
+def _next_step(repo: git.Repo) -> str | None:
+    """The next ref to check out while walking toward the destination, or None
+    when already there. Release tags are walked in order as stepping stones;
+    once they're exhausted a pinned target ref (if any) is the final hop."""
+    base = _current_tag(repo) or _latest_ancestor_tag(repo)
+    later = [t for t in _get_sorted_tags(repo) if base is None or _version_key(t) > _version_key(base)]
+    if later:
+        return later[0]
+
+    target = _get_target_ref(repo)
+    if target is not None:
+        sha = _resolve_ref_sha(repo, target)
+        if sha is not None and repo.head.commit.hexsha != sha:
+            return target
+    return None
+
+
 # ── Fetch / diff / apply ─────────────────────────────────────────────
 
 
@@ -86,6 +154,13 @@ def fetch_updates() -> FetchResult:
 
     if repo.is_dirty(untracked_files=True):
         return FetchResult(state="DIRTY")
+
+    target = _get_target_ref(repo)
+    if target is not None:
+        sha = _resolve_ref_sha(repo, target)
+        if sha is not None and repo.head.commit.hexsha != sha:
+            return FetchResult(state="BEHIND_REMOTE")
+        return FetchResult(state="UP_TO_DATE")
 
     tags = _get_sorted_tags(repo)
     if not tags:
@@ -101,22 +176,30 @@ def fetch_updates() -> FetchResult:
 
 def show_diff() -> DiffResult:
     repo = _repo()
-    tags = _get_sorted_tags(repo)
     current = _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
 
-    if not tags:
+    target = _get_target_ref(repo)
+    dest_label: str | None
+    if target is not None:
+        dest: str | None = _resolve_ref_sha(repo, target)
+        dest_label = target
+    else:
+        tags = _get_sorted_tags(repo)
+        dest = tags[-1] if tags else None
+        dest_label = dest
+
+    if dest is None:
         return DiffResult(commits=[], current_ref=current, remote_ref=None)
 
-    latest = tags[-1]
     commits = []
-    for commit in repo.iter_commits(f"{current}..{latest}"):
+    for commit in repo.iter_commits(f"{current}..{dest}"):
         commits.append(
             DiffCommit(
                 sha=commit.hexsha[:8],
                 message=str(commit.message).strip().split("\n")[0],
             )
         )
-    return DiffResult(commits=commits, current_ref=current, remote_ref=latest)
+    return DiffResult(commits=commits, current_ref=current, remote_ref=dest_label)
 
 
 # STABILITY CONTRACT: this execs the checked-out tag's apply file by path
@@ -132,25 +215,19 @@ def apply_update() -> NoReturn:
         raise RuntimeError("Working tree has uncommitted changes. Stash or commit first.")
 
     repo.git.fetch("origin", "--tags")
-    tags = _get_sorted_tags(repo)
-    if not tags:
+    if not _get_sorted_tags(repo) and _get_target_ref(repo) is None:
         raise RuntimeError("No tags found on remote. Tag a release first.")
 
-    latest = tags[-1]
-    current = _current_tag(repo) or _latest_ancestor_tag(repo)
-
-    if current == latest:
-        logger.info(f"Already on {latest}; running pending migrations and restarting...")
-    else:
-        # Step onto the first tag ahead so the new tag's apply code runs;
-        # apply_after_checkout tail-calls forward through the rest itself.
-        next_tag = tags[0] if current is None else next(t for t in tags if _version_key(t) > _version_key(current))
-        logger.info(f"Checking out {next_tag}...")
-        repo.git.checkout(next_tag)
+    # Take the first step (next tag, or the pinned target once tags are done);
+    # apply_after_checkout tail-calls forward through the rest itself.
+    step = _next_step(repo)
+    if step is not None:
+        logger.info(f"Checking out {step}...")
+        repo.git.checkout(_resolve_ref_sha(repo, step) or step)
         repo.git.clean("-fd")
 
-    # Hand off to the checked-out tag's apply code, replacing this process.
-    # It walks any remaining tags and restarts openhost when done, so this
+    # Hand off to the checked-out ref's apply code, replacing this process.
+    # It walks any remaining steps and restarts openhost when done, so this
     # never returns; the migration log records what happened for the next boot.
     os.execv(sys.executable, [sys.executable, str(_APPLY_ENTRYPOINT)])
 
@@ -176,6 +253,10 @@ def set_remote_url(url: str) -> RemoteInfo:
     except RuntimeError:
         repo.create_remote("origin", url)
 
+    # An @ref pins the instance to that branch/commit (updates walk the tags but
+    # end there instead of the latest tag); no @ref clears the pin.
+    _set_target_ref(repo, ref)
+
     if ref:
         _get_remote(repo).fetch()
         try:
@@ -195,5 +276,5 @@ def get_remote_info() -> RemoteInfo:
     repo = _repo()
     remote = _get_remote(repo)
     url = _strip_credentials(remote.url) if remote.url else None
-    current = _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
-    return RemoteInfo(url=url, ref=current)
+    ref = _get_target_ref(repo) or _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
+    return RemoteInfo(url=url, ref=ref)
