@@ -56,6 +56,30 @@ def get_connection_origin(connection: AnyConnection) -> str | None:
     return None
 
 
+def verify_same_origin(connection: AnyConnection) -> None:
+    """Reject cross-origin requests to unauthenticated state-changing endpoints (e.g. /logout).
+
+    The ``Origin`` header is set by browsers on all cross-origin requests (including from subdomains
+    and from sandboxed/opaque contexts, which send ``Origin: null``) and cannot be forged by js. So:
+    if an Origin header is present at all, it must parse to exactly the target host; otherwise the
+    request is cross-site and is rejected. This stops a hostile page (including a sandboxed iframe
+    sending ``Origin: null``) from cross-site POSTing to endpoints like /logout, which has no
+    owner-auth guard of its own (it must work for any session state).
+
+    A genuinely same-origin top-level form post either omits Origin or sends the matching host, so
+    legitimate logout still works.
+
+    raises NotAuthorizedException on a cross-origin request.
+    """
+    # Use the raw header (not get_connection_origin) so that a present-but-unparseable Origin such
+    # as "null" is treated as cross-origin rather than collapsing to None ("no header") and passing.
+    raw_origin = connection.headers.get("Origin")
+    if raw_origin is None:
+        return
+    if get_connection_origin(connection) != connection.base_url.netloc:
+        raise NotAuthorizedException(detail="cross-origin request not allowed")
+
+
 def authenticate(connection: AnyConnection, db: sqlite3.Connection) -> AuthenticatedAccessor | None:
     """Resolve who is making this request, by trying each auth scheme in priority order.
 

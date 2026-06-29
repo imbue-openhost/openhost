@@ -16,6 +16,7 @@ from compute_space.core.auth.auth import create_session
 from compute_space.core.auth.auth import revoke_session
 from compute_space.core.auth.auth import validate_password
 from compute_space.web.auth.auth import authenticate
+from compute_space.web.auth.auth import verify_same_origin
 from compute_space.web.auth.cookies import build_session_cookie
 from compute_space.web.auth.cookies import clear_session_cookie
 
@@ -64,6 +65,9 @@ async def login_post(request: Request[Any, Any, Any], db: sqlite3.Connection, co
 
 @post("/logout", status_code=200)
 async def logout(request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config) -> Response[Any]:
+    # /logout has no owner-auth guard (it must work for any session state), so guard it against
+    # cross-site POSTs here to prevent forced-logout CSRF.
+    verify_same_origin(request)
     if session_token := request.cookies.get(SESSION_COOKIE_NAME):
         revoke_session(session_token, db)
         db.commit()
