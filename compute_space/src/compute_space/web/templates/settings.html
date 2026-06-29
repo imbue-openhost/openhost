@@ -109,7 +109,9 @@ async function checkForUpdates() {
     if (data.state === 'UP_TO_DATE') {
       el.innerHTML = '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
     } else if (data.state === 'UPDATE_AVAILABLE') {
+      const notice = data.error ? '<p class="error">' + esc(data.error) + '</p>' : '';
       el.innerHTML = '<p>Updates available.</p>'
+        + notice
         + '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> '
         + checkAgainBtn;
     } else if (data.state === 'ERROR') {
