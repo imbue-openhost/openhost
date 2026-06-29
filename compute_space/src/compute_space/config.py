@@ -276,6 +276,7 @@ class DefaultConfig(Config):
         lambda: [
             "https://github.com/imbue-openhost/secrets",
             "file_browser",
+            "oauth_provider",
             "https://github.com/imbue-openhost/openhost-catalog",
         ]
     )
