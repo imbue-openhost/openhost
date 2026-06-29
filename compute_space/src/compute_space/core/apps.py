@@ -25,7 +25,9 @@ from compute_space.core.auth.permissions_v2 import Grant
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
+from compute_space.core.containers import checkpoint_container
 from compute_space.core.containers import remove_image
+from compute_space.core.containers import restore_container
 from compute_space.core.containers import run_container
 from compute_space.core.containers import stop_app_process
 from compute_space.core.data import deprovision_data
@@ -1033,3 +1035,104 @@ def get_app_from_hostname(host: str) -> App | None:
 def is_public_path(app: App, request_path: str) -> bool:
     # TODO: we should consider if this is the appropriate matching logic
     return any(request_path == pp or request_path.startswith(pp.rstrip("/") + "/") for pp in app.public_paths)
+
+
+def _checkpoint_path(app_name: str, temp_data_dir: str) -> str:
+    return os.path.join(temp_data_dir, "app_temp_data", app_name, "checkpoint.tar.gz")
+
+
+def suspend_app(app_id: str, db: sqlite3.Connection, config: Config) -> None:
+    """CRIU-checkpoint a running app, freeing its memory while preserving state.
+
+    Updates status to ``'suspended'`` on success, ``'error'`` on failure.
+    Raises RuntimeError on failure (after updating the DB).
+    """
+    app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+    if app_row is None:
+        raise RuntimeError("App not found")
+    app_name = app_row["name"]
+    if not app_row["container_id"]:
+        raise RuntimeError("App has no running container")
+
+    checkpoint_path = _checkpoint_path(app_name, config.temporary_data_dir)
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+
+    try:
+        checkpoint_container(f"openhost-{app_name}", checkpoint_path)
+        db.execute(
+            "UPDATE apps SET status = 'suspended', container_id = NULL WHERE app_id = ?",
+            (app_id,),
+        )
+        db.commit()
+    except Exception as e:
+        logger.exception("CRIU checkpoint failed for %s", app_name)
+        db.execute(
+            "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+            (str(e), app_id),
+        )
+        db.commit()
+        raise
+
+
+def resume_app(app_id: str, config: Config) -> None:
+    """Restore a suspended app from its CRIU checkpoint (or rebuild if checkpoint is gone).
+
+    Opens its own DB connection so it is safe to call from any background thread.
+    Uses an atomic UPDATE claim to ensure only one concurrent caller restores the app.
+    Falls back to ``start_app_process`` when the checkpoint file is missing or CRIU fails.
+    """
+    db = sqlite3.connect(config.db_path, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    try:
+        cursor = db.execute(
+            "UPDATE apps SET status = 'starting' WHERE app_id = ? AND status = 'suspended'",
+            (app_id,),
+        )
+        db.commit()
+        if cursor.rowcount == 0:
+            # Already being resumed by another concurrent caller — nothing to do.
+            return
+
+        app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+        if app_row is None:
+            return
+        app_name = app_row["name"]
+        checkpoint_path = _checkpoint_path(app_name, config.temporary_data_dir)
+
+        if os.path.exists(checkpoint_path):
+            try:
+                container_id = restore_container(f"openhost-{app_name}", checkpoint_path)
+                db.execute(
+                    "UPDATE apps SET container_id = ? WHERE app_id = ?",
+                    (container_id, app_id),
+                )
+                db.commit()
+                if wait_for_ready(app_row["local_port"]):
+                    db.execute("UPDATE apps SET status = 'running' WHERE app_id = ?", (app_id,))
+                else:
+                    db.execute(
+                        "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                        ("Restored from checkpoint but not responding to HTTP", app_id),
+                    )
+                db.commit()
+                return
+            except RuntimeError as e:
+                logger.warning(
+                    "CRIU restore failed for %s, falling back to fresh start: %s", app_name, e
+                )
+
+        # Checkpoint missing or CRIU restore failed: rebuild and restart the container.
+        start_app_process(app_id, db, config)
+    except Exception as e:
+        logger.exception("Failed to resume %s", app_id)
+        try:
+            db.execute(
+                "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                (str(e), app_id),
+            )
+            db.commit()
+        except sqlite3.Error:
+            pass
+    finally:
+        db.close()

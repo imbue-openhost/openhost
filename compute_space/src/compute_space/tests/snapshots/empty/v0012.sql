@@ -29,29 +29,31 @@ CREATE TABLE "app_tokens" (
                 FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
             );
 CREATE TABLE "apps" (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                app_id TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL UNIQUE,
-                manifest_name TEXT NOT NULL DEFAULT '',
-                version TEXT NOT NULL,
-                description TEXT,
-                runtime_type TEXT NOT NULL DEFAULT 'serverfull',
-                repo_path TEXT NOT NULL,
-                repo_url TEXT,
-                health_check TEXT,
-                local_port INTEGER NOT NULL UNIQUE,
-                container_port INTEGER,
-                container_id TEXT,
-                status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing')),
-                error_message TEXT,
-                memory_mb INTEGER NOT NULL DEFAULT 128,
-                gpu INTEGER NOT NULL DEFAULT 0,
-                public_paths TEXT NOT NULL DEFAULT '[]',
-                manifest_raw TEXT,
-                installed_by TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            , links TEXT NOT NULL DEFAULT '[]', cpu_cores REAL NOT NULL DEFAULT 0.1);
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE,
+    manifest_name TEXT NOT NULL DEFAULT '',
+    version TEXT NOT NULL,
+    description TEXT,
+    runtime_type TEXT NOT NULL DEFAULT 'serverfull',
+    repo_path TEXT NOT NULL,
+    repo_url TEXT,
+    health_check TEXT,
+    local_port INTEGER NOT NULL UNIQUE,
+    container_port INTEGER,
+    container_id TEXT,
+    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing', 'suspended')),
+    error_message TEXT,
+    memory_mb INTEGER NOT NULL DEFAULT 128,
+    cpu_cores REAL NOT NULL DEFAULT 0.1,
+    gpu INTEGER NOT NULL DEFAULT 0,
+    public_paths TEXT NOT NULL DEFAULT '[]',
+    links TEXT NOT NULL DEFAULT '[]',
+    manifest_raw TEXT,
+    installed_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE archive_backend (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     backend TEXT NOT NULL DEFAULT 'disabled' CHECK(backend IN ('disabled', 's3')),
@@ -79,7 +81,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,11);
+INSERT INTO "schema_version" VALUES(1,12);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
@@ -104,8 +106,8 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_apps_status ON apps(status);
-CREATE UNIQUE INDEX idx_apps_app_id ON apps(app_id);
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX sessions_user_id_idx ON sessions(user_id);
+CREATE INDEX idx_apps_status ON apps(status);
+CREATE UNIQUE INDEX idx_apps_app_id ON apps(app_id);
 COMMIT;

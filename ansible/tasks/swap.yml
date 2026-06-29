@@ -1,0 +1,49 @@
+---
+# Configure swap space and install CRIU for app suspension.
+
+- name: Check if swapfile already exists
+  stat:
+    path: /swapfile
+  register: _swapfile
+
+- name: Create 4 GiB swapfile
+  command: fallocate -l 4G /swapfile
+  when: not _swapfile.stat.exists
+  changed_when: true
+
+- name: Set swapfile permissions
+  file:
+    path: /swapfile
+    mode: "0600"
+    owner: root
+    group: root
+
+- name: Format swapfile
+  command: mkswap /swapfile
+  when: not _swapfile.stat.exists
+  changed_when: true
+
+- name: Enable swapfile
+  command: swapon /swapfile
+  when: not _swapfile.stat.exists
+  changed_when: true
+
+- name: Persist swapfile in /etc/fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
+    state: present
+
+- name: Set vm.swappiness
+  sysctl:
+    name: vm.swappiness
+    value: "10"
+    state: present
+    sysctl_file: /etc/sysctl.d/90-openhost-swap.conf
+    reload: yes
+
+- name: Install CRIU
+  apt:
+    name: criu
+    state: present
+    update_cache: yes

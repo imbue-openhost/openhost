@@ -34,6 +34,7 @@
   tasks:
     - import_tasks: tasks/apt_packages.yml
     - import_tasks: tasks/containers.yml
+    - import_tasks: tasks/swap.yml
 
 - name: Dev environment
   hosts: all

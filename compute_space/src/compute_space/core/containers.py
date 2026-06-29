@@ -430,6 +430,43 @@ def is_container_running(container_id: str) -> bool:
     return result.stdout.strip() == "running"
 
 
+def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
+    """CRIU-checkpoint a running container, exporting state to a tar archive.
+
+    The container is stopped after checkpointing (memory freed). ``--ignore-rootfs``
+    keeps the checkpoint small (image filesystem stays on disk). ``--tcp-close``
+    drops open TCP connections instead of attempting to restore them, which is
+    more reliable under rootless Podman.
+    """
+    cmd = [
+        "podman",
+        "container",
+        "checkpoint",
+        "--export",
+        checkpoint_path,
+        "--ignore-rootfs",
+        "--tcp-close",
+        container_name,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"CRIU checkpoint failed:\n{result.stderr or result.stdout}")
+
+
+def restore_container(container_name: str, checkpoint_path: str) -> str:
+    """Restore a container from a CRIU checkpoint archive. Returns the new container ID.
+
+    Removes any stopped container with the same name first (``podman checkpoint``
+    leaves a stopped container behind after exporting).
+    """
+    subprocess.run(["podman", "rm", "-f", container_name], capture_output=True, timeout=30)
+    cmd = ["podman", "container", "restore", "--import", checkpoint_path]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"CRIU restore failed:\n{result.stderr or result.stdout}")
+    return result.stdout.strip()
+
+
 def get_docker_logs(
     app_name: str,
     temp_data_dir: str,

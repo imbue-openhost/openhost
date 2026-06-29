@@ -233,6 +233,32 @@ class AppCmd:
         ).json()
         print(f"Renamed {app_name} → {result.get('name', new_name)}")
 
+    @cappa.command(name="suspend")
+    def suspend(
+        self,
+        app_name: Annotated[str, cappa.Arg(help="App name")],
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+    ) -> None:
+        """Suspend a running app (CRIU checkpoint — preserves in-memory state)."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
+        make_api_request(cfg.url, cfg.token, "POST", f"/suspend_app/{app_id}")
+        print(f"Suspended {app_name}")
+
+    @cappa.command(name="resume")
+    def resume(
+        self,
+        app_name: Annotated[str, cappa.Arg(help="App name")],
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+        wait: Annotated[bool, cappa.Arg(long=True, help="Wait for app to be running")] = False,
+    ) -> None:
+        """Resume a suspended app from its checkpoint."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
+        make_api_request(cfg.url, cfg.token, "POST", f"/resume_app/{app_id}")
+        if wait:
+            wait_for_app_running(cfg.url, cfg.token, app_id, app_name)
+        else:
+            print(f"Resuming {app_name}...")
+
     @cappa.command(name="list")
     def list_apps(
         self,

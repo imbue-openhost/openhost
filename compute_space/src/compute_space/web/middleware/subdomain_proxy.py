@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from litestar import Request
@@ -17,6 +18,7 @@ from litestar.types.asgi_types import WebSocketCloseEvent
 from compute_space.config import get_config
 from compute_space.core.apps import get_app_from_hostname
 from compute_space.core.apps import is_public_path
+from compute_space.core.apps import resume_app
 from compute_space.core.logging import logger
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.auth.auth import verify_owner_auth
@@ -150,7 +152,20 @@ class SubdomainProxyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # TODO: maybe behave differently for apps that are not in running state. not sure
+        # Auto-resume: wake up a suspended app before proxying to it.
+        if app.status == "suspended":
+            await asyncio.to_thread(resume_app, app.app_id, get_config())
+            app = get_app_from_hostname(netloc)
+            if not app or app.status != "running":
+                if scope["type"] == ScopeType.HTTP:
+                    request = Request(scope, receive, send)
+                    response = Response(content=None, status_code=503)
+                    await response.to_asgi_response(app=None, request=request)(scope, receive, send)
+                else:
+                    await send(
+                        WebSocketCloseEvent(type="websocket.close", code=4503, reason="app resuming")
+                    )
+                return
 
         # Forwarding headers so the app can tell where the request originated.
         # Caddy terminates TLS and speaks plain HTTP to us on loopback, so we

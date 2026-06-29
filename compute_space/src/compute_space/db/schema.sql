@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS apps (
     local_port INTEGER NOT NULL UNIQUE,
     container_port INTEGER,
     container_id TEXT,
-    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing')),
+    status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('building', 'starting', 'running', 'stopped', 'error', 'removing', 'suspended')),
     error_message TEXT,
     memory_mb INTEGER NOT NULL DEFAULT 128,
     cpu_cores REAL NOT NULL DEFAULT 0.1,

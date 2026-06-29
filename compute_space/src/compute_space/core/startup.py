@@ -17,16 +17,28 @@ def check_app_status(config: Config) -> None:
     (e.g. the service restarted mid-rebuild) those apps stay in 'starting'.
     Looking only at 'running' would strand them forever.
 
-    Apps that need rebuilding are restarted sequentially in a single background
-    thread to avoid concurrent image builds against the same containers-storage
+    Suspended apps are also resumed on startup: CRIU restores across service
+    restarts (checkpoint on disk), but a host reboot invalidates the checkpoint
+    (kernel state is gone). ``resume_app`` handles both cases — it falls back to
+    a fresh build+start when CRIU fails.
+
+    Apps that need rebuilding or resuming are handled sequentially in background
+    threads to avoid concurrent image builds against the same containers-storage
     instance.
     """
     db = sqlite3.connect(config.db_path)
     db.row_factory = sqlite3.Row
     apps_to_restart: list[str] = []
+    apps_to_resume: list[str] = []
     try:
-        rows = db.execute("SELECT * FROM apps WHERE status IN ('running', 'starting', 'building')").fetchall()
+        rows = db.execute(
+            "SELECT * FROM apps WHERE status IN ('running', 'starting', 'building', 'suspended')"
+        ).fetchall()
         for row in rows:
+            if row["status"] == "suspended":
+                apps_to_resume.append(row["app_id"])
+                continue
+
             alive = bool(row["container_id"]) and is_container_running(row["container_id"])
 
             if alive:
@@ -71,6 +83,13 @@ def check_app_status(config: Config) -> None:
             daemon=True,
         ).start()
 
+    if apps_to_resume:
+        threading.Thread(
+            target=_resume_apps_sequential,
+            args=(apps_to_resume, config),
+            daemon=True,
+        ).start()
+
 
 def _restart_apps_sequential(app_ids: list[str], config: Config) -> None:
     """Rebuild and restart apps one at a time in a background thread."""
@@ -91,6 +110,19 @@ def _restart_apps_sequential(app_ids: list[str], config: Config) -> None:
                 db.commit()
     finally:
         db.close()
+
+
+def _resume_apps_sequential(app_ids: list[str], config: Config) -> None:
+    """Resume suspended apps one at a time in a background thread."""
+    # Local import avoids a circular dependency: startup → apps → startup
+    from compute_space.core.apps import resume_app
+
+    for app_id in app_ids:
+        try:
+            resume_app(app_id, config)
+            logger.info("Resumed suspended app %s", app_id)
+        except Exception as e:
+            logger.exception("Failed to resume app %s: %s", app_id, e)
 
 
 def retry_pending_default_apps(config: Config) -> None:

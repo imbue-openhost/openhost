@@ -30,7 +30,9 @@ from compute_space.core.apps import insert_and_deploy
 from compute_space.core.apps import move_clone_to_app_temp_dir
 from compute_space.core.apps import reload_app_background
 from compute_space.core.apps import remove_app_background
+from compute_space.core.apps import resume_app
 from compute_space.core.apps import start_app_process
+from compute_space.core.apps import suspend_app
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import get_docker_logs
@@ -951,6 +953,58 @@ async def set_app_remote(
     )
 
 
+@post("/suspend_app/{app_id:str}", status_code=200, guards=[require_owner_auth])
+async def suspend_app_route(
+    app_id: str, db: sqlite3.Connection, config: Config
+) -> Response[OkResponse] | Response[ErrorResponse]:
+    """CRIU-checkpoint a running app to free its memory while preserving state."""
+    app_row, err = _resolve_app_or_error(app_id, db)
+    if err is not None:
+        return err
+    assert app_row is not None
+    if _is_removing(app_row):
+        return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
+    if app_row["status"] != "running":
+        return Response(
+            content=ErrorResponse(error=f"App is not running (status: {app_row['status']})"),
+            status_code=409,
+            media_type=MediaType.JSON,
+        )
+
+    try:
+        suspend_app(app_id, db, config)
+    except RuntimeError as e:
+        return Response(content=ErrorResponse(error=str(e)), status_code=500, media_type=MediaType.JSON)
+
+    return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
+
+
+@post("/resume_app/{app_id:str}", status_code=202, guards=[require_owner_auth])
+async def resume_app_route(
+    app_id: str, db: sqlite3.Connection, config: Config
+) -> Response[OkResponse] | Response[ErrorResponse]:
+    """Resume a suspended app from its CRIU checkpoint (or rebuild if checkpoint is gone).
+
+    Returns 202 immediately. Poll ``/api/app_status/{app_id}`` for ``status == 'running'``.
+    """
+    app_row, err = _resolve_app_or_error(app_id, db)
+    if err is not None:
+        return err
+    assert app_row is not None
+    if _is_removing(app_row):
+        return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
+    if app_row["status"] != "suspended":
+        return Response(
+            content=ErrorResponse(error=f"App is not suspended (status: {app_row['status']})"),
+            status_code=409,
+            media_type=MediaType.JSON,
+        )
+
+    Thread(target=resume_app, args=(app_id, config), daemon=True).start()
+
+    return Response(content=OkResponse(ok=True), status_code=202, media_type=MediaType.JSON)
+
+
 api_apps_routes = Router(
     path="/",
     route_handlers=[
@@ -966,5 +1020,7 @@ api_apps_routes = Router(
         remove_app,
         rename_app,
         set_app_remote,
+        suspend_app_route,
+        resume_app_route,
     ],
 )
