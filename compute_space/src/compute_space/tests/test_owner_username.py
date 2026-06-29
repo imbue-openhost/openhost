@@ -427,6 +427,25 @@ def test_setup_get_disables_submit_button_to_prevent_double_submit(setup_client:
     assert "btn.disabled = true" in body
 
 
+def test_setup_get_explains_username_format_and_validates_client_side(
+    setup_client: TestClient[Litestar],
+) -> None:
+    """The setup form must tell the operator what username format is
+    allowed (no silent @-rejection) and wire up live client-side
+    validation that mirrors the server-side rule."""
+    resp = setup_client.get("/setup")
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Explanatory text: the allowed chars and the explicit "no @" note.
+    assert "lowercase letters, digits" in body
+    assert "<code>@</code>" in body
+    # Live client-side validation is wired in via the shared module and
+    # the form blocks submit on an invalid value.
+    assert "username-validation.js" in body
+    assert "OpenHostUsername.usernameError" in body
+    assert "reportValidity" in body
+
+
 # ---------------------------------------------------------------------------
 # /login: session resolves to persisted username (mirror invariant of /setup)
 # ---------------------------------------------------------------------------
