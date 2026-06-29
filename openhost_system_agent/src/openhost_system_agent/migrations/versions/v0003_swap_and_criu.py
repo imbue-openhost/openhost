@@ -21,13 +21,16 @@ _CRIU_BUILD_DEPS = (
     "libprotobuf-c-dev",
     "protobuf-c-compiler",
     "protobuf-compiler",
+    "python3-protobuf",
     "pkg-config",
     "libnl-3-dev",
     "libcap-dev",
     "libaio-dev",
+    "libgnutls28-dev",
     "libnet-dev",
-    "python3-yaml",
+    "uuid-dev",
     "libbsd-dev",
+    "python3-yaml",
 )
 
 

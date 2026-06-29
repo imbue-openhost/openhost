@@ -51,12 +51,15 @@
       - protobuf-c-compiler
       - protobuf-compiler
       - pkg-config
+      - python3-protobuf
       - libnl-3-dev
       - libcap-dev
       - libaio-dev
+      - libgnutls28-dev
       - libnet-dev
-      - python3-yaml
+      - uuid-dev
       - libbsd-dev
+      - python3-yaml
     state: present
     update_cache: yes
 
