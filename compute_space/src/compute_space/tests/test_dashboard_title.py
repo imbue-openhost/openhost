@@ -105,6 +105,23 @@ def test_heading_uses_owner_username_when_set(cfg: Any) -> None:
     assert "alice-zone's Private Compute Space" not in resp.text
 
 
+def test_dashboard_renders_logout_button(cfg: Any) -> None:
+    """The shared layout nav exposes a Log out control that POSTs to /logout.
+
+    The session cookie is httponly, so logout must round-trip through the
+    server; a top-level form POST (samesite=lax) is the correct mechanism.
+    """
+    set_active_config(cfg)
+    cookie = auth_cookie(cfg, username="owner")
+
+    with TestClient(app=_build_app(cfg)) as client:
+        resp = client.get("/dashboard", cookies=cookie)
+    assert resp.status_code == 200
+    assert 'action="/logout"' in resp.text
+    assert 'method="post"' in resp.text
+    assert "Log out" in resp.text
+
+
 def test_owner_name_global_reads_live(cfg: Any) -> None:
     set_active_config(cfg)
     globals_ = _template_globals(cfg, Path("static"))

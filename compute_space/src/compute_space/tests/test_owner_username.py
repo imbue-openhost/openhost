@@ -440,3 +440,47 @@ def test_login_creates_session_resolving_to_persisted_username(cfg: Any, login_c
     resp = login_client.post("/login", data={"password": "loginpass1"}, follow_redirects=False)
     assert resp.status_code in (200, 302), resp.text
     assert _session_username_after(cfg.db_path) == "alice"
+
+
+# ---------------------------------------------------------------------------
+# /logout: the control surfaced by the dashboard nav button must revoke the
+# session and clear the cookie. The button is just a form POST to this route,
+# so exercising the route covers what the button triggers.
+# ---------------------------------------------------------------------------
+
+
+def _session_count(db_path: str) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def test_logout_revokes_session_and_clears_cookie(cfg: Any, login_client: TestClient[Litestar]) -> None:
+    """POST /logout (what the dashboard Log out button submits) must delete the
+    session row server-side and emit a cleared session cookie, so a stolen/cached
+    cookie can't be replayed after logout."""
+    user_id = _seed_user(cfg.db_path, "alice", password="loginpass1")
+    token = _create_session_for(cfg.db_path, user_id)
+    assert _session_count(cfg.db_path) == 1
+
+    login_client.cookies.set(SESSION_COOKIE_NAME, token)
+    resp = login_client.post("/logout", follow_redirects=False)
+
+    # Redirects the operator back to the login page.
+    assert resp.status_code in (200, 302), resp.text
+    assert resp.headers.get("location") == "/login"
+    # Session row is gone -> the old cookie is now inert server-side.
+    assert _session_count(cfg.db_path) == 0
+    # And the response clears the cookie (max-age=0).
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert SESSION_COOKIE_NAME in set_cookie
+    assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie.lower()
+
+
+def test_logout_without_session_is_safe(cfg: Any, login_client: TestClient[Litestar]) -> None:
+    """Hitting /logout with no session cookie must not error; it just redirects."""
+    resp = login_client.post("/logout", follow_redirects=False)
+    assert resp.status_code in (200, 302), resp.text
+    assert resp.headers.get("location") == "/login"
