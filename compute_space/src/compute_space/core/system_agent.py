@@ -6,7 +6,6 @@ import subprocess
 import cattrs
 
 from compute_space.core.util import async_wrap
-from openhost_system_agent.protocol import ApplyResult
 from openhost_system_agent.protocol import DiffResult
 from openhost_system_agent.protocol import FetchResult
 from openhost_system_agent.protocol import MigrationStatus
@@ -17,7 +16,8 @@ class SystemAgentError(Exception):
     pass
 
 
-def _call_system_agent_sync[ResultT](result_type: type[ResultT], *args: str, timeout: int = 300) -> ResultT:
+def _run_system_agent(*args: str, timeout: int = 300) -> str:
+    """Run the agent, raising SystemAgentError on failure. Returns stdout."""
     try:
         result = subprocess.run(
             ["sudo", "openhost_system_agent", *args],
@@ -50,10 +50,15 @@ def _call_system_agent_sync[ResultT](result_type: type[ResultT], *args: str, tim
             )
         raise SystemAgentError(str(error))
 
+    return result.stdout
+
+
+def _call_system_agent_sync[ResultT](result_type: type[ResultT], *args: str, timeout: int = 300) -> ResultT:
+    stdout = _run_system_agent(*args, timeout=timeout)
     try:
-        raw = json.loads(result.stdout)
+        raw = json.loads(stdout)
     except (json.JSONDecodeError, ValueError) as e:
-        raise SystemAgentError(f"Invalid JSON from system agent: {result.stdout}") from e
+        raise SystemAgentError(f"Invalid JSON from system agent: {stdout}") from e
 
     try:
         return cattrs.structure(raw, result_type)
@@ -72,8 +77,11 @@ def system_agent_show_diff() -> DiffResult:
 
 
 @async_wrap
-def system_agent_apply() -> ApplyResult:
-    return _call_system_agent_sync(ApplyResult, "update", "apply", timeout=600)
+def system_agent_apply() -> None:
+    # On success the agent restarts openhost, which kills this process before
+    # it returns, so there is nothing to parse. Only failures return here (and
+    # raise); the restarted compute_space reads the migration log for results.
+    _run_system_agent("update", "apply", timeout=600)
 
 
 @async_wrap

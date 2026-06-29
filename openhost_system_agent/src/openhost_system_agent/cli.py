@@ -42,10 +42,12 @@ class UpdateCmd:
         except Exception as e:
             _error(str(e))
 
-    @cappa.command(name="apply", help="Apply pending update: checkout, install deps, run system migrations.")
+    @cappa.command(name="apply", help="Apply pending update: checkout, install deps, migrate, restart openhost.")
     def apply(self) -> None:
+        # apply_update execs into the apply walk and restarts openhost on
+        # success, so it never returns; only failures surface here.
         try:
-            _output(apply_update())
+            apply_update()
         except Exception as e:
             _error(str(e))
 
