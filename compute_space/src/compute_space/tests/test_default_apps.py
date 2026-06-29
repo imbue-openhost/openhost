@@ -310,9 +310,7 @@ def test_oauth_provider_in_default_factory():
         tls_enabled=False,
         start_caddy=False,
     )
-    assert "oauth_provider" in cfg.default_apps, (
-        f"oauth_provider not in default_apps: {cfg.default_apps}"
-    )
+    assert "oauth_provider" in cfg.default_apps, f"oauth_provider not in default_apps: {cfg.default_apps}"
 
 
 def test_mixed_local_and_remote_entries(cfg_with_apps, monkeypatch):
