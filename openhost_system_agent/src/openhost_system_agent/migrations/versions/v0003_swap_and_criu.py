@@ -12,6 +12,11 @@ from openhost_system_agent.migrations.base import SystemMigration
 from openhost_system_agent.migrations.helpers import run
 from openhost_system_agent.migrations.helpers import write_file
 
+# criu is not available via apt on Ubuntu 24.04; install the static binary
+# from GitHub releases instead.  Bump this when upgrading CRIU.
+_CRIU_VERSION = "4.1"
+_CRIU_ARCH_MAP = {"x86_64": "x86_64", "aarch64": "aarch64"}
+
 
 class Migration0003SwapAndCriu(SystemMigration):
     version = 3
@@ -22,29 +27,19 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._set_swappiness()
 
     def _install_criu(self) -> None:
-        self._add_ubuntu_archive_universe()
-        run("apt-get", "update", "-qq")
-        run("apt-get", "install", "-y", "-qq", "criu")
-
-    def _add_ubuntu_archive_universe(self) -> None:
-        # Some cloud mirrors (e.g. Hetzner) are partial and don't carry all
-        # universe packages. Add the official Ubuntu archive as a supplementary
-        # source so packages like criu are available regardless of the mirror.
-        fallback = Path("/etc/apt/sources.list.d/ubuntu-archive-universe.sources")
-        if fallback.exists():
+        dest = Path("/usr/local/sbin/criu")
+        if dest.exists():
             return
-        result = subprocess.run(
-            ["lsb_release", "-sc"], capture_output=True, text=True
+        arch = subprocess.run(
+            ["uname", "-m"], capture_output=True, text=True
+        ).stdout.strip()
+        criu_arch = _CRIU_ARCH_MAP.get(arch, arch)
+        url = (
+            f"https://github.com/checkpoint-restore/criu/releases/download/"
+            f"v{_CRIU_VERSION}/criu-static-{criu_arch}"
         )
-        codename = result.stdout.strip() if result.returncode == 0 else "noble"
-        fallback.write_text(
-            "# Added by OpenHost — supplements cloud mirror with full Ubuntu universe.\n"
-            "Types: deb\n"
-            "URIs: http://archive.ubuntu.com/ubuntu\n"
-            f"Suites: {codename}\n"
-            "Components: universe\n"
-            "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
-        )
+        run("curl", "-fsSL", "-o", str(dest), url)
+        dest.chmod(0o755)
 
     def _configure_swap(self) -> None:
         swapfile = Path("/swapfile")
@@ -54,7 +49,6 @@ class Migration0003SwapAndCriu(SystemMigration):
             run("mkswap", str(swapfile))
             run("swapon", str(swapfile))
 
-        # Persist in /etc/fstab
         fstab = Path("/etc/fstab")
         entry = "/swapfile none swap sw 0 0"
         text = fstab.read_text()
