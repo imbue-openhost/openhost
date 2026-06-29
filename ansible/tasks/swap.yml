@@ -42,10 +42,17 @@
     sysctl_file: /etc/sysctl.d/90-openhost-swap.conf
     reload: yes
 
-- name: Enable universe repository
-  apt_repository:
-    repo: "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe"
-    state: present
+- name: Add Ubuntu archive as supplementary universe source
+  copy:
+    dest: /etc/apt/sources.list.d/ubuntu-archive-universe.sources
+    content: |
+      # Added by OpenHost — supplements cloud mirror with full Ubuntu universe.
+      Types: deb
+      URIs: http://archive.ubuntu.com/ubuntu
+      Suites: {{ ansible_distribution_release }}
+      Components: universe
+      Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+    mode: "0644"
 
 - name: Install CRIU
   apt:

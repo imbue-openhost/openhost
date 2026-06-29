@@ -22,9 +22,29 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._set_swappiness()
 
     def _install_criu(self) -> None:
-        run("add-apt-repository", "-y", "universe")
+        self._add_ubuntu_archive_universe()
         run("apt-get", "update", "-qq")
         run("apt-get", "install", "-y", "-qq", "criu")
+
+    def _add_ubuntu_archive_universe(self) -> None:
+        # Some cloud mirrors (e.g. Hetzner) are partial and don't carry all
+        # universe packages. Add the official Ubuntu archive as a supplementary
+        # source so packages like criu are available regardless of the mirror.
+        fallback = Path("/etc/apt/sources.list.d/ubuntu-archive-universe.sources")
+        if fallback.exists():
+            return
+        result = subprocess.run(
+            ["lsb_release", "-sc"], capture_output=True, text=True
+        )
+        codename = result.stdout.strip() if result.returncode == 0 else "noble"
+        fallback.write_text(
+            "# Added by OpenHost — supplements cloud mirror with full Ubuntu universe.\n"
+            "Types: deb\n"
+            "URIs: http://archive.ubuntu.com/ubuntu\n"
+            f"Suites: {codename}\n"
+            "Components: universe\n"
+            "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+        )
 
     def _configure_swap(self) -> None:
         swapfile = Path("/swapfile")
