@@ -6,6 +6,7 @@ CRIU is not available via apt on Ubuntu 24.04, so it is built from source.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,6 +24,8 @@ _CRIU_BUILD_DEPS = (
     "pkg-config",
     "libnl-3-dev",
     "libcap-dev",
+    "libaio-dev",
+    "libnet-dev",
     "python3-yaml",
     "libbsd-dev",
 )
@@ -40,6 +43,7 @@ class Migration0003SwapAndCriu(SystemMigration):
         dest = Path("/usr/local/sbin/criu")
         if dest.exists():
             return
+        os.environ["DEBIAN_FRONTEND"] = "noninteractive"
         run("apt-get", "update", "-qq")
         run("apt-get", "install", "-y", "-qq", *_CRIU_BUILD_DEPS)
         src_url = (

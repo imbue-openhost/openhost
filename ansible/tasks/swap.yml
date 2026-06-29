@@ -53,6 +53,8 @@
       - pkg-config
       - libnl-3-dev
       - libcap-dev
+      - libaio-dev
+      - libnet-dev
       - python3-yaml
       - libbsd-dev
     state: present
