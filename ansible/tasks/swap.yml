@@ -42,8 +42,44 @@
     sysctl_file: /etc/sysctl.d/90-openhost-swap.conf
     reload: yes
 
-- name: Download CRIU static binary
+- name: Install CRIU build dependencies
+  apt:
+    name:
+      - build-essential
+      - libprotobuf-dev
+      - libprotobuf-c-dev
+      - protobuf-c-compiler
+      - protobuf-compiler
+      - pkg-config
+      - libnl-3-dev
+      - libcap-dev
+      - python3-yaml
+      - libbsd-dev
+    state: present
+    update_cache: yes
+
+- name: Download CRIU source
   get_url:
-    url: "https://github.com/checkpoint-restore/criu/releases/download/v4.1/criu-static-{{ ansible_machine }}"
+    url: "https://github.com/checkpoint-restore/criu/archive/refs/tags/v4.1.tar.gz"
+    dest: /tmp/criu.tar.gz
+
+- name: Extract CRIU source
+  unarchive:
+    src: /tmp/criu.tar.gz
+    dest: /tmp
+    remote_src: yes
+    creates: /tmp/criu-4.1
+
+- name: Build CRIU
+  make:
+    chdir: /tmp/criu-4.1
+    target: criu/criu
+  args:
+    creates: /tmp/criu-4.1/criu/criu
+
+- name: Install CRIU binary
+  copy:
+    src: /tmp/criu-4.1/criu/criu
     dest: /usr/local/sbin/criu
     mode: "0755"
+    remote_src: yes
