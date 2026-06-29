@@ -434,9 +434,7 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
     """CRIU-checkpoint a running container, exporting state to a tar archive.
 
     The container is stopped after checkpointing (memory freed). ``--ignore-rootfs``
-    keeps the checkpoint small (image filesystem stays on disk). ``--tcp-close``
-    drops open TCP connections instead of attempting to restore them, which is
-    more reliable under rootless Podman.
+    keeps the checkpoint small (image filesystem stays on disk).
     """
     cmd = [
         "podman",
@@ -445,7 +443,6 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
         "--export",
         checkpoint_path,
         "--ignore-rootfs",
-        "--tcp-close",
         container_name,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
