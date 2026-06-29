@@ -22,6 +22,7 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._set_swappiness()
 
     def _install_criu(self) -> None:
+        run("add-apt-repository", "-y", "universe")
         run("apt-get", "update", "-qq")
         run("apt-get", "install", "-y", "-qq", "criu")
 

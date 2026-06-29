@@ -42,6 +42,11 @@
     sysctl_file: /etc/sysctl.d/90-openhost-swap.conf
     reload: yes
 
+- name: Enable universe repository
+  apt_repository:
+    repo: "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe"
+    state: present
+
 - name: Install CRIU
   apt:
     name: criu
