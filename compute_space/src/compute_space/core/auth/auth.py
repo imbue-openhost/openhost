@@ -14,8 +14,12 @@ SESSION_COOKIE_NAME = "session_token"
 
 # Lowercase alphanumeric + dots/underscores/hyphens, starting with an alphanumeric.
 # Length cap matches Mastodon's 30-char column. Lowercase-only so usernames are safe for subdomains.
+# NOTE: the trailing anchor is ``\Z`` (absolute end of string), NOT ``$``. In
+# Python's ``re``, ``$`` also matches just before a trailing newline, so a
+# value like ``"alice\n"`` would otherwise pass validation and be stored
+# verbatim — a header-injection / data-integrity hazard. ``\Z`` forbids that.
 OWNER_USERNAME_MAX_LEN = 30
-_OWNER_USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,29}$")
+_OWNER_USERNAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]{0,29}\Z")
 DEFAULT_OWNER_USERNAME = "owner"
 
 

@@ -241,6 +241,10 @@ def test_validate_owner_username_accepts(value: str) -> None:
         "alice/bob",
         "a" * 31,  # over max
         "alice\nfoo",  # control char breaks HTTP headers
+        "alice\n",  # trailing newline: re `$` would match before it; `\Z` must not
+        "a" * 29 + "\n",  # 30 chars ending in newline — same `$`-vs-`\Z` trap
+        "alice\r",  # trailing carriage return
+        "alice\r\n",  # trailing CRLF
         "ünicode",  # non-ASCII
     ],
 )
