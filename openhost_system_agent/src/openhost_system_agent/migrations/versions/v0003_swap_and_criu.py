@@ -1,4 +1,4 @@
-"""Configure swap space and install CRIU for app suspension.
+"""Configure swap space, install CRIU, and grant checkpoint capability.
 
 Safe to run on already-provisioned hosts — every step is idempotent.
 CRIU is not available via apt on Ubuntu 24.04, so it is built from source.
@@ -15,6 +15,8 @@ from openhost_system_agent.migrations.helpers import run
 from openhost_system_agent.migrations.helpers import write_file
 
 _CRIU_VERSION = "4.1"
+_DROPIN_DIR = "/etc/systemd/system/openhost.service.d"
+_DROPIN_PATH = f"{_DROPIN_DIR}/10-checkpoint-restore.conf"
 _CRIU_BUILD_DEPS = (
     "build-essential",
     "libprotobuf-dev",
@@ -41,6 +43,7 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._install_criu()
         self._configure_swap()
         self._set_swappiness()
+        self._add_checkpoint_restore_cap()
 
     def _install_criu(self) -> None:
         dest = Path("/usr/local/sbin/criu")
@@ -88,3 +91,18 @@ class Migration0003SwapAndCriu(SystemMigration):
             mode=0o644,
         )
         run("sysctl", "-p", "/etc/sysctl.d/90-openhost-swap.conf")
+
+    def _add_checkpoint_restore_cap(self) -> None:
+        dropin = Path(_DROPIN_PATH)
+        if dropin.exists():
+            return
+        Path(_DROPIN_DIR).mkdir(parents=True, exist_ok=True)
+        write_file(
+            _DROPIN_PATH,
+            "[Service]\n"
+            "# Allow rootless podman checkpoint/restore (CRIU).\n"
+            "AmbientCapabilities=CAP_CHECKPOINT_RESTORE\n",
+            mode=0o644,
+        )
+        run("systemctl", "daemon-reload")
+        run("systemctl", "restart", "openhost")

@@ -36,6 +36,9 @@ SuccessExitStatus=42
 RestartSec=3
 # this will kill other processes in the group (eg caddy etc) after the main process exits
 TimeoutStopSec=5
+# Allow rootless podman checkpoint/restore (CRIU).  Podman 4+ checks that
+# the calling process holds this capability before allowing checkpoint.
+AmbientCapabilities=CAP_CHECKPOINT_RESTORE
 
 [Install]
 WantedBy=multi-user.target
