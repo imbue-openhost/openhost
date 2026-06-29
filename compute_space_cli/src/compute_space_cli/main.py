@@ -238,7 +238,7 @@ class AppCmd:
         self,
         app_name: Annotated[str, cappa.Arg(help="App name")],
         cfg: Annotated[config.Instance, Dep(resolve_instance)],
-        shell: Annotated[str, cappa.Arg(long=True, help="Shell to invoke inside container")] = "bash",
+        shell: Annotated[str, cappa.Arg(long=True, help="Shell to invoke inside container")] = "sh",
     ) -> None:
         """Open an interactive shell inside an app's container."""
         _SHELL_SHORTHANDS = {"bash": "/usr/bin/bash", "sh": "/bin/sh"}
