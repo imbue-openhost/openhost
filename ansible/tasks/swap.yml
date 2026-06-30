@@ -100,3 +100,28 @@
     src: /usr/local/sbin/criu
     dest: /usr/local/bin/criu
     state: link
+
+- name: Create containers config directory for host user
+  file:
+    path: /home/host/.config/containers
+    state: directory
+    owner: host
+    group: host
+    mode: "0755"
+
+- name: Configure host user containers.conf to use apt runc for CRIU checkpoint support
+  copy:
+    dest: /home/host/.config/containers/containers.conf
+    owner: host
+    group: host
+    mode: "0644"
+    content: |
+      [engine]
+      runtime = "runc"
+
+      [engine.runtimes]
+      runc = [
+          "/usr/sbin/runc",
+          "/usr/bin/runc",
+          "/usr/local/bin/runc",
+      ]

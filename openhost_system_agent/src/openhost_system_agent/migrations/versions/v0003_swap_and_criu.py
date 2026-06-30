@@ -45,6 +45,7 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._configure_swap()
         self._set_swappiness()
         self._add_checkpoint_restore_cap()
+        self._configure_host_containers_conf()
 
     def _install_criu(self) -> None:
         dest = Path("/usr/local/sbin/criu")
@@ -119,3 +120,28 @@ class Migration0003SwapAndCriu(SystemMigration):
         target = Path("/usr/local/sbin/criu")
         if not link.exists() and target.exists():
             link.symlink_to(target)
+
+    def _configure_host_containers_conf(self) -> None:
+        conf_dir = Path("/home/host/.config/containers")
+        conf_path = conf_dir / "containers.conf"
+        if conf_path.exists():
+            return
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        # The conda-forge podman bundle ships a "runc" binary that is actually
+        # crun under a different name and has no CRIU checkpoint support.
+        # Override the default runtime to point "runc" at the real
+        # opencontainers runc installed by apt (/usr/sbin/runc).
+        write_file(
+            str(conf_path),
+            '[engine]\n'
+            'runtime = "runc"\n'
+            '\n'
+            '[engine.runtimes]\n'
+            'runc = [\n'
+            '    "/usr/sbin/runc",\n'
+            '    "/usr/bin/runc",\n'
+            '    "/usr/local/bin/runc",\n'
+            ']\n',
+            mode=0o644,
+        )
+        run("chown", "-R", "host:host", str(conf_dir))
