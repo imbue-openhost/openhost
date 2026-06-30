@@ -38,7 +38,13 @@ def _get_bearer_token_if_set(connection: AnyConnection) -> str | None:
 def get_connection_origin(connection: AnyConnection) -> str | None:
     """gets and formats the origin header as "sub.example.com" or "sub.example.com:1234", no protocol or path, if set.
     port is included if non-default.
-    returns None if no origin header is set.
+    returns None only if no Origin header is set at all.
+
+    A *present* Origin that has no parseable host (notably ``Origin: null``, which browsers send from
+    sandboxed/opaque contexts like ``<iframe sandbox>``) returns the literal token (e.g. ``"null"``)
+    rather than None, so callers can't mistake a present cross-origin request for an absent header and
+    wave it through. Such a token never equals a real ``host[:port]``, so origin-match checks fail
+    closed.
 
     browsers have specific behaviors around the Origin header, which we rely on here.
     - it is set on all cross-origin requests, including from subdomains.
@@ -47,36 +53,34 @@ def get_connection_origin(connection: AnyConnection) -> str | None:
 
     we don't use the Referer header, as it's not intended for use in CORS type origin validation.
     """
-    if raw := connection.headers.get("Origin"):
-        parsed = urlparse(raw)
-        host, port = parsed.hostname, parsed.port
-        if not host:
-            return None
-        return f"{host}:{port}" if port else host
-    return None
+    raw = connection.headers.get("Origin")
+    if raw is None:
+        return None
+    parsed = urlparse(raw)
+    host, port = parsed.hostname, parsed.port
+    if not host:
+        # present but opaque/unparseable (e.g. "null"): return a non-matching token, not None.
+        return raw.strip().lower() or "null"
+    return f"{host}:{port}" if port else host
 
 
 def verify_same_origin(connection: AnyConnection) -> None:
     """Reject cross-origin requests to unauthenticated state-changing endpoints (e.g. /logout).
 
     The ``Origin`` header is set by browsers on all cross-origin requests (including from subdomains
-    and from sandboxed/opaque contexts, which send ``Origin: null``) and cannot be forged by js. So:
-    if an Origin header is present at all, it must parse to exactly the target host; otherwise the
-    request is cross-site and is rejected. This stops a hostile page (including a sandboxed iframe
-    sending ``Origin: null``) from cross-site POSTing to endpoints like /logout, which has no
-    owner-auth guard of its own (it must work for any session state).
+    and from sandboxed/opaque contexts, which send ``Origin: null``) and cannot be forged by js. So
+    if an Origin header is present at all, it must match the target host; otherwise the request is
+    cross-site and is rejected. This stops a hostile page (including a sandboxed iframe sending
+    ``Origin: null``) from cross-site POSTing to endpoints like /logout, which has no owner-auth
+    guard of its own (it must work for any session state).
 
     A genuinely same-origin top-level form post either omits Origin or sends the matching host, so
     legitimate logout still works.
 
     raises NotAuthorizedException on a cross-origin request.
     """
-    # Use the raw header (not get_connection_origin) so that a present-but-unparseable Origin such
-    # as "null" is treated as cross-origin rather than collapsing to None ("no header") and passing.
-    raw_origin = connection.headers.get("Origin")
-    if raw_origin is None:
-        return
-    if get_connection_origin(connection) != connection.base_url.netloc:
+    origin = get_connection_origin(connection)
+    if origin is not None and origin != connection.base_url.netloc:
         raise NotAuthorizedException(detail="cross-origin request not allowed")
 
 
@@ -164,6 +168,12 @@ def require_owner_or_app_auth(connection: AnyConnection, _route_handler: BaseRou
     except NotAuthorizedException:
         pass
     verify_app_auth(connection)
+
+
+def require_same_origin(connection: AnyConnection, _route_handler: BaseRouteHandler) -> None:
+    """Adapt verify_same_origin to be used as a route guard (for unauthenticated state-changing
+    endpoints like /logout that still need cross-origin/CSRF protection)."""
+    verify_same_origin(connection)
 
 
 def build_login_url(netloc: str, path: str, query: str) -> str:
