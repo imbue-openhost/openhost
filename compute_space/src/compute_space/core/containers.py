@@ -445,7 +445,8 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
         "--ignore-rootfs",
         container_name,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    strace_cmd = ["strace", "-e", "trace=capget,prctl", "-o", "/tmp/podman-caps-strace.log"] + cmd
+    result = subprocess.run(strace_cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"CRIU checkpoint failed:\n{result.stderr or result.stdout}")
 
