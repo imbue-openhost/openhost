@@ -88,3 +88,9 @@
     dest: /usr/local/sbin/criu
     mode: "0755"
     remote_src: yes
+
+- name: Symlink CRIU into /usr/local/bin so runc can find it in PATH
+  file:
+    src: /usr/local/sbin/criu
+    dest: /usr/local/bin/criu
+    state: link

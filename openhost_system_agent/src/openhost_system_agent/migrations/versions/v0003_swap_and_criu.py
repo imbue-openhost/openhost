@@ -41,6 +41,7 @@ class Migration0003SwapAndCriu(SystemMigration):
 
     def up(self) -> None:
         self._install_criu()
+        self._symlink_criu_to_bin()
         self._configure_swap()
         self._set_swappiness()
         self._add_checkpoint_restore_cap()
@@ -106,3 +107,9 @@ class Migration0003SwapAndCriu(SystemMigration):
         )
         run("systemctl", "daemon-reload")
         run("systemctl", "restart", "openhost")
+
+    def _symlink_criu_to_bin(self) -> None:
+        link = Path("/usr/local/bin/criu")
+        target = Path("/usr/local/sbin/criu")
+        if not link.exists() and target.exists():
+            link.symlink_to(target)

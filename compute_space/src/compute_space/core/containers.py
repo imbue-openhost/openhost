@@ -222,6 +222,7 @@ def run_container(
         container_name,
         "--hostname",
         container_name,
+        "--runtime=runc",
     ]
 
     if manifest.network_host:
@@ -445,8 +446,7 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
         "--ignore-rootfs",
         container_name,
     ]
-    debug_cmd = ["podman", "--log-level=debug"] + cmd[1:]
-    result = subprocess.run(debug_cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"CRIU checkpoint failed:\n{result.stderr or result.stdout}")
 
