@@ -435,16 +435,23 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
     """CRIU-checkpoint a running container, exporting state to a tar archive.
 
     Rootless podman cannot checkpoint containers directly (podman's rootless
-    gate hard-blocks checkpoint regardless of capabilities).  We use a narrow
-    sudo rule targeting a helper script that runs root podman against the host
-    user's rootless container storage.  The container is stopped after
-    checkpointing so memory is freed; ``--ignore-rootfs`` keeps the archive
-    small (image layers stay on disk).
+    gate hard-blocks checkpoint regardless of capabilities).  We resolve the
+    container ID here (rootless podman can do this) then pass the full 64-char
+    ID to the privileged helper, which calls runc directly — avoiding root
+    podman touching the host user's storage and corrupting file ownership.
     """
+    inspect = subprocess.run(
+        ["podman", "inspect", "--format", "{{.ID}}", container_name],
+        capture_output=True, text=True, timeout=30,
+    )
+    if inspect.returncode != 0:
+        raise RuntimeError(f"Container {container_name!r} not found: {inspect.stderr.strip()}")
+    container_id = inspect.stdout.strip()
+
     cmd = [
         "sudo",
         "/usr/local/bin/openhost-checkpoint",
-        container_name,
+        container_id,
         checkpoint_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)

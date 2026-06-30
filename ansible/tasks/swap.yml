@@ -147,26 +147,20 @@
     mode: "0755"
     content: |
       #!/bin/sh
-      # Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH
-      # Calls runc directly to avoid root podman writing into the host user's
-      # runroot (/run/user/<uid>/containers) and corrupting ownership.
+      # Usage: openhost-checkpoint CONTAINER_ID CHECKPOINT_PATH
+      # Caller (compute_space, rootless) resolves name→ID before invoking this.
       set -e
-      [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }
+      [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_ID CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
       RUNC_ROOT="/run/user/${HOST_UID}/runc"
-      STORAGE_CTR=/home/host/.local/share/containers/storage/overlay-containers
-      CTR_ID=$(runuser -u host -- \
-          env XDG_RUNTIME_DIR="/run/user/${HOST_UID}" \
-              /home/host/openhost/.pixi/envs/default/bin/podman \
-              inspect --format '{{.ID}}' "$1" 2>/dev/null) || true
-      [ -n "${CTR_ID}" ] || { echo "Container '$1' not found" >&2; exit 1; }
-      BUNDLE="${STORAGE_CTR}/${CTR_ID}/userdata"
+      BUNDLE=/home/host/.local/share/containers/storage/overlay-containers/$1/userdata
+      [ -d "${BUNDLE}" ] || { echo "Bundle for $1 not found" >&2; exit 1; }
       /usr/sbin/runc --root "${RUNC_ROOT}" \
           checkpoint \
           --image-path "${BUNDLE}/checkpoint" \
           --work-path "${BUNDLE}" \
-          "${CTR_ID}"
-      tar -czf "$2" -C "${BUNDLE}" checkpoint config.dump spec.dump artifacts
+          "$1"
+      tar -czf "$2" -C "${BUNDLE}" checkpoint config.json artifacts
       chown -R host:host "${BUNDLE}/checkpoint" "${BUNDLE}/dump.log"
       chown host:host "$2"
 

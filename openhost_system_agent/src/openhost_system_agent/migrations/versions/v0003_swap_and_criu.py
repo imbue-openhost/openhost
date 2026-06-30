@@ -161,30 +161,28 @@ class Migration0003SwapAndCriu(SystemMigration):
         )
 
         # Checkpoint: call runc directly so root never writes into the host
-        # user's runroot (/run/user/<uid>/containers).  We get the container
-        # ID via rootless podman (as the host user), checkpoint via runc, then
-        # package the result in podman's --ignore-rootfs archive format.
+        # user's runroot (/run/user/<uid>/containers).  The caller (compute_space,
+        # running as the host user) resolves the container name → full 64-char ID
+        # via rootless podman before invoking this helper, so no name lookup is
+        # needed here.  config.dump / spec.dump are only created by podman's own
+        # checkpoint path; we include config.json (the OCI spec) instead.
         checkpoint_script = Path("/usr/local/bin/openhost-checkpoint")
         write_file(
             str(checkpoint_script),
             "#!/bin/sh\n"
-            "# Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH\n"
+            "# Usage: openhost-checkpoint CONTAINER_ID CHECKPOINT_PATH\n"
             "set -e\n"
-            '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }\n'
+            '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_ID CHECKPOINT_PATH" >&2; exit 1; }\n'
             "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
             "RUNC_ROOT=\"/run/user/${HOST_UID}/runc\"\n"
-            f"STORAGE_CTR={_ROOT}/overlay-containers\n"
-            "CTR_ID=$(runuser -u host -- \\\n"
-            f"    env XDG_RUNTIME_DIR=\"/run/user/${{HOST_UID}}\" \\\n"
-            f"        {_PODMAN} inspect --format '{{{{.ID}}}}' \"$1\" 2>/dev/null) || true\n"
-            '[ -n "${CTR_ID}" ] || { echo "Container \'$1\' not found" >&2; exit 1; }\n'
-            'BUNDLE="${STORAGE_CTR}/${CTR_ID}/userdata"\n'
+            f"BUNDLE={_ROOT}/overlay-containers/$1/userdata\n"
+            '[ -d "${BUNDLE}" ] || { echo "Bundle for $1 not found" >&2; exit 1; }\n'
             "/usr/sbin/runc --root \"${RUNC_ROOT}\" \\\n"
             '    checkpoint \\\n'
             '    --image-path "${BUNDLE}/checkpoint" \\\n'
             '    --work-path "${BUNDLE}" \\\n'
-            '    "${CTR_ID}"\n'
-            'tar -czf "$2" -C "${BUNDLE}" checkpoint config.dump spec.dump artifacts\n'
+            '    "$1"\n'
+            'tar -czf "$2" -C "${BUNDLE}" checkpoint config.json artifacts\n'
             'chown -R host:host "${BUNDLE}/checkpoint" "${BUNDLE}/dump.log"\n'
             'chown host:host "$2"\n',
             mode=0o755,
