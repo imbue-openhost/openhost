@@ -444,12 +444,35 @@ def _raise_checkpoint_cap() -> None:
     libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_CHECKPOINT_RESTORE, 0, 0)
 
 
+def _checkpoint_preflight() -> str:
+    """Return a short diagnostic string: process caps + criu reachability."""
+    caps = ""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("Cap"):
+                    caps += line.strip() + " "
+    except Exception:
+        pass
+    criu_v = ""
+    try:
+        r = subprocess.run(
+            ["criu", "--version"], capture_output=True, text=True, timeout=5
+        )
+        criu_v = (r.stdout or r.stderr).strip().splitlines()[0]
+    except Exception as e:
+        criu_v = f"not found: {e}"
+    return f"caps=[{caps.strip()}] criu=[{criu_v}]"
+
+
 def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
     """CRIU-checkpoint a running container, exporting state to a tar archive.
 
     The container is stopped after checkpointing (memory freed). ``--ignore-rootfs``
     keeps the checkpoint small (image filesystem stays on disk).
     """
+    preflight = _checkpoint_preflight()
+    logger.debug("checkpoint preflight: %s", preflight)
     cmd = [
         "podman",
         "--log-level=debug",
@@ -468,7 +491,10 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
         preexec_fn=_raise_checkpoint_cap,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"CRIU checkpoint failed:\n{result.stderr or result.stdout}")
+        raise RuntimeError(
+            f"CRIU checkpoint failed [preflight: {preflight}]:\n"
+            f"{result.stderr or result.stdout}"
+        )
 
 
 def restore_container(container_name: str, checkpoint_path: str) -> str:
