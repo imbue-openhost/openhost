@@ -56,10 +56,23 @@ def check_app_status(config: Config) -> None:
                 )
                 apps_to_restart.append(row["app_id"])
             else:
+                # No container yet — build/start was interrupted before run_container().
+                # Treat the same as a dead container: attempt rebuild/restart.
+                repo_path = row["repo_path"]
+                if not repo_path or not os.path.isdir(repo_path):
+                    db.execute(
+                        "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                        (
+                            f"Cannot restart: repo path missing ({repo_path})",
+                            row["app_id"],
+                        ),
+                    )
+                    continue
                 db.execute(
-                    "UPDATE apps SET status = 'stopped' WHERE app_id = ?",
+                    "UPDATE apps SET status = 'starting' WHERE app_id = ?",
                     (row["app_id"],),
                 )
+                apps_to_restart.append(row["app_id"])
         db.commit()
     finally:
         db.close()

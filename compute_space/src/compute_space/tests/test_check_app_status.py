@@ -129,6 +129,44 @@ def test_running_app_with_dead_container_is_restarted(tmp_path: Path, monkeypatc
     assert app_id in restarted
 
 
+def test_starting_app_with_no_container_is_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    cfg = _make_test_config(tmp_path, port=20700)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app_id = _seed_app(
+        cfg, name="nocontainer", status="starting", port=20710, container_id=None, repo_path=str(repo)
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert done.wait(5), "restart sweep was never scheduled for 'starting' app with no container"
+    assert app_id in restarted
+    assert _status(cfg, app_id) == "starting"
+
+
+def test_building_app_with_no_container_is_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    cfg = _make_test_config(tmp_path, port=20800)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app_id = _seed_app(
+        cfg, name="nocontainer-build", status="building", port=20810, container_id=None, repo_path=str(repo)
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert done.wait(5), "restart sweep was never scheduled for 'building' app with no container"
+    assert app_id in restarted
+    assert _status(cfg, app_id) == "starting"
+
+
 def test_running_app_with_live_container_is_left_alone(tmp_path: Path, monkeypatch: Any) -> None:
     cfg = _make_test_config(tmp_path, port=20600)
     init_db(cfg.db_path)
