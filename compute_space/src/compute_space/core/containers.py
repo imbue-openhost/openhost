@@ -19,6 +19,7 @@ via ``--add-host`` so existing Dockerfiles keep resolving.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import sqlite3
@@ -431,6 +432,18 @@ def is_container_running(container_id: str) -> bool:
     return result.stdout.strip() == "running"
 
 
+def _raise_checkpoint_cap() -> None:
+    # Re-raise CAP_CHECKPOINT_RESTORE (40) in the ambient set of the forked
+    # child before exec.  Ambient caps survive exec for non-privileged binaries,
+    # so this ensures the cap is in podman's effective set even if something in
+    # the fork-to-exec gap would otherwise clear it.
+    libc = ctypes.CDLL(None, use_errno=True)
+    PR_CAP_AMBIENT = 47
+    PR_CAP_AMBIENT_RAISE = 2
+    CAP_CHECKPOINT_RESTORE = 40
+    libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_CHECKPOINT_RESTORE, 0, 0)
+
+
 def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
     """CRIU-checkpoint a running container, exporting state to a tar archive.
 
@@ -439,6 +452,7 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
     """
     cmd = [
         "podman",
+        "--log-level=debug",
         "container",
         "checkpoint",
         "--export",
@@ -446,7 +460,13 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
         "--ignore-rootfs",
         container_name,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        preexec_fn=_raise_checkpoint_cap,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"CRIU checkpoint failed:\n{result.stderr or result.stdout}")
 
