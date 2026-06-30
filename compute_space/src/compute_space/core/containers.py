@@ -19,7 +19,6 @@ via ``--add-host`` so existing Dockerfiles keep resolving.
 
 from __future__ import annotations
 
-import ctypes
 import os
 import re
 import sqlite3
@@ -432,79 +431,36 @@ def is_container_running(container_id: str) -> bool:
     return result.stdout.strip() == "running"
 
 
-def _raise_checkpoint_cap() -> None:
-    # Re-raise CAP_CHECKPOINT_RESTORE (40) in the ambient set of the forked
-    # child before exec.  Ambient caps survive exec for non-privileged binaries,
-    # so this ensures the cap is in podman's effective set even if something in
-    # the fork-to-exec gap would otherwise clear it.
-    libc = ctypes.CDLL(None, use_errno=True)
-    PR_CAP_AMBIENT = 47
-    PR_CAP_AMBIENT_RAISE = 2
-    CAP_CHECKPOINT_RESTORE = 40
-    libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_CHECKPOINT_RESTORE, 0, 0)
-
-
-def _checkpoint_preflight() -> str:
-    """Return a short diagnostic string: process caps + criu reachability."""
-    caps = ""
-    try:
-        with open("/proc/self/status") as f:
-            for line in f:
-                if line.startswith("Cap"):
-                    caps += line.strip() + " "
-    except Exception:
-        pass
-    criu_v = ""
-    try:
-        r = subprocess.run(
-            ["criu", "--version"], capture_output=True, text=True, timeout=5
-        )
-        criu_v = (r.stdout or r.stderr).strip().splitlines()[0]
-    except Exception as e:
-        criu_v = f"not found: {e}"
-    return f"caps=[{caps.strip()}] criu=[{criu_v}]"
-
-
 def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
     """CRIU-checkpoint a running container, exporting state to a tar archive.
 
-    The container is stopped after checkpointing (memory freed). ``--ignore-rootfs``
-    keeps the checkpoint small (image filesystem stays on disk).
+    Rootless podman cannot checkpoint containers directly (podman's rootless
+    gate hard-blocks checkpoint regardless of capabilities).  We use a narrow
+    sudo rule targeting a helper script that runs root podman against the host
+    user's rootless container storage.  The container is stopped after
+    checkpointing so memory is freed; ``--ignore-rootfs`` keeps the archive
+    small (image layers stay on disk).
     """
-    preflight = _checkpoint_preflight()
-    logger.debug("checkpoint preflight: %s", preflight)
     cmd = [
-        "podman",
-        "--log-level=debug",
-        "container",
-        "checkpoint",
-        "--export",
-        checkpoint_path,
-        "--ignore-rootfs",
+        "sudo",
+        "/usr/local/bin/openhost-checkpoint",
         container_name,
+        checkpoint_path,
     ]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        preexec_fn=_raise_checkpoint_cap,
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"CRIU checkpoint failed [preflight: {preflight}]:\n"
-            f"{result.stderr or result.stdout}"
-        )
+        raise RuntimeError(f"CRIU checkpoint failed:\n{result.stderr or result.stdout}")
 
 
 def restore_container(container_name: str, checkpoint_path: str) -> str:
     """Restore a container from a CRIU checkpoint archive. Returns the new container ID.
 
-    Removes any stopped container with the same name first (``podman checkpoint``
-    leaves a stopped container behind after exporting).
+    Uses the same privileged helper as checkpoint so root podman can access the
+    host user's rootless container storage.  Any stopped container with the same
+    name is removed first (``podman checkpoint`` leaves one behind).
     """
     subprocess.run(["podman", "rm", "-f", container_name], capture_output=True, timeout=30)
-    cmd = ["podman", "container", "restore", "--import", checkpoint_path]
+    cmd = ["sudo", "/usr/local/bin/openhost-restore", checkpoint_path]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"CRIU restore failed:\n{result.stderr or result.stdout}")

@@ -46,6 +46,7 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._set_swappiness()
         self._add_checkpoint_restore_cap()
         self._configure_host_containers_conf()
+        self._install_checkpoint_helpers()
 
     def _install_criu(self) -> None:
         dest = Path("/usr/local/sbin/criu")
@@ -116,10 +117,86 @@ class Migration0003SwapAndCriu(SystemMigration):
         run("systemctl", "restart", "openhost")
 
     def _symlink_criu_to_bin(self) -> None:
-        link = Path("/usr/local/bin/criu")
-        target = Path("/usr/local/sbin/criu")
-        if not link.exists() and target.exists():
-            link.symlink_to(target)
+        wrapper = Path("/usr/local/bin/criu")
+        real = Path("/usr/local/sbin/criu")
+        if wrapper.exists() or not real.exists():
+            return
+        # Podman's CRCheckForCriu runs `criu check` without --unprivileged,
+        # which always exits 1 for non-root.  This wrapper injects the flag so
+        # podman initialises supportsCheckpoint = true.  The real CRIU binary
+        # handles dump/restore natively once CAP_CHECKPOINT_RESTORE is present.
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "CRIU=/usr/local/sbin/criu\n"
+            'if [ "$(id -u)" != "0" ] && [ "${1:-}" = "check" ]; then\n'
+            '    exec "$CRIU" check --unprivileged "$@"\n'
+            "fi\n"
+            'exec "$CRIU" "$@"\n'
+        )
+        wrapper.chmod(0o755)
+
+    def _install_checkpoint_helpers(self) -> None:
+        # Rootless podman blocks checkpoint at the Go level regardless of
+        # capabilities.  These helpers run root podman against the host user's
+        # rootless container storage.  conmon lives in the pixi env so we must
+        # pass it explicitly; the default system paths don't have it.
+        _PODMAN = "/home/host/openhost/.pixi/envs/default/bin/podman"
+        _CONMON = "/home/host/openhost/.pixi/envs/default/bin/conmon"
+        _ROOT = "/home/host/.local/share/containers/storage"
+
+        checkpoint_script = Path("/usr/local/bin/openhost-checkpoint")
+        if not checkpoint_script.exists():
+            write_file(
+                str(checkpoint_script),
+                "#!/bin/sh\n"
+                "# Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH\n"
+                "set -e\n"
+                '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }\n'
+                f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+                # Root podman derives the runc state root from $XDG_RUNTIME_DIR/runc.
+                # Without setting this to the host user's value, runc looks in
+                # /run/runc/ (root default) and can't find the rootless container.
+                f'export XDG_RUNTIME_DIR="/run/user/${{HOST_UID}}"\n'
+                f'exec {_PODMAN} \\\n'
+                f'    --conmon {_CONMON} \\\n'
+                f'    --root {_ROOT} \\\n'
+                f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
+                '    container checkpoint \\\n'
+                '    --export "$2" \\\n'
+                '    --ignore-rootfs \\\n'
+                '    "$1"\n',
+                mode=0o755,
+            )
+
+        restore_script = Path("/usr/local/bin/openhost-restore")
+        if not restore_script.exists():
+            write_file(
+                str(restore_script),
+                "#!/bin/sh\n"
+                "# Usage: openhost-restore CHECKPOINT_PATH\n"
+                "set -e\n"
+                '[ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }\n'
+                f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+                f'export XDG_RUNTIME_DIR="/run/user/${{HOST_UID}}"\n'
+                f'exec {_PODMAN} \\\n'
+                f'    --conmon {_CONMON} \\\n'
+                f'    --root {_ROOT} \\\n'
+                f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
+                '    container restore \\\n'
+                '    --import "$1"\n',
+                mode=0o755,
+            )
+
+        sudoers = Path("/etc/sudoers.d/openhost-checkpoint")
+        if not sudoers.exists():
+            write_file(
+                str(sudoers),
+                "# Allow the openhost service user to checkpoint/restore containers\n"
+                "# via privileged helpers that access the rootless container storage.\n"
+                "host ALL=(root) NOPASSWD: /usr/local/bin/openhost-checkpoint\n"
+                "host ALL=(root) NOPASSWD: /usr/local/bin/openhost-restore\n",
+                mode=0o440,
+            )
 
     def _configure_host_containers_conf(self) -> None:
         conf_dir = Path("/home/host/.config/containers")

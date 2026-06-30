@@ -95,11 +95,17 @@
     mode: "0755"
     remote_src: yes
 
-- name: Symlink CRIU into /usr/local/bin so runc can find it in PATH
-  file:
-    src: /usr/local/sbin/criu
+- name: Install CRIU wrapper at /usr/local/bin/criu
+  copy:
     dest: /usr/local/bin/criu
-    state: link
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      CRIU=/usr/local/sbin/criu
+      if [ "$(id -u)" != "0" ] && [ "${1:-}" = "check" ]; then
+          exec "$CRIU" check --unprivileged "$@"
+      fi
+      exec "$CRIU" "$@"
 
 - name: Create containers config directory for host user
   file:
@@ -125,3 +131,56 @@
           "/usr/bin/runc",
           "/usr/local/bin/runc",
       ]
+
+- name: Install openhost-checkpoint helper script
+  copy:
+    dest: /usr/local/bin/openhost-checkpoint
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH
+      set -e
+      [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }
+      HOST_UID=$(getent passwd host | cut -d: -f3)
+      # XDG_RUNTIME_DIR must match the host user's value so root podman derives
+      # the correct runc state root ($XDG_RUNTIME_DIR/runc).  Without it, root
+      # podman passes no --root to runc and runc looks in /run/runc/ instead of
+      # /run/user/<uid>/runc/.
+      export XDG_RUNTIME_DIR="/run/user/${HOST_UID}"
+      exec /home/host/openhost/.pixi/envs/default/bin/podman \
+          --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
+          --root /home/host/.local/share/containers/storage \
+          --runroot "/run/user/${HOST_UID}/containers" \
+          container checkpoint \
+          --export "$2" \
+          --ignore-rootfs \
+          "$1"
+
+- name: Install openhost-restore helper script
+  copy:
+    dest: /usr/local/bin/openhost-restore
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # Usage: openhost-restore CHECKPOINT_PATH
+      set -e
+      [ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }
+      HOST_UID=$(getent passwd host | cut -d: -f3)
+      export XDG_RUNTIME_DIR="/run/user/${HOST_UID}"
+      exec /home/host/openhost/.pixi/envs/default/bin/podman \
+          --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
+          --root /home/host/.local/share/containers/storage \
+          --runroot "/run/user/${HOST_UID}/containers" \
+          container restore \
+          --import "$1"
+
+- name: Install sudoers rule for checkpoint helpers
+  copy:
+    dest: /etc/sudoers.d/openhost-checkpoint
+    mode: "0440"
+    validate: visudo -cf %s
+    content: |
+      # Allow the openhost service user to checkpoint/restore containers
+      # via privileged helpers that access the rootless container storage.
+      host ALL=(root) NOPASSWD: /usr/local/bin/openhost-checkpoint
+      host ALL=(root) NOPASSWD: /usr/local/bin/openhost-restore
