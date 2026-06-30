@@ -140,52 +140,66 @@ class Migration0003SwapAndCriu(SystemMigration):
         # capabilities.  These helpers run root podman against the host user's
         # rootless container storage.  conmon lives in the pixi env so we must
         # pass it explicitly; the default system paths don't have it.
+        #
+        # Root podman calls runc without --root, so runc defaults to /run/runc/
+        # (the root default).  But the rootless container's runc state lives at
+        # $XDG_RUNTIME_DIR/runc = /run/user/<uid>/runc/.  We bridge this with a
+        # runc wrapper at /usr/local/sbin/openhost-runc that injects the correct
+        # --root before every runc invocation.  Podman accepts --runtime to
+        # override which OCI runtime binary it calls.
         _PODMAN = "/home/host/openhost/.pixi/envs/default/bin/podman"
         _CONMON = "/home/host/openhost/.pixi/envs/default/bin/conmon"
         _ROOT = "/home/host/.local/share/containers/storage"
+        _RUNC_WRAPPER = "/usr/local/sbin/openhost-runc"
+
+        runc_wrapper = Path(_RUNC_WRAPPER)
+        write_file(
+            str(runc_wrapper),
+            "#!/bin/sh\n"
+            "# Wrapper for runc that points --root at the host user's runc state\n"
+            "# directory so that root podman can find rootless containers.\n"
+            "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+            'exec /usr/sbin/runc --root "/run/user/${HOST_UID}/runc" "$@"\n',
+            mode=0o755,
+        )
 
         checkpoint_script = Path("/usr/local/bin/openhost-checkpoint")
-        if not checkpoint_script.exists():
-            write_file(
-                str(checkpoint_script),
-                "#!/bin/sh\n"
-                "# Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH\n"
-                "set -e\n"
-                '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }\n'
-                f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
-                # Root podman derives the runc state root from $XDG_RUNTIME_DIR/runc.
-                # Without setting this to the host user's value, runc looks in
-                # /run/runc/ (root default) and can't find the rootless container.
-                f'export XDG_RUNTIME_DIR="/run/user/${{HOST_UID}}"\n'
-                f'exec {_PODMAN} \\\n'
-                f'    --conmon {_CONMON} \\\n'
-                f'    --root {_ROOT} \\\n'
-                f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
-                '    container checkpoint \\\n'
-                '    --export "$2" \\\n'
-                '    --ignore-rootfs \\\n'
-                '    "$1"\n',
-                mode=0o755,
-            )
+        write_file(
+            str(checkpoint_script),
+            "#!/bin/sh\n"
+            "# Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH\n"
+            "set -e\n"
+            '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }\n'
+            f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+            f'exec {_PODMAN} \\\n'
+            f'    --runtime {_RUNC_WRAPPER} \\\n'
+            f'    --conmon {_CONMON} \\\n'
+            f'    --root {_ROOT} \\\n'
+            f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
+            '    container checkpoint \\\n'
+            '    --export "$2" \\\n'
+            '    --ignore-rootfs \\\n'
+            '    "$1"\n',
+            mode=0o755,
+        )
 
         restore_script = Path("/usr/local/bin/openhost-restore")
-        if not restore_script.exists():
-            write_file(
-                str(restore_script),
-                "#!/bin/sh\n"
-                "# Usage: openhost-restore CHECKPOINT_PATH\n"
-                "set -e\n"
-                '[ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }\n'
-                f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
-                f'export XDG_RUNTIME_DIR="/run/user/${{HOST_UID}}"\n'
-                f'exec {_PODMAN} \\\n'
-                f'    --conmon {_CONMON} \\\n'
-                f'    --root {_ROOT} \\\n'
-                f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
-                '    container restore \\\n'
-                '    --import "$1"\n',
-                mode=0o755,
-            )
+        write_file(
+            str(restore_script),
+            "#!/bin/sh\n"
+            "# Usage: openhost-restore CHECKPOINT_PATH\n"
+            "set -e\n"
+            '[ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }\n'
+            f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+            f'exec {_PODMAN} \\\n'
+            f'    --runtime {_RUNC_WRAPPER} \\\n'
+            f'    --conmon {_CONMON} \\\n'
+            f'    --root {_ROOT} \\\n'
+            f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
+            '    container restore \\\n'
+            '    --import "$1"\n',
+            mode=0o755,
+        )
 
         sudoers = Path("/etc/sudoers.d/openhost-checkpoint")
         if not sudoers.exists():

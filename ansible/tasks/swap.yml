@@ -132,6 +132,17 @@
           "/usr/local/bin/runc",
       ]
 
+- name: Install openhost-runc wrapper
+  copy:
+    dest: /usr/local/sbin/openhost-runc
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # Wrapper for runc that points --root at the host user's runc state
+      # directory so that root podman can find rootless containers.
+      HOST_UID=$(getent passwd host | cut -d: -f3)
+      exec /usr/sbin/runc --root "/run/user/${HOST_UID}/runc" "$@"
+
 - name: Install openhost-checkpoint helper script
   copy:
     dest: /usr/local/bin/openhost-checkpoint
@@ -142,12 +153,8 @@
       set -e
       [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
-      # XDG_RUNTIME_DIR must match the host user's value so root podman derives
-      # the correct runc state root ($XDG_RUNTIME_DIR/runc).  Without it, root
-      # podman passes no --root to runc and runc looks in /run/runc/ instead of
-      # /run/user/<uid>/runc/.
-      export XDG_RUNTIME_DIR="/run/user/${HOST_UID}"
       exec /home/host/openhost/.pixi/envs/default/bin/podman \
+          --runtime /usr/local/sbin/openhost-runc \
           --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
           --root /home/host/.local/share/containers/storage \
           --runroot "/run/user/${HOST_UID}/containers" \
@@ -166,8 +173,8 @@
       set -e
       [ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
-      export XDG_RUNTIME_DIR="/run/user/${HOST_UID}"
       exec /home/host/openhost/.pixi/envs/default/bin/podman \
+          --runtime /usr/local/sbin/openhost-runc \
           --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
           --root /home/host/.local/share/containers/storage \
           --runroot "/run/user/${HOST_UID}/containers" \
