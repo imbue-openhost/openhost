@@ -47,6 +47,7 @@ class Migration0003SwapAndCriu(SystemMigration):
         self._add_checkpoint_restore_cap()
         self._configure_host_containers_conf()
         self._install_checkpoint_helpers()
+        self._configure_root_containers_conf()
 
     def _install_criu(self) -> None:
         dest = Path("/usr/local/sbin/criu")
@@ -172,7 +173,6 @@ class Migration0003SwapAndCriu(SystemMigration):
             '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }\n'
             f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
             f'exec {_PODMAN} \\\n'
-            f'    --runtime {_RUNC_WRAPPER} \\\n'
             f'    --conmon {_CONMON} \\\n'
             f'    --root {_ROOT} \\\n'
             f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
@@ -192,7 +192,6 @@ class Migration0003SwapAndCriu(SystemMigration):
             '[ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }\n'
             f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
             f'exec {_PODMAN} \\\n'
-            f'    --runtime {_RUNC_WRAPPER} \\\n'
             f'    --conmon {_CONMON} \\\n'
             f'    --root {_ROOT} \\\n'
             f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
@@ -236,3 +235,25 @@ class Migration0003SwapAndCriu(SystemMigration):
             mode=0o644,
         )
         run("chown", "-R", "host:host", str(conf_dir))
+
+    def _configure_root_containers_conf(self) -> None:
+        conf_dir = Path("/root/.config/containers")
+        conf_path = conf_dir / "containers.conf"
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        # podman --runtime flag is ignored for `checkpoint` — it resolves the
+        # runtime from the container's stored config ("runc"), then looks up
+        # "runc" in root's containers.conf.  Default root config maps "runc" to
+        # /usr/bin/runc (no --root flag), so it can't find rootless container
+        # state.  We override root's "runc" to point at our wrapper, which
+        # injects --root /run/user/<uid>/runc before every runc call.
+        write_file(
+            str(conf_path),
+            '[engine]\n'
+            'runtime = "runc"\n'
+            '\n'
+            '[engine.runtimes]\n'
+            'runc = [\n'
+            '    "/usr/local/sbin/openhost-runc",\n'
+            ']\n',
+            mode=0o644,
+        )

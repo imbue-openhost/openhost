@@ -154,7 +154,6 @@
       [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
       exec /home/host/openhost/.pixi/envs/default/bin/podman \
-          --runtime /usr/local/sbin/openhost-runc \
           --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
           --root /home/host/.local/share/containers/storage \
           --runroot "/run/user/${HOST_UID}/containers" \
@@ -174,12 +173,34 @@
       [ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
       exec /home/host/openhost/.pixi/envs/default/bin/podman \
-          --runtime /usr/local/sbin/openhost-runc \
           --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
           --root /home/host/.local/share/containers/storage \
           --runroot "/run/user/${HOST_UID}/containers" \
           container restore \
           --import "$1"
+
+- name: Create root containers config directory
+  file:
+    path: /root/.config/containers
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure root containers.conf to use runc wrapper for checkpoint
+  copy:
+    dest: /root/.config/containers/containers.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [engine]
+      runtime = "runc"
+
+      [engine.runtimes]
+      runc = [
+          "/usr/local/sbin/openhost-runc",
+      ]
 
 - name: Install sudoers rule for checkpoint helpers
   copy:
