@@ -134,9 +134,7 @@ def test_starting_app_with_no_container_is_restarted(tmp_path: Path, monkeypatch
     init_db(cfg.db_path)
     repo = tmp_path / "repo"
     repo.mkdir()
-    app_id = _seed_app(
-        cfg, name="nocontainer", status="starting", port=20710, container_id=None, repo_path=str(repo)
-    )
+    app_id = _seed_app(cfg, name="nocontainer", status="starting", port=20710, container_id=None, repo_path=str(repo))
 
     monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
     restarted, done = _capture_restart_sweep(monkeypatch)
