@@ -35,10 +35,7 @@ def _detect_public_ip() -> str | None:
     except OSError:
         ip = ""
     private_prefixes = ("10.", "192.168.")
-    is_private = (
-        ip.startswith(private_prefixes)
-        or any(ip.startswith(f"172.{n}.") for n in range(16, 32))
-    )
+    is_private = ip.startswith(private_prefixes) or any(ip.startswith(f"172.{n}.") for n in range(16, 32))
     if not ip or is_private:
         try:
             out = subprocess.run(
@@ -67,12 +64,18 @@ class Migration0003RemoveObsoleteHairpinNat(SystemMigration):
             return
         for port in ("80", "443"):
             rule = [
-                "-t", "nat",
-                "-p", "tcp",
-                "-d", public_ip,
-                "--dport", port,
-                "-j", "DNAT",
-                "--to-destination", f"127.0.0.1:{port}",
+                "-t",
+                "nat",
+                "-p",
+                "tcp",
+                "-d",
+                public_ip,
+                "--dport",
+                port,
+                "-j",
+                "DNAT",
+                "--to-destination",
+                f"127.0.0.1:{port}",
             ]
             # Delete every copy of the rule (older code could append duplicates).
             while subprocess.run(["iptables", "-C", "OUTPUT", *rule], capture_output=True).returncode == 0:

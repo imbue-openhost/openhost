@@ -114,9 +114,7 @@ def start_coredns(
     # bindable (the openhost0 dummy interface exists in production but not in
     # dev/CI), otherwise CoreDNS would fail to start.
     if container_gateway_ip and not _gateway_ip_is_bindable(container_gateway_ip):
-        logger.info(
-            "Container gateway %s not bindable; skipping container-facing DNS view", container_gateway_ip
-        )
+        logger.info("Container gateway %s not bindable; skipping container-facing DNS view", container_gateway_ip)
         container_gateway_ip = None
 
     # Container-facing zone file: the wildcard points at the gateway IP.  Lives

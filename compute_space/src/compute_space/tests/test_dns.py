@@ -119,9 +119,7 @@ def _stub_popen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dns_mod.threading, "Thread", lambda *a, **k: type("T", (), {"start": lambda self: None})())
 
 
-def test_container_dns_view_rendered_when_gateway_bindable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_container_dns_view_rendered_when_gateway_bindable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
     monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: True)
     monkeypatch.setattr(dns_mod, "_host_upstream_resolvers", lambda: ["9.9.9.9"])
@@ -146,9 +144,7 @@ def test_container_dns_view_rendered_when_gateway_bindable(
     assert "203.0.113.10" not in cz
 
 
-def test_container_dns_view_skipped_when_gateway_not_bindable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_container_dns_view_skipped_when_gateway_not_bindable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
     monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: False)
     _stub_popen(monkeypatch)
@@ -164,9 +160,7 @@ def test_container_dns_view_skipped_when_gateway_not_bindable(
     assert not (tmp_path / "zonefile.container").exists()
 
 
-def test_host_upstream_resolvers_filters_loopback_and_gateway(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_host_upstream_resolvers_filters_loopback_and_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     resolv = tmp_path / "resolv.conf"
     resolv.write_text(
         "nameserver 127.0.0.53\n"
