@@ -30,6 +30,13 @@ from compute_space.core.manifest import PortMapping
 
 CONTAINER_ROOT = "/data"
 
+# Dummy-interface IP that the host kernel accepts as local; the router (and a
+# container-facing CoreDNS view) bind here so pasta containers can reach host
+# services via ``host.containers.internal``.  Created by ansible as the
+# ``openhost0`` dummy interface.  Keep in sync with ansible/tasks/containers.yml
+# and the openhost0 systemd-networkd unit.
+CONTAINER_GATEWAY_IP = "10.200.0.1"
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-9]|\x1b[=>]|\x0f|\r")
 
 # Prefix on RuntimeError messages when the build failure is a corrupted
@@ -245,6 +252,19 @@ def run_container(
                 # host.docker.internal kept for compatibility with existing apps.
                 "--add-host=host.docker.internal:host-gateway",
                 "--add-host=host.containers.internal:host-gateway",
+                # Point the container's resolver at the container-facing CoreDNS
+                # view bound on the gateway.  That view answers `*.zone_domain`
+                # with the gateway IP (where Caddy is reachable) and forwards
+                # everything else upstream.  This is what makes "hairpin" access
+                # to sibling apps' public HTTPS URLs work: pasta otherwise gives
+                # the container the host's public IP as a *local* address, so a
+                # connection to `app.zone` (public IP) never leaves the container
+                # netns and is refused.  Resolving to the gateway instead sends
+                # it to Caddy, which terminates the real zone cert by SNI and
+                # applies normal routing/auth.  network_host apps are excluded:
+                # they share the host netns and use the host's resolver directly.
+                "--dns",
+                CONTAINER_GATEWAY_IP,
             ]
         )
 

@@ -80,9 +80,9 @@
 
 # Pasta (rootless podman's default network backend) shares the host's IP with containers.  This means host-gateway
 # resolves to the container's own IP, breaking container→host communication.  We create a dummy interface with a
-# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 10.200.0.1:8080)
-# via this IP.  Container ports are bound on 127.0.0.1, so they're NOT reachable via the dummy interface — containers
-# are isolated from each other.
+# private IP that the host kernel accepts as local.  Containers reach host services (like the router on 10.200.0.1:8080,
+# and the container-facing CoreDNS view on 10.200.0.1:53) via this IP.  Container ports are bound on 127.0.0.1, so
+# they're NOT reachable via the dummy interface — containers are isolated from each other.
 - name: Create openhost0 dummy interface for container→host gateway
   shell: |
     ip link show openhost0 >/dev/null 2>&1 && exit 0
@@ -111,20 +111,28 @@
     dest: /etc/systemd/network/10-openhost0.network
     mode: "0644"
 
-# Pasta containers share the host's IP, so `*.zone_domain` resolves to the host's own public IP.  Connecting to
-# that IP from inside a pasta container hits the container's network namespace where Caddy isn't listening,
-# giving "connection refused".  These DNAT rules rewrite outbound packets aimed at public_ip:80/443 to
-# 127.0.0.1, where Caddy IS listening.  This lets containers curl other apps' public URLs and keeps
-# inter-container isolation intact (container ports still bind 127.0.0.1 only).
-- name: Add iptables hairpin NAT rules
+# Same-hostname HTTPS access from pasta containers (NAT "hairpin") is handled in
+# software, not iptables.  Pasta gives each container the host's public IP as a
+# *local* address, so a connection to `<app>.<zone_domain>` (which public DNS
+# resolves to that public IP) never leaves the container netns and is refused —
+# and a DNAT to 127.0.0.1 doesn't help because that loopback is the container's
+# own, not the host's Caddy.  Instead, a container-facing CoreDNS view bound on
+# the gateway (10.200.0.1) resolves the zone wildcard to the gateway, and app
+# containers are pointed at it via `--dns` (see compute_space.core.dns and
+# core/containers.py).  Caddy (listening on *:443) then terminates the real zone
+# cert by SNI and routes normally.  Inter-container isolation is unchanged:
+# container ports still bind 127.0.0.1 only.
+#
+# Remove the old, ineffective OUTPUT DNAT hairpin rules and their persistence
+# script from hosts that were provisioned before this change.
+- name: Remove obsolete iptables hairpin DNAT rules (OUTPUT -> 127.0.0.1)
   shell: |
-    set -e
     PUBLIC_IP="{{ public_ip | default(inventory_hostname) }}"
-
-    # Hairpin NAT: let pasta containers reach Caddy via the public IP.
     for PORT in 80 443; do
       RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
-      iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
+      while iptables -C OUTPUT ${RULE} 2>/dev/null; do
+        iptables -D OUTPUT ${RULE}
+      done
     done
   changed_when: true
 
@@ -133,30 +141,10 @@
     path: /etc/networkd-dispatcher/routable.d/50-openhost-hairpin-nat
     state: absent
 
-- name: Persist iptables hairpin NAT rules across reboots
-  copy:
-    # The public IP is detected at boot rather than baked in at ansible time
-    # because cloud instances (EC2 without Elastic IP, etc.) can get a new
-    # address after a reboot.
-    content: |
-      #!/bin/sh
-      # Managed by OpenHost; do not edit by hand.
-
-      # Detect public IP (same logic as scripts/provision.sh).
-      PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-      case "$PUBLIC_IP" in
-        10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*)
-          PUBLIC_IP=$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || true) ;;
-      esac
-      [ -z "$PUBLIC_IP" ] && exit 0  # no IP yet; networkd-dispatcher will re-fire
-
-      # Hairpin NAT: let pasta containers reach Caddy via the public IP.
-      for PORT in 80 443; do
-        RULE="-t nat -p tcp -d ${PUBLIC_IP} --dport ${PORT} -j DNAT --to-destination 127.0.0.1:${PORT}"
-        iptables -C OUTPUT ${RULE} 2>/dev/null || iptables -A OUTPUT ${RULE}
-      done
-    dest: /etc/networkd-dispatcher/routable.d/50-openhost-firewall
-    mode: "0755"
+- name: Remove obsolete hairpin NAT persistence script
+  file:
+    path: /etc/networkd-dispatcher/routable.d/50-openhost-firewall
+    state: absent
 
 - name: Ensure host user containers config dir exists
   file:
