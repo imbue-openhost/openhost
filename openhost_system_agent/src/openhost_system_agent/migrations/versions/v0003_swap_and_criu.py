@@ -138,32 +138,32 @@ class Migration0003SwapAndCriu(SystemMigration):
 
     def _install_checkpoint_helpers(self) -> None:
         # Rootless podman blocks checkpoint at the Go level regardless of
-        # capabilities.  These helpers run root podman against the host user's
-        # rootless container storage.  conmon lives in the pixi env so we must
-        # pass it explicitly; the default system paths don't have it.
-        #
-        # Root podman calls runc without --root, so runc defaults to /run/runc/
-        # (the root default).  But the rootless container's runc state lives at
-        # $XDG_RUNTIME_DIR/runc = /run/user/<uid>/runc/.  We bridge this with a
-        # runc wrapper at /usr/local/sbin/openhost-runc that injects the correct
-        # --root before every runc invocation.  Podman accepts --runtime to
-        # override which OCI runtime binary it calls.
+        # capabilities.  To checkpoint without root podman touching the host
+        # user's container storage (which would leave root-owned files and
+        # corrupt subsequent rootless podman operations), we call runc and
+        # CRIU directly for checkpoint.  Restore still requires root podman
+        # (rootless restore is also blocked), so we fix ownership afterwards.
         _PODMAN = "/home/host/openhost/.pixi/envs/default/bin/podman"
         _CONMON = "/home/host/openhost/.pixi/envs/default/bin/conmon"
         _ROOT = "/home/host/.local/share/containers/storage"
-        _RUNC_WRAPPER = "/usr/local/sbin/openhost-runc"
 
-        runc_wrapper = Path(_RUNC_WRAPPER)
+        # The runc wrapper injects --root pointing at the host user's runc
+        # state dir so root podman (used for restore) can find rootless
+        # containers.  Root podman's --runtime flag is ignored for checkpoint
+        # but IS used for restore's runc create/restore calls.
+        runc_wrapper = Path("/usr/local/sbin/openhost-runc")
         write_file(
             str(runc_wrapper),
             "#!/bin/sh\n"
-            "# Wrapper for runc that points --root at the host user's runc state\n"
-            "# directory so that root podman can find rootless containers.\n"
             "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
             'exec /usr/sbin/runc --root "/run/user/${HOST_UID}/runc" "$@"\n',
             mode=0o755,
         )
 
+        # Checkpoint: call runc directly so root never writes into the host
+        # user's runroot (/run/user/<uid>/containers).  We get the container
+        # ID via rootless podman (as the host user), checkpoint via runc, then
+        # package the result in podman's --ignore-rootfs archive format.
         checkpoint_script = Path("/usr/local/bin/openhost-checkpoint")
         write_file(
             str(checkpoint_script),
@@ -171,18 +171,28 @@ class Migration0003SwapAndCriu(SystemMigration):
             "# Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH\n"
             "set -e\n"
             '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }\n'
-            f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
-            f'exec {_PODMAN} \\\n'
-            f'    --conmon {_CONMON} \\\n'
-            f'    --root {_ROOT} \\\n'
-            f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
-            '    container checkpoint \\\n'
-            '    --export "$2" \\\n'
-            '    --ignore-rootfs \\\n'
-            '    "$1"\n',
+            "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+            "RUNC_ROOT=\"/run/user/${HOST_UID}/runc\"\n"
+            f"STORAGE_CTR={_ROOT}/overlay-containers\n"
+            "CTR_ID=$(runuser -u host -- \\\n"
+            f"    env XDG_RUNTIME_DIR=\"/run/user/${{HOST_UID}}\" \\\n"
+            f"        {_PODMAN} inspect --format '{{{{.ID}}}}' \"$1\" 2>/dev/null) || true\n"
+            '[ -n "${CTR_ID}" ] || { echo "Container \'$1\' not found" >&2; exit 1; }\n'
+            'BUNDLE="${STORAGE_CTR}/${CTR_ID}/userdata"\n'
+            "/usr/sbin/runc --root \"${RUNC_ROOT}\" \\\n"
+            '    checkpoint \\\n'
+            '    --image-path "${BUNDLE}/checkpoint" \\\n'
+            '    --work-path "${BUNDLE}" \\\n'
+            '    "${CTR_ID}"\n'
+            'tar -czf "$2" -C "${BUNDLE}" checkpoint config.dump spec.dump artifacts\n'
+            'chown -R host:host "${BUNDLE}/checkpoint" "${BUNDLE}/dump.log"\n'
+            'chown host:host "$2"\n',
             mode=0o755,
         )
 
+        # Restore: root podman is unavoidable here (rootless restore is also
+        # blocked).  We fix all storage ownership afterwards so rootless podman
+        # can continue managing the restored container.
         restore_script = Path("/usr/local/bin/openhost-restore")
         write_file(
             str(restore_script),
@@ -190,13 +200,19 @@ class Migration0003SwapAndCriu(SystemMigration):
             "# Usage: openhost-restore CHECKPOINT_PATH\n"
             "set -e\n"
             '[ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }\n'
-            f"HOST_UID=$(getent passwd host | cut -d: -f3)\n"
-            f'exec {_PODMAN} \\\n'
+            "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
+            f'{_PODMAN} \\\n'
+            f'    --runtime /usr/local/sbin/openhost-runc \\\n'
             f'    --conmon {_CONMON} \\\n'
             f'    --root {_ROOT} \\\n'
             f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
             '    container restore \\\n'
-            '    --import "$1"\n',
+            '    --import "$1"\n'
+            # Restore writes root-owned files into the host user's storage and
+            # runroot.  chown them back so rootless podman can manage the
+            # restored container.
+            f'find {_ROOT} -not -user host -exec chown host:host {{}} + 2>/dev/null || true\n'
+            'find "/run/user/${HOST_UID}/containers" -not -user host -exec chown host:host {} + 2>/dev/null || true\n',
             mode=0o755,
         )
 

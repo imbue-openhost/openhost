@@ -138,8 +138,6 @@
     mode: "0755"
     content: |
       #!/bin/sh
-      # Wrapper for runc that points --root at the host user's runc state
-      # directory so that root podman can find rootless containers.
       HOST_UID=$(getent passwd host | cut -d: -f3)
       exec /usr/sbin/runc --root "/run/user/${HOST_UID}/runc" "$@"
 
@@ -150,17 +148,27 @@
     content: |
       #!/bin/sh
       # Usage: openhost-checkpoint CONTAINER_NAME CHECKPOINT_PATH
+      # Calls runc directly to avoid root podman writing into the host user's
+      # runroot (/run/user/<uid>/containers) and corrupting ownership.
       set -e
       [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_NAME CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
-      exec /home/host/openhost/.pixi/envs/default/bin/podman \
-          --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
-          --root /home/host/.local/share/containers/storage \
-          --runroot "/run/user/${HOST_UID}/containers" \
-          container checkpoint \
-          --export "$2" \
-          --ignore-rootfs \
-          "$1"
+      RUNC_ROOT="/run/user/${HOST_UID}/runc"
+      STORAGE_CTR=/home/host/.local/share/containers/storage/overlay-containers
+      CTR_ID=$(runuser -u host -- \
+          env XDG_RUNTIME_DIR="/run/user/${HOST_UID}" \
+              /home/host/openhost/.pixi/envs/default/bin/podman \
+              inspect --format '{{.ID}}' "$1" 2>/dev/null) || true
+      [ -n "${CTR_ID}" ] || { echo "Container '$1' not found" >&2; exit 1; }
+      BUNDLE="${STORAGE_CTR}/${CTR_ID}/userdata"
+      /usr/sbin/runc --root "${RUNC_ROOT}" \
+          checkpoint \
+          --image-path "${BUNDLE}/checkpoint" \
+          --work-path "${BUNDLE}" \
+          "${CTR_ID}"
+      tar -czf "$2" -C "${BUNDLE}" checkpoint config.dump spec.dump artifacts
+      chown -R host:host "${BUNDLE}/checkpoint" "${BUNDLE}/dump.log"
+      chown host:host "$2"
 
 - name: Install openhost-restore helper script
   copy:
@@ -169,15 +177,22 @@
     content: |
       #!/bin/sh
       # Usage: openhost-restore CHECKPOINT_PATH
+      # Root podman is required (rootless restore is also blocked by podman).
+      # Ownership is fixed after so rootless podman can manage the container.
       set -e
       [ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
-      exec /home/host/openhost/.pixi/envs/default/bin/podman \
+      /home/host/openhost/.pixi/envs/default/bin/podman \
+          --runtime /usr/local/sbin/openhost-runc \
           --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
           --root /home/host/.local/share/containers/storage \
           --runroot "/run/user/${HOST_UID}/containers" \
           container restore \
           --import "$1"
+      find /home/host/.local/share/containers/storage -not -user host \
+          -exec chown host:host {} + 2>/dev/null || true
+      find "/run/user/${HOST_UID}/containers" -not -user host \
+          -exec chown host:host {} + 2>/dev/null || true
 
 - name: Create root containers config directory
   file:
