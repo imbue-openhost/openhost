@@ -4,6 +4,13 @@ The OAuth provider app (`oauth-provider`, in `apps/oauth_provider/`) provides OA
 
 (Note: this is distinct from the `secrets` key-value service. The OAuth provider app *consumes* the secrets service to fetch its own Google client credentials, but the OAuth functionality described here is provided by the `oauth-provider` app, not a "secrets app".)
 
+## Deployment
+
+The OAuth provider ships as a **default app**: every new instance auto-installs it at `/setup` completion (it is listed in `Config.default_apps` alongside `secrets`, `file_browser`, and `openhost-catalog`). No manual install is required — consumer apps can request OAuth tokens as soon as the zone is set up.
+
+- **GitHub** works out of the box (it uses the device flow with bundled client credentials).
+- **Google** requires the zone owner to store `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` in the `secrets` app; the provider fetches them lazily, so its container starts cleanly even before those secrets exist.
+
 ## How it works
 
 ### Requesting a token
