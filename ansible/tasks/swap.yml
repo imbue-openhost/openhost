@@ -149,20 +149,23 @@
       #!/bin/sh
       # Usage: openhost-checkpoint CONTAINER_ID CHECKPOINT_PATH
       # Caller (compute_space, rootless) resolves name→ID before invoking this.
+      # The runroot must match the DB-recorded value; a temp runroot is rejected.
       set -e
       [ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_ID CHECKPOINT_PATH" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
-      RUNC_ROOT="/run/user/${HOST_UID}/runc"
-      BUNDLE=/home/host/.local/share/containers/storage/overlay-containers/$1/userdata
-      [ -d "${BUNDLE}" ] || { echo "Bundle for $1 not found" >&2; exit 1; }
-      /usr/sbin/runc --root "${RUNC_ROOT}" \
-          checkpoint \
-          --image-path "${BUNDLE}/checkpoint" \
-          --work-path "${BUNDLE}" \
+      /home/host/openhost/.pixi/envs/default/bin/podman \
+          --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
+          --root /home/host/.local/share/containers/storage \
+          --runroot "/run/user/${HOST_UID}/containers" \
+          container checkpoint \
+          --export "$2" \
+          --ignore-rootfs \
           "$1"
-      tar -czf "$2" -C "${BUNDLE}" checkpoint config.json artifacts
-      chown -R host:host "${BUNDLE}/checkpoint" "${BUNDLE}/dump.log"
-      chown host:host "$2"
+      find /home/host/.local/share/containers/storage -not -user host \
+          -exec chown host:host {} + 2>/dev/null || true
+      find "/run/user/${HOST_UID}/containers" -not -user host \
+          -exec chown host:host {} + 2>/dev/null || true
+      chown host:host "$2" 2>/dev/null || true
 
 - name: Install openhost-restore helper script
   copy:
@@ -170,22 +173,24 @@
     mode: "0755"
     content: |
       #!/bin/sh
-      # Usage: openhost-restore CHECKPOINT_PATH
-      # Root podman is required (rootless restore is also blocked by podman).
-      # Ownership is fixed after so rootless podman can manage the container.
+      # Usage: openhost-restore CHECKPOINT_PATH CONTAINER_NAME
       set -e
-      [ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }
+      [ $# -eq 2 ] || { echo "Usage: $0 CHECKPOINT_PATH CONTAINER_NAME" >&2; exit 1; }
       HOST_UID=$(getent passwd host | cut -d: -f3)
-      /home/host/openhost/.pixi/envs/default/bin/podman \
-          --runtime /usr/local/sbin/openhost-runc \
-          --conmon /home/host/openhost/.pixi/envs/default/bin/conmon \
-          --root /home/host/.local/share/containers/storage \
-          --runroot "/run/user/${HOST_UID}/containers" \
-          container restore \
-          --import "$1"
-      find /home/host/.local/share/containers/storage -not -user host \
+      PODMAN=/home/host/openhost/.pixi/envs/default/bin/podman
+      CONMON=/home/host/openhost/.pixi/envs/default/bin/conmon
+      ROOT=/home/host/.local/share/containers/storage
+      RUNROOT="/run/user/${HOST_UID}/containers"
+      # Root podman retains the container entry after checkpoint; rootless rm
+      # may also fail if checkpoint left root-owned files in storage.
+      # Remove via root podman (which can remove root-owned files) before restoring.
+      "$PODMAN" --conmon "$CONMON" --root "$ROOT" --runroot "$RUNROOT" \
+          rm -f "$2" 2>/dev/null || true
+      "$PODMAN" --conmon "$CONMON" --root "$ROOT" --runroot "$RUNROOT" \
+          container restore --import "$1"
+      find "$ROOT" -not -user host \
           -exec chown host:host {} + 2>/dev/null || true
-      find "/run/user/${HOST_UID}/containers" -not -user host \
+      find "$RUNROOT" -not -user host \
           -exec chown host:host {} + 2>/dev/null || true
 
 - name: Create root containers config directory

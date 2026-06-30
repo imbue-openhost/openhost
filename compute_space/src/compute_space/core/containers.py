@@ -436,9 +436,9 @@ def checkpoint_container(container_name: str, checkpoint_path: str) -> None:
 
     Rootless podman cannot checkpoint containers directly (podman's rootless
     gate hard-blocks checkpoint regardless of capabilities).  We resolve the
-    container ID here (rootless podman can do this) then pass the full 64-char
-    ID to the privileged helper, which calls runc directly — avoiding root
-    podman touching the host user's storage and corrupting file ownership.
+    full container ID here (rootless podman can do this without root) then
+    pass it to the privileged helper, which uses root podman so CRIU can run
+    and podman generates the proper archive including config.dump.
     """
     inspect = subprocess.run(
         ["podman", "inspect", "--format", "{{.ID}}", container_name],
@@ -467,7 +467,7 @@ def restore_container(container_name: str, checkpoint_path: str) -> str:
     name is removed first (``podman checkpoint`` leaves one behind).
     """
     subprocess.run(["podman", "rm", "-f", container_name], capture_output=True, timeout=30)
-    cmd = ["sudo", "/usr/local/bin/openhost-restore", checkpoint_path]
+    cmd = ["sudo", "/usr/local/bin/openhost-restore", checkpoint_path, container_name]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"CRIU restore failed:\n{result.stderr or result.stdout}")

@@ -160,12 +160,14 @@ class Migration0003SwapAndCriu(SystemMigration):
             mode=0o755,
         )
 
-        # Checkpoint: call runc directly so root never writes into the host
-        # user's runroot (/run/user/<uid>/containers).  The caller (compute_space,
-        # running as the host user) resolves the container name → full 64-char ID
-        # via rootless podman before invoking this helper, so no name lookup is
-        # needed here.  config.dump / spec.dump are only created by podman's own
-        # checkpoint path; we include config.json (the OCI spec) instead.
+        # Checkpoint and restore both use root podman against the host user's
+        # storage.  The runroot MUST be the host user's own runroot — podman
+        # stores it in its state DB and rejects any mismatch.  Root writes
+        # create root-owned files in both storage and runroot, so we run
+        # `find -not -user host -exec chown` immediately after each operation.
+        # The runc wrapper (openhost-runc) injects --root /run/user/<uid>/runc
+        # so root podman can find rootless container state.  It is picked up via
+        # /root/.config/containers/containers.conf (user config overrides vendor).
         checkpoint_script = Path("/usr/local/bin/openhost-checkpoint")
         write_file(
             str(checkpoint_script),
@@ -174,43 +176,43 @@ class Migration0003SwapAndCriu(SystemMigration):
             "set -e\n"
             '[ $# -eq 2 ] || { echo "Usage: $0 CONTAINER_ID CHECKPOINT_PATH" >&2; exit 1; }\n'
             "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
-            "RUNC_ROOT=\"/run/user/${HOST_UID}/runc\"\n"
-            f"BUNDLE={_ROOT}/overlay-containers/$1/userdata\n"
-            '[ -d "${BUNDLE}" ] || { echo "Bundle for $1 not found" >&2; exit 1; }\n'
-            "/usr/sbin/runc --root \"${RUNC_ROOT}\" \\\n"
-            '    checkpoint \\\n'
-            '    --image-path "${BUNDLE}/checkpoint" \\\n'
-            '    --work-path "${BUNDLE}" \\\n'
+            f'{_PODMAN} \\\n'
+            f'    --conmon {_CONMON} \\\n'
+            f'    --root {_ROOT} \\\n'
+            f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
+            '    container checkpoint \\\n'
+            '    --export "$2" \\\n'
+            '    --ignore-rootfs \\\n'
             '    "$1"\n'
-            'tar -czf "$2" -C "${BUNDLE}" checkpoint config.json artifacts\n'
-            'chown -R host:host "${BUNDLE}/checkpoint" "${BUNDLE}/dump.log"\n'
-            'chown host:host "$2"\n',
+            f'find {_ROOT} -not -user host -exec chown host:host {{}} + 2>/dev/null || true\n'
+            'find "/run/user/${HOST_UID}/containers" -not -user host -exec chown host:host {} + 2>/dev/null || true\n'
+            'chown host:host "$2" 2>/dev/null || true\n',
             mode=0o755,
         )
 
-        # Restore: root podman is unavoidable here (rootless restore is also
-        # blocked).  We fix all storage ownership afterwards so rootless podman
-        # can continue managing the restored container.
         restore_script = Path("/usr/local/bin/openhost-restore")
         write_file(
             str(restore_script),
             "#!/bin/sh\n"
-            "# Usage: openhost-restore CHECKPOINT_PATH\n"
+            "# Usage: openhost-restore CHECKPOINT_PATH CONTAINER_NAME\n"
             "set -e\n"
-            '[ $# -eq 1 ] || { echo "Usage: $0 CHECKPOINT_PATH" >&2; exit 1; }\n'
+            '[ $# -eq 2 ] || { echo "Usage: $0 CHECKPOINT_PATH CONTAINER_NAME" >&2; exit 1; }\n'
             "HOST_UID=$(getent passwd host | cut -d: -f3)\n"
-            f'{_PODMAN} \\\n'
-            f'    --runtime /usr/local/sbin/openhost-runc \\\n'
-            f'    --conmon {_CONMON} \\\n'
-            f'    --root {_ROOT} \\\n'
-            f'    --runroot "/run/user/${{HOST_UID}}/containers" \\\n'
-            '    container restore \\\n'
-            '    --import "$1"\n'
-            # Restore writes root-owned files into the host user's storage and
-            # runroot.  chown them back so rootless podman can manage the
-            # restored container.
-            f'find {_ROOT} -not -user host -exec chown host:host {{}} + 2>/dev/null || true\n'
-            'find "/run/user/${HOST_UID}/containers" -not -user host -exec chown host:host {} + 2>/dev/null || true\n',
+            f'PODMAN={_PODMAN}\n'
+            f'CONMON={_CONMON}\n'
+            f'ROOT={_ROOT}\n'
+            'RUNROOT="/run/user/${HOST_UID}/containers"\n'
+            "# Root podman retains the container entry after checkpoint; rootless rm\n"
+            "# may also fail if checkpoint left root-owned files in storage.\n"
+            "# Remove via root podman (which can remove root-owned files) before restoring.\n"
+            '"$PODMAN" --conmon "$CONMON" --root "$ROOT" --runroot "$RUNROOT" \\\n'
+            '    rm -f "$2" 2>/dev/null || true\n'
+            '"$PODMAN" --conmon "$CONMON" --root "$ROOT" --runroot "$RUNROOT" \\\n'
+            '    container restore --import "$1"\n'
+            'find "$ROOT" -not -user host \\\n'
+            '    -exec chown host:host {} + 2>/dev/null || true\n'
+            'find "$RUNROOT" -not -user host \\\n'
+            '    -exec chown host:host {} + 2>/dev/null || true\n',
             mode=0o755,
         )
 
