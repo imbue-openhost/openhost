@@ -42,6 +42,12 @@
     sysctl_file: /etc/sysctl.d/90-openhost-swap.conf
     reload: yes
 
+- name: Install runc (real opencontainers runc for CRIU checkpoint support)
+  apt:
+    name: runc
+    state: present
+    update_cache: yes
+
 - name: Install CRIU build dependencies
   apt:
     name:

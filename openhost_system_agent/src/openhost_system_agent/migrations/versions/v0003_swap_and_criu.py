@@ -52,6 +52,12 @@ class Migration0003SwapAndCriu(SystemMigration):
             return
         os.environ["DEBIAN_FRONTEND"] = "noninteractive"
         run("apt-get", "update", "-qq")
+        # runc (the real opencontainers runc from apt) is required for CRIU
+        # checkpoint support.  The conda-forge-bundled runc that ships with
+        # podman is actually crun under a different name and lacks CRIU support.
+        # apt runc goes to /usr/sbin/runc, which is already in podman's default
+        # "runc" runtime search paths (containers.conf), so no extra config needed.
+        run("apt-get", "install", "-y", "-qq", "runc")
         run("apt-get", "install", "-y", "-qq", *_CRIU_BUILD_DEPS)
         src_url = (
             f"https://github.com/checkpoint-restore/criu"
