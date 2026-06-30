@@ -42,3 +42,9 @@ won't install via pixi.  the default test suite skips both via pytest
 markers, so this is only relevant if you want to run `--run-tls` or
 `--run-containers` locally on mac (install them by hand if so).
 
+## in-progress work
+
+- **CRIU app suspension**: checkpoint/restore for memory-freeing idle apps.
+  See `docs/criu_suspension_ai.md` for full status, architecture, remaining steps,
+  and critical technical gotchas from the implementation session.
+
