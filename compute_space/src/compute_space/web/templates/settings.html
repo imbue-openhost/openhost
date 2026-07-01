@@ -11,11 +11,16 @@
   account name when they receive your identity from OpenHost. Sign-in
   only requires the password; this name is for downstream apps.
   Already-running apps will pick up changes on their next reload.
+  <br>
+  Allowed: lowercase letters, digits, and <code>.</code>
+  <code>_</code> <code>-</code>; must start with a letter or digit;
+  max&nbsp;30 characters. No <code>@</code>, spaces, or uppercase.
 </p>
 <div id="username-status">
   <div style="display:flex; gap:0.5em; align-items:center;">
     <input type="text" id="username-input"
            pattern="[a-z0-9][a-z0-9._\-]{0,29}" maxlength="30"
+           aria-describedby="username-msg"
            placeholder="Loading…" disabled style="flex:1;">
     <button onclick="setOwnerUsername()" class="btn btn-primary"
             id="set-username-btn" disabled>Save</button>
@@ -80,6 +85,7 @@
   </tr>
 </table>
 
+<script src="{{ static_url('js/username-validation.js') }}"></script>
 <script>
 function showError(msg) {
   const el = document.getElementById('error');
@@ -109,7 +115,9 @@ async function checkForUpdates() {
     if (data.state === 'UP_TO_DATE') {
       el.innerHTML = '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
     } else if (data.state === 'UPDATE_AVAILABLE') {
+      const notice = data.error ? '<p class="error">' + esc(data.error) + '</p>' : '';
       el.innerHTML = '<p>Updates available.</p>'
+        + notice
         + '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> '
         + checkAgainBtn;
     } else if (data.state === 'ERROR') {
@@ -281,6 +289,14 @@ async function changePassword() {
 
 let savedUsername = '';
 
+// Live client-side username validation lives in the shared
+// /static/js/username-validation.js module (mirrors the server-side
+// validate_owner_username rule). Empty is treated as "no input yet"
+// (not an error) so we don't nag before the operator types; the Save
+// button is independently gated on emptiness, and the server rejects
+// empty values authoritatively.
+const usernameError = window.OpenHostUsername.usernameError;
+
 async function loadOwnerUsername() {
   const input = document.getElementById('username-input');
   const btn = document.getElementById('set-username-btn');
@@ -299,11 +315,20 @@ async function loadOwnerUsername() {
     btn.disabled = true;
     input.addEventListener('input', () => {
       const v = input.value.trim();
-      // Save stays disabled when the value matches what's stored
-      // OR is empty.  Server-side rejects empty; this is the
-      // friendlier client-side guard so the operator doesn't
-      // round-trip a bound-to-fail request.
-      btn.disabled = v === savedUsername || v === '';
+      const err = usernameError(v);
+      if (err) {
+        msg.textContent = err;
+        msg.className = 'error';
+        msg.style.color = '';
+        msg.style.display = '';
+      } else {
+        msg.style.display = 'none';
+      }
+      // Save stays disabled when the value matches what's stored,
+      // is empty, OR fails client-side validation.  Server-side
+      // rejects all of those too; this is the friendlier guard so
+      // the operator doesn't round-trip a bound-to-fail request.
+      btn.disabled = v === savedUsername || v === '' || err !== '';
     });
   } catch (e) {
     // Surface the failure to the operator rather than leaving the
@@ -325,6 +350,15 @@ async function setOwnerUsername() {
   const msg = document.getElementById('username-msg');
   const username = input.value.trim();
   if (!username) return;
+
+  const clientErr = usernameError(username);
+  if (clientErr) {
+    msg.textContent = clientErr;
+    msg.className = 'error';
+    msg.style.color = '';
+    msg.style.display = '';
+    return;
+  }
 
   btn.disabled = true;
   msg.style.display = 'none';
