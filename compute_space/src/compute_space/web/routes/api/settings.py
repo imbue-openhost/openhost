@@ -38,6 +38,18 @@ _GIT_STATE_TO_UPDATE_STATE = {
     "BEHIND_REMOTE": UpdateState.UPDATE_AVAILABLE,
     "AHEAD_OF_REMOTE": UpdateState.UPDATE_AVAILABLE,
     "DIRTY": UpdateState.UPDATE_AVAILABLE,
+    # Detached HEAD is recoverable: `update apply` checks the host back onto its
+    # tracking branch before updating. Offer the update rather than erroring.
+    "DETACHED_HEAD": UpdateState.UPDATE_AVAILABLE,
+}
+
+# Explanatory text shown to the owner for git states that need a heads-up
+# beyond the generic "Updates available." message.
+_GIT_STATE_NOTICE = {
+    "DETACHED_HEAD": (
+        "This host's code checkout is in a detached HEAD state (not on a branch). "
+        "Applying the update will move it back onto its tracking branch and update normally."
+    ),
 }
 
 
@@ -103,7 +115,7 @@ async def check_for_updates() -> CheckUpdatesResponse:
     if state is None:
         return CheckUpdatesResponse(state=UpdateState.ERROR, error=f"Unknown git state: {fetch_result.state}")
 
-    return CheckUpdatesResponse(state=state)
+    return CheckUpdatesResponse(state=state, error=_GIT_STATE_NOTICE.get(fetch_result.state))
 
 
 @post("/api/settings/update", status_code=204, guards=[require_owner_auth])

@@ -103,3 +103,124 @@ def test_clear_txt_removes_records(tmp_path: Path) -> None:
     clear_txt(zonefile)
 
     assert "IN TXT" not in zonefile.read_text()
+
+
+class _FakeProc:
+    pid = 4242
+    stdout = None
+
+    def wait(self) -> int:
+        return 0
+
+
+def _stub_popen(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dns_mod.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    # Don't spawn the log-streaming thread (its target reads proc.stdout).
+    monkeypatch.setattr(dns_mod.threading, "Thread", lambda *a, **k: type("T", (), {"start": lambda self: None})())
+
+
+def test_container_dns_view_rendered_when_gateway_bindable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: True)
+    monkeypatch.setattr(dns_mod, "_host_upstream_resolvers", lambda: ["9.9.9.9"])
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    zonefile = tmp_path / "zonefile"
+    dns_mod.start_coredns("app.example.com", "203.0.113.10", corefile, zonefile, container_gateway_ip="10.200.0.1")
+
+    cf = corefile.read_text()
+    # Public view binds the discovered local IP; container view binds the gateway.
+    assert "bind 10.0.0.5" in cf
+    assert "bind 10.200.0.1" in cf
+    assert "forward . 9.9.9.9" in cf
+
+    # Public zonefile points at the public IP; container zonefile at the gateway.
+    assert "203.0.113.10" in zonefile.read_text()
+    container_zone = tmp_path / "zonefile.container"
+    assert container_zone.exists()
+    cz = container_zone.read_text()
+    assert "*   IN A    10.200.0.1" in cz
+    assert "203.0.113.10" not in cz
+
+
+def test_container_dns_view_skipped_when_gateway_not_bindable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: False)
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    zonefile = tmp_path / "zonefile"
+    dns_mod.start_coredns("app.example.com", "203.0.113.10", corefile, zonefile, container_gateway_ip="10.200.0.1")
+
+    cf = corefile.read_text()
+    assert "bind 10.200.0.1" not in cf
+    assert "forward" not in cf
+    # No container zonefile written.
+    assert not (tmp_path / "zonefile.container").exists()
+
+
+def test_host_upstream_resolvers_filters_loopback_and_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    resolv = tmp_path / "resolv.conf"
+    resolv.write_text(
+        "nameserver 127.0.0.53\n"
+        f"nameserver {dns_mod.CONTAINER_GATEWAY_IP}\n"
+        "nameserver 185.12.64.1\n"
+        "nameserver 1.1.1.1\n"
+        "search example.com\n"
+    )
+    real_open = open
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda p, *a, **k: real_open(resolv, *a, **k) if str(p) == "/etc/resolv.conf" else real_open(p, *a, **k),
+    )
+    assert dns_mod._host_upstream_resolvers() == ["185.12.64.1", "1.1.1.1"]
+
+
+def test_host_upstream_resolvers_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_oserror(*a: object, **k: object) -> object:
+        raise OSError("nope")
+
+    monkeypatch.setattr("builtins.open", raise_oserror)
+    assert dns_mod._host_upstream_resolvers() == list(dns_mod._FALLBACK_UPSTREAM_DNS)
+
+
+def test_host_upstream_resolvers_falls_back_when_only_loopback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A host using only the systemd-resolved stub (127.0.0.53) would leave the
+    # container view with no forwardable upstream; we must fall back, never emit
+    # an empty/loopback forward (which would be unreachable from the container).
+    resolv = tmp_path / "resolv.conf"
+    resolv.write_text("nameserver 127.0.0.53\n")
+    real_open = open
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda p, *a, **k: real_open(resolv, *a, **k) if str(p) == "/etc/resolv.conf" else real_open(p, *a, **k),
+    )
+    assert dns_mod._host_upstream_resolvers() == list(dns_mod._FALLBACK_UPSTREAM_DNS)
+
+
+def test_container_view_forward_uses_discovered_resolvers_and_distinct_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The public view and the container view must bind different addresses (the
+    # default-route source vs the gateway), and the container catch-all must
+    # forward to the discovered upstreams.
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: True)
+    monkeypatch.setattr(dns_mod, "_host_upstream_resolvers", lambda: ["185.12.64.1", "1.1.1.1"])
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    dns_mod.start_coredns("app.example.com", "203.0.113.10", corefile, tmp_path / "zonefile")
+    cf = corefile.read_text()
+
+    assert "bind 10.0.0.5" in cf  # public/authoritative view
+    assert "bind 10.200.0.1" in cf  # container view + catch-all
+    assert "forward . 185.12.64.1 1.1.1.1" in cf
+    # Catch-all is scoped to the container gateway only (never the public bind),
+    # so the public IP is not turned into an open recursive resolver.
+    catch_all = cf.split(".:53 {", 1)[1]
+    assert "bind 10.200.0.1" in catch_all
+    assert "bind 10.0.0.5" not in catch_all

@@ -73,6 +73,26 @@ async def test_check_for_updates_migration_behind_is_update_available(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_check_for_updates_detached_head_is_update_available_with_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch() -> FetchResult:
+        return FetchResult(state="DETACHED_HEAD")
+
+    async def fake_status() -> MigrationStatus:
+        return MigrationStatus(ok=True, reason="", message="ok", current_host_version=1, expected_version=1)
+
+    monkeypatch.setattr(settings_mod, "system_agent_fetch", fake_fetch)
+    monkeypatch.setattr(settings_mod, "system_agent_status", fake_status)
+
+    result = await settings_mod.check_for_updates.fn()
+
+    assert result.state == "UPDATE_AVAILABLE"
+    assert result.error is not None
+    assert "detached HEAD" in result.error
+
+
+@pytest.mark.asyncio
 async def test_check_for_updates_migration_missing_is_error(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_fetch() -> FetchResult:
         return FetchResult(state="UP_TO_DATE")

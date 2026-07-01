@@ -22,8 +22,21 @@ sudo openhost-system-agent <command>
 Key subcommands:
 
 - `update fetch` — fetch latest code from remote
-- `update apply` — apply pending system migrations and restart services
-- `update status` — show current version and pending migrations
+- `update apply` — apply pending update: checkout, install deps, run system migrations
+- `status` — show current system version and whether migrations are pending
+
+### Detached HEAD recovery
+
+The host checkout can occasionally end up in a detached HEAD state (HEAD points
+at a commit rather than a branch). In that state there is no tracking branch to
+reason about, so:
+
+- `update fetch` reports `{"state": "DETACHED_HEAD"}` rather than pretending the
+  host is up to date.
+- `update apply` recovers automatically: it resolves the remote's default branch
+  (via `origin/HEAD`, falling back to `main`), checks it out as a local tracking
+  branch, and then performs the normal update. If the configured remote uses a
+  non-default branch, pin it explicitly with `update set_remote <url>@<branch>`.
 
 ## Adding a New Migration
 

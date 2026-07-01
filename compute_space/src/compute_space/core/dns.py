@@ -22,12 +22,56 @@ import attr
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
 
+from compute_space.core.containers import CONTAINER_GATEWAY_IP
 from compute_space.core.logging import logger
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _jinja_env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR))
 
 _SERIAL_RE = re.compile(r"^(\s+)(\d+)(\s+;\s*serial\s*)$", re.MULTILINE)
+
+# Fallback upstream resolvers for the container-facing DNS view's catch-all
+# forward block, used only if the host's own resolvers can't be discovered.
+_FALLBACK_UPSTREAM_DNS = ("8.8.8.8", "1.1.1.1")
+
+
+def _gateway_ip_is_bindable(gateway_ip: str) -> bool:
+    """True if ``gateway_ip`` is a local address CoreDNS can bind.
+
+    The ``openhost0`` dummy interface (10.200.0.1) only exists on
+    ansible-provisioned hosts; in dev/CI it won't, and binding it would crash
+    CoreDNS.  Probe a UDP bind (CoreDNS serves DNS on UDP) to decide.
+    """
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind((gateway_ip, 0))
+        probe.close()
+        return True
+    except OSError:
+        return False
+
+
+def _host_upstream_resolvers() -> list[str]:
+    """Discover the host's real upstream resolvers for the container DNS view.
+
+    The container-facing CoreDNS view forwards non-zone queries upstream.  We
+    can't forward to the host's 127.0.0.53 stub (unreachable from the container
+    netns) nor loop back to ourselves, so read concrete nameservers from
+    /etc/resolv.conf, dropping loopback/stub and our own gateway address.
+    """
+    resolvers: list[str] = []
+    try:
+        with open("/etc/resolv.conf") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "nameserver":
+                    addr = parts[1]
+                    if addr.startswith("127.") or addr == CONTAINER_GATEWAY_IP or addr == "::1":
+                        continue
+                    resolvers.append(addr)
+    except OSError:
+        pass
+    return resolvers or list(_FALLBACK_UPSTREAM_DNS)
 
 
 def _coredns_bind_ip(public_ip: str) -> str:
@@ -48,15 +92,43 @@ def _coredns_bind_ip(public_ip: str) -> str:
 
 
 def start_coredns(
-    zone_domain: str, public_ip: str, corefile_path: Path, zonefile_path: Path
+    zone_domain: str,
+    public_ip: str,
+    corefile_path: Path,
+    zonefile_path: Path,
+    container_gateway_ip: str | None = CONTAINER_GATEWAY_IP,
 ) -> subprocess.Popen[bytes]:
-    """Write CoreDNS config + zone file, start CoreDNS, return the process."""
+    """Write CoreDNS config + zone file, start CoreDNS, return the process.
+
+    When ``container_gateway_ip`` is set (the default, and the dummy
+    ``openhost0`` gateway in production), a second server view is bound there
+    that resolves the zone wildcard to the gateway so pasta app containers can
+    reach sibling apps' public HTTPS URLs through Caddy (NAT hairpin), with a
+    catch-all forward for everything else.  Pass ``None`` to disable (e.g. in
+    environments without the gateway interface).
+    """
+
+    bind_serial = int(time.time())
+
+    # Only emit the container-facing view when the gateway IP is actually
+    # bindable (the openhost0 dummy interface exists in production but not in
+    # dev/CI), otherwise CoreDNS would fail to start.
+    if container_gateway_ip and not _gateway_ip_is_bindable(container_gateway_ip):
+        logger.info("Container gateway %s not bindable; skipping container-facing DNS view", container_gateway_ip)
+        container_gateway_ip = None
+
+    # Container-facing zone file: the wildcard points at the gateway IP.  Lives
+    # next to the public zone file with a `.container` suffix.
+    container_zonefile_path = zonefile_path.with_name(zonefile_path.name + ".container")
 
     # Write Corefile. this is coredns's config.
     corefile = _jinja_env.get_template("Corefile").render(
         zone_domain=zone_domain,
         bind_ip=_coredns_bind_ip(public_ip),
         zone_file_path=zonefile_path,
+        container_gateway_ip=container_gateway_ip,
+        container_zone_file_path=container_zonefile_path,
+        upstream_dns=" ".join(_host_upstream_resolvers()),
     )
     with open(corefile_path, "w") as f:
         f.write(corefile)
@@ -66,10 +138,19 @@ def start_coredns(
         zone_domain=zone_domain,
         public_ip=public_ip,
         # Use current timestamp as initial SOA serial. This is simple and ensures it's always increasing on each run.
-        serial=int(time.time()),
+        serial=bind_serial,
     )
     with open(zonefile_path, "w") as f:
         f.write(content)
+
+    if container_gateway_ip:
+        container_content = _jinja_env.get_template("zonefile_container").render(
+            zone_domain=zone_domain,
+            gateway_ip=container_gateway_ip,
+            serial=bind_serial,
+        )
+        with open(container_zonefile_path, "w") as f:
+            f.write(container_content)
 
     logger.info(f"Starting CoreDNS for {zone_domain}")
     proc = subprocess.Popen(

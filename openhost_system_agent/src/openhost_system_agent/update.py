@@ -37,6 +37,73 @@ def _branch_name(repo: git.Repo) -> str:
         return repo.head.commit.hexsha[:8]
 
 
+def _is_detached(repo: git.Repo) -> bool:
+    """Return True when HEAD points at a commit rather than a branch."""
+    return repo.head.is_detached
+
+
+_DEFAULT_BRANCH = "main"
+
+
+def _remote_default_branch(repo: git.Repo) -> str:
+    """Best-effort guess of the branch the host should be tracking.
+
+    Prefers the remote's published default branch (origin/HEAD -> origin/<name>),
+    then a local branch named `main`, then any local branch, and finally falls
+    back to the literal "main". This is used to recover from a detached HEAD,
+    where there is no active branch to derive a tracking ref from.
+    """
+    # origin/HEAD is a symbolic ref pointing at the remote's default branch.
+    # Only trust it when the branch it names actually exists as a remote ref;
+    # a stale origin/HEAD (e.g. the remote's default branch was renamed or
+    # deleted after this host cloned) would otherwise name a branch that no
+    # longer exists, and recovery would fail even though a usable branch like
+    # `main` is right there. Fall through to the local fallbacks in that case.
+    try:
+        symref = str(repo.git.symbolic_ref("refs/remotes/origin/HEAD")).strip()
+        # e.g. "refs/remotes/origin/main" -> "main"
+        prefix = "refs/remotes/origin/"
+        if symref.startswith(prefix):
+            candidate = symref[len(prefix) :]
+            try:
+                repo.refs[f"origin/{candidate}"]
+                return candidate
+            except IndexError:
+                pass
+    except git.GitCommandError:
+        pass
+
+    if _DEFAULT_BRANCH in [h.name for h in repo.heads]:
+        return _DEFAULT_BRANCH
+    if repo.heads:
+        return repo.heads[0].name
+    return _DEFAULT_BRANCH
+
+
+def _recover_detached_head(repo: git.Repo) -> str:
+    """Move a detached HEAD back onto a real, tracking branch.
+
+    Resolves a target branch (see `_remote_default_branch`) and checks it out
+    with the remote ref as its upstream so subsequent fetch/apply logic has a
+    tracking branch to reason about. Returns the branch name.
+    """
+    branch = _remote_default_branch(repo)
+    remote_ref = f"origin/{branch}"
+    try:
+        repo.refs[remote_ref]
+    except IndexError as e:
+        raise RuntimeError(
+            f"HEAD is detached and no remote branch '{remote_ref}' exists to recover onto. "
+            f"Run 'update fetch' first, or set an explicit branch with "
+            f"'update set_remote <url>@<branch>'."
+        ) from e
+
+    logger.info(f"HEAD is detached; recovering onto {branch} (tracking {remote_ref})...")
+    repo.git.checkout("-fB", branch, remote_ref)
+    repo.heads[branch].set_tracking_branch(repo.refs[remote_ref])
+    return branch
+
+
 _KNOWN_SCHEMES = {"http", "https", "ssh", "git", "file"}
 
 
@@ -58,11 +125,13 @@ def fetch_updates() -> FetchResult:
     if repo.is_dirty(untracked_files=True):
         return FetchResult(state="DIRTY")
 
-    try:
-        branch = repo.active_branch
-    except TypeError:
-        return FetchResult(state="UP_TO_DATE")
+    # A detached HEAD has no branch (and so no tracking branch) to compare
+    # against. Surface it explicitly instead of pretending we're up to date —
+    # `update apply` knows how to recover from this state.
+    if _is_detached(repo):
+        return FetchResult(state="DETACHED_HEAD")
 
+    branch = repo.active_branch
     tracking = branch.tracking_branch()
     if tracking is None:
         raise RuntimeError(f"Branch {branch.name} has no tracking branch set")
@@ -79,7 +148,9 @@ def fetch_updates() -> FetchResult:
 
 def show_diff() -> DiffResult:
     repo = _repo()
-    branch = _branch_name(repo)
+    # In detached HEAD there is no branch to derive `origin/<branch>` from, so
+    # diff against the branch we would recover onto during `update apply`.
+    branch = _remote_default_branch(repo) if _is_detached(repo) else _branch_name(repo)
     remote_ref = f"origin/{branch}"
 
     try:
@@ -108,7 +179,15 @@ def apply_update() -> ApplyResult:
     if repo.is_dirty(untracked_files=True):
         raise RuntimeError("Working tree has uncommitted changes. Stash or commit first.")
 
-    branch = _branch_name(repo)
+    # Capture the checked-out commit *before* any detached-HEAD recovery moves
+    # HEAD, so the up-to-date comparison below reflects whether the working tree
+    # actually changed (and therefore whether `pixi install` needs to run).
+    local_sha = repo.head.commit.hexsha
+
+    if _is_detached(repo):
+        branch = _recover_detached_head(repo)
+    else:
+        branch = _branch_name(repo)
     remote_ref = f"origin/{branch}"
 
     try:
@@ -116,7 +195,6 @@ def apply_update() -> ApplyResult:
     except IndexError as e:
         raise RuntimeError(f"No remote ref {remote_ref} found. Run 'update fetch' first.") from e
 
-    local_sha = repo.head.commit.hexsha
     remote_sha = repo.refs[remote_ref].commit.hexsha
 
     if local_sha == remote_sha:
