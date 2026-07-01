@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import sys
@@ -256,7 +257,7 @@ class AppCmd:
             print(f"No running container for {app_name} (status: {status.get('status')})", file=sys.stderr)
             raise SystemExit(1)
 
-        remote_cmd = f"cd ~/openhost && /home/host/.pixi/bin/pixi run -e dev podman exec -it {container_id} {shell}"
+        remote_cmd = f"cd ~/openhost && /home/host/.pixi/bin/pixi run -e dev podman exec -it {shlex.quote(container_id)} {shlex.quote(shell)}"
         cmd = [ssh_bin, "-t"]
         if cfg.ssh_key:
             cmd += ["-i", cfg.ssh_key]
