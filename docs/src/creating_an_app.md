@@ -15,6 +15,15 @@ Apps can be anything that can run in an OCI container, and accessed via HTTP(s).
 
 An `openhost.toml` manifest must be placed at the root of your repo, to indicate to OpenHost how to run your app. See the [manifest spec](manifest_spec.md) for the full field reference.
 
+## App template
+
+OpenHost has a standard app template available as a starting point: [https://github.com/imbue-openhost/app-template](https://github.com/imbue-openhost/app-template)
+
+This repo contains a Python 3.12 server using Litestar and Hypercorn, managed with uv. It includes pre-commit hooks (ruff formatting, mypy strict type checking), and an integration test suite using pytest, httpx, and Playwright. Tests run both locally and as a full containerized app, building the Dockerfile and fronting it with the real OpenHost router. 
+
+The template is recommended when starting a new app from scratch. Existing projects can also be deployed to OpenHost directly via their own Dockerfile without using this template.
+
+
 ### Rootless constraints
 
 A few things that work under classical Docker don't work here:
