@@ -35,7 +35,7 @@ class UpdateCmd:
         except Exception as e:
             _error(str(e))
 
-    @cappa.command(name="show_diff", help="Show pending changes between HEAD and remote.")
+    @cappa.command(name="show-diff", help="Show pending changes between HEAD and remote.")
     def show_diff(self) -> None:
         try:
             _output(show_diff())
@@ -49,7 +49,7 @@ class UpdateCmd:
         except Exception as e:
             _error(str(e))
 
-    @cappa.command(name="set_remote", help="Set the git remote URL.")
+    @cappa.command(name="set-remote", help="Set the git remote URL.")
     def set_remote(
         self,
         url: Annotated[str, cappa.Arg(help="Git remote URL")],
@@ -59,7 +59,7 @@ class UpdateCmd:
         except Exception as e:
             _error(str(e))
 
-    @cappa.command(name="get_remote", help="Get the current git remote URL and ref.")
+    @cappa.command(name="get-remote", help="Get the current git remote URL and ref.")
     def get_remote(self) -> None:
         try:
             _output(get_remote_info())

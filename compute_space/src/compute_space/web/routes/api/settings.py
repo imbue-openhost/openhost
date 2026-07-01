@@ -77,7 +77,7 @@ class OwnerUsernameResponse:
 # --- routes -----------------------------------------------------------------
 
 
-@get("/api/settings/get_remote", guards=[require_owner_auth])
+@get("/api/settings/get-remote", guards=[require_owner_auth])
 async def get_remote() -> RemoteInfo:
     try:
         return await system_agent_get_remote()
@@ -85,7 +85,7 @@ async def get_remote() -> RemoteInfo:
         raise HTTPException(detail=str(e), status_code=500) from e
 
 
-@post("/api/settings/set_remote", status_code=200, guards=[require_owner_auth])
+@post("/api/settings/set-remote", status_code=200, guards=[require_owner_auth])
 async def set_remote(data: SetRemoteRequest) -> RemoteInfo:
     try:
         return await system_agent_set_remote(data.url.strip())
