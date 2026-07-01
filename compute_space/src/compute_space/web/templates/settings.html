@@ -189,7 +189,7 @@ async function loadRemote() {
   const input = document.getElementById('remote-url');
   const btn = document.getElementById('set-remote-btn');
   try {
-    const resp = await fetch('/api/settings/get_remote');
+    const resp = await fetch('/api/settings/get-remote');
     if (!resp.ok) throw new Error('failed to load remote');
     const data = await resp.json();
     savedRemote = data.url || '';
@@ -220,7 +220,7 @@ async function setRemote() {
   msg.style.display = 'none';
 
   try {
-    const resp = await fetch('/api/settings/set_remote', {
+    const resp = await fetch('/api/settings/set-remote', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({url}),

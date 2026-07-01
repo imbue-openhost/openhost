@@ -830,7 +830,7 @@ def git_pull(
 
         # Fetch the pinned ref and hard-reset the working tree to it.
         # TODO: this duplicates the branch-vs-tag checkout in
-        # git_ops.hard_checkout_ref (the system-agent update path), which also
+        # git_ops.hard_checkout_ref (the system_agent update path), which also
         # runs ``git clean -fd`` to drop untracked files that can shadow modules
         # removed/renamed between revisions. We omit the clean (parity with the
         # old ``git pull`` behaviour). Decide whether to converge the two paths
@@ -841,7 +841,7 @@ def git_pull(
             return False, err
         # A branch ref materialises as the remote-tracking ``origin/<ref>``;
         # check it out as a local branch so it tracks and future pulls update
-        # cleanly (mirrors the system-agent update flow). A tag or commit SHA
+        # cleanly (mirrors the system_agent update flow). A tag or commit SHA
         # has no ``origin/<ref>`` branch, so fall back to a detached checkout
         # of the just-fetched FETCH_HEAD.
         is_branch = (
