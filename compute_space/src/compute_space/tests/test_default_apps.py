@@ -296,6 +296,19 @@ def test_catalog_in_default_factory():
     assert catalog_entries, f"openhost-catalog not in default_apps: {cfg.default_apps}"
 
 
+def test_filestash_in_default_factory():
+    """openhost-filestash must be in the shipped DefaultConfig.default_apps."""
+    cfg = DefaultConfig(
+        host="127.0.0.1",
+        data_root_dir="/tmp/fake",
+        zone_domain="test.local",
+        tls_enabled=False,
+        start_caddy=False,
+    )
+    filestash_entries = [s for s in cfg.default_apps if "openhost-filestash" in s.lower()]
+    assert filestash_entries, f"openhost-filestash not in default_apps: {cfg.default_apps}"
+
+
 def test_oauth_provider_in_default_factory():
     """The vendored oauth_provider app must be in the shipped
     DefaultConfig.default_apps so every new instance auto-installs the OAuth
