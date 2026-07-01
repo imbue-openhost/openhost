@@ -54,12 +54,22 @@ def _remote_default_branch(repo: git.Repo) -> str:
     where there is no active branch to derive a tracking ref from.
     """
     # origin/HEAD is a symbolic ref pointing at the remote's default branch.
+    # Only trust it when the branch it names actually exists as a remote ref;
+    # a stale origin/HEAD (e.g. the remote's default branch was renamed or
+    # deleted after this host cloned) would otherwise name a branch that no
+    # longer exists, and recovery would fail even though a usable branch like
+    # `main` is right there. Fall through to the local fallbacks in that case.
     try:
         symref = str(repo.git.symbolic_ref("refs/remotes/origin/HEAD")).strip()
         # e.g. "refs/remotes/origin/main" -> "main"
         prefix = "refs/remotes/origin/"
         if symref.startswith(prefix):
-            return symref[len(prefix) :]
+            candidate = symref[len(prefix) :]
+            try:
+                repo.refs[f"origin/{candidate}"]
+                return candidate
+            except IndexError:
+                pass
     except git.GitCommandError:
         pass
 

@@ -159,3 +159,29 @@ def test_apply_detached_head_errors_clearly_without_remote_branch(
 
     with pytest.raises(RuntimeError, match="HEAD is detached"):
         update_mod.apply_update()
+
+
+def test_apply_recovers_when_origin_head_is_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale origin/HEAD (pointing at a branch with no remote ref) must not
+    block recovery: the default-branch lookup falls back to a branch that
+    actually exists (main) instead of trusting the dangling symref."""
+    repo = _make_clone_with_remote(tmp_path)
+    latest_sha = repo.head.commit.hexsha
+    first_sha = repo.git.rev_list("--max-parents=0", "HEAD").strip()
+    repo.git.checkout(first_sha)
+    # Point origin/HEAD at a branch that has no origin/<branch> ref (e.g. the
+    # remote's default branch was renamed/deleted after this host cloned).
+    repo.git.symbolic_ref("refs/remotes/origin/HEAD", "refs/remotes/origin/gone")
+    assert repo.head.is_detached
+
+    monkeypatch.setattr(update_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(update_mod, "_run_pixi_install", lambda: None)
+    monkeypatch.setattr(update_mod, "_run_migrations_reexec", lambda: [])
+
+    result = update_mod.apply_update()
+
+    assert not repo.head.is_detached
+    assert repo.active_branch.name == "main"
+    assert repo.active_branch.tracking_branch().name == "origin/main"
+    assert repo.head.commit.hexsha == latest_sha
+    assert result.ref == latest_sha[:8]
