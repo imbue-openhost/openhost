@@ -47,6 +47,8 @@ oh app logs cool-app                         # view logs
 oh app logs cool-app --follow                # tail logs
 oh app reload cool-app                       # rebuild + restart
 oh app reload cool-app --update --wait       # git pull, rebuild, wait until running
+oh app ssh cool-app                          # open a shell inside the running container
+oh app ssh cool-app --shell bash             # use bash instead of sh (default: sh)
 oh app stop cool-app                         # stop app
 oh app remove cool-app                       # remove app + data
 oh app remove cool-app --keep-data           # remove but keep data
@@ -100,14 +102,6 @@ oh instance rsync -av ./local/ host@myzone.example.com:/path/  # rsync via the c
 ```
 
 `oh instance ssh` is a shorthand for `ssh [-i key] host@<hostname>`. Without a key configured via `configure-ssh-key`, it falls back to your SSH agent or default key.
-
-Once on the server, app containers can be inspected with:
-
-```bash
-cd ~/openhost && /home/host/.pixi/bin/pixi run -e dev podman ps
-/home/host/.pixi/bin/pixi run -e dev podman logs openhost-my-app
-/home/host/.pixi/bin/pixi run -e dev podman exec -it openhost-my-app /bin/sh
-```
 
 Note: `podman` is installed via pixi, not system-wide. Use the full path above or `cd ~/openhost && pixi run -e dev podman ...` if pixi is on your PATH. App data lives at `~/.openhost/local_compute_space/persistent_data/app_data/`.
 
