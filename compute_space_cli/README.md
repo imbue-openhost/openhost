@@ -4,8 +4,13 @@ Command-line tool for managing apps on your OpenHost compute space.
 
 ## Install
 
+HTTPS:
 ```bash
-uv tool install "oh @ git+https://github.com/imbue-ai/openhost.git#subdirectory=compute_space_cli"
+uv tool install "oh @ git+https://github.com/imbue-openhost/openhost.git#subdirectory=compute_space_cli"
+```
+SSH:
+```bash
+uv tool install "oh @ git+ssh://git@github.com/imbue-openhost/openhost.git#subdirectory=compute_space_cli"
 ```
 
 ## Setup
@@ -27,15 +32,21 @@ cd compute_space_cli && uv tool install --editable .
 
 ```bash
 oh status                                    # check if compute space is reachable
+oh version                                   # show git branch/SHA of the running openhost
+oh logs                                      # view zone-level router logs
+oh logs --follow                             # tail router logs
 
 oh app list                                  # list apps and status
 oh app deploy https://github.com/you/myapp   # deploy from git repo
 oh app deploy https://github.com/you/myapp --name cool-app  # custom name
+oh app deploy https://github.com/you/myapp --wait           # block until running
+oh app deploy https://github.com/you/myapp --grant-permissions-v2  # auto-grant all manifest permissions
+oh app deploy https://github.com/you/myapp --port web=8080  # override a port mapping
 oh app status cool-app                       # check status
 oh app logs cool-app                         # view logs
 oh app logs cool-app --follow                # tail logs
 oh app reload cool-app                       # rebuild + restart
-oh app reload cool-app --update              # git pull, then rebuild
+oh app reload cool-app --update --wait       # git pull, rebuild, wait until running
 oh app stop cool-app                         # stop app
 oh app remove cool-app                       # remove app + data
 oh app remove cool-app --keep-data           # remove but keep data
@@ -46,7 +57,11 @@ oh tokens create --name "ci" --expiry-hours 72
 oh tokens delete 3                           # delete by token ID
 ```
 
-Deploy and reload accept `--wait` to block until the app is running (or errors).
+`oh logs` shows zone-level router logs (deploy errors, routing issues). `oh app logs` shows a specific app's container output.
+
+`--grant-permissions-v2` automatically grants all `[[services.v2.consumes]]` entries from the manifest at deploy time, skipping the manual approval step in the dashboard. See [cross_app_services.md](../docs/src/cross_app_services.md) for details on the permissions model.
+
+`--port` can be repeated for multiple overrides: `--port web=8080 --port metrics=9090`.
 
 ## Multi-instance support
 
@@ -74,6 +89,36 @@ OH_INSTANCE=dev oh app list                  # same, via env var
 
 Resolution order: `--instance` flag > `OH_INSTANCE` env var > default instance.
 Names are resolved as hostnames first, then aliases.
+
+## SSH access
+
+```bash
+oh instance configure-ssh-key ~/.ssh/id_ed25519   # register SSH key for this instance
+oh instance ssh                                    # SSH into the zone server as the host user
+oh instance ssh -- -L 5432:localhost:5432          # SSH with extra arguments (port forward etc.)
+oh instance rsync -av ./local/ host@myzone.example.com:/path/  # rsync via the configured key
+```
+
+`oh instance ssh` is a shorthand for `ssh [-i key] host@<hostname>`. Without a key configured via `configure-ssh-key`, it falls back to your SSH agent or default key.
+
+Once on the server, app containers can be inspected with:
+
+```bash
+cd ~/openhost && /home/host/.pixi/bin/pixi run -e dev podman ps
+/home/host/.pixi/bin/pixi run -e dev podman logs openhost-my-app
+/home/host/.pixi/bin/pixi run -e dev podman exec -it openhost-my-app /bin/sh
+```
+
+Note: `podman` is installed via pixi, not system-wide. Use the full path above or `cd ~/openhost && pixi run -e dev podman ...` if pixi is on your PATH. App data lives at `~/.openhost/local_compute_space/persistent_data/app_data/`.
+
+## Authenticated HTTP requests
+
+```bash
+oh curl https://myzone.example.com/api/apps          # GET with bearer token injected
+oh curl -X POST https://myzone.example.com/api/...   # any curl args work
+```
+
+`oh curl` runs `curl` with `Authorization: Bearer <token>` pre-injected for the current instance. Useful for hitting the API or testing app endpoints without copying tokens by hand.
 
 ## Update
 
