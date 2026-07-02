@@ -1,10 +1,7 @@
 {% extends "layout.html" %}
 {% block title_suffix %} - Terminal{% endblock %}
 {% block content %}
-<style>
-  body { max-width: none; padding: 1em; }
-</style>
-<div id="terminal" style="width:100%; height:calc(100vh - 200px); background:#1e1e1e; border-radius:4px;"></div>
+<div id="terminal" style="width:100vw; margin-left:calc((100% - 100vw) / 2); height:calc(100vh - 200px); background:#1e1e1e; border-radius:4px;"></div>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
