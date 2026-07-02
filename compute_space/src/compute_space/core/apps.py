@@ -24,9 +24,7 @@ from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.permissions_v2 import Grant
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
-from compute_space.core.containers import archive_old_log
 from compute_space.core.containers import build_image
-from compute_space.core.containers import log_timestamp
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
 from compute_space.core.containers import stop_app_process

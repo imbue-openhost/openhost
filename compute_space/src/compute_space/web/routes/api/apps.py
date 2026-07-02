@@ -25,8 +25,6 @@ from compute_space.core.apps import PermissionGrant
 from compute_space.core.apps import all_manifest_permissions_v2
 from compute_space.core.apps import app_container_log_path
 from compute_space.core.apps import app_log_path
-from compute_space.core.apps import archive_old_log
-from compute_space.core.apps import log_timestamp
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
@@ -36,7 +34,9 @@ from compute_space.core.apps import remove_app_background
 from compute_space.core.apps import start_app_process
 from compute_space.core.apps import validate_manifest
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
+from compute_space.core.containers import archive_old_log
 from compute_space.core.containers import get_docker_logs
+from compute_space.core.containers import log_timestamp
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
 from compute_space.core.git_ops import UnsupportedRepoUrlError

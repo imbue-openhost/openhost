@@ -23,8 +23,8 @@ import os
 import re
 import sqlite3
 import subprocess
+from datetime import UTC
 from datetime import datetime
-from datetime import timezone
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -112,7 +112,7 @@ def log_timestamp(log_file: str) -> str | None:
     if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
         return None
     mtime = os.path.getmtime(log_file)
-    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y%m%d_%H%M%S")
 
 
 def archive_old_log(log_file: str, ts: str | None = None) -> None:
@@ -131,7 +131,6 @@ def archive_old_log(log_file: str, ts: str | None = None) -> None:
     archived = sorted(f for f in os.listdir(log_dir) if f.startswith(base))
     for old in archived[:-_MAX_LOG_FILES]:
         os.remove(os.path.join(log_dir, old))
-
 
 
 def _is_build_cache_corrupt(output: str) -> bool:
