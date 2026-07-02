@@ -347,6 +347,24 @@ def test_run_container_has_hardening_flags(tmp_path, monkeypatch: pytest.MonkeyP
     assert "--add-host=host.containers.internal:host-gateway" in argv
 
 
+def test_run_container_points_dns_at_gateway_for_pasta_apps(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pasta apps resolve via the container-facing CoreDNS view on the gateway so
+    # `<app>.<zone>` hairpins to Caddy instead of looping in the container netns.
+    manifest = _basic_manifest()
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+    dns_idx = argv.index("--dns")
+    assert argv[dns_idx + 1] == "10.200.0.1"
+
+
+def test_run_container_network_host_app_gets_no_dns_override(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # network_host apps share the host netns and use the host's resolver
+    # directly; they must not get the gateway --dns override.
+    manifest = _basic_manifest(network_host=True)
+    argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)
+    assert "--network=host" in argv
+    assert "--dns" not in argv
+
+
 def test_run_container_mounts_use_idmap_option(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _basic_manifest(app_data=True, app_temp_data=True, access_vm_data=True)
     argv = _run_and_capture(monkeypatch, manifest=manifest, tmp_path=tmp_path)

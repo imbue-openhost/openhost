@@ -6,3 +6,22 @@
     log
     errors
 }
+{% if container_gateway_ip %}
+# Container-facing view.  Pasta app containers point their resolver here (see
+# core/containers.py --dns).  It answers the zone wildcard with the gateway IP
+# so containers reach sibling apps' public HTTPS URLs through Caddy (hairpin),
+# and forwards everything else upstream so normal name resolution still works.
+{{ zone_domain }}:53 {
+    bind {{ container_gateway_ip }}
+    file {{ container_zone_file_path }} {
+        reload 2s
+    }
+    log
+    errors
+}
+.:53 {
+    bind {{ container_gateway_ip }}
+    forward . {{ upstream_dns }}
+    errors
+}
+{% endif %}

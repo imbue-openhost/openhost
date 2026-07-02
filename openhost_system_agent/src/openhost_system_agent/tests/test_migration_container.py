@@ -195,7 +195,7 @@ class TestApplyUpdateWalk:
         apply = _exec(c, "sudo", agent, "update", "apply", timeout=600, check=False)
         assert apply.returncode == 0, f"update apply failed (exit {apply.returncode}):\n{apply.stdout}\n{apply.stderr}"
 
-        # The v3 migration upgraded pixi to the pinned version.
+        # The pixi-version migration upgraded pixi to the pinned version.
         after = _host_sh(c, f"{_PIXI} --version")
         assert "0.70.2" in after.stdout, f"pixi not upgraded: {after.stdout!r}"
 
@@ -203,9 +203,10 @@ class TestApplyUpdateWalk:
         tag = _host_sh(c, f"cd {_REPO} && git describe --tags --exact-match HEAD")
         assert tag.stdout.strip() == "v2", f"HEAD not on v2: {tag.stdout!r}"
 
-        # The migration log advanced through v3.
+        # The migration log advanced through the latest migration (the pixi
+        # upgrade), which is the highest version in the registry.
         log = _exec(c, "cat", "/etc/openhost/migrations.jsonl")
-        assert '"version":3' in log.stdout.replace(" ", ""), f"log did not reach v3:\n{log.stdout}"
+        assert '"version":4' in log.stdout.replace(" ", ""), f"log did not reach v4:\n{log.stdout}"
 
         # openhost was restarted by the walk and serves /health.
         try:

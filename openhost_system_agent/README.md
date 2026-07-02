@@ -21,9 +21,15 @@ sudo openhost-system-agent <command>
 
 Key subcommands:
 
-- `update fetch` — fetch latest code from remote
-- `update apply` — apply pending system migrations and restart services
-- `update status` — show current version and pending migrations
+- `update fetch` — fetch latest tags/code from remote and report whether a newer release is available
+- `update apply` — apply the pending update: walk the release tags as stepping stones (running each tag's migrations → `pixi install` → checkout next), then restart openhost
+- `status` — show current system version and whether migrations are pending
+
+Updates track **release tags**, not a branch. The host checkout normally sits on
+a release tag (a detached HEAD by git's definition, which is expected here). To
+pin an instance to a specific branch or commit instead of the latest tag, use
+`update set_remote <url>@<ref>`; updates then walk the tags as usual but end on
+that ref.
 
 ## Adding a New Migration
 

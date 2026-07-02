@@ -4,13 +4,17 @@ from collections.abc import Sequence
 
 from openhost_system_agent.migrations.base import SystemMigration
 from openhost_system_agent.migrations.versions.v0002_baseline import Migration0002Baseline
-from openhost_system_agent.migrations.versions.v0003_pixi_version import Migration0003PixiVersion
+from openhost_system_agent.migrations.versions.v0003_remove_obsolete_hairpin_nat import (
+    Migration0003RemoveObsoleteHairpinNat,
+)
+from openhost_system_agent.migrations.versions.v0004_pixi_version import Migration0004PixiVersion
 
 # Numbered migrations in apply order. Versions MUST start at 2 and be
 # contiguous. v1 is the baseline produced by ansible setup.yml.
 REGISTRY: list[SystemMigration] = [
     Migration0002Baseline(),
-    Migration0003PixiVersion(),
+    Migration0003RemoveObsoleteHairpinNat(),
+    Migration0004PixiVersion(),
 ]
 
 

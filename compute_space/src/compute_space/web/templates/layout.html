@@ -14,9 +14,12 @@
     button, input[type="submit"], .btn { padding: 0.4em 1em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; text-decoration: none; color: #222; display: inline-block; }
     .btn-danger { background: #fee; border-color: #c00; color: #c00; }
     .btn-primary { background: #e8f0fe; border-color: #36c; color: #36c; }
-    nav { display: flex; }
+    nav { display: flex; align-items: center; }
     nav a { margin-right: 1.5em; }
     nav .spacer { flex: 1; }
+    nav .nav-user { color: #888; font-size: 0.9em; margin-right: 1em; }
+    nav form.logout-form { margin: 0; }
+    nav .btn-logout { padding: 0.3em 0.9em; font-size: 0.9em; }
     .error { color: #c00; }
     .field-error { color: #c00; font-size: 0.85em; }
     .status-running { color: #080; font-weight: bold; }
@@ -47,6 +50,10 @@
     <a href="/system/">System Info</a>
     <a href="/settings">Settings</a>
     <span class="spacer"></span>
+    {% if display_name %}<span class="nav-user">Logged in as {{ display_name }}</span>{% endif %}
+    <form class="logout-form" method="post" action="/logout">
+      <button type="submit" class="btn btn-danger btn-logout">Log out</button>
+    </form>
   </nav>
   <hr>
   {% block content %}{% endblock %}

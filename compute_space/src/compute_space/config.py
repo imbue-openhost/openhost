@@ -275,7 +275,8 @@ class DefaultConfig(Config):
     default_apps: list[str] = attr.Factory(
         lambda: [
             "https://github.com/imbue-openhost/secrets",
-            "file_browser",
+            "https://github.com/imbue-openhost/openhost-filestash",
+            "oauth_provider",
             "https://github.com/imbue-openhost/openhost-catalog",
         ]
     )

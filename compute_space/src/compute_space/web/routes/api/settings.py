@@ -37,9 +37,12 @@ class UpdateState(StrEnum):
 _GIT_STATE_TO_UPDATE_STATE = {
     "UP_TO_DATE": UpdateState.UP_TO_DATE,
     "BEHIND_REMOTE": UpdateState.UPDATE_AVAILABLE,
-    "AHEAD_OF_REMOTE": UpdateState.UPDATE_AVAILABLE,
     "DIRTY": UpdateState.UPDATE_AVAILABLE,
 }
+
+# Explanatory text shown to the owner for git states that need a heads-up
+# beyond the generic "Updates available." message.
+_GIT_STATE_NOTICE: dict[str, str] = {}
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -104,7 +107,7 @@ async def check_for_updates() -> CheckUpdatesResponse:
     if state is None:
         return CheckUpdatesResponse(state=UpdateState.ERROR, error=f"Unknown git state: {fetch_result.state}")
 
-    return CheckUpdatesResponse(state=state)
+    return CheckUpdatesResponse(state=state, error=_GIT_STATE_NOTICE.get(fetch_result.state))
 
 
 # Serializes apply_update: the agent checks out tags and runs migrations on a
