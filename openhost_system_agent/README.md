@@ -16,7 +16,7 @@ It runs as root (via `sudo`) and handles two concerns:
 The agent must be run as root:
 
 ```
-sudo openhost-system-agent <command>
+sudo openhost_system_agent <command>
 ```
 
 Key subcommands:

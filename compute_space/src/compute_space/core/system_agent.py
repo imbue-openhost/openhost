@@ -68,7 +68,7 @@ def system_agent_fetch() -> FetchResult:
 
 @async_wrap
 def system_agent_show_diff() -> DiffResult:
-    return _call_system_agent_sync(DiffResult, "update", "show_diff")
+    return _call_system_agent_sync(DiffResult, "update", "show-diff")
 
 
 @async_wrap
@@ -78,12 +78,12 @@ def system_agent_apply() -> ApplyResult:
 
 @async_wrap
 def system_agent_set_remote(url: str) -> RemoteInfo:
-    return _call_system_agent_sync(RemoteInfo, "update", "set_remote", url, timeout=120)
+    return _call_system_agent_sync(RemoteInfo, "update", "set-remote", url, timeout=120)
 
 
 @async_wrap
 def system_agent_get_remote() -> RemoteInfo:
-    return _call_system_agent_sync(RemoteInfo, "update", "get_remote")
+    return _call_system_agent_sync(RemoteInfo, "update", "get-remote")
 
 
 @async_wrap
