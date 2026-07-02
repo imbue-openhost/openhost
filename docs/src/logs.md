@@ -25,29 +25,21 @@ The router writes to two sinks simultaneously via loguru:
 
 ---
 
-### App build logs
+### App build and runtimelogs
 
 During deploy and reload, `podman build` output and container start/stop events are streamed to a per-app file:
 
 `<temp_data_dir>/app_temp_data/<app_name>/docker.log`
 
-- Archived (not deleted) at the start of each reload. The existing file is renamed with its modification time as a suffix: `docker.log.20240101_120000`. This timestamp reflects when that build ended, not when the next one started.
-- Up to 5 archived build logs are kept per app; older ones are deleted when the limit is exceeded.
-- Deleted entirely when the app is removed.
-- Access via `oh app logs <name>` (shown first, before runtime logs).
-
----
-
-### App container runtime logs (stdout/stderr)
-
 Container stdout and stderr are written to a per-app file via podman's `k8s-file` log driver:
 
 `<temp_data_dir>/app_temp_data/<app_name>/container.log`
 
-- Capped at 10 MB per file, with up to 3 rotated files kept — so at most 30 MB of runtime logs per app on disk at any time. Rotation is handled by podman automatically.
-- Deleted when the app is removed.
-- Access via `oh app logs <name>` (shown after build logs, sourced via `podman logs`).
-- These logs do **not** appear in journald — the `k8s-file` driver writes directly to disk, bypassing journald entirely.
+- Archived (not deleted) at the start of each reload. Both logs have the build time appended: `docker.log.20240101_120000`.
+- Up to 5 archived build logs are kept per app; older ones are deleted when the limit is exceeded.
+- Deleted entirely when the app is removed.
+- Access via `oh app logs <name>` (the current runtime log is appended to the build log).
+- Runtime logs do not appear in journald, which is used for openhost status logs
 
 ---
 

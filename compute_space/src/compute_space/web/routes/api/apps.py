@@ -23,8 +23,10 @@ from compute_space.core.app_id import is_valid_app_id
 from compute_space.core.apps import RESERVED_PATHS
 from compute_space.core.apps import PermissionGrant
 from compute_space.core.apps import all_manifest_permissions_v2
+from compute_space.core.apps import app_container_log_path
 from compute_space.core.apps import app_log_path
 from compute_space.core.apps import archive_old_log
+from compute_space.core.apps import log_timestamp
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
@@ -528,7 +530,9 @@ async def _reload_app_impl(
     log_file = app_log_path(app_name, config)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     if not continue_oauth:
-        archive_old_log(log_file)
+        ts = log_timestamp(log_file)
+        archive_old_log(log_file, ts=ts)
+        archive_old_log(app_container_log_path(app_name, config), ts=ts)
 
     with open(log_file, "a") as lf:
         if not continue_oauth:

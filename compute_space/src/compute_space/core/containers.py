@@ -107,12 +107,24 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
 _MAX_LOG_FILES = 5
 
 
-def archive_old_log(log_file: str) -> None:
-    """Rename an existing log file using its mtime as the timestamp, pruning oldest if over limit."""
+def log_timestamp(log_file: str) -> str | None:
+    """Return a timestamp string from a log file's mtime, or None if the file is absent/empty."""
+    if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
+        return None
+    mtime = os.path.getmtime(log_file)
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+
+def archive_old_log(log_file: str, ts: str | None = None) -> None:
+    """Rename an existing log file with a timestamp suffix, pruning oldest if over limit.
+
+    ts is used as the suffix when provided (so multiple files from the same
+    session share a timestamp).  Falls back to the file's own mtime.
+    """
     if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
         return
-    mtime = os.path.getmtime(log_file)
-    ts = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    if ts is None:
+        ts = log_timestamp(log_file)
     os.rename(log_file, f"{log_file}.{ts}")
     log_dir = os.path.dirname(log_file)
     base = os.path.basename(log_file) + "."
@@ -288,13 +300,11 @@ def run_container(
             ]
         )
 
-    # Archive previous session's container log and start a fresh one.
-    # max-file is not supported by podman's k8s-file driver; we handle
-    # retention ourselves via archive_old_log. max-size=10mb is kept as
-    # a safety net against unbounded growth between reloads.
+    # max-file is not supported by podman's k8s-file driver; archiving is
+    # handled by the reload route before run_container is called.
+    # max-size=10mb is kept as a safety net against unbounded growth between reloads.
     container_log_file = os.path.join(app_temp_dir, "container.log")
     os.makedirs(app_temp_dir, exist_ok=True)
-    archive_old_log(container_log_file)
 
     cmd.extend(
         [
