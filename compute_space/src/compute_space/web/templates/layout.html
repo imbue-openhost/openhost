@@ -14,7 +14,7 @@
     button, input[type="submit"], .btn { padding: 0.4em 1em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; text-decoration: none; color: #222; display: inline-block; font: inherit; font-size: 0.875em; }
     .btn-danger { background: #fee; border-color: #c00; color: #c00; }
     .btn-primary { background: #e8f0fe; border-color: #36c; color: #36c; }
-    nav { display: flex; align-items: flex-end; gap: 0.25em; }
+    nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid #e8e8e8; }
     nav .spacer { flex: 1; }
     nav .nav-user { color: #888; font-size: 0.9em; margin-right: 0.5em; align-self: center; }
     nav form.logout-form { margin: 0; align-self: center; }
@@ -60,7 +60,6 @@
       <button type="submit" class="btn btn-danger btn-logout">Log out</button>
     </form>
   </nav>
-  <hr style="margin-top: 0;">
   <script>
     (function() {
       var p = window.location.pathname;
