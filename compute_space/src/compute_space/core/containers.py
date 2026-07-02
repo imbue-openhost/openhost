@@ -102,6 +102,7 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
         f.write(text)
 
 
+
 def _is_build_cache_corrupt(output: str) -> bool:
     return any(_is_build_cache_corrupt_line(line) for line in output.splitlines())
 
@@ -268,6 +269,11 @@ def run_container(
             ]
         )
 
+    # Write container stdout/stderr to a size-capped per-app file instead of
+    # letting them flow into journald, where they accumulate without bound.
+    container_log_file = os.path.join(app_temp_dir, "container.log")
+    os.makedirs(app_temp_dir, exist_ok=True)
+
     cmd.extend(
         [
             f"--memory={manifest.memory_mb}m",
@@ -275,6 +281,10 @@ def run_container(
             "--restart=unless-stopped",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges=true",
+            "--log-driver=k8s-file",
+            f"--log-opt=path={container_log_file}",
+            "--log-opt=max-size=10mb",
+            "--log-opt=max-file=3",
         ]
     )
     if manifest.shm_mb > 0:

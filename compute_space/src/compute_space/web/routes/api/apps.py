@@ -24,6 +24,7 @@ from compute_space.core.apps import RESERVED_PATHS
 from compute_space.core.apps import PermissionGrant
 from compute_space.core.apps import all_manifest_permissions_v2
 from compute_space.core.apps import app_log_path
+from compute_space.core.apps import archive_old_log
 from compute_space.core.apps import clone_with_github_fallback
 from compute_space.core.apps import git_pull
 from compute_space.core.apps import insert_and_deploy
@@ -527,7 +528,7 @@ async def _reload_app_impl(
     log_file = app_log_path(app_name, config)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     if not continue_oauth:
-        open(log_file, "w").close()  # truncate
+        archive_old_log(log_file)
 
     with open(log_file, "a") as lf:
         if not continue_oauth:

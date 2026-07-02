@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from datetime import datetime
+from datetime import timezone
 from collections.abc import Callable
 
 import attr
@@ -708,9 +710,26 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
     db.commit()
 
 
+_MAX_BUILD_LOGS = 5
+
+
 def app_log_path(app_name: str, config: Config) -> str:
     """Return the log file path for an app."""
     return os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "docker.log")
+
+
+def archive_old_log(log_file: str) -> None:
+    """Rename the existing build log using its mtime as the timestamp, pruning oldest if over limit."""
+    if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
+        return
+    mtime = os.path.getmtime(log_file)
+    ts = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    os.rename(log_file, f"{log_file}.{ts}")
+    log_dir = os.path.dirname(log_file)
+    base = os.path.basename(log_file) + "."
+    archived = sorted(f for f in os.listdir(log_dir) if f.startswith(base))
+    for old in archived[:-_MAX_BUILD_LOGS]:
+        os.remove(os.path.join(log_dir, old))
 
 
 def _remote_default_branch(repo_path: str, log: Callable[[str], None]) -> tuple[str | None, str | None]:
