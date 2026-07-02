@@ -23,6 +23,8 @@ import os
 import re
 import sqlite3
 import subprocess
+from datetime import datetime
+from datetime import timezone
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -100,6 +102,23 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, "a") as f:
         f.write(text)
+
+
+_MAX_LOG_FILES = 5
+
+
+def archive_old_log(log_file: str) -> None:
+    """Rename an existing log file using its mtime as the timestamp, pruning oldest if over limit."""
+    if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
+        return
+    mtime = os.path.getmtime(log_file)
+    ts = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    os.rename(log_file, f"{log_file}.{ts}")
+    log_dir = os.path.dirname(log_file)
+    base = os.path.basename(log_file) + "."
+    archived = sorted(f for f in os.listdir(log_dir) if f.startswith(base))
+    for old in archived[:-_MAX_LOG_FILES]:
+        os.remove(os.path.join(log_dir, old))
 
 
 
@@ -269,10 +288,13 @@ def run_container(
             ]
         )
 
-    # Write container stdout/stderr to a size-capped per-app file instead of
-    # letting them flow into journald, where they accumulate without bound.
+    # Archive previous session's container log and start a fresh one.
+    # max-file is not supported by podman's k8s-file driver; we handle
+    # retention ourselves via archive_old_log. max-size=10mb is kept as
+    # a safety net against unbounded growth between reloads.
     container_log_file = os.path.join(app_temp_dir, "container.log")
     os.makedirs(app_temp_dir, exist_ok=True)
+    archive_old_log(container_log_file)
 
     cmd.extend(
         [
@@ -284,7 +306,6 @@ def run_container(
             "--log-driver=k8s-file",
             f"--log-opt=path={container_log_file}",
             "--log-opt=max-size=10mb",
-            "--log-opt=max-file=3",
         ]
     )
     if manifest.shm_mb > 0:
