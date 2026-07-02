@@ -62,10 +62,10 @@
   </nav>
   <script>
     (function() {
-      var p = window.location.pathname;
+      var p = window.location.pathname.replace(/\/+$/, '') || '/';
       document.querySelectorAll('#main-nav .nav-tab').forEach(function(a) {
-        var href = a.getAttribute('href');
-        if (href !== '/docs/' && (p === href || (href !== '/dashboard' && p.startsWith(href)))) {
+        var href = a.getAttribute('href').replace(/\/+$/, '') || '/';
+        if (href !== '/docs' && (p === href || p === '/' && href === '/dashboard' || (href !== '/dashboard' && p.startsWith(href)))) {
           a.classList.add('active');
         }
       });
