@@ -127,20 +127,47 @@ def _resolve_ref_sha(repo: git.Repo, ref: str) -> str | None:
     return None
 
 
+def _is_ancestor(repo: git.Repo, ancestor: str, descendant: str) -> bool:
+    """True if ``ancestor`` is an ancestor of (or equal to) ``descendant``."""
+    try:
+        repo.git.merge_base("--is-ancestor", ancestor, descendant)
+        return True
+    except git.GitCommandError:
+        return False
+
+
 def _next_step(repo: git.Repo) -> str | None:
     """The next ref to check out while walking toward the destination, or None
-    when already there. Release tags are walked in order as stepping stones;
-    once they're exhausted a pinned target ref (if any) is the final hop."""
+    when already there.
+
+    Release tags are walked in ascending version order as stepping stones, then
+    the pinned target ref (if any) is the final hop. The destination is the
+    pinned target when set, otherwise the latest release tag.
+
+    When a target is pinned we must (1) treat "HEAD already at the target sha"
+    as terminal *before* walking tags, and (2) only walk tags that are ancestors
+    of the target. Otherwise a target that doesn't contain the newest tag (a
+    branch cut from an older release, or a rollback pin) would oscillate forever
+    between the newest tag and the target."""
+    target = _get_target_ref(repo)
+    target_sha = _resolve_ref_sha(repo, target) if target is not None else None
+
+    # Terminal: already sitting on the pinned destination.
+    if target_sha is not None and repo.head.commit.hexsha == target_sha:
+        return None
+
     base = _current_tag(repo) or _latest_ancestor_tag(repo)
     later = [t for t in _get_sorted_tags(repo) if base is None or _version_key(t) > _version_key(base)]
+    if target_sha is not None:
+        # Only step through tags the pinned target actually contains, so the
+        # walk stays monotonic toward the target instead of ping-ponging.
+        later = [t for t in later if _is_ancestor(repo, t, target_sha)]
     if later:
         return later[0]
 
-    target = _get_target_ref(repo)
-    if target is not None:
-        sha = _resolve_ref_sha(repo, target)
-        if sha is not None and repo.head.commit.hexsha != sha:
-            return target
+    # Tags exhausted (or none applicable): the pinned target is the final hop.
+    if target_sha is not None:
+        return target
     return None
 
 

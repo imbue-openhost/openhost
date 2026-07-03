@@ -5,15 +5,19 @@ be managed through normal code deploys. They run as root via `sudo openhost_syst
 
 ## How an update works
 
-Updates are **tag-based**: hosts update to the latest semver tag, not the latest commit. When a host is behind, it
-walks forward through intermediate tags one at a time:
+Updates are **tag-based**: by default hosts update to the latest semver tag, not the latest commit. When a host is
+behind, it walks forward through intermediate tags one at a time:
 
 ```
-for each tag after current, up to latest:
+for each tag after current, up to the destination:
     checkout tag → run that tag's apply_after_checkout.py →
     migrations → pixi install
 finally: restart openhost
 ```
+
+The **destination** is normally the latest release tag. A host can instead be pinned to a specific branch or commit
+(the **target ref**) — see "Pinning to a target ref" below. When pinned, the release tags are still walked as
+stepping stones (only those the target contains), and the pinned ref is the final hop.
 
 Running each step under the checked-out tag's code is the critical design choice. This means:
 
@@ -54,12 +58,29 @@ intermediate tag rather than jumping straight to the latest.
 
 ### The algorithm
 
-1. `apply_update` fetches tags, finds the next tag after the host's current position, checks it out, and launches
+1. `apply_update` fetches tags, finds the next step toward the destination (`_next_step`), checks it out, and launches
    `apply_after_checkout.py`.
 2. `apply_after_checkout.py` runs migrations → pixi install at that tag's code.
-3. It then checks if there's a next tag. If so, it checks it out and `os.execv`s into itself — replacing the process
-   with the next tag's code.
-4. This repeats until there are no more tags. On the latest tag it restarts openhost and the host is up to date.
+3. It then asks `_next_step` for the next ref. If there is one, it checks it out and `os.execv`s into itself —
+   replacing the process with that ref's code.
+4. This repeats until `_next_step` returns `None` (the destination is reached). Then it restarts openhost and the host
+   is up to date.
+
+`_next_step` walks the release tags in ascending order, then (if a target ref is pinned) hops to the target as the
+final step. It is careful to (a) treat "already on the target commit" as terminal *before* walking tags, and (b) only
+step through tags that are ancestors of the pinned target. Without both, a target that does not contain the newest tag
+(a branch cut from an older release, or a rollback pin) would oscillate forever between the newest tag and the target.
+
+## Pinning to a target ref
+
+By default the destination is the latest release tag. To pin a host to a specific branch or commit, append `@<ref>` to
+the remote URL (e.g. via `update set-remote` or the dashboard): `https://github.com/imbue-openhost/openhost@my-branch`.
+This persists `openhost.target-ref` in git config. Updates then walk the release tags the target contains as stepping
+stones and end on the target's tip instead of the latest tag. Passing a URL with no `@<ref>` clears the pin and
+restores latest-tag behavior.
+
+Because the pin is persisted, be careful not to round-trip a resolved ref (like the current tag) back into the remote
+URL — doing so would pin the host to that tag and freeze it there.
 
 ## What to be aware of
 

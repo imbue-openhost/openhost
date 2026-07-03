@@ -328,3 +328,292 @@ def test_get_remote_info_reports_pinned_target(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(update_mod, "_repo", lambda: local)
 
     assert update_mod.get_remote_info().ref == "feature"
+
+
+# ── Extended: _next_step termination + stepping-stone topologies ─────
+#
+# These exercise the walk against every important topology, especially the
+# ones the original implementation looped forever on: a pinned ref that does
+# not contain the newest release tag (branch cut from an older tag, or a
+# rollback pin to an older commit). The invariant under test: from any starting
+# point, repeatedly applying ``_next_step`` (checking out its result each time)
+# must reach ``None`` in a bounded number of hops, and land on the intended
+# destination.
+
+
+def _branch_from(remote: Path, name: str, start: str, msg: str) -> None:
+    """Create ``name`` off ``start`` (a tag/branch/sha), one commit ahead."""
+    _git(remote, "checkout", start)
+    _git(remote, "checkout", "-b", name)
+    _commit(remote, msg)
+    _git(remote, "checkout", "main")
+
+
+def _walk(repo: git.Repo, *, max_hops: int = 50) -> list[str]:
+    """Drive the real apply walk locally: repeatedly ask ``_next_step`` for the
+    next ref, check out its resolved commit, and record it, until ``None``.
+
+    Mirrors ``apply_after_checkout.main``'s checkout loop (minus migrations /
+    pixi / execv). Raises if it fails to terminate within ``max_hops`` — that is
+    exactly the infinite-loop regression we are guarding against."""
+    path = Path(repo.working_dir)
+    hops: list[str] = []
+    for _ in range(max_hops):
+        step = update_mod._next_step(repo)
+        if step is None:
+            return hops
+        hops.append(step)
+        sha = update_mod._resolve_ref_sha(repo, step) or step
+        _git(path, "checkout", sha)
+    raise AssertionError(f"walk did not terminate within {max_hops} hops: {hops}")
+
+
+def test_walk_unpinned_reaches_latest_tag(tmp_path: Path) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0", "v1.2.0"])
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+
+    hops = _walk(repo)
+
+    assert hops == ["v1.1.0", "v1.2.0"]
+    assert update_mod._current_tag(repo) == "v1.2.0"
+
+
+def test_walk_unpinned_already_latest_is_noop(tmp_path: Path) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
+
+    assert _walk(repo) == []
+
+
+def test_walk_pinned_branch_off_latest_tag_terminates(tmp_path: Path) -> None:
+    # feature descends from the latest tag: walk tags, then hop to feature.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch(remote, "feature", "feature work")  # off main == v1.1.0
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(repo, "feature")
+
+    hops = _walk(repo)
+
+    assert hops == ["v1.1.0", "feature"]
+    tip = update_mod._resolve_ref_sha(repo, "feature")
+    assert repo.head.commit.hexsha == tip
+
+
+def test_walk_pinned_branch_off_older_tag_terminates(tmp_path: Path) -> None:
+    # REGRESSION: feature cut from v1.0.0 while v1.1.0 exists on main and is NOT
+    # an ancestor of feature. The original _next_step ping-ponged v1.1.0<->feature
+    # forever. The walk must terminate and skip the un-contained tag.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch_from(remote, "feature", "v1.0.0", "feature off old tag")
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(repo, "feature")
+
+    hops = _walk(repo)
+
+    # v1.1.0 is not contained by feature, so it is skipped entirely.
+    assert hops == ["feature"]
+    tip = update_mod._resolve_ref_sha(repo, "feature")
+    assert repo.head.commit.hexsha == tip
+
+
+def test_walk_pinned_on_branch_tip_is_terminal_even_with_newer_tag(tmp_path: Path) -> None:
+    # REGRESSION: sitting exactly on the pinned tip while a newer, un-contained
+    # tag exists must be terminal (previously it stepped onto the newer tag).
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch_from(remote, "feature", "v1.0.0", "feature off old tag")
+    repo = _clone_at(remote, tmp_path / "local", checkout="feature")
+    update_mod._set_target_ref(repo, "feature")
+
+    assert update_mod._next_step(repo) is None
+    assert _walk(repo) == []
+
+
+def test_walk_rollback_pin_to_older_commit_terminates(tmp_path: Path) -> None:
+    # REGRESSION: pin to an OLDER tag/commit than current HEAD (a rollback).
+    # The walk must not chase forward to a newer tag; it should be a no-op /
+    # single hop that terminates rather than looping.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0", "v1.2.0"])
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.2.0")
+    update_mod._set_target_ref(repo, "v1.0.0")
+
+    hops = _walk(repo)
+
+    # Only v1.0.0 is an ancestor of the target sha; no forward chase to v1.1/2.
+    assert hops in (["v1.0.0"], [])
+    assert repo.head.commit.hexsha == update_mod._resolve_ref_sha(repo, "v1.0.0")
+
+
+def test_walk_pinned_multiple_intermediate_tags_are_stepped(tmp_path: Path) -> None:
+    # feature off v1.2.0 while v1.0/1.1/1.2 all exist: step every contained tag
+    # after current, then hop to feature.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0", "v1.2.0"])
+    _branch_from(remote, "feature", "v1.2.0", "feature off latest")
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(repo, "feature")
+
+    hops = _walk(repo)
+
+    assert hops == ["v1.1.0", "v1.2.0", "feature"]
+
+
+def test_walk_pinned_partway_up_tags(tmp_path: Path) -> None:
+    # Start already on v1.1.0, pinned to feature off v1.2.0: only v1.2.0 then hop.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0", "v1.2.0"])
+    _branch_from(remote, "feature", "v1.2.0", "feature off latest")
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
+    update_mod._set_target_ref(repo, "feature")
+
+    assert _walk(repo) == ["v1.2.0", "feature"]
+
+
+def test_walk_pinned_to_sha_directly(tmp_path: Path) -> None:
+    # Pin to a raw commit sha (not a branch name) that is a descendant of latest.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _git(remote, "checkout", "main")
+    _commit(remote, "past latest")
+    target_sha = _git(remote, "rev-parse", "HEAD")
+    _git(remote, "checkout", "main")
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(repo, target_sha)
+
+    hops = _walk(repo)
+
+    assert hops[-1] == target_sha
+    assert repo.head.commit.hexsha == target_sha
+
+
+def test_next_step_no_tags_no_target_is_none(tmp_path: Path) -> None:
+    # A repo with commits but no release tags and no pin: nothing to do.
+    path = tmp_path / "repo"
+    path.mkdir()
+    _git(path, "-c", "init.defaultBranch=main", "init")
+    _commit(path, "only commit")
+    repo = git.Repo(path)
+
+    assert update_mod._next_step(repo) is None
+
+
+def test_next_step_no_tags_with_pinned_target(tmp_path: Path) -> None:
+    # No release tags at all, but a branch is pinned: hop straight to it.
+    path = tmp_path / "remote"
+    path.mkdir()
+    _git(path, "-c", "init.defaultBranch=main", "init")
+    _commit(path, "base")
+    _branch(path, "feature", "feature work")
+    repo = _clone_at(path, tmp_path / "local", checkout="main")
+    update_mod._set_target_ref(repo, "feature")
+
+    assert _walk(repo) == ["feature"]
+
+
+def test_next_step_pinned_to_nonexistent_ref_is_none(tmp_path: Path) -> None:
+    # A pin to a ref that cannot be resolved must not loop or crash; treat as
+    # "nothing to step to" (fetch_updates likewise reports UP_TO_DATE).
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
+    update_mod._set_target_ref(repo, "does-not-exist")
+
+    assert update_mod._resolve_ref_sha(repo, "does-not-exist") is None
+    assert update_mod._next_step(repo) is None
+
+
+def test_is_ancestor_helper(tmp_path: Path) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch_from(remote, "feature", "v1.0.0", "off old")
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
+
+    v100 = update_mod._resolve_ref_sha(repo, "v1.0.0")
+    v110 = update_mod._resolve_ref_sha(repo, "v1.1.0")
+    feat = update_mod._resolve_ref_sha(repo, "feature")
+    assert v100 is not None and v110 is not None and feat is not None
+
+    assert update_mod._is_ancestor(repo, v100, v110) is True
+    assert update_mod._is_ancestor(repo, v100, feat) is True
+    # v1.1.0 is NOT contained by feature (feature branched off v1.0.0).
+    assert update_mod._is_ancestor(repo, v110, feat) is False
+    # A commit is its own ancestor (equal case) — keeps the terminal check sound.
+    assert update_mod._is_ancestor(repo, feat, feat) is True
+
+
+def test_apply_update_pinned_off_old_tag_takes_bounded_first_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # REGRESSION at the apply_update entrypoint: with a pin that doesn't contain
+    # the newest tag, the first step must be the target (or a contained tag),
+    # never the un-contained newest tag, and it must execv exactly once.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch_from(remote, "feature", "v1.0.0", "off old tag")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "feature")
+    calls = _stub_execv(monkeypatch)
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    update_mod.apply_update()
+
+    assert len(calls) == 1
+    # HEAD advanced to the feature tip, not the un-contained v1.1.0.
+    assert local.head.commit.hexsha == update_mod._resolve_ref_sha(local, "feature")
+
+
+def test_apply_update_on_pinned_tip_is_noop_walk_then_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Already on the pinned tip (with a newer un-contained tag present): the
+    # first hop is terminal, so apply_update execs apply_after_checkout directly
+    # (which will restart) without stepping onto any tag.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch_from(remote, "feature", "v1.0.0", "off old tag")
+    local = _clone_at(remote, tmp_path / "local", checkout="feature")
+    update_mod._set_target_ref(local, "feature")
+    calls = _stub_execv(monkeypatch)
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+    before = local.head.commit.hexsha
+
+    update_mod.apply_update()
+
+    assert len(calls) == 1
+    assert local.head.commit.hexsha == before  # no checkout happened
+
+
+def test_show_diff_pinned_lists_commits_to_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    _branch(remote, "feature", "feature work")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "feature")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    diff = update_mod.show_diff()
+
+    assert diff.remote_ref == "feature"
+    assert len(diff.commits) >= 1
+
+
+def test_fetch_updates_rollback_pin_reports_behind_then_up_to_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A rollback pin to an older tag reports BEHIND_REMOTE until HEAD matches it,
+    # and never loops.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
+    update_mod._set_target_ref(local, "v1.0.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    assert update_mod.fetch_updates().state == "BEHIND_REMOTE"
+
+    v100_sha = update_mod._resolve_ref_sha(local, "v1.0.0")
+    assert v100_sha is not None
+    _git(tmp_path / "local", "checkout", v100_sha)
+    assert update_mod.fetch_updates().state == "UP_TO_DATE"
+
+
+def test_set_remote_url_roundtrip_pin_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    update_mod.set_remote_url(f"file://{remote}@feature")
+    update_mod.set_remote_url(f"file://{remote}@feature")  # re-pin same ref
+    assert update_mod._get_target_ref(local) == "feature"
+
+    update_mod.set_remote_url(f"file://{remote}")
+    update_mod.set_remote_url(f"file://{remote}")  # re-clear when already clear
+    assert update_mod._get_target_ref(local) is None
