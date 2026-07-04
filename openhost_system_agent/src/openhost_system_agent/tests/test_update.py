@@ -320,6 +320,19 @@ def test_set_remote_url_pins_and_clears_target(tmp_path: Path, monkeypatch: pyte
     assert update_mod._get_target_ref(local) is None
 
 
+def test_fetch_updates_pinned_unresolvable_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pin to a ref that cannot be resolved after fetch (typo'd or deleted
+    # branch) must surface as an error, not silently report UP_TO_DATE and hide
+    # the broken pin forever.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "no-such-branch")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        update_mod.fetch_updates()
+
+
 def test_get_remote_info_reports_pinned_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
     _branch(remote, "feature", "f1")

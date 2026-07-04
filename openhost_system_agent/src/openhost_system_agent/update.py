@@ -185,7 +185,16 @@ def fetch_updates() -> FetchResult:
     target = _get_target_ref(repo)
     if target is not None:
         sha = _resolve_ref_sha(repo, target)
-        if sha is not None and repo.head.commit.hexsha != sha:
+        if sha is None:
+            # The instance is pinned (git config openhost.target-ref) to a ref
+            # that does not exist on the remote after fetching — a typo'd or
+            # deleted branch/commit. Surface it instead of silently reporting
+            # UP_TO_DATE, which would hide the operator's broken pin forever.
+            raise RuntimeError(
+                f"Pinned target ref '{target}' could not be resolved on the remote. "
+                "Fix or clear the pin with 'set_remote' (a URL without an @ref clears it)."
+            )
+        if repo.head.commit.hexsha != sha:
             return FetchResult(state="BEHIND_REMOTE")
         return FetchResult(state="UP_TO_DATE")
 
