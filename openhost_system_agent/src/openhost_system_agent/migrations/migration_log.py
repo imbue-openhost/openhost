@@ -7,7 +7,6 @@ import attr
 from loguru import logger
 
 MIGRATIONS_PATH = "/etc/openhost/migrations.jsonl"
-MIGRATIONS_LOCK_PATH = "/etc/openhost/migrations.jsonl.lock"
 
 
 @attr.s(auto_attribs=True, frozen=True)
