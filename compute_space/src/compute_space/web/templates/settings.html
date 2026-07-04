@@ -195,7 +195,10 @@ async function loadRemote() {
     if (!resp.ok) throw new Error('failed to load remote');
     const data = await resp.json();
     savedRemote = data.url || '';
-    if (savedRemote && data.ref) {
+    // Only reconstruct the url@ref pin when the instance is actually pinned.
+    // When unpinned, data.ref is just the resolved current tag shown elsewhere;
+    // appending it here would make re-saving silently pin the host to that tag.
+    if (savedRemote && data.pinned && data.ref) {
       savedRemote = savedRemote + '@' + data.ref;
     }
     input.value = savedRemote;

@@ -238,6 +238,9 @@ def test_get_remote_info_reports_current_tag(tmp_path: Path, monkeypatch: pytest
 
     assert info.ref == "v1.0.0"
     assert info.url is not None and "remote" in info.url
+    # Unpinned: ref is informational only and must not be flagged as a pin, so
+    # the dashboard won't round-trip it back into a silent pin.
+    assert info.pinned is False
 
 
 # ── Pinned target ref (run from a branch/commit) ─────────────────────
@@ -340,7 +343,37 @@ def test_get_remote_info_reports_pinned_target(tmp_path: Path, monkeypatch: pyte
     update_mod._set_target_ref(local, "feature")
     monkeypatch.setattr(update_mod, "_repo", lambda: local)
 
-    assert update_mod.get_remote_info().ref == "feature"
+    info = update_mod.get_remote_info()
+    assert info.ref == "feature"
+    assert info.pinned is True  # actually pinned -> dashboard may reconstruct @feature
+
+
+def test_get_remote_info_unpinned_not_flagged_pinned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # REGRESSION: an unpinned instance reports the resolved current tag as ref
+    # (for display) but must set pinned=False. Otherwise the dashboard round-
+    # trips url@ref into set_remote and silently pins the host to the current
+    # tag, freezing it out of future auto-updates.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    assert update_mod._get_target_ref(local) is None  # unpinned
+    info = update_mod.get_remote_info()
+    assert info.ref == "v1.1.0"  # still shown for information
+    assert info.pinned is False  # but not a pin
+
+
+def test_set_remote_url_reports_pinned_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    pinned = update_mod.set_remote_url(f"file://{remote}@feature")
+    assert pinned.pinned is True and pinned.ref == "feature"
+
+    unpinned = update_mod.set_remote_url(f"file://{remote}")
+    assert unpinned.pinned is False
 
 
 # ── Extended: _next_step termination + stepping-stone topologies ─────

@@ -317,7 +317,9 @@ def set_remote_url(url: str) -> RemoteInfo:
     _set_target_ref(repo, ref)
 
     return RemoteInfo(
-        url=_strip_credentials(url), ref=ref or (tags[-1] if (tags := _get_sorted_tags(repo)) else "HEAD")
+        url=_strip_credentials(url),
+        ref=ref or (tags[-1] if (tags := _get_sorted_tags(repo)) else "HEAD"),
+        pinned=ref is not None,
     )
 
 
@@ -325,5 +327,8 @@ def get_remote_info() -> RemoteInfo:
     repo = _repo()
     remote = _get_remote(repo)
     url = _strip_credentials(remote.url) if remote.url else None
-    ref = _get_target_ref(repo) or _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
-    return RemoteInfo(url=url, ref=ref)
+    target = _get_target_ref(repo)
+    # When unpinned, still report the resolved current tag for display, but flag
+    # it as not pinned so the dashboard doesn't round-trip it back into a pin.
+    ref = target or _current_tag(repo) or _latest_ancestor_tag(repo) or repo.head.commit.hexsha[:8]
+    return RemoteInfo(url=url, ref=ref, pinned=target is not None)
