@@ -152,6 +152,16 @@ def _next_step(repo: git.Repo) -> str | None:
     target = _get_target_ref(repo)
     target_sha = _resolve_ref_sha(repo, target) if target is not None else None
 
+    # Pinned to a ref that no longer resolves (typo, or a branch/commit deleted
+    # on the remote after it was pinned). Stop instead of silently walking to the
+    # latest tag, which would abandon the operator's pin and jump the host onto a
+    # release they explicitly opted out of. Mirrors fetch_updates.
+    if target is not None and target_sha is None:
+        raise RuntimeError(
+            f"Pinned target ref '{target}' could not be resolved on the remote. "
+            "Fix or clear the pin with 'set_remote' (a URL without an @ref clears it)."
+        )
+
     # Terminal: already sitting on the pinned destination.
     if target_sha is not None and repo.head.commit.hexsha == target_sha:
         return None

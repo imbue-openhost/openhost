@@ -177,12 +177,26 @@ def test_walk_pinned_multiple_intermediate_tags(tmp_path: Path) -> None:
     assert _walk(local) == ["v1.1.0", "v1.2.0", "feature"]
 
 
-def test_walk_pinned_to_nonexistent_ref_is_none(tmp_path: Path) -> None:
+def test_walk_pinned_to_unresolvable_ref_raises(tmp_path: Path) -> None:
+    # A pin to a ref that no longer resolves must raise, not silently walk to the
+    # latest tag (which would abandon the operator's pin). Mirrors update.py.
     remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
     local = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
     _set_target(local, "does-not-exist")
     assert aac._resolve_ref_sha(str(local), "does-not-exist") is None
-    assert aac._next_step(str(local)) is None
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        aac._next_step(str(local))
+
+
+def test_walk_pinned_to_unresolvable_ref_below_latest_tag_raises(tmp_path: Path) -> None:
+    # REGRESSION: HEAD below the latest tag with an unresolvable pin. The old
+    # walk would step forward to the next tag and jump to the latest release,
+    # abandoning the pin. It must raise instead.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0", "v2.0.0"])
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    _set_target(local, "deleted-branch")
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        aac._next_step(str(local))
 
 
 def test_walk_no_tags_with_pinned_target(tmp_path: Path) -> None:

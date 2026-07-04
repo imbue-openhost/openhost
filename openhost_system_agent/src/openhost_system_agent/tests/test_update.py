@@ -519,15 +519,45 @@ def test_next_step_no_tags_with_pinned_target(tmp_path: Path) -> None:
     assert _walk(repo) == ["feature"]
 
 
-def test_next_step_pinned_to_nonexistent_ref_is_none(tmp_path: Path) -> None:
-    # A pin to a ref that cannot be resolved must not loop or crash; treat as
-    # "nothing to step to" (fetch_updates likewise reports UP_TO_DATE).
+def test_next_step_pinned_to_unresolvable_ref_raises(tmp_path: Path) -> None:
+    # A pin to a ref that cannot be resolved (typo, or a branch/commit deleted
+    # on the remote after it was pinned) must raise, not silently walk. Here HEAD
+    # is at the latest tag so the OLD code happened to return None; the fix
+    # surfaces the broken pin consistently with fetch_updates (see ca961ab).
     remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
     repo = _clone_at(remote, tmp_path / "local", checkout="v1.1.0")
     update_mod._set_target_ref(repo, "does-not-exist")
 
     assert update_mod._resolve_ref_sha(repo, "does-not-exist") is None
-    assert update_mod._next_step(repo) is None
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        update_mod._next_step(repo)
+
+
+def test_next_step_pinned_to_unresolvable_ref_below_latest_tag_raises(tmp_path: Path) -> None:
+    # REGRESSION: HEAD is BELOW the latest tag while pinned to an unresolvable
+    # ref. The old _next_step returned the next tag and would have walked the
+    # host all the way to the latest release, silently abandoning the operator's
+    # pin. It must raise instead of stepping.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0", "v2.0.0"])
+    repo = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(repo, "deleted-branch")
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        update_mod._next_step(repo)
+
+
+def test_apply_update_pinned_to_unresolvable_ref_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # apply_update must surface a broken pin rather than execing into a walk that
+    # jumps the host to the latest tag, abandoning the pin.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0", "v1.1.0"])
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    update_mod._set_target_ref(local, "deleted-branch")
+    calls = _stub_execv(monkeypatch)
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        update_mod.apply_update()
+    assert calls == []  # never handed off to the walk
 
 
 def test_is_ancestor_helper(tmp_path: Path) -> None:
