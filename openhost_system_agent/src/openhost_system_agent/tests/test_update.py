@@ -630,3 +630,38 @@ def test_set_remote_url_roundtrip_pin_is_idempotent(tmp_path: Path, monkeypatch:
     update_mod.set_remote_url(f"file://{remote}")
     update_mod.set_remote_url(f"file://{remote}")  # re-clear when already clear
     assert update_mod._get_target_ref(local) is None
+
+
+def test_set_remote_url_bad_ref_does_not_persist_broken_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pinning to a ref that doesn't exist must raise AND leave no target-ref
+    # persisted. Otherwise fetch_updates would silently report UP_TO_DATE for an
+    # unresolvable pin, hiding the misconfiguration and freezing the host.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    with pytest.raises(git.GitCommandError):
+        update_mod.set_remote_url(f"file://{remote}@nonexistent-branch")
+
+    # No broken pin left behind.
+    assert update_mod._get_target_ref(local) is None
+    # And with no pin persisted, fetch_updates uses normal tag logic (on latest).
+    assert update_mod.fetch_updates().state == "UP_TO_DATE"
+
+
+def test_set_remote_url_bad_re_pin_keeps_prior_working_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A working pin already exists; a subsequent re-pin to a bad ref fails but
+    # must not clobber the good pin.
+    remote = _make_repo(tmp_path / "remote", ["v1.0.0"])
+    _branch(remote, "feature", "f1")
+    local = _clone_at(remote, tmp_path / "local", checkout="v1.0.0")
+    monkeypatch.setattr(update_mod, "_repo", lambda: local)
+
+    update_mod.set_remote_url(f"file://{remote}@feature")
+    assert update_mod._get_target_ref(local) == "feature"
+
+    with pytest.raises(git.GitCommandError):
+        update_mod.set_remote_url(f"file://{remote}@nonexistent-branch")
+
+    # The good pin survives the failed re-pin.
+    assert update_mod._get_target_ref(local) == "feature"

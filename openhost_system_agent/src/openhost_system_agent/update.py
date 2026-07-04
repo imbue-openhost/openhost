@@ -290,9 +290,10 @@ def set_remote_url(url: str) -> RemoteInfo:
         repo.create_remote("origin", url)
 
     # An @ref pins the instance to that branch/commit (updates walk the tags but
-    # end there instead of the latest tag); no @ref clears the pin.
-    _set_target_ref(repo, ref)
-
+    # end there instead of the latest tag); no @ref clears the pin. Persist the
+    # pin only *after* the ref resolves and is checked out, so a bad @ref (typo,
+    # deleted branch) raises without leaving a broken pin behind that would make
+    # fetch_updates silently report UP_TO_DATE forever.
     if ref:
         _get_remote(repo).fetch()
         try:
@@ -302,6 +303,8 @@ def set_remote_url(url: str) -> RemoteInfo:
         except IndexError:
             repo.git.checkout("-f", ref)
         repo.git.clean("-fd")
+
+    _set_target_ref(repo, ref)
 
     return RemoteInfo(
         url=_strip_credentials(url), ref=ref or (tags[-1] if (tags := _get_sorted_tags(repo)) else "HEAD")
