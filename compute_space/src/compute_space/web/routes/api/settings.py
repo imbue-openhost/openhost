@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from enum import StrEnum
 
@@ -36,21 +37,12 @@ class UpdateState(StrEnum):
 _GIT_STATE_TO_UPDATE_STATE = {
     "UP_TO_DATE": UpdateState.UP_TO_DATE,
     "BEHIND_REMOTE": UpdateState.UPDATE_AVAILABLE,
-    "AHEAD_OF_REMOTE": UpdateState.UPDATE_AVAILABLE,
     "DIRTY": UpdateState.UPDATE_AVAILABLE,
-    # Detached HEAD is recoverable: `update apply` checks the host back onto its
-    # tracking branch before updating. Offer the update rather than erroring.
-    "DETACHED_HEAD": UpdateState.UPDATE_AVAILABLE,
 }
 
 # Explanatory text shown to the owner for git states that need a heads-up
 # beyond the generic "Updates available." message.
-_GIT_STATE_NOTICE = {
-    "DETACHED_HEAD": (
-        "This host's code checkout is in a detached HEAD state (not on a branch). "
-        "Applying the update will move it back onto its tracking branch and update normally."
-    ),
-}
+_GIT_STATE_NOTICE: dict[str, str] = {}
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -118,20 +110,31 @@ async def check_for_updates() -> CheckUpdatesResponse:
     return CheckUpdatesResponse(state=state, error=_GIT_STATE_NOTICE.get(fetch_result.state))
 
 
+# Serializes apply_update: the agent checks out tags and runs migrations on a
+# shared repo, so two concurrent applies would race. On success the agent
+# restarts compute_space (killing this process), so the lock is only released
+# on failure, leaving the host free to retry.
+_apply_lock = asyncio.Lock()
+
+
 @post("/api/settings/update", status_code=204, guards=[require_owner_auth])
 async def apply_update() -> None:
-    try:
-        migration_status = await system_agent_status()
-    except SystemAgentError as e:
-        raise HTTPException(detail=str(e), status_code=500) from e
+    if _apply_lock.locked():
+        raise HTTPException(detail="An update is already in progress.", status_code=409)
 
-    if not migration_status.ok and migration_status.reason != "behind":
-        raise HTTPException(detail=migration_status.message, status_code=409)
+    async with _apply_lock:
+        try:
+            migration_status = await system_agent_status()
+        except SystemAgentError as e:
+            raise HTTPException(detail=str(e), status_code=500) from e
 
-    try:
-        await system_agent_apply()
-    except SystemAgentError as e:
-        raise HTTPException(detail=str(e), status_code=500) from e
+        if not migration_status.ok and migration_status.reason != "behind":
+            raise HTTPException(detail=migration_status.message, status_code=409)
+
+        try:
+            await system_agent_apply()
+        except SystemAgentError as e:
+            raise HTTPException(detail=str(e), status_code=500) from e
 
 
 @post("/api/settings/restart_compute_space", status_code=204, guards=[require_owner_auth])

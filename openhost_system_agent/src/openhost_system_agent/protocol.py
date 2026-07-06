@@ -22,16 +22,15 @@ class DiffResult:
 
 
 @attr.s(auto_attribs=True, frozen=True)
-class ApplyResult:
-    ref: str
-    system_migrations_applied: list[int]
-    already_up_to_date: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
 class RemoteInfo:
     url: str | None
     ref: str
+    # True only when the instance is pinned to a target ref (git config
+    # openhost.target-ref). When False, ``ref`` is the resolved current release
+    # tag shown for information only; the dashboard must NOT reconstruct a
+    # ``url@ref`` pin from it, or re-saving an unpinned remote would silently
+    # freeze the host on the current tag.
+    pinned: bool = False
 
 
 @attr.s(auto_attribs=True, frozen=True)
