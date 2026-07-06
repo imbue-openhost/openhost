@@ -69,8 +69,11 @@ async def test_check_for_updates_migration_behind_is_update_available(monkeypatc
 
     result = await settings_mod.check_for_updates.fn()
 
+    # A "behind" host is applied by the Update button, so we must not surface the
+    # CLI-oriented status message (which tells the owner to SSH in and run
+    # `sudo openhost_system_agent update apply`) as a scary error in the UI.
     assert result.state == "UPDATE_AVAILABLE"
-    assert result.error == "run system migrations"
+    assert result.error is None
 
 
 @pytest.mark.asyncio
