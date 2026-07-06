@@ -98,7 +98,12 @@ async def check_for_updates() -> CheckUpdatesResponse:
         return CheckUpdatesResponse(state=UpdateState.ERROR, error=str(e))
 
     if not migration_status.ok and migration_status.reason == "behind":
-        return CheckUpdatesResponse(state=UpdateState.UPDATE_AVAILABLE, error=migration_status.message)
+        # A "behind" host just needs pending system migrations applied, which the
+        # Update button does (it runs the same `openhost_system_agent update apply`
+        # the CLI status message suggests). Surfacing that CLI-oriented message here
+        # would wrongly tell the owner to SSH in, so we treat this like any other
+        # available update and let the button handle it.
+        return CheckUpdatesResponse(state=UpdateState.UPDATE_AVAILABLE)
 
     if not migration_status.ok:
         return CheckUpdatesResponse(state=UpdateState.ERROR, error=migration_status.message)
