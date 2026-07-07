@@ -278,6 +278,7 @@ class DefaultConfig(Config):
             "https://github.com/imbue-openhost/openhost-filestash",
             "oauth_provider",
             "https://github.com/imbue-openhost/openhost-catalog",
+            "https://github.com/imbue-openhost/openhost-backup",
         ]
     )
 
