@@ -23,6 +23,8 @@ import os
 import re
 import sqlite3
 import subprocess
+from datetime import UTC
+from datetime import datetime
 
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
@@ -100,6 +102,35 @@ def _append_log(app_name: str, temp_data_dir: str, text: str) -> None:
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, "a") as f:
         f.write(text)
+
+
+_MAX_LOG_FILES = 5
+
+
+def log_timestamp(log_file: str) -> str | None:
+    """Return a timestamp string from a log file's mtime, or None if the file is absent/empty."""
+    if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
+        return None
+    mtime = os.path.getmtime(log_file)
+    return datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y%m%d_%H%M%S")
+
+
+def archive_old_log(log_file: str, ts: str | None = None) -> None:
+    """Rename an existing log file with a timestamp suffix, pruning oldest if over limit.
+
+    ts is used as the suffix when provided (so multiple files from the same
+    session share a timestamp).  Falls back to the file's own mtime.
+    """
+    if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
+        return
+    if ts is None:
+        ts = log_timestamp(log_file)
+    os.rename(log_file, f"{log_file}.{ts}")
+    log_dir = os.path.dirname(log_file)
+    base = os.path.basename(log_file) + "."
+    archived = sorted(f for f in os.listdir(log_dir) if f.startswith(base))
+    for old in archived[:-_MAX_LOG_FILES]:
+        os.remove(os.path.join(log_dir, old))
 
 
 def _is_build_cache_corrupt(output: str) -> bool:
@@ -268,6 +299,12 @@ def run_container(
             ]
         )
 
+    # max-file is not supported by podman's k8s-file driver; archiving is
+    # handled by the reload route before run_container is called.
+    # max-size=10mb is kept as a safety net against unbounded growth between reloads.
+    container_log_file = os.path.join(app_temp_dir, "container.log")
+    os.makedirs(app_temp_dir, exist_ok=True)
+
     cmd.extend(
         [
             f"--memory={manifest.memory_mb}m",
@@ -275,6 +312,9 @@ def run_container(
             "--restart=unless-stopped",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges=true",
+            "--log-driver=k8s-file",
+            f"--log-opt=path={container_log_file}",
+            "--log-opt=max-size=10mb",
         ]
     )
     if manifest.shm_mb > 0:

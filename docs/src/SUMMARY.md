@@ -8,6 +8,7 @@
 - [Routing](./routing.md)
 - [User Identity](./user_identity.md)
 - [Persistent Data & Archive](./data.md)
+- [Logs](./logs.md)
 
 # Guides
 

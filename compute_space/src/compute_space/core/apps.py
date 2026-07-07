@@ -709,8 +709,13 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
 
 
 def app_log_path(app_name: str, config: Config) -> str:
-    """Return the log file path for an app."""
+    """Return the build log file path for an app."""
     return os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "docker.log")
+
+
+def app_container_log_path(app_name: str, config: Config) -> str:
+    """Return the container runtime log file path for an app."""
+    return os.path.join(config.temporary_data_dir, "app_temp_data", app_name, "container.log")
 
 
 def _remote_default_branch(repo_path: str, log: Callable[[str], None]) -> tuple[str | None, str | None]:

@@ -75,7 +75,16 @@ def setup_file_logging(logfile_path: Path) -> None:
     _pending_log_path = None
     # Truncate so the API returns only current-invocation logs
     open(_log_path, "w").close()
-    logger.add(str(_log_path), level="INFO", format=_LOG_FORMAT, catch=True, backtrace=False, diagnose=False)
+    logger.add(
+        str(_log_path),
+        level="INFO",
+        format=_LOG_FORMAT,
+        catch=True,
+        backtrace=False,
+        diagnose=False,
+        rotation="10 MB",
+        retention=5,
+    )
 
 
 def retry_file_logging() -> None:
