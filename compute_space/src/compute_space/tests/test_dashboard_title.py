@@ -88,8 +88,8 @@ def test_heading_uses_zone_name_when_no_username(cfg: Any) -> None:
     with TestClient(app=_build_app(cfg)) as client:
         resp = client.get("/dashboard", cookies=cookie)
     assert resp.status_code == 200
-    assert "alice-zone's Private Compute Space" in resp.text
-    assert "owner's Private Compute Space" not in resp.text
+    assert "alice-zone's personal compute space" in resp.text
+    assert "owner's personal compute space" not in resp.text
 
 
 def test_heading_uses_owner_username_when_set(cfg: Any) -> None:
@@ -100,9 +100,9 @@ def test_heading_uses_owner_username_when_set(cfg: Any) -> None:
     with TestClient(app=_build_app(cfg)) as client:
         resp = client.get("/dashboard", cookies=cookie)
     assert resp.status_code == 200
-    assert "alice's Private Compute Space" in resp.text
+    assert "alice's personal compute space" in resp.text
     # The zone subdomain must no longer drive the heading.
-    assert "alice-zone's Private Compute Space" not in resp.text
+    assert "alice-zone's personal compute space" not in resp.text
 
 
 def test_dashboard_renders_logout_button(cfg: Any) -> None:
