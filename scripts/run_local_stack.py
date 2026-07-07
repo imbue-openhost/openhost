@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--default-apps",
         action="store_true",
-        help="deploy the standard default apps (secrets, file_browser, catalog) at setup",
+        help="deploy the standard default apps (secrets, filestash, catalog, oauth, backup) at setup",
     )
     args = parser.parse_args()
 
