@@ -1,12 +1,18 @@
 import os
 import sqlite3
 import threading
+import time
 
 from compute_space.config import Config
 from compute_space.core.apps import start_app_process
 from compute_space.core.containers import is_container_running
 from compute_space.core.default_apps import deploy_default_apps
 from compute_space.core.logging import logger
+
+# UTC timestamp captured at module import.  check_app_status uses this to
+# distinguish rows inserted by this process (whose build threads are still
+# running) from rows abandoned by a previous process (which should be swept).
+_PROCESS_START_UTC = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
 
 def check_app_status(config: Config) -> None:
@@ -39,27 +45,35 @@ def check_app_status(config: Config) -> None:
                     )
                 continue
 
-            if row["container_id"]:
-                repo_path = row["repo_path"]
-                if not repo_path or not os.path.isdir(repo_path):
+            repo_path = row["repo_path"]
+            if not repo_path or not os.path.isdir(repo_path):
+                db.execute(
+                    "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
+                    (
+                        f"Cannot restart: repo path missing ({repo_path})",
+                        row["app_id"],
+                    ),
+                )
+                continue
+
+            if not row["container_id"]:
+                # No container yet — run_container() hadn't been called when the
+                # process was killed.  Rows created after this process started have
+                # an active deploy_app_background thread still running; mark them
+                # starting so the dashboard reflects that, but don't queue a second
+                # build.
+                if row["created_at"] >= _PROCESS_START_UTC:
                     db.execute(
-                        "UPDATE apps SET status = 'error', error_message = ? WHERE app_id = ?",
-                        (
-                            f"Cannot restart: repo path missing ({repo_path})",
-                            row["app_id"],
-                        ),
+                        "UPDATE apps SET status = 'starting' WHERE app_id = ?",
+                        (row["app_id"],),
                     )
                     continue
-                db.execute(
-                    "UPDATE apps SET status = 'starting' WHERE app_id = ?",
-                    (row["app_id"],),
-                )
-                apps_to_restart.append(row["app_id"])
-            else:
-                db.execute(
-                    "UPDATE apps SET status = 'stopped' WHERE app_id = ?",
-                    (row["app_id"],),
-                )
+
+            db.execute(
+                "UPDATE apps SET status = 'starting' WHERE app_id = ?",
+                (row["app_id"],),
+            )
+            apps_to_restart.append(row["app_id"])
         db.commit()
     finally:
         db.close()

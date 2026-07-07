@@ -617,27 +617,33 @@ class TestContainerGone:
             # timeout that TestContainerE2E.test_app_detail uses (120 s).
             deadline = time.time() + 120
             db_status = None
+            db_error = None
             while time.time() < deadline:
                 try:
                     poll_db = sqlite3.connect(db_path)
                     try:
                         poll_db.row_factory = sqlite3.Row
                         poll_row = poll_db.execute(
-                            "SELECT status FROM apps WHERE name = ?",
+                            "SELECT status, error_message FROM apps WHERE name = ?",
                             (self.APP_NAME,),
                         ).fetchone()
                         if poll_row:
                             db_status = poll_row["status"]
+                            db_error = poll_row["error_message"]
                     finally:
                         poll_db.close()
                 except Exception as e:
                     logger.error(f"Error polling DB for app status: {e}")
                     pass
                 logger.info(f"Polled DB for app status: {db_status}")
-                if db_status == "running":
+                # 'error' is terminal — stop waiting out the full deadline and
+                # surface the failure reason instead of a bare status.
+                if db_status in ("running", "error"):
                     break
                 time.sleep(2)
-            assert db_status == "running", f"App should be running after deploy, got status={db_status}"
+            assert db_status == "running", (
+                f"App should be running after deploy, got status={db_status} (error_message={db_error!r})"
+            )
 
             # Record old container ID
             db = sqlite3.connect(db_path)
@@ -687,6 +693,7 @@ class TestContainerGone:
             # a new container via _start_app_process()
             deadline = time.time() + 15  # router is already up, just verify DB
             db_status = None
+            db_error = None
             new_container_id = None
             while time.time() < deadline:
                 try:
@@ -694,21 +701,24 @@ class TestContainerGone:
                     try:
                         poll_db.row_factory = sqlite3.Row
                         poll_row = poll_db.execute(
-                            "SELECT status, container_id FROM apps WHERE name = ?",
+                            "SELECT status, error_message, container_id FROM apps WHERE name = ?",
                             (self.APP_NAME,),
                         ).fetchone()
                         if poll_row:
                             db_status = poll_row["status"]
+                            db_error = poll_row["error_message"]
                             new_container_id = poll_row["container_id"]
                     finally:
                         poll_db.close()
                 except Exception:
                     pass
-                if db_status == "running":
+                if db_status in ("running", "error"):
                     break
                 time.sleep(2)
 
-            assert db_status == "running", f"App should be running after rebuild, got status={db_status}"
+            assert db_status == "running", (
+                f"App should be running after rebuild, got status={db_status} (error_message={db_error!r})"
+            )
             assert new_container_id, "Should have a new container ID"
             assert new_container_id != old_container_id, "Container ID should be different after rebuild"
 

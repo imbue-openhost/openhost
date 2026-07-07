@@ -27,15 +27,23 @@ def _seed_app(
     port: int,
     container_id: str | None,
     repo_path: str,
+    created_at: str | None = None,
 ) -> str:
     app_id = new_app_id()
     db = sqlite3.connect(cfg.db_path)
     try:
-        db.execute(
-            """INSERT INTO apps (app_id, name, version, repo_path, local_port, status, container_id)
-               VALUES (?, ?, '1.0', ?, ?, ?, ?)""",
-            (app_id, name, repo_path, port, status, container_id),
-        )
+        if created_at is None:
+            db.execute(
+                """INSERT INTO apps (app_id, name, version, repo_path, local_port, status, container_id)
+                   VALUES (?, ?, '1.0', ?, ?, ?, ?)""",
+                (app_id, name, repo_path, port, status, container_id),
+            )
+        else:
+            db.execute(
+                """INSERT INTO apps (app_id, name, version, repo_path, local_port, status, container_id, created_at)
+                   VALUES (?, ?, '1.0', ?, ?, ?, ?, ?)""",
+                (app_id, name, repo_path, port, status, container_id, created_at),
+            )
         db.commit()
     finally:
         db.close()
@@ -129,6 +137,127 @@ def test_running_app_with_dead_container_is_restarted(tmp_path: Path, monkeypatc
     assert app_id in restarted
 
 
+def test_starting_app_with_no_container_from_previous_process_is_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    # A no-container 'starting' row created *before* this process started is an
+    # abandoned build from a killed previous process — its deploy thread is gone,
+    # so the sweep must rebuild it.
+    cfg = _make_test_config(tmp_path, port=20700)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(startup, "_PROCESS_START_UTC", "2020-01-01 00:00:00")
+    app_id = _seed_app(
+        cfg,
+        name="nocontainer",
+        status="starting",
+        port=20710,
+        container_id=None,
+        repo_path=str(repo),
+        created_at="2019-12-31 23:59:59",
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert done.wait(5), "restart sweep was never scheduled for abandoned 'starting' app with no container"
+    assert app_id in restarted
+    assert _status(cfg, app_id) == "starting"
+
+
+def test_building_app_with_no_container_from_previous_process_is_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    # Same as above but 'building' — an interrupted build left with no container
+    # and a created_at predating this process must be rebuilt.
+    cfg = _make_test_config(tmp_path, port=20800)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(startup, "_PROCESS_START_UTC", "2020-01-01 00:00:00")
+    app_id = _seed_app(
+        cfg,
+        name="nocontainer-build",
+        status="building",
+        port=20810,
+        container_id=None,
+        repo_path=str(repo),
+        created_at="2019-12-31 23:59:59",
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert done.wait(5), "restart sweep was never scheduled for abandoned 'building' app with no container"
+    assert app_id in restarted
+    assert _status(cfg, app_id) == "starting"
+
+
+def test_inflight_build_from_current_process_is_not_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    # The first-boot race guard: deploy_default_apps inserts a 'building' row with
+    # no container and spawns a deploy thread, then this same process runs
+    # check_app_status while that build is still in flight.  Because the row's
+    # created_at is >= this process's start, the sweep must NOT queue a second,
+    # concurrent build (which would race podman rm -f, clobber container_id, and
+    # regenerate the app token).  It should only reflect the in-flight state by
+    # marking the row 'starting'.
+    cfg = _make_test_config(tmp_path, port=20900)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(startup, "_PROCESS_START_UTC", "2020-01-01 00:00:00")
+    app_id = _seed_app(
+        cfg,
+        name="inflight-build",
+        status="building",
+        port=20910,
+        container_id=None,
+        repo_path=str(repo),
+        created_at="2020-01-01 00:00:01",
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set(), "in-flight build from the current process was wrongly queued for restart"
+    assert app_id not in restarted
+    # Status is advanced to 'starting' so the dashboard shows the transitional
+    # state; the owning deploy thread still drives it to 'running'/'error'.
+    assert _status(cfg, app_id) == "starting"
+
+
+def test_inflight_build_at_exact_process_start_is_not_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    # created_at == _PROCESS_START_UTC (1-second resolution collision) must be
+    # treated as in-flight, not abandoned — the guard uses >=, so a row stamped
+    # in the same second the process started is left for its deploy thread.
+    cfg = _make_test_config(tmp_path, port=21000)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(startup, "_PROCESS_START_UTC", "2020-01-01 00:00:00")
+    app_id = _seed_app(
+        cfg,
+        name="inflight-boundary",
+        status="building",
+        port=21010,
+        container_id=None,
+        repo_path=str(repo),
+        created_at="2020-01-01 00:00:00",
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set()
+    assert app_id not in restarted
+    assert _status(cfg, app_id) == "starting"
+
+
 def test_running_app_with_live_container_is_left_alone(tmp_path: Path, monkeypatch: Any) -> None:
     cfg = _make_test_config(tmp_path, port=20600)
     init_db(cfg.db_path)
@@ -144,3 +273,112 @@ def test_running_app_with_live_container_is_left_alone(tmp_path: Path, monkeypat
     assert not done.is_set()
     assert restarted == []
     assert _status(cfg, app_id) == "running"
+
+
+def test_building_app_with_live_container_is_healed_to_running(tmp_path: Path, monkeypatch: Any) -> None:
+    # Symmetry with the 'starting' heal: a 'building' row whose container is
+    # actually up (a prior sweep started it but the status never advanced) must
+    # heal to 'running', not be rebuilt.
+    cfg = _make_test_config(tmp_path, port=21300)
+    init_db(cfg.db_path)
+    app_id = _seed_app(
+        cfg, name="live-build", status="building", port=21310, container_id="livecontainer", repo_path="/nonexistent"
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: True)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set()
+    assert restarted == []
+    assert _status(cfg, app_id) == "running"
+
+
+def test_dead_container_with_missing_repo_path_is_marked_error(tmp_path: Path, monkeypatch: Any) -> None:
+    # A dead container whose repo checkout has vanished cannot be rebuilt, so the
+    # sweep must surface the failure as 'error' rather than silently queue a
+    # rebuild that would immediately fail.
+    cfg = _make_test_config(tmp_path, port=21100)
+    init_db(cfg.db_path)
+    missing = tmp_path / "gone"  # deliberately never created
+    app_id = _seed_app(
+        cfg, name="norepo", status="building", port=21110, container_id="deadbeef", repo_path=str(missing)
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set()
+    assert app_id not in restarted
+    assert _status(cfg, app_id) == "error"
+
+
+def test_stopped_app_is_left_untouched(tmp_path: Path, monkeypatch: Any) -> None:
+    # check_app_status only scans running/starting/building. An app the owner
+    # deliberately stopped must not be revived by the boot sweep.
+    cfg = _make_test_config(tmp_path, port=21200)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app_id = _seed_app(cfg, name="idle", status="stopped", port=21210, container_id=None, repo_path=str(repo))
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set()
+    assert app_id not in restarted
+    assert _status(cfg, app_id) == "stopped"
+
+
+def test_removing_app_is_left_untouched(tmp_path: Path, monkeypatch: Any) -> None:
+    # 'removing' is a teardown-in-progress state outside the sweep's scan set;
+    # reviving it would race the removal thread.
+    cfg = _make_test_config(tmp_path, port=21500)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app_id = _seed_app(cfg, name="going", status="removing", port=21510, container_id="deadbeef", repo_path=str(repo))
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set()
+    assert app_id not in restarted
+    assert _status(cfg, app_id) == "removing"
+
+
+def test_inflight_starting_from_current_process_is_not_restarted(tmp_path: Path, monkeypatch: Any) -> None:
+    # Same guard as the in-flight 'building' case, for a row that reached
+    # 'starting' before run_container recorded a container_id. created_at >= this
+    # process's start means the owning deploy thread is still live, so the sweep
+    # must not queue a competing rebuild.
+    cfg = _make_test_config(tmp_path, port=21400)
+    init_db(cfg.db_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(startup, "_PROCESS_START_UTC", "2020-01-01 00:00:00")
+    app_id = _seed_app(
+        cfg,
+        name="inflight-starting",
+        status="starting",
+        port=21410,
+        container_id=None,
+        repo_path=str(repo),
+        created_at="2020-01-01 00:00:05",
+    )
+
+    monkeypatch.setattr(startup, "is_container_running", lambda cid: False)
+    restarted, done = _capture_restart_sweep(monkeypatch)
+
+    startup.check_app_status(cfg)
+
+    assert not done.is_set()
+    assert app_id not in restarted
+    assert _status(cfg, app_id) == "starting"
