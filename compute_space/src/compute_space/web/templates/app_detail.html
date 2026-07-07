@@ -14,7 +14,7 @@
   <tr><th>Description</th><td>{{ app.description or "---" }}</td></tr>
   <tr><th>URL</th><td>
     <span id="name-display">
-      <a href="{{ app_url(app.name) }}">{{ app_url(app.name) }}</a>
+      <a href="{{ app_url(app.name) }}" class="app-link">{{ app_url(app.name) }}</a>
       <button class="btn" onclick="editName()" style="margin-left:0.5em;">Edit</button>
     </span>
     <span id="name-edit" style="display:none;">

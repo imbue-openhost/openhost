@@ -11,15 +11,17 @@
     th, td { border: 1px solid #ddd; padding: 0.5em 0.8em; text-align: left; }
     th { background: #f5f5f5; }
     input[type="text"], input[type="password"] { padding: 0.4em; width: 100%; box-sizing: border-box; }
-    button, input[type="submit"], .btn { padding: 0.4em 1em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; text-decoration: none; color: #222; display: inline-block; }
+    button, input[type="submit"], .btn { padding: 0.4em 1em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; text-decoration: none; color: #222; display: inline-block; font: inherit; font-size: 0.875em; }
     .btn-danger { background: #fee; border-color: #c00; color: #c00; }
     .btn-primary { background: #e8f0fe; border-color: #36c; color: #36c; }
-    nav { display: flex; align-items: center; }
-    nav a { margin-right: 1.5em; }
+    nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid #e8e8e8; }
     nav .spacer { flex: 1; }
-    nav .nav-user { color: #888; font-size: 0.9em; margin-right: 1em; }
-    nav form.logout-form { margin: 0; }
+    nav .nav-user { color: #888; font-size: 0.9em; margin-right: 0.5em; align-self: center; }
+    nav form.logout-form { margin: 0; align-self: center; }
     nav .btn-logout { padding: 0.3em 0.9em; font-size: 0.9em; }
+    .nav-tab { display: inline-block; padding: 0.4em 1em; border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; text-decoration: none; color: #444; background: transparent; }
+    .nav-tab:hover { background: #f0f0f0; color: #222; border-color: #ddd; }
+    .nav-tab.active { background: #fff; border-color: #ddd; color: #222; margin-bottom: -1px; padding-bottom: calc(0.4em + 1px); }
     .error { color: #c00; }
     .field-error { color: #c00; font-size: 0.85em; }
     .status-running { color: #080; font-weight: bold; }
@@ -32,6 +34,9 @@
     .toast p { margin: 0 0 0.75em 0; }
     .toast .toast-actions { display: flex; gap: 0.5em; }
     h2 { margin-top: 2em; }
+    .app-link { color: #36c; text-decoration: none; font-weight: bold; }
+    .app-link:visited { color: #36c; }
+    .app-link:hover { text-decoration: underline; }
     .muted { color: #888; font-size: 0.9em; }
     .hint { color: #666; font-size: 0.9em; }
     .label-col { width: 14em; }
@@ -42,20 +47,30 @@
 </head>
 <body>
   <h1>{% if display_name %}{{ display_name }}'s Private Compute Space{% else %}OpenHost{% endif %}</h1>
-  <nav>
-    <a href="/dashboard">Dashboard</a>
-    <a href="/docs/" target="_blank" rel="noopener">Docs</a>
-    <a href="/add_app">Deploy App</a>
-    <a href="/terminal/">Terminal</a>
-    <a href="/system/">System Info</a>
-    <a href="/settings">Settings</a>
+  <nav id="main-nav">
+    <a href="/dashboard" class="nav-tab">Dashboard</a>
+    <a href="/docs/" target="_blank" rel="noopener" class="nav-tab">Docs</a>
+    <a href="/add_app" class="nav-tab">Deploy App</a>
+    <a href="/terminal/" class="nav-tab">Terminal</a>
+    <a href="/system/" class="nav-tab">System Info</a>
+    <a href="/settings" class="nav-tab">Settings</a>
     <span class="spacer"></span>
     {% if display_name %}<span class="nav-user">Logged in as {{ display_name }}</span>{% endif %}
     <form class="logout-form" method="post" action="/logout">
       <button type="submit" class="btn btn-danger btn-logout">Log out</button>
     </form>
   </nav>
-  <hr>
+  <script>
+    (function() {
+      var p = window.location.pathname.replace(/\/+$/, '') || '/';
+      document.querySelectorAll('#main-nav .nav-tab').forEach(function(a) {
+        var href = a.getAttribute('href').replace(/\/+$/, '') || '/';
+        if (href !== '/docs' && (p === href || p === '/' && href === '/dashboard' || (href !== '/dashboard' && p.startsWith(href)))) {
+          a.classList.add('active');
+        }
+      });
+    })();
+  </script>
   {% block content %}{% endblock %}
 </body>
 </html>
