@@ -98,10 +98,10 @@ function renderManifest(m, url) {
   if (hasFs) {
     section('Filesystem Permissions', '#fff3cd');
     if (wantsAllData) {
-      row('Full data access', 'Read/write to ALL apps’ permanent data, temporary data, VM data, and archive data (rw)');
+      row('Full data access', 'Read/write to ALL apps\u2019 permanent data, temporary data, VM data, and archive data (rw)');
     } else {
       if (wantsAllAppData) {
-        row('Full app data access', 'Read/write to ALL apps’ permanent data, temporary data, and VM data (rw)');
+        row('Full app data access', 'Read/write to ALL apps\u2019 permanent data, temporary data, and VM data (rw)');
       } else {
         if (m.app_data || m.sqlite_dbs.length)
           row('Permanent data', "Read/write to app's own permanent data directory");
@@ -109,7 +109,7 @@ function renderManifest(m, url) {
         if (m.access_vm_data) row('VM data', 'Read-only access to VM shared data');
       }
       if (wantsAllArchive) {
-        row('Full archive access', 'Read/write to ALL apps’ archive data (when S3 backend is configured)');
+        row('Full archive access', 'Read/write to ALL apps\u2019 archive data (when S3 backend is configured)');
       } else if (m.app_archive) {
         row('Archive data', "Read/write to app's own archive directory (requires S3 backend)");
       }
