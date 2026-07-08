@@ -21,27 +21,29 @@ OPENHOST_SERVICE_PATH = "/etc/systemd/system/openhost.service"
 # Fixed path for the reclaim script the service runs before ExecStart.
 RECLAIM_SCRIPT_PATH = "/usr/local/bin/openhost-reclaim-pixi"
 
-# The reclaim script: hand the host's pixi trees back to the host user. Run as
-# root (the unit's ExecStartPre uses the `+` prefix) before the host-user
-# `pixi run`, so a pixi op once run as root (old update bugs, stray root
-# self-update) can't brick the service. A standalone script — not an inline
-# ExecStartPre snippet — so no $VAR reaches systemd (which would substitute it
-# from the unit environment before /bin/sh runs). Depends on nothing from the
-# (possibly broken) pixi env. Kept byte-identical with
-# ansible/files/openhost-reclaim-pixi (a test enforces this).
+# The reclaim script: hand the host's OpenHost trees back to the host user. Run
+# as root (the unit's ExecStartPre uses the `+` prefix) before the host-user
+# `git`/`pixi run`, so files a root-run update left behind can't brick the
+# service. A standalone script — not an inline ExecStartPre snippet — so no
+# $VAR reaches systemd (which would substitute it from the unit environment
+# before /bin/sh runs). Depends on nothing from the (possibly broken) pixi env.
+# Kept byte-identical with ansible/files/openhost-reclaim-pixi (a test enforces
+# this).
 RECLAIM_SCRIPT = """#!/bin/sh
-# Reclaim ownership of the host's pixi trees for the host user. Managed by
+# Reclaim ownership of the host's OpenHost trees for the host user. Managed by
 # OpenHost; keep in sync with RECLAIM_SCRIPT in the openhost_system_agent
 # baseline migration (v0002_baseline.py).
 #
-# The openhost service runs as the unprivileged host user via `pixi run`. A
-# pixi operation accidentally run as root leaves root-owned files under the
-# host-owned pixi trees, and the host service's next `pixi run` then fails with
-# EACCES and won't start. Run as root (e.g. from a systemd ExecStartPre with
-# the '+' prefix), this hands those trees back to host so the service
-# self-heals on boot. A standalone script (not an inline ExecStartPre snippet)
-# so no $VAR reaches systemd, which would substitute it before /bin/sh runs.
-# Idempotent; missing paths are skipped.
+# The openhost service runs as the unprivileged host user: it runs `git` and
+# `pixi run` against /home/host/openhost (repo + its .pixi env) and against
+# /home/host/.pixi (pixi binary + caches). The root-run update walk (migrations,
+# git checkout/clean, and in older versions pixi install) can leave root-owned
+# files in those trees, after which the host service's pixi run fails with
+# EACCES and git ops fail on root-owned objects, so it won't start. Run as root
+# (e.g. from a systemd ExecStartPre with the '+' prefix), this hands those trees
+# back to host so the service self-heals on boot. A standalone script (not an
+# inline ExecStartPre snippet) so no $VAR reaches systemd, which would
+# substitute it before /bin/sh runs. Idempotent; missing paths are skipped.
 #
 # Best-effort by design: the whole reclaim is bounded by a single `timeout` and
 # its failure is swallowed (`|| :`). A systemd ExecStartPre with the `-` prefix
@@ -54,7 +56,7 @@ RECLAIM_SCRIPT = """#!/bin/sh
 #
 # shellcheck disable=SC2016  # $dir is expanded by the inner `sh -c`, not here.
 timeout 80 sh -c '
-for dir in /home/host/.pixi /home/host/openhost/.pixi; do
+for dir in /home/host/openhost /home/host/.pixi; do
     if [ -e "$dir" ]; then
         chown -Rh host:host "$dir"
     fi

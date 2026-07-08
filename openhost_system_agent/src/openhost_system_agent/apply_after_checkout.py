@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 from openhost_system_agent.migrations.runner import apply_system_migrations
-from openhost_system_agent.reclaim import reclaim_pixi_ownership
+from openhost_system_agent.reclaim import reclaim_host_ownership
 
 PIXI_BIN = "/home/host/.pixi/bin/pixi"
 
@@ -158,7 +158,7 @@ def main() -> None:
     # later reclaim — leaving the host bricked. It also precedes the host-user
     # `pixi install` below and heals root-owned residue left by prior updates.
     # Runs as root (this whole apply is root via sudo).
-    reclaim_pixi_ownership()
+    reclaim_host_ownership()
 
     # Migrations run before install so a toolchain upgrade (e.g. pixi) takes
     # effect before deps are installed for this checkout.
