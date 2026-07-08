@@ -51,8 +51,12 @@ for dir in /home/host/.pixi /home/host/openhost/.pixi; do
 done
 """
 
-# The unit line that invokes the reclaim script as root before ExecStart.
-RECLAIM_EXEC_START_PRE = f"ExecStartPre=+{RECLAIM_SCRIPT_PATH}\n"
+# The unit line that invokes the reclaim script before ExecStart. Prefixes
+# (order-insensitive): `+` runs it as root (needed to chown root-owned files
+# even though the unit is User=host); `-` makes it best-effort so a chown
+# failure can never block startup — the failsafe must not brick the service it
+# protects. Kept in sync with ansible/templates/openhost.service.j2.
+RECLAIM_EXEC_START_PRE = f"ExecStartPre=-+{RECLAIM_SCRIPT_PATH}\n"
 
 
 def build_openhost_service_unit(host_uid: int) -> str:

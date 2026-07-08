@@ -9,18 +9,19 @@ from openhost_system_agent.migrations.versions.v0002_baseline import build_openh
 
 
 class TestOpenhostServiceUnit:
-    def test_reclaim_execstartpre_calls_script_as_root(self) -> None:
+    def test_reclaim_execstartpre_runs_script_as_root_best_effort(self) -> None:
         unit = build_openhost_service_unit(1001)
         # Runs the standalone script (no inline $VAR for systemd to expand) as
-        # root via the `+` prefix.
-        assert f"ExecStartPre=+{RECLAIM_SCRIPT_PATH}\n" in unit
+        # root (`+`) and best-effort (`-`, so a chown failure can't block the
+        # service the failsafe protects).
+        assert f"ExecStartPre=-+{RECLAIM_SCRIPT_PATH}\n" in unit
         # Must not embed a shell $VAR, which systemd would substitute from the
         # unit environment before /bin/sh sees it.
         assert "$" not in RECLAIM_EXEC_START_PRE
 
     def test_reclaim_runs_before_execstart(self) -> None:
         unit = build_openhost_service_unit(1001)
-        assert unit.index("ExecStartPre=+") < unit.index("ExecStart=/home/host/.pixi/bin/pixi run")
+        assert unit.index("ExecStartPre=-+") < unit.index("ExecStart=/home/host/.pixi/bin/pixi run")
 
     def test_uses_the_shared_reclaim_constant(self) -> None:
         # The exact ExecStartPre line is a module constant so migrations that

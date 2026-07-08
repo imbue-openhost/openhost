@@ -150,17 +150,19 @@ def main() -> None:
     project = str(Path(__file__).resolve().parents[3])
     _ensure_repo_trusted(project)
 
+    # Failsafe: hand the pixi trees back to the host user FIRST, before anything
+    # else touches them. This must precede migrations because a migration can
+    # run a pixi operation as the host user (e.g. v0004's `pixi self-update`);
+    # if an older root-run left `/home/host/.pixi` root-owned, that host-user
+    # step would fail with EACCES and abort the whole update — never reaching a
+    # later reclaim — leaving the host bricked. It also precedes the host-user
+    # `pixi install` below and heals root-owned residue left by prior updates.
+    # Runs as root (this whole apply is root via sudo).
+    reclaim_pixi_ownership()
+
     # Migrations run before install so a toolchain upgrade (e.g. pixi) takes
     # effect before deps are installed for this checkout.
     apply_system_migrations()
-
-    # Failsafe: hand the pixi trees back to the host user before the host-user
-    # install below needs to touch them. Migrations run as root and older
-    # openhost versions ran `pixi install` as root, either of which can leave
-    # root-owned files that the host service's `pixi run` then can't modify.
-    # Reclaiming here lets such hosts self-heal on their next update instead of
-    # staying bricked. Runs as root (this whole apply is root via sudo).
-    reclaim_pixi_ownership()
 
     # Install as the unprivileged 'host' user, not root. The openhost service
     # runs as host via `pixi run`, and pixi tracks its PyPI sync per-user; a
