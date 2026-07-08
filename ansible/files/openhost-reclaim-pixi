@@ -12,15 +12,20 @@
 # so no $VAR reaches systemd, which would substitute it before /bin/sh runs.
 # Idempotent; missing paths are skipped.
 #
-# Best-effort by design: each chown is bounded by `timeout` and its failure is
-# swallowed (`|| :`). A systemd ExecStartPre with the `-` prefix ignores this
-# script's exit code, but that does NOT exempt it from TimeoutStartSec — a chown
-# that hung on a slow/stuck disk would otherwise blow the start window and block
-# the very service this failsafe protects. Bounding each chown well under the
-# default 90s start timeout guarantees we never do that.
-
+# Best-effort by design: the whole reclaim is bounded by a single `timeout` and
+# its failure is swallowed (`|| :`). A systemd ExecStartPre with the `-` prefix
+# ignores this script's exit code, but that does NOT exempt it from
+# TimeoutStartSec, which applies cumulatively across ExecStartPre commands. A
+# chown hung on a slow/stuck disk would otherwise blow the start window and
+# block the very service this failsafe protects. One overall bound (not a
+# per-path bound that could sum past the window) well under systemd's default
+# 90s start timeout guarantees we never do that.
+#
+# shellcheck disable=SC2016  # $dir is expanded by the inner `sh -c`, not here.
+timeout 80 sh -c '
 for dir in /home/host/.pixi /home/host/openhost/.pixi; do
     if [ -e "$dir" ]; then
-        timeout 60 chown -Rh host:host "$dir" || :
+        chown -Rh host:host "$dir"
     fi
 done
+' || :
