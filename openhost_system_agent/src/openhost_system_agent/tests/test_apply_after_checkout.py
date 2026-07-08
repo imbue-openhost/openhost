@@ -246,7 +246,7 @@ def test_main_reclaims_pixi_ownership_after_migrations_before_install() -> None:
         patch.object(aac, "_ensure_repo_trusted"),
         patch.object(aac, "apply_system_migrations", side_effect=lambda: order.append("migrations")),
         patch.object(aac, "reclaim_pixi_ownership", side_effect=lambda: order.append("reclaim")),
-        patch.object(aac.subprocess, "run", side_effect=_install) as mock_run,
+        patch("openhost_system_agent.apply_after_checkout.subprocess.run", side_effect=_install) as mock_run,
         patch.object(aac, "_next_step", return_value=None),
     ):
         # No next step -> falls through to the systemctl restart, which our

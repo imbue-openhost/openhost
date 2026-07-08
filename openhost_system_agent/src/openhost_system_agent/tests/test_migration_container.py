@@ -210,9 +210,7 @@ class TestApplyUpdateWalk:
         # Reference the registry so this can't drift when a migration is added.
         latest = latest_registry_version(REGISTRY)
         log = _exec(c, "cat", "/etc/openhost/migrations.jsonl")
-        assert f'"version":{latest}' in log.stdout.replace(" ", ""), (
-            f"log did not reach v{latest}:\n{log.stdout}"
-        )
+        assert f'"version":{latest}' in log.stdout.replace(" ", ""), f"log did not reach v{latest}:\n{log.stdout}"
 
         # openhost was restarted by the walk and serves /health.
         try:
