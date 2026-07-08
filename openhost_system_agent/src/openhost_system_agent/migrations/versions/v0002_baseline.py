@@ -42,11 +42,17 @@ RECLAIM_SCRIPT = """#!/bin/sh
 # self-heals on boot. A standalone script (not an inline ExecStartPre snippet)
 # so no $VAR reaches systemd, which would substitute it before /bin/sh runs.
 # Idempotent; missing paths are skipped.
-set -eu
+#
+# Best-effort by design: each chown is bounded by `timeout` and its failure is
+# swallowed (`|| :`). A systemd ExecStartPre with the `-` prefix ignores this
+# script's exit code, but that does NOT exempt it from TimeoutStartSec — a chown
+# that hung on a slow/stuck disk would otherwise blow the start window and block
+# the very service this failsafe protects. Bounding each chown well under the
+# default 90s start timeout guarantees we never do that.
 
 for dir in /home/host/.pixi /home/host/openhost/.pixi; do
     if [ -e "$dir" ]; then
-        chown -Rh host:host "$dir"
+        timeout 60 chown -Rh host:host "$dir" || :
     fi
 done
 """
