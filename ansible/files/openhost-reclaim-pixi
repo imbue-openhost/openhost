@@ -1,0 +1,20 @@
+#!/bin/sh
+# Reclaim ownership of the host's pixi trees for the host user. Managed by
+# OpenHost; keep in sync with RECLAIM_SCRIPT in the openhost_system_agent
+# baseline migration (v0002_baseline.py).
+#
+# The openhost service runs as the unprivileged host user via `pixi run`. A
+# pixi operation accidentally run as root leaves root-owned files under the
+# host-owned pixi trees, and the host service's next `pixi run` then fails with
+# EACCES and won't start. Run as root (e.g. from a systemd ExecStartPre with
+# the '+' prefix), this hands those trees back to host so the service
+# self-heals on boot. A standalone script (not an inline ExecStartPre snippet)
+# so no $VAR reaches systemd, which would substitute it before /bin/sh runs.
+# Idempotent; missing paths are skipped.
+set -eu
+
+for dir in /home/host/.pixi /home/host/openhost/.pixi; do
+    if [ -e "$dir" ]; then
+        chown -Rh host:host "$dir"
+    fi
+done

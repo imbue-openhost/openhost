@@ -21,6 +21,8 @@ from openhost_system_agent.migrations.helpers import get_host_uid
 from openhost_system_agent.migrations.helpers import run
 from openhost_system_agent.migrations.helpers import write_file
 from openhost_system_agent.migrations.versions.v0002_baseline import OPENHOST_SERVICE_PATH
+from openhost_system_agent.migrations.versions.v0002_baseline import RECLAIM_SCRIPT
+from openhost_system_agent.migrations.versions.v0002_baseline import RECLAIM_SCRIPT_PATH
 from openhost_system_agent.migrations.versions.v0002_baseline import build_openhost_service_unit
 from openhost_system_agent.reclaim import reclaim_pixi_ownership
 
@@ -33,7 +35,9 @@ class Migration0005PixiOwnershipFailsafe(SystemMigration):
         # `pixi install` (run as host by apply_after_checkout) succeeds.
         reclaim_pixi_ownership()
 
-        # Persist the startup failsafe into the unit so future root-owned
-        # residue self-heals on every boot.
+        # Install the reclaim script and wire the startup failsafe into the
+        # unit so future root-owned residue self-heals on every boot. Existing
+        # hosts ran the baseline before either existed, so write both here.
+        write_file(RECLAIM_SCRIPT_PATH, RECLAIM_SCRIPT, mode=0o755)
         write_file(OPENHOST_SERVICE_PATH, build_openhost_service_unit(get_host_uid()), mode=0o644)
         run("systemctl", "daemon-reload")
