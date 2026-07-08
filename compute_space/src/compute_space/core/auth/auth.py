@@ -9,7 +9,7 @@ from datetime import timedelta
 import attr
 import bcrypt
 
-SESSION_TTL_SECONDS = 7 * 24 * 60 * 60  # one week
+SESSION_TTL_SECONDS = 28 * 24 * 60 * 60  # four weeks
 SESSION_COOKIE_NAME = "session_token"
 
 # Lowercase alphanumeric + dots/underscores/hyphens, starting with an alphanumeric.
