@@ -1,5 +1,7 @@
 ---
-# Install pixi, caddy, and coredns. Set capabilities for privileged port binding.
+# Install pixi and caddy, and let caddy bind privileged ports.
+# CoreDNS is handled separately in coredns.yml (it isn't packaged for every
+# arch, so it may come from a pinned download rather than pixi).
 
 - name: Install pixi
   shell: curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.70.2 bash
@@ -24,22 +26,10 @@
   register: caddy_path
   changed_when: false
 
-- name: Find coredns binary path
-  shell: /home/host/.pixi/bin/pixi run which coredns
-  args:
-    chdir: /home/host/openhost
-  register: coredns_path
-  changed_when: false
-
 - name: Set cap_net_bind_service on caddy
   become: yes
   become_user: root
   shell: setcap 'cap_net_bind_service=+ep' {{ caddy_path.stdout }}
-
-- name: Set cap_net_bind_service on coredns
-  become: yes
-  become_user: root
-  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_path.stdout }}
 
 - name: Create resolved.conf.d directory
   become: yes
