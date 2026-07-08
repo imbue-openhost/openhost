@@ -24,22 +24,29 @@ DOMAIN=""
 BRANCH="main"
 REPO_URL="https://github.com/imbue-openhost/openhost.git"
 OPENHOST_DIR="/home/host/openhost"
+LOCAL_HTTP_ONLY="false"
 
 usage() {
-    echo "Usage: $0 --domain <domain> [--branch <branch>] [--repo <repo-url>]"
+    echo "Usage: $0 --domain <domain> [--branch <branch>] [--repo <repo-url>] [--local-http-only]"
     echo ""
-    echo "  --domain   Required. Domain name (e.g., myhost.example.com)"
-    echo "  --branch   Git branch to deploy (default: main)"
-    echo "  --repo     Git repo URL (default: imbue-openhost/openhost)"
+    echo "  --domain            Required. Domain name (e.g., myhost.example.com)."
+    echo "                      In --local-http-only mode this is only used for app"
+    echo "                      subdomain routing (e.g. lvh.me), not TLS/DNS."
+    echo "  --branch            Git branch to deploy (default: main)"
+    echo "  --repo              Git repo URL (default: imbue-openhost/openhost)"
+    echo "  --local-http-only   HTTP-only localhost mode: no TLS, CoreDNS, or Caddy."
+    echo "                      For bringing an instance up before a public domain +"
+    echo "                      DNS are ready.  Reach it via an SSH tunnel to :8080."
 }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --domain)   DOMAIN="$2"; shift 2 ;;
-        --branch)   BRANCH="$2"; shift 2 ;;
-        --repo)     REPO_URL="$2"; shift 2 ;;
-        -h|--help)  usage; exit 0 ;;
-        *)          echo "Unknown option: $1"; usage; exit 1 ;;
+        --domain)           DOMAIN="$2"; shift 2 ;;
+        --branch)           BRANCH="$2"; shift 2 ;;
+        --repo)             REPO_URL="$2"; shift 2 ;;
+        --local-http-only)  LOCAL_HTTP_ONLY="true"; shift ;;
+        -h|--help)          usage; exit 0 ;;
+        *)                  echo "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
 
@@ -108,18 +115,21 @@ ansible-playbook ansible/local_setup.yml \
     -e "domain=$DOMAIN" \
     -e "public_ip=${PUBLIC_IP:-127.0.0.1}" \
     -e "acme_directory_url=https://acme-v02.api.letsencrypt.org/directory" \
+    -e "local_http_only=$LOCAL_HTTP_ONLY" \
     -e "skip_service_start=true" \
     --connection=local \
     -i "localhost,"
 
-# ---- Generate ACME account key if missing ----
-ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
-if [ ! -f "$ACME_KEY_PATH" ]; then
-    echo "--- Generating ACME account key ---"
-    mkdir -p "$(dirname "$ACME_KEY_PATH")"
-    su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 scripts/generate_acme_key.py $ACME_KEY_PATH"
-    chmod 600 "$ACME_KEY_PATH"
-    chown host:host "$ACME_KEY_PATH"
+# ---- Generate ACME account key if missing (TLS mode only) ----
+if [ "$LOCAL_HTTP_ONLY" != "true" ]; then
+    ACME_KEY_PATH="$OPENHOST_DIR/ansible/secrets/certbot_private_key.json"
+    if [ ! -f "$ACME_KEY_PATH" ]; then
+        echo "--- Generating ACME account key ---"
+        mkdir -p "$(dirname "$ACME_KEY_PATH")"
+        su host -c "cd $OPENHOST_DIR && /home/host/.pixi/bin/pixi run python3 scripts/generate_acme_key.py $ACME_KEY_PATH"
+        chmod 600 "$ACME_KEY_PATH"
+        chown host:host "$ACME_KEY_PATH"
+    fi
 fi
 
 # ---- Start the service ----
@@ -129,8 +139,14 @@ systemctl start openhost
 echo ""
 echo "=== OpenHost provisioning complete ==="
 echo ""
-echo "  Dashboard: https://$DOMAIN"
-echo "  SSH:       ssh host@$DOMAIN"
+if [ "$LOCAL_HTTP_ONLY" = "true" ]; then
+    echo "  Mode:      HTTP-only localhost (no TLS/CoreDNS/Caddy)"
+    echo "  Dashboard: http://localhost:8080  (SSH-tunnel to reach it:"
+    echo "             ssh -L 8080:localhost:8080 host@<pi-ip>)"
+else
+    echo "  Dashboard: https://$DOMAIN"
+    echo "  SSH:       ssh host@$DOMAIN"
+fi
 echo ""
 echo "  Check status:  systemctl status openhost"
 echo "  View logs:     journalctl -u openhost -f"

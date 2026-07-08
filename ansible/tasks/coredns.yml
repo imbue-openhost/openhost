@@ -35,6 +35,7 @@
 # ---- other arches: install the pinned GitHub release ----
 - name: Download pinned CoreDNS tarball (checksum-verified)
   become: yes
+  become_user: root
   get_url:
     url: "https://github.com/coredns/coredns/releases/download/v{{ coredns_version }}/coredns_{{ coredns_version }}_linux_{{ coredns_arch }}.tgz"
     dest: /tmp/coredns-pinned.tgz
@@ -44,6 +45,7 @@
 
 - name: Install CoreDNS to /usr/local/bin
   become: yes
+  become_user: root
   unarchive:
     src: /tmp/coredns-pinned.tgz
     dest: /usr/local/bin
@@ -61,4 +63,5 @@
 # ---- both paths: allow binding the privileged :53 port ----
 - name: Set cap_net_bind_service on CoreDNS
   become: yes
+  become_user: root
   shell: setcap 'cap_net_bind_service=+ep' {{ coredns_bin }}

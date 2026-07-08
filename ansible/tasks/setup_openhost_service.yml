@@ -46,7 +46,7 @@
 
 - name: Show claim URL
   debug:
-    msg: "Claim URL: https://{{ domain }}/setup?claim={{ effective_claim_token }}"
+    msg: "Claim URL: {{ ('http://' + domain + ':8080') if (local_http_only | default(false) | bool) else ('https://' + domain) }}/setup?claim={{ effective_claim_token }}"
 
 # Look up the host user's UID so the service template can reference
 # the right /run/user/<uid> path and user@<uid>.service unit. The

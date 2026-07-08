@@ -1,16 +1,24 @@
+{% set http_only = (local_http_only | default(false)) | bool %}
+{# local_http_only: HTTP-only localhost mode (no TLS / CoreDNS / Caddy) for
+   bringing an instance up before a public domain + DNS are ready.  The router
+   serves plain HTTP directly on host:port (reach it via an SSH tunnel, or set
+   -e bind_host=0.0.0.0 for LAN access).  Re-run without the flag for full
+   TLS + CoreDNS once DNS is in place. #}
 [openhost]
 zone_domain = "{{ domain }}"
-host = "127.0.0.1"
-tls_enabled = true
-acquire_tls_cert_if_missing = true
+host = "{{ bind_host | default('127.0.0.1') }}"
+tls_enabled = {{ 'false' if http_only else 'true' }}
+acquire_tls_cert_if_missing = {{ 'false' if http_only else 'true' }}
+{% if not http_only %}
 acme_account_key_path = "/home/host/openhost/ansible/secrets/certbot_private_key.json"
 acme_email = "{{ acme_email | default('openhost@' + domain) }}"
 {% if acme_directory_url is defined %}
 acme_directory_url = "{{ acme_directory_url }}"
 {% endif %}
-coredns_enabled = true
+{% endif %}
+coredns_enabled = {{ 'false' if http_only else 'true' }}
 public_ip = "{{ public_ip | default(inventory_hostname) }}"
-start_caddy = true
+start_caddy = {{ 'false' if http_only else 'true' }}
 claim_token_required = true
 data_root_dir = "/home/host/.openhost/local_compute_space"
 apps_dir_override = "/home/host/openhost/apps"
