@@ -16,6 +16,50 @@ from openhost_system_agent.migrations.helpers import run
 from openhost_system_agent.migrations.helpers import set_sshd_option
 from openhost_system_agent.migrations.helpers import write_file
 
+OPENHOST_SERVICE_PATH = "/etc/systemd/system/openhost.service"
+
+# Failsafe run before the host-user ExecStart: reclaim ownership of the pixi
+# trees so a pixi operation once run as root (old update bugs, stray root
+# self-update) can't brick the service. The `+` prefix runs it as root even
+# though the unit is User=host; inline so it needs nothing from the (possibly
+# broken) pixi env. Kept as a module constant so later migrations rewriting the
+# unit stay byte-identical with this baseline.
+RECLAIM_EXEC_START_PRE = (
+    "ExecStartPre=+/bin/sh -c 'for d in /home/host/.pixi /home/host/openhost/.pixi; "
+    'do [ -e "$d" ] && chown -Rh host:host "$d"; done; true\'\n'
+)
+
+
+def build_openhost_service_unit(host_uid: int) -> str:
+    """Render the openhost.service unit. Shared so migrations that rewrite it
+    stay consistent with the baseline (and with ansible's template)."""
+    return (
+        "[Unit]\n"
+        "Description=OpenHost Compute Space\n"
+        f"After=network-online.target user@{host_uid}.service\n"
+        f"Wants=network-online.target user@{host_uid}.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "User=host\n"
+        "WorkingDirectory=/home/host/openhost\n"
+        "Environment=PATH=/home/host/.pixi/bin:/home/host/openhost/.pixi/envs/default/bin:"
+        "/usr/local/bin:/usr/bin:/bin\n"
+        "Environment=OPENHOST_ROUTER_CONFIG=/home/host/.openhost/local_compute_space/config.toml\n"
+        f"Environment=XDG_RUNTIME_DIR=/run/user/{host_uid}\n"
+        f"Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{host_uid}/bus\n"
+        + RECLAIM_EXEC_START_PRE
+        + "ExecStart=/home/host/.pixi/bin/pixi run python -m compute_space\n"
+        "Restart=no\n"
+        "RestartForceExitStatus=42\n"
+        "SuccessExitStatus=42\n"
+        "RestartSec=3\n"
+        "TimeoutStopSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
 
 class Migration0002Baseline(SystemMigration):
     version = 2
@@ -114,32 +158,7 @@ class Migration0002Baseline(SystemMigration):
         run("systemctl", "reload", "ssh")
 
     def _systemd_service(self) -> None:
-        host_uid = get_host_uid()
-        unit = (
-            "[Unit]\n"
-            "Description=OpenHost Compute Space\n"
-            f"After=network-online.target user@{host_uid}.service\n"
-            f"Wants=network-online.target user@{host_uid}.service\n"
-            "\n"
-            "[Service]\n"
-            "Type=simple\n"
-            "User=host\n"
-            "WorkingDirectory=/home/host/openhost\n"
-            "Environment=PATH=/home/host/.pixi/bin:/home/host/openhost/.pixi/envs/default/bin:"
-            "/usr/local/bin:/usr/bin:/bin\n"
-            "Environment=OPENHOST_ROUTER_CONFIG=/home/host/.openhost/local_compute_space/config.toml\n"
-            f"Environment=XDG_RUNTIME_DIR=/run/user/{host_uid}\n"
-            f"Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{host_uid}/bus\n"
-            "ExecStart=/home/host/.pixi/bin/pixi run python -m compute_space\n"
-            "Restart=no\n"
-            "RestartForceExitStatus=42\n"
-            "SuccessExitStatus=42\n"
-            "RestartSec=3\n"
-            "TimeoutStopSec=5\n"
-            "\n"
-            "[Install]\n"
-            "WantedBy=multi-user.target\n"
-        )
-        write_file("/etc/systemd/system/openhost.service", unit, mode=0o644)
+        unit = build_openhost_service_unit(get_host_uid())
+        write_file(OPENHOST_SERVICE_PATH, unit, mode=0o644)
         run("systemctl", "daemon-reload")
         run("systemctl", "enable", "openhost")

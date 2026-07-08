@@ -8,6 +8,7 @@ from openhost_system_agent.migrations.versions.v0003_remove_obsolete_hairpin_nat
     Migration0003RemoveObsoleteHairpinNat,
 )
 from openhost_system_agent.migrations.versions.v0004_pixi_version import Migration0004PixiVersion
+from openhost_system_agent.migrations.versions.v0005_pixi_ownership_failsafe import Migration0005PixiOwnershipFailsafe
 
 # Numbered migrations in apply order. Versions MUST start at 2 and be
 # contiguous. v1 is the baseline produced by ansible setup.yml.
@@ -15,6 +16,7 @@ REGISTRY: list[SystemMigration] = [
     Migration0002Baseline(),
     Migration0003RemoveObsoleteHairpinNat(),
     Migration0004PixiVersion(),
+    Migration0005PixiOwnershipFailsafe(),
 ]
 
 
