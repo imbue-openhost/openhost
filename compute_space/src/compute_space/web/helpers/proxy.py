@@ -110,6 +110,39 @@ _HTTP_REQUEST_EXCLUDED_HEADERS = frozenset(
 
 _BUFFER_THRESHOLD = 512_000  # 500 KB — buffer small upstream responses to avoid chunked encoding
 
+# How long to wait to *establish* a TCP connection to a backend app before
+# giving up with a 502.  Kept short so a dead/not-listening app fails fast.
+_DEFAULT_CONNECT_TIMEOUT = 30.0
+# How long to wait for the backend to send response bytes.  This MUST be long
+# enough to accommodate legitimate long-poll / streaming endpoints (e.g. Matrix
+# ``/sync`` long-polls for ~30s, server-sent events, hanging GETs).  A short
+# read timeout here manifests as intermittent ``504 App timed out`` responses
+# that break long-lived clients: Matrix clients treat the 504 as a sync error
+# and surface a disconnection to the user.  ``None`` disables the read timeout
+# so we never cut a request the backend is still legitimately serving; the
+# client owns its own timeout, and a truly wedged app is caught by the connect
+# timeout above and by the app's own liveness handling.
+_DEFAULT_READ_TIMEOUT: float | None = None
+
+
+def _build_httpx_timeout(timeout: float | httpx.Timeout | None) -> httpx.Timeout:
+    """Build the httpx timeout for a proxied request.
+
+    A bare number (or ``None``) sets the *connect* timeout (fail-fast for dead
+    apps) while leaving the *read* timeout generous (``_DEFAULT_READ_TIMEOUT``)
+    so long-poll/streaming endpoints aren't cut short.  Callers that need full
+    control can pass an ``httpx.Timeout`` directly and it is used as-is.
+    """
+    if isinstance(timeout, httpx.Timeout):
+        return timeout
+    connect = timeout if timeout is not None else _DEFAULT_CONNECT_TIMEOUT
+    return httpx.Timeout(
+        connect=connect,
+        read=_DEFAULT_READ_TIMEOUT,
+        write=connect,
+        pool=connect,
+    )
+
 _HTTP_RESPONSE_EXCLUDED_HEADERS = frozenset(
     {
         # per-hop headers (these get read as we receive the incoming request, and automatically set on the outgoing)
@@ -127,7 +160,7 @@ async def proxy_http_request(
     target_port: int,
     override_path: str | None = None,
     extra_headers: Iterable[tuple[str, str]] = (),
-    timeout: float = 30,
+    timeout: float | httpx.Timeout | None = None,
 ) -> ASGIResponse:
     """Forward an HTTP request to a local port and return the response.
 
@@ -141,6 +174,12 @@ async def proxy_http_request(
     buffered into a plain ``ASGIResponse`` (which sets ``Content-Length`` and
     avoids chunked encoding).  Larger or unknown-length responses are streamed
     back via ``ASGIStreamingResponse`` so they don't have to fit in memory.
+
+    ``timeout`` controls the *connect* timeout (fail-fast for dead apps); the
+    read timeout stays generous so long-poll/streaming endpoints aren't cut off
+    (see ``_build_httpx_timeout``).  ``None`` (the default) uses
+    ``_DEFAULT_CONNECT_TIMEOUT``.  An ``httpx.Timeout`` may be passed for full
+    control.
     """
     target_url = _format_proxy_request_url(request.scope, target_port, override_path)
     new_request_headers = _build_forwarded_request_headers(
@@ -174,7 +213,7 @@ async def proxy_http_request(
     has_declared_body = "content-length" in request.headers or "transfer-encoding" in request.headers
     content = request_body if has_declared_body else None
 
-    client = httpx.AsyncClient(timeout=timeout)
+    client = httpx.AsyncClient(timeout=_build_httpx_timeout(timeout))
     try:
         new_request = client.build_request(
             method=str(request.method),
