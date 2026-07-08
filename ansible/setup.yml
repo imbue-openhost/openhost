@@ -7,7 +7,9 @@
 # Optional variables:
 #   -e public_ip=1.2.3.4         (defaults to target IP)
 #   -e initial_user=ubuntu        (defaults to root)
-#   -e openhost_commit=<sha>      (git commit to deploy; defaults to main)
+#   -e openhost_branch=<branch>   (git branch to deploy; defaults to main)
+#   -e openhost_commit=<sha>      (exact commit to deploy; used if
+#                                  openhost_branch is unset)
 #   -e claim_token=<secret>       (gates /setup until the human supplies this
 #                                  token; URL-safe: letters, digits, '-', '_'.
 #                                  If omitted, the play generates a random
