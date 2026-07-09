@@ -35,10 +35,12 @@ class TestOpenhostServiceUnit:
 
 
 class TestReclaimScript:
-    def test_script_chowns_both_pixi_trees_to_host(self) -> None:
+    def test_script_chowns_host_trees_to_host(self) -> None:
         assert "chown -Rh host:host" in RECLAIM_SCRIPT
+        # The repo tree (covers its .pixi env, .git, working tree) and the
+        # standalone pixi tree (binary + caches).
+        assert "/home/host/openhost" in RECLAIM_SCRIPT
         assert "/home/host/.pixi" in RECLAIM_SCRIPT
-        assert "/home/host/openhost/.pixi" in RECLAIM_SCRIPT
         assert RECLAIM_SCRIPT.startswith("#!/bin/sh")
 
     def test_matches_ansible_copy_byte_for_byte(self) -> None:
