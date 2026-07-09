@@ -143,6 +143,7 @@
   <button class="btn" onclick="appAction('/stop_app/{{ app.app_id }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', null, {label: 'Reloading'})">Reload App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
+  <a class="btn" href="/api/app_diagnostics/{{ app.app_id }}?download=1">Download Diagnostics</a>
   {% if edit_app %}
     {% if edit_app.mode == 'service' %}
       <form method="POST" action="{{ edit_app.action }}" target="_blank" style="display:contents;">

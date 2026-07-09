@@ -1,0 +1,41 @@
+{% extends "layout.html" %}
+{% block title_suffix %} - Diagnostics{% endblock %}
+{% block content %}
+<h2>Diagnostics</h2>
+<p class="hint">A snapshot of this instance for debugging: OpenHost version, host system
+info, installed dependency versions, container runtime, disk usage, and every
+installed app. Copy or download it and include it in a bug report.</p>
+
+<div class="control-row">
+  <button class="btn btn-primary" id="copy-btn">Copy to clipboard</button>
+  <button class="btn" id="download-btn">Download JSON</button>
+  <button class="btn" id="refresh-btn">Refresh</button>
+  <span class="hint" id="copy-status"></span>
+</div>
+
+<h2>Summary</h2>
+<table id="summary-table">
+  <tbody id="summary-body">
+    <tr><td colspan="2" class="muted">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+
+<h2>Installed Apps</h2>
+<table id="apps-table">
+  <thead><tr><th>App</th><th>Version</th><th>Status</th><th>Git</th></tr></thead>
+  <tbody id="apps-body">
+    <tr><td colspan="4" class="muted">Loading&hellip;</td></tr>
+  </tbody>
+</table>
+
+<h2>Raw JSON</h2>
+<pre class="log-output" id="diag-json" style="max-height: 40em; white-space: pre-wrap; word-break: break-all;">Loading...</pre>
+
+<script id="page-config" type="application/json">
+{
+  "diagnosticsUrl": "/api/diagnostics",
+  "diagnosticsDownloadUrl": "/api/diagnostics?download=1"
+}
+</script>
+<script src="{{ static_url('js/diagnostics.js') }}"></script>
+{% endblock %}

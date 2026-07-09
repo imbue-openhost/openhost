@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 import subprocess
@@ -283,6 +284,17 @@ class AppCmd:
             if err:
                 line += f"  ({err})"
             print(line)
+
+    @cappa.command(name="diagnostics")
+    def diagnostics(
+        self,
+        app_name: Annotated[str, cappa.Arg(help="App name")],
+        cfg: Annotated[config.Instance, Dep(resolve_instance)],
+    ) -> None:
+        """Print a per-app diagnostics bundle (JSON) for debugging."""
+        app_id = resolve_app_id_by_name(cfg.url, cfg.token, app_name)
+        result = make_api_request(cfg.url, cfg.token, "GET", f"/api/app_diagnostics/{app_id}")
+        print(json.dumps(result.json(), indent=2))
 
 
 @cappa.command(name="tokens", help="Manage API tokens.")
@@ -580,6 +592,14 @@ class Version:
         print(f"  full sha: {sha}")
 
 
+@cappa.command(name="diagnostics", help="Print a full instance diagnostics bundle (JSON) for debugging.")
+@attrs.define
+class Diagnostics:
+    def __call__(self, cfg: Annotated[config.Instance, Dep(resolve_instance)]) -> None:
+        result = make_api_request(cfg.url, cfg.token, "GET", "/api/diagnostics")
+        print(json.dumps(result.json(), indent=2))
+
+
 @cappa.command(name="curl", help="curl with your OpenHost bearer token injected.")
 @attrs.define
 class Curl:
@@ -600,7 +620,7 @@ class Curl:
 @cappa.command(name="oh", help="OpenHost compute space CLI — manage things in your compute space.")
 @attrs.define
 class Oh:
-    subcommand: cappa.Subcommands[Status | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl | Version]
+    subcommand: cappa.Subcommands[Status | AppCmd | TokensCmd | LogsCmd | InstanceCmd | Curl | Version | Diagnostics]
     instance: Annotated[
         str | None,
         cappa.Arg(long=True, default=None, propagate=True, help="Target a specific named instance"),
