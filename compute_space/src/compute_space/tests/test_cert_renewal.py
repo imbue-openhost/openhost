@@ -94,13 +94,15 @@ def test_renew_skips_valid_cert(tmp_path: Path) -> None:
     assert calls == []
 
 
-@pytest.mark.parametrize("days_until_expiry", [-1, 10])
-def test_renew_provisions_and_restarts_caddy(tmp_path: Path, days_until_expiry: int) -> None:
+@pytest.mark.parametrize(
+    "expires_in", [datetime.timedelta(days=-1), RENEW_BEFORE - datetime.timedelta(days=1)], ids=["expired", "expiring"]
+)
+def test_renew_provisions_and_restarts_caddy(tmp_path: Path, expires_in: datetime.timedelta) -> None:
     config = _config(tmp_path)
     _write_self_signed_cert(
         config.tls_cert_path,
         config.tls_key_path,
-        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days_until_expiry),
+        datetime.datetime.now(datetime.UTC) + expires_in,
     )
     calls: list[str] = []
     renewed = renew_cert_if_needed(
