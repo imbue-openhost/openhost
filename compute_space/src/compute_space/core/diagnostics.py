@@ -255,9 +255,7 @@ def _collect_container_runtime() -> ContainerRuntimeInfo:
     assert the rootless flag) so the two agree on what "healthy" looks like.
     """
     if shutil.which("podman") is None:
-        return ContainerRuntimeInfo(
-            available=False, version=None, rootless=None, error="podman not found on PATH"
-        )
+        return ContainerRuntimeInfo(available=False, version=None, rootless=None, error="podman not found on PATH")
     try:
         info_proc = subprocess.run(
             ["podman", "info", "--format", "json"],
@@ -278,7 +276,10 @@ def _collect_container_runtime() -> ContainerRuntimeInfo:
     try:
         info = json.loads(info_proc.stdout)
         host = info.get("host", {})
-        version = host.get("serverVersion")
+        # podman reports its own version under the top-level ``version`` table
+        # (``version.Version``); ``host.serverVersion`` is not populated in
+        # current releases, so read the former and fall back to the latter.
+        version = info.get("version", {}).get("Version") or host.get("serverVersion")
         rootless_val = host.get("security", {}).get("rootless")
         rootless = rootless_val if isinstance(rootless_val, bool) else None
     except (json.JSONDecodeError, AttributeError):

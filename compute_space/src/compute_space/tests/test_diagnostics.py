@@ -112,7 +112,7 @@ def test_collect_container_runtime_rootless_true() -> None:
     fake = subprocess.CompletedProcess(
         args=[],
         returncode=0,
-        stdout=json.dumps({"host": {"serverVersion": "4.9.3", "security": {"rootless": True}}}),
+        stdout=json.dumps({"version": {"Version": "4.9.3"}, "host": {"security": {"rootless": True}}}),
         stderr="",
     )
     with (
@@ -218,9 +218,7 @@ def test_app_diagnostics_400_on_bad_id(apps_client: TestClient[Litestar], cookie
     assert resp.status_code == 400
 
 
-def test_app_diagnostics_returns_bundle(
-    cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]
-) -> None:
+def test_app_diagnostics_returns_bundle(cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     app_id = _seed_app(cfg.db_path, "myapp", manifest_raw=_MINIMAL_MANIFEST)
     resp = apps_client.get(f"/api/app_diagnostics/{app_id}", cookies=cookies)
     assert resp.status_code == 200
@@ -237,9 +235,7 @@ def test_app_diagnostics_returns_bundle(
     assert "openhost" in body
 
 
-def test_app_diagnostics_download_header(
-    cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]
-) -> None:
+def test_app_diagnostics_download_header(cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     app_id = _seed_app(cfg.db_path, "myapp")
     resp = apps_client.get(f"/api/app_diagnostics/{app_id}?download=1", cookies=cookies)
     assert resp.status_code == 200
