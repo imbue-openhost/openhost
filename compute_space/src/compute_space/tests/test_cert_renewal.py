@@ -1,0 +1,122 @@
+import datetime
+from pathlib import Path
+
+import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from compute_space.config import Config
+from compute_space.config import DefaultConfig
+from compute_space.core.tls.renewal import RENEW_BEFORE
+from compute_space.core.tls.renewal import CertStatus
+from compute_space.core.tls.renewal import get_cert_status
+from compute_space.core.tls.renewal import renew_cert_if_needed
+
+_NOW = datetime.datetime(2026, 7, 9, tzinfo=datetime.UTC)
+
+
+def _write_self_signed_cert(cert_path: Path, key_path: Path, not_valid_after: datetime.datetime) -> None:
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(x509.oid.NameOID.COMMON_NAME, "test.example.com")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_valid_after - datetime.timedelta(days=90))
+        .not_valid_after(not_valid_after)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+
+
+def test_status_missing_when_no_files(tmp_path: Path) -> None:
+    assert get_cert_status(tmp_path / "cert.pem", tmp_path / "key.pem", now=_NOW) == CertStatus.MISSING
+
+
+def test_status_missing_when_key_absent(tmp_path: Path) -> None:
+    cert_path = tmp_path / "cert.pem"
+    _write_self_signed_cert(cert_path, tmp_path / "elsewhere.pem", _NOW + datetime.timedelta(days=60))
+    assert get_cert_status(cert_path, tmp_path / "key.pem", now=_NOW) == CertStatus.MISSING
+
+
+def test_status_expired(tmp_path: Path) -> None:
+    cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
+    _write_self_signed_cert(cert_path, key_path, _NOW - datetime.timedelta(days=1))
+    assert get_cert_status(cert_path, key_path, now=_NOW) == CertStatus.EXPIRED
+
+
+def test_status_expiring_soon(tmp_path: Path) -> None:
+    cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
+    _write_self_signed_cert(cert_path, key_path, _NOW + RENEW_BEFORE - datetime.timedelta(days=1))
+    assert get_cert_status(cert_path, key_path, now=_NOW) == CertStatus.EXPIRING_SOON
+
+
+def test_status_ok_when_outside_renewal_window(tmp_path: Path) -> None:
+    cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
+    _write_self_signed_cert(cert_path, key_path, _NOW + RENEW_BEFORE + datetime.timedelta(days=1))
+    assert get_cert_status(cert_path, key_path, now=_NOW) == CertStatus.OK
+
+
+def test_status_unparseable_cert_treated_as_expired(tmp_path: Path) -> None:
+    cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_path.write_text("not a certificate")
+    key_path.write_text("not a key")
+    assert get_cert_status(cert_path, key_path, now=_NOW) == CertStatus.EXPIRED
+
+
+def _config(tmp_path: Path) -> Config:
+    config = DefaultConfig(zone_domain="test.example.com", data_root_dir=str(tmp_path))
+    config.openhost_data_path.mkdir(parents=True)
+    return config
+
+
+def test_renew_skips_valid_cert(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _write_self_signed_cert(
+        config.tls_cert_path, config.tls_key_path, datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=60)
+    )
+    calls: list[str] = []
+    renewed = renew_cert_if_needed(
+        config, lambda: calls.append("restart"), provision=lambda c: calls.append("provision")
+    )
+    assert renewed is False
+    assert calls == []
+
+
+@pytest.mark.parametrize("days_until_expiry", [-1, 10])
+def test_renew_provisions_and_restarts_caddy(tmp_path: Path, days_until_expiry: int) -> None:
+    config = _config(tmp_path)
+    _write_self_signed_cert(
+        config.tls_cert_path,
+        config.tls_key_path,
+        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days_until_expiry),
+    )
+    calls: list[str] = []
+    renewed = renew_cert_if_needed(
+        config, lambda: calls.append("restart"), provision=lambda c: calls.append("provision")
+    )
+    assert renewed is True
+    assert calls == ["provision", "restart"]
+
+
+def test_renew_failure_does_not_restart_caddy(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    def _failing_provision(config: Config) -> None:
+        raise RuntimeError("ACME is down")
+
+    with pytest.raises(RuntimeError, match="ACME is down"):
+        renew_cert_if_needed(config, lambda: calls.append("restart"), provision=_failing_provision)
+    assert calls == []

@@ -11,22 +11,20 @@ from typing import Any
 import hypercorn.asyncio
 import hypercorn.config
 
-from compute_space.config import CERT_PROVIDER_ACME
 from compute_space.config import Config
 from compute_space.config import load_config
 from compute_space.config import set_active_config
 from compute_space.core.auth.keys import load_keys
+from compute_space.core.caddy import CaddyProcess
 from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
 from compute_space.core.logging import logger
 from compute_space.core.logging import setup_file_logging
 from compute_space.core.terminal import cleanup_all as cleanup_terminal_sessions
-from compute_space.core.tls.acquire_cert import acquire_tls_cert
-from compute_space.core.tls.acquire_cert import check_if_cert_exists
-from compute_space.core.tls.acquire_cert_broker import acquire_tls_cert_via_broker
-from compute_space.core.tls.cert_api_client import CertApiClient
-from compute_space.core.tls.keycloak import KeycloakClientCredentials
-from compute_space.core.tls.keycloak import KeycloakTokenProvider
+from compute_space.core.tls.provision import provision_cert
+from compute_space.core.tls.renewal import CertStatus
+from compute_space.core.tls.renewal import get_cert_status
+from compute_space.core.tls.renewal import start_renewal_thread
 from compute_space.core.updates import RESTART_EXIT_CODE
 from compute_space.core.updates import initialize_shutdown_event
 from compute_space.db import init_db
@@ -63,54 +61,29 @@ def _owner_exists(config: Config) -> bool:
         db.close()
 
 
-def _acquire_missing_tls_cert(config: Config) -> None:
-    """Acquire a missing TLS cert using the configured provider.
-
-    Caller has already verified the cert is missing, CoreDNS is enabled, and
-    acquire_tls_cert_if_missing is set.  The default "acme" provider is the
-    unchanged BYO-ACME path; "cert_api" fetches from the openhost-cert-api broker.
-
-    The cert_provider value and its required settings are validated when the
-    Config is constructed (Config.__attrs_post_init__), so here we only narrow
-    the optional fields for the type checker.
-    """
-    if config.cert_provider == CERT_PROVIDER_ACME:
-        if not config.acme_account_key_path:
-            raise RuntimeError("ACME account key path must be set in config to acquire TLS cert")
-        asyncio.run(
-            acquire_tls_cert(
-                domain=config.zone_domain,
-                cert_path=config.tls_cert_path,
-                key_path=config.tls_key_path,
-                acme_account_key_path=Path(config.acme_account_key_path),
-                coredns_zonefile_path=config.coredns_zonefile_path,
-                acme_email=config.acme_email,
-                directory_url=config.acme_directory_url,
-            )
-        )
+def _ensure_tls_cert(config: Config) -> None:
+    """Make sure a usable cert+key pair is on disk before Caddy starts, acquiring or renewing as configured."""
+    status = get_cert_status(config.tls_cert_path, config.tls_key_path)
+    if status == CertStatus.OK:
+        logger.info(f"Using existing TLS cert from {config.tls_cert_path}")
+        return
+    if not config.coredns_enabled or not config.acquire_tls_cert_if_missing:
+        # A cert nearing expiry still works, so don't block startup over it.
+        if status == CertStatus.EXPIRING_SOON:
+            logger.warning("TLS cert expires soon but automatic cert acquisition is not enabled; cannot renew")
+            return
+        if not config.coredns_enabled:
+            raise RuntimeError("CoreDNS must be enabled to acquire TLS cert via DNS-01 challenge")
+        raise RuntimeError(f"TLS cert is {status.value} and acquire_tls_cert_if_missing is False")
+    if status == CertStatus.EXPIRING_SOON:
+        # The existing cert is still valid, so a failed renewal shouldn't block
+        # startup — the background renewal loop will keep retrying.
+        try:
+            provision_cert(config)
+        except Exception:
+            logger.exception("TLS cert renewal failed; serving the existing cert and retrying in the background")
     else:
-        # cert_provider is guaranteed to be CERT_PROVIDER_CERT_API with all of
-        # the cert_api settings populated (validated in Config.__attrs_post_init__).
-        assert config.cert_api_base_url is not None
-        assert config.cert_api_keycloak_issuer_url is not None
-        assert config.cert_api_keycloak_client_id is not None
-        assert config.cert_api_keycloak_client_secret is not None
-        credentials = KeycloakClientCredentials(
-            issuer_url=config.cert_api_keycloak_issuer_url,
-            client_id=config.cert_api_keycloak_client_id,
-            client_secret=config.cert_api_keycloak_client_secret,
-        )
-        # The token provider fetches a bearer from Keycloak (client-credentials) and
-        # refreshes it transparently across the broker's finalize-poll loop.
-        with KeycloakTokenProvider.create(credentials) as token_provider:
-            with CertApiClient.create(config.cert_api_base_url, token_provider) as client:
-                acquire_tls_cert_via_broker(
-                    domain=config.zone_domain,
-                    cert_path=config.tls_cert_path,
-                    key_path=config.tls_key_path,
-                    coredns_zonefile_path=config.coredns_zonefile_path,
-                    client=client,
-                )
+        provision_cert(config)
 
 
 def main() -> None:
@@ -132,23 +105,23 @@ def main() -> None:
         )
 
     if config.tls_enabled:
-        if not check_if_cert_exists(config.tls_cert_path, config.tls_key_path):
-            if not config.coredns_enabled:
-                raise RuntimeError("CoreDNS must be enabled to acquire TLS cert via DNS-01 challenge")
-            if not config.acquire_tls_cert_if_missing:
-                raise RuntimeError("TLS cert not found and acquire_tls_cert_if_missing is False")
-            _acquire_missing_tls_cert(config)
+        _ensure_tls_cert(config)
 
     # Caddy reverse proxy. mainly for TLS termination, but also some other features
+    caddy: CaddyProcess | None = None
     if config.start_caddy:
-        children.append(
-            start_caddy(
-                config.caddyfile_path, config.tls_enabled, config.tls_cert_path, config.tls_key_path, config.port
-            )
+        caddy = start_caddy(
+            config.caddyfile_path, config.tls_enabled, config.tls_cert_path, config.tls_key_path, config.port
         )
+        if config.tls_enabled and config.coredns_enabled and config.acquire_tls_cert_if_missing:
+            start_renewal_thread(config, caddy.restart)
     else:
         if config.tls_enabled:
             raise RuntimeError("TLS is enabled but start_caddy is False. Caddy is required for TLS termination.")
+
+    def _all_children() -> list[subprocess.Popen[bytes]]:
+        # Read caddy.proc at shutdown time: restart() may have replaced it.
+        return children + ([caddy.proc] if caddy is not None else [])
 
     hypercorn_config = hypercorn.config.Config()
     # Bind the primary address (127.0.0.1 in production) plus the container
@@ -178,7 +151,7 @@ def main() -> None:
         setup_completed = asyncio.run(_serve(create_setup_app(config), hypercorn_config))
         if not setup_completed:
             logger.info("Setup interrupted by signal; exiting")
-            _terminate_children(children)
+            _terminate_children(_all_children())
             time.sleep(0.1)
             os._exit(0)
 
@@ -188,7 +161,7 @@ def main() -> None:
     restart_requested = asyncio.run(_serve(app, hypercorn_config))
     logger.info(f"hypercorn serve returned, restart_requested={restart_requested}")
 
-    _terminate_children(children)
+    _terminate_children(_all_children())
 
     if restart_requested:
         logger.info(f"Calling os._exit({RESTART_EXIT_CODE})")
