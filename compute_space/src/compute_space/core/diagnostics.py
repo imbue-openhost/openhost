@@ -42,8 +42,9 @@ from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.core.storage import storage_status
 
-# The schema version of the diagnostics payload.  Bump when the shape changes so
-# consumers (support tooling, the CLI) can detect an incompatible bundle.
+# The schema version of the diagnostics payload.  Bump when the shape changes
+# so consumers (support tooling, the CLI, the dashboard) can detect an
+# incompatible bundle.  Present on both the platform and per-app bundles.
 DIAGNOSTICS_SCHEMA_VERSION = 1
 
 # Distribution names whose versions are worth surfacing in a bug report.  These
