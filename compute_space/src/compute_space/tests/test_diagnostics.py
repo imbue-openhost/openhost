@@ -10,10 +10,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+from unittest.mock import mock_open
 from unittest.mock import patch
 
 import attr
 import git
+import httpx
 import pytest
 from litestar import Litestar
 from litestar.testing import TestClient
@@ -22,6 +24,7 @@ from compute_space.config import Config
 from compute_space.core import diagnostics
 from compute_space.core.app_id import new_app_id
 from compute_space.core.diagnostics import DIAGNOSTICS_SCHEMA_VERSION
+from compute_space.core.diagnostics import AppHealth
 from compute_space.core.diagnostics import GitInfo
 from compute_space.db.connection import init_db
 from compute_space.tests._litestar_helpers import auth_cookie
@@ -57,6 +60,36 @@ version = "2.3.4"
 image = "docker.io/library/nginx:latest"
 port = 80
 """
+
+
+@pytest.fixture(autouse=True)
+def _no_real_network(request: Any) -> Iterator[None]:
+    """Keep the suite hermetic + fast: stub the collectors that would otherwise
+    make real outbound HTTP calls (reachability probes, per-app health checks).
+
+    The higher-level endpoint/bundle tests don't care about the exact network
+    result, so we stub it. Tests that exercise the network collectors directly
+    mark themselves ``@pytest.mark.real_collectors`` to opt out of this stub and
+    instead patch ``httpx.AsyncClient`` themselves.
+    """
+    if request.node.get_closest_marker("real_collectors"):
+        yield
+        return
+
+    async def _fake_reachability(_config: Any) -> list[Any]:
+        return []
+
+    async def _fake_health(_local_port: Any, health_check: Any) -> AppHealth:
+        path = health_check or "/"
+        if not path.startswith("/"):
+            path = "/" + path
+        return AppHealth(checked=False, healthy=None, status_code=None, checked_path=path, error="stubbed")
+
+    with (
+        patch("compute_space.core.diagnostics._collect_reachability", side_effect=_fake_reachability),
+        patch("compute_space.core.diagnostics._collect_app_health", side_effect=_fake_health),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -505,3 +538,259 @@ def test_gitinfo_is_frozen() -> None:
     info = GitInfo(branch="main", sha="abc", short_sha="abc", dirty=False, remote_url=None)
     with pytest.raises(attr.exceptions.FrozenInstanceError):
         info.branch = "other"  # type: ignore[misc]
+
+
+# ─── resource pressure ───────────────────────────────────────────────────────
+
+
+def test_read_meminfo_parses(tmp_path: Path) -> None:
+    meminfo = "MemTotal:       16384000 kB\nMemFree:         1000000 kB\nMemAvailable:    8192000 kB\n"
+    m = mock_open(read_data=meminfo)
+    with patch("compute_space.core.diagnostics.open", m):
+        total, available = diagnostics._read_meminfo()
+    assert total == 16384000 * 1024
+    assert available == 8192000 * 1024
+
+
+def test_read_meminfo_missing_file() -> None:
+    with patch("compute_space.core.diagnostics.open", side_effect=FileNotFoundError):
+        assert diagnostics._read_meminfo() == (None, None)
+
+
+def test_collect_resource_pressure_computes_percent_and_load() -> None:
+    with (
+        patch("compute_space.core.diagnostics._read_meminfo", return_value=(1000, 250)),
+        patch("compute_space.core.diagnostics.os.getloadavg", return_value=(0.5, 1.0, 2.0)),
+        patch("compute_space.core.diagnostics.os.cpu_count", return_value=4),
+    ):
+        rp = diagnostics._collect_resource_pressure()
+    assert rp.memory_total_bytes == 1000
+    assert rp.memory_available_bytes == 250
+    assert rp.memory_used_percent == 75.0  # (1000-250)/1000
+    assert rp.load_avg_1m == 0.5
+    assert rp.load_avg_15m == 2.0
+    assert rp.cpu_count == 4
+
+
+def test_collect_resource_pressure_degrades_without_loadavg() -> None:
+    with (
+        patch("compute_space.core.diagnostics._read_meminfo", return_value=(None, None)),
+        patch("compute_space.core.diagnostics.os.getloadavg", side_effect=OSError),
+    ):
+        rp = diagnostics._collect_resource_pressure()
+    assert rp.memory_total_bytes is None
+    assert rp.memory_used_percent is None
+    assert rp.load_avg_1m is None
+
+
+# ─── podman stats parsing ─────────────────────────────────────────────────────
+
+
+def test_parse_stats_bytes() -> None:
+    assert diagnostics._parse_stats_bytes("128MB") == 128 * 1000**2
+    assert diagnostics._parse_stats_bytes("1.5GiB") == int(1.5 * 1024**3)
+    assert diagnostics._parse_stats_bytes("512kB") == 512 * 1000
+    assert diagnostics._parse_stats_bytes("42B") == 42
+    assert diagnostics._parse_stats_bytes("--") is None
+    assert diagnostics._parse_stats_bytes("") is None
+    assert diagnostics._parse_stats_bytes(None) is None
+    assert diagnostics._parse_stats_bytes("garbage") is None
+
+
+def test_parse_stats_percent() -> None:
+    assert diagnostics._parse_stats_percent("3.14%") == 3.14
+    assert diagnostics._parse_stats_percent("0.00%") == 0.0
+    assert diagnostics._parse_stats_percent("--") is None
+    assert diagnostics._parse_stats_percent(None) is None
+
+
+def test_collect_app_resources_no_container() -> None:
+    r = diagnostics._collect_app_resources(None, 0.5, 256)
+    assert r.running is False
+    assert r.cpu_cores_limit == 0.5
+    assert r.memory_mb_limit == 256
+    assert r.cpu_percent is None
+
+
+def test_collect_app_resources_running_parses_stats() -> None:
+    stats = json.dumps([{"CPU": "12.50%", "MemUsage": "64MB / 128MB", "MemPerc": "50.00%"}])
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=stats, stderr="")
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+    ):
+        r = diagnostics._collect_app_resources("cid123", 0.5, 128)
+    assert r.running is True
+    assert r.cpu_percent == 12.5
+    assert r.memory_usage_bytes == 64 * 1000**2
+    assert r.memory_limit_bytes == 128 * 1000**2
+    assert r.memory_percent == 50.0
+
+
+def test_collect_app_resources_not_running_when_nonzero() -> None:
+    fake = subprocess.CompletedProcess(args=[], returncode=125, stdout="", stderr="no such container")
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+    ):
+        r = diagnostics._collect_app_resources("cid123", 0.5, 128)
+    assert r.running is False
+    assert r.error is None
+
+
+def test_collect_app_resources_stats_timeout() -> None:
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch(
+            "compute_space.core.diagnostics.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="podman", timeout=10),
+        ),
+    ):
+        r = diagnostics._collect_app_resources("cid123", 0.5, 128)
+    assert r.running is False
+    assert "timed out" in (r.error or "")
+
+
+# ─── health checks ────────────────────────────────────────────────────────────
+
+
+class _FakeResp:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeAsyncClient:
+    """Minimal async-context-manager httpx.AsyncClient stand-in."""
+
+    def __init__(self, *, get_result: Any = None, get_exc: Exception | None = None, **_: Any) -> None:
+        self._result = get_result
+        self._exc = get_exc
+
+    async def __aenter__(self) -> _FakeAsyncClient:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+    async def get(self, _url: str) -> Any:
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+@pytest.mark.real_collectors
+def test_collect_app_health_no_port() -> None:
+    h = asyncio.run(diagnostics._collect_app_health(None, None))
+    assert h.checked is False
+    assert h.healthy is None
+    assert h.checked_path == "/"
+
+
+@pytest.mark.real_collectors
+def test_collect_app_health_ok() -> None:
+    def _client(**kw: Any) -> _FakeAsyncClient:
+        return _FakeAsyncClient(get_result=_FakeResp(200))
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _client):
+        h = asyncio.run(diagnostics._collect_app_health(19500, "/healthz"))
+    assert h.checked is True
+    assert h.healthy is True
+    assert h.status_code == 200
+    assert h.checked_path == "/healthz"
+
+
+@pytest.mark.real_collectors
+def test_collect_app_health_5xx_is_unhealthy() -> None:
+    def _client(**kw: Any) -> _FakeAsyncClient:
+        return _FakeAsyncClient(get_result=_FakeResp(503))
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _client):
+        h = asyncio.run(diagnostics._collect_app_health(19500, None))
+    assert h.healthy is False
+    assert h.status_code == 503
+
+
+@pytest.mark.real_collectors
+def test_collect_app_health_connection_error() -> None:
+    def _client(**kw: Any) -> _FakeAsyncClient:
+        return _FakeAsyncClient(get_exc=httpx.ConnectError("refused"))
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _client):
+        h = asyncio.run(diagnostics._collect_app_health(19500, "healthz"))
+    assert h.checked is True
+    assert h.healthy is False
+    assert h.status_code is None
+    assert h.checked_path == "/healthz"  # leading slash normalized
+
+
+# ─── reachability ─────────────────────────────────────────────────────────────
+
+
+def test_reachability_targets_includes_config_urls(tmp_path: Path) -> None:
+    cfg = _make_test_config(tmp_path)
+    real = Config(**{f.name: getattr(cfg, f.name) for f in attr.fields(Config)})
+    targets = diagnostics._reachability_targets(real)
+    labels = {label for label, _ in targets}
+    assert "github" in labels
+    # cert_api_base_url has a default, so cert_api should be present.
+    assert "cert_api" in labels
+    # No duplicate URLs.
+    urls = [url for _, url in targets]
+    assert len(urls) == len(set(urls))
+
+
+@pytest.mark.real_collectors
+def test_collect_reachability_mixed_results(tmp_path: Path) -> None:
+    real = Config(**{f.name: getattr(_make_test_config(tmp_path), f.name) for f in attr.fields(Config)})
+
+    class _RClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _RClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def get(self, url: str) -> Any:
+            if "github" in url:
+                return _FakeResp(200)
+            raise httpx.ConnectError("boom")
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _RClient):
+        results = asyncio.run(diagnostics._collect_reachability(real))
+    by_label = {r.label: r for r in results}
+    assert by_label["github"].reachable is True
+    assert by_label["github"].status_code == 200
+    assert by_label["github"].latency_ms is not None
+    # A non-github target should be marked unreachable with an error.
+    unreachable = [r for r in results if not r.reachable]
+    assert unreachable
+    assert unreachable[0].error
+
+
+# ─── new fields present in bundles ────────────────────────────────────────────
+
+
+def test_platform_bundle_has_new_fields(
+    cfg: Any, system_client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    _seed_app(cfg.db_path, "myapp", manifest_raw=_MINIMAL_MANIFEST)
+    body = system_client.get("/api/diagnostics", cookies=cookies).json()
+    assert body["schema_version"] == 2
+    assert "resource_pressure" in body
+    assert "reachability" in body
+    # Per-app entries carry health + resources.
+    app = body["apps"][0]
+    assert "health" in app
+    assert "resources" in app
+
+
+def test_app_bundle_has_new_fields(cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    app_id = _seed_app(cfg.db_path, "myapp", manifest_raw=_MINIMAL_MANIFEST)
+    body = apps_client.get(f"/api/app_diagnostics/{app_id}", cookies=cookies).json()
+    assert body["schema_version"] == 2
+    assert "health" in body
+    assert "resources" in body
+    assert "resource_pressure" in body

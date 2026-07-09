@@ -59,14 +59,45 @@ function renderSummary(data) {
     }).join(' &middot; ');
     row('Key dependencies', depHtml);
   }
+
+  var rp = data.resource_pressure || {};
+  if (rp.memory_total_bytes != null) {
+    var memText = formatBytes(rp.memory_total_bytes - (rp.memory_available_bytes || 0))
+      + ' / ' + formatBytes(rp.memory_total_bytes)
+      + (rp.memory_used_percent != null ? ' (' + rp.memory_used_percent + '%)' : '');
+    var memCls = (rp.memory_used_percent != null && rp.memory_used_percent >= 90) ? ' class="status-error"' : '';
+    rows += '<tr><th class="label-col">Memory used</th><td' + memCls + '>' + escHtml(memText) + '</td></tr>';
+  }
+  if (rp.load_avg_1m != null) {
+    var loadText = rp.load_avg_1m + ' / ' + rp.load_avg_5m + ' / ' + rp.load_avg_15m
+      + (rp.cpu_count != null ? '  (over ' + rp.cpu_count + ' CPUs)' : '');
+    var loadCls = (rp.cpu_count && rp.load_avg_1m > rp.cpu_count) ? ' class="status-error"' : '';
+    rows += '<tr><th class="label-col">Load avg (1/5/15m)</th><td' + loadCls + '>' + escHtml(loadText) + '</td></tr>';
+  }
+
   document.getElementById('summary-body').innerHTML = rows;
+}
+
+function healthCell(h) {
+  if (!h || !h.checked) return '<span class="muted">n/a</span>';
+  if (h.healthy) return '<span class="status-running">OK' + (h.status_code ? ' (' + escHtml(h.status_code) + ')' : '') + '</span>';
+  var detail = h.status_code ? String(h.status_code) : (h.error || 'unreachable');
+  return '<span class="status-error">FAIL (' + escHtml(detail) + ')</span>';
+}
+
+function resourceCell(r) {
+  if (!r || !r.running) return '<span class="muted">not running</span>';
+  var cpu = (r.cpu_percent != null) ? (r.cpu_percent + '%') : '?';
+  var mem = (r.memory_usage_bytes != null) ? formatBytes(r.memory_usage_bytes) : '?';
+  if (r.memory_percent != null) mem += ' (' + r.memory_percent + '%)';
+  return escHtml(cpu + ' cpu, ' + mem);
 }
 
 function renderApps(data) {
   var apps = data.apps || [];
   var body = document.getElementById('apps-body');
   if (!apps.length) {
-    body.innerHTML = '<tr><td colspan="4" class="muted">No apps installed.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="muted">No apps installed.</td></tr>';
     return;
   }
   body.innerHTML = apps.map(function(a) {
@@ -74,7 +105,27 @@ function renderApps(data) {
     return '<tr><td>' + escHtml(a.name) + '</td>'
       + '<td>' + escHtml(a.version || '') + '</td>'
       + '<td class="' + statusCls + '">' + escHtml(a.status) + '</td>'
+      + '<td>' + healthCell(a.health) + '</td>'
+      + '<td>' + resourceCell(a.resources) + '</td>'
       + '<td>' + escHtml(gitText(a.git)) + '</td></tr>';
+  }).join('');
+}
+
+function renderReachability(data) {
+  var targets = data.reachability || [];
+  var body = document.getElementById('reachability-body');
+  if (!targets.length) {
+    body.innerHTML = '<tr><td colspan="4" class="muted">No reachability data.</td></tr>';
+    return;
+  }
+  body.innerHTML = targets.map(function(t) {
+    var cls = t.reachable ? 'status-running' : 'status-error';
+    var label = t.reachable ? ('yes' + (t.status_code ? ' (' + escHtml(t.status_code) + ')' : '')) : ('no' + (t.error ? ' (' + escHtml(t.error) + ')' : ''));
+    var latency = (t.latency_ms != null) ? (t.latency_ms + ' ms') : '';
+    return '<tr><td>' + escHtml(t.label) + '</td>'
+      + '<td><code>' + escHtml(t.url) + '</code></td>'
+      + '<td class="' + cls + '">' + label + '</td>'
+      + '<td>' + escHtml(latency) + '</td></tr>';
   }).join('');
 }
 
@@ -88,6 +139,7 @@ function loadDiagnostics() {
     .then(function(data) {
       latest = data;
       renderSummary(data);
+      renderReachability(data);
       renderApps(data);
       document.getElementById('diag-json').textContent = JSON.stringify(data, null, 2);
     })
