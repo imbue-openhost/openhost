@@ -8,7 +8,7 @@ installed app. Copy or download it and include it in a bug report.</p>
 
 <div class="control-row">
   <button class="btn btn-primary" id="copy-btn">Copy to clipboard</button>
-  <button class="btn" id="download-btn">Download JSON</button>
+  <a class="btn" id="download-btn" href="/api/diagnostics?download=1">Download JSON</a>
   <button class="btn" id="refresh-btn">Refresh</button>
   <span class="hint" id="copy-status"></span>
 </div>
@@ -33,8 +33,7 @@ installed app. Copy or download it and include it in a bug report.</p>
 
 <script id="page-config" type="application/json">
 {
-  "diagnosticsUrl": "/api/diagnostics",
-  "diagnosticsDownloadUrl": "/api/diagnostics?download=1"
+  "diagnosticsUrl": "/api/diagnostics"
 }
 </script>
 <script src="{{ static_url('js/diagnostics.js') }}"></script>

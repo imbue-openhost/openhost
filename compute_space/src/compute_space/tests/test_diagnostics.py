@@ -448,9 +448,10 @@ def test_platform_filename_sanitizes_and_stamps() -> None:
     name = _diagnostics_filename("my.zone.example.com:8443")
     assert name.startswith("openhost-diagnostics-")
     assert name.endswith(".json")
-    # ':' is not filename-safe and must be replaced.
+    # ':' is not filename-safe and must be replaced with '_'; the rest of the
+    # host (dots included) is preserved verbatim.
     assert ":" not in name
-    assert "my.zone.example.com" in name
+    assert name.startswith("openhost-diagnostics-my.zone.example.com_8443-")
 
 
 def test_platform_filename_handles_empty_zone() -> None:

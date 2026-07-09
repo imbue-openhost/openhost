@@ -117,10 +117,6 @@ document.getElementById('copy-btn').addEventListener('click', function() {
   }
 });
 
-document.getElementById('download-btn').addEventListener('click', function() {
-  window.location.href = config.diagnosticsDownloadUrl;
-});
-
 document.getElementById('refresh-btn').addEventListener('click', loadDiagnostics);
 
 loadDiagnostics();
