@@ -80,6 +80,20 @@
     state: link
     force: yes
 
+# The openhost.service ExecStartPre reclaims ownership of the pixi trees as
+# root before the host-user ExecStart runs `pixi run`. It lives at a fixed
+# system path so the unit references it without any $VAR that systemd would
+# substitute, and so it works even when the pixi env is broken.
+- name: Install pixi-ownership reclaim script
+  become: yes
+  become_user: root
+  copy:
+    src: files/openhost-reclaim-pixi
+    dest: /usr/local/bin/openhost-reclaim-pixi
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install openhost systemd service
   become: yes
   become_user: root

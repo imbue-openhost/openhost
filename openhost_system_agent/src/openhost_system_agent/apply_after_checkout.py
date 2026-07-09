@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 from openhost_system_agent.migrations.runner import apply_system_migrations
+from openhost_system_agent.reclaim import reclaim_pixi_ownership
 
 PIXI_BIN = "/home/host/.pixi/bin/pixi"
 
@@ -148,6 +149,16 @@ def main() -> None:
     # src/openhost_system_agent/apply_after_checkout.py → repo root is four up.
     project = str(Path(__file__).resolve().parents[3])
     _ensure_repo_trusted(project)
+
+    # Failsafe: hand the pixi trees back to the host user FIRST, before anything
+    # else touches them. This must precede migrations because a migration can
+    # run a pixi operation as the host user (e.g. v0004's `pixi self-update`);
+    # if an older root-run left `/home/host/.pixi` root-owned, that host-user
+    # step would fail with EACCES and abort the whole update — never reaching a
+    # later reclaim — leaving the host bricked. It also precedes the host-user
+    # `pixi install` below and heals root-owned residue left by prior updates.
+    # Runs as root (this whole apply is root via sudo).
+    reclaim_pixi_ownership()
 
     # Migrations run before install so a toolchain upgrade (e.g. pixi) takes
     # effect before deps are installed for this checkout.

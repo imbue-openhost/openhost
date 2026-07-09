@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -230,3 +231,33 @@ def test_ensure_repo_trusted_is_idempotent(tmp_path: Path, monkeypatch: pytest.M
         text=True,
     )
     assert result.stdout.count(str(repo)) == 1
+
+
+def test_main_reclaims_pixi_ownership_before_migrations_and_install() -> None:
+    # The failsafe must run FIRST: before migrations (a migration can run a
+    # host-user pixi op, e.g. v0004's self-update, that would fail on a
+    # root-owned tree and abort the update) and before the host-user
+    # `pixi install`.
+    order: list[str] = []
+
+    def _install(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        order.append("install")
+        return subprocess.CompletedProcess(args=[], returncode=0)
+
+    with (
+        patch.object(aac, "_ensure_repo_trusted"),
+        patch.object(aac, "apply_system_migrations", side_effect=lambda: order.append("migrations")),
+        patch.object(aac, "reclaim_pixi_ownership", side_effect=lambda: order.append("reclaim")),
+        patch("openhost_system_agent.apply_after_checkout.subprocess.run", side_effect=_install) as mock_run,
+        patch.object(aac, "_next_step", return_value=None),
+    ):
+        # No next step -> falls through to the systemctl restart, which our
+        # mocked subprocess.run also records as an "install" entry; assert the
+        # relative order of reclaim -> migrations -> first subprocess call.
+        aac.main()
+
+    assert order[:3] == ["reclaim", "migrations", "install"]
+    # The first subprocess call is the host-user pixi install.
+    first_call = mock_run.call_args_list[0]
+    assert first_call.args[0] == ["sudo", "-u", "host", "-H", aac.PIXI_BIN, "install"]
+    assert first_call.kwargs["timeout"] == 300
