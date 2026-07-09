@@ -11,7 +11,6 @@ from litestar.response import Template
 from compute_space.config import Config
 from compute_space.core.app_id import is_valid_app_name
 from compute_space.core.apps import deserialize_links
-from compute_space.core.apps import list_builtin_apps
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.git_ops import UnsupportedRepoUrlError
@@ -26,6 +25,11 @@ from compute_space.web.auth.auth import require_owner_auth
 
 EDIT_APP_SERVICE_URL = "github.com/imbue-openhost/claude-code-container/services/open-workspace"
 EDIT_APP_VERSION_SPEC = "<1.0"
+
+# The app catalog ships as a default app (see Config.default_apps); the Deploy
+# page links to it when installed and offers to install it otherwise.
+CATALOG_APP_NAME = "catalog"
+CATALOG_REPO_URL = "https://github.com/imbue-openhost/openhost-catalog"
 
 
 @get(["/", "/dashboard"], guards=[require_owner_auth])
@@ -170,11 +174,14 @@ async def _resolve_edit_app(
 
 
 @get("/add_app", guards=[require_owner_auth])
-async def add_app(config: Config, repo: str = "", next: str = "") -> Template:
+async def add_app(db: sqlite3.Connection, repo: str = "", next: str = "") -> Template:
+    catalog_installed = db.execute("SELECT 1 FROM apps WHERE name = ?", (CATALOG_APP_NAME,)).fetchone() is not None
     return Template(
         template_name="add_app.html",
         context={
-            "builtin_apps": list_builtin_apps(config),
+            "catalog_installed": catalog_installed,
+            "catalog_app_name": CATALOG_APP_NAME,
+            "catalog_repo_url": CATALOG_REPO_URL,
             "initial_repo": repo,
             "next_url": next,
         },
