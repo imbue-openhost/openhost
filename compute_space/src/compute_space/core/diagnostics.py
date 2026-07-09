@@ -746,10 +746,16 @@ async def collect_platform_diagnostics(db: sqlite3.Connection, config: Config) -
             "manifest_raw, local_port, health_check, container_id, cpu_cores, memory_mb "
             "FROM apps ORDER BY name"
         ).fetchall()
-        for row in rows:
-            apps.append(await _collect_app_summary(row))
     except Exception:
-        logger.opt(exception=True).warning("Failed to collect per-app diagnostics summary")
+        logger.opt(exception=True).warning("Failed to query apps for diagnostics summary")
+        rows = []
+    for row in rows:
+        # Collect each app independently so one malformed row can't drop the
+        # rest of the fleet from the bundle.
+        try:
+            apps.append(await _collect_app_summary(row))
+        except Exception:
+            logger.opt(exception=True).warning("Failed to collect diagnostics for one app; skipping it")
 
     reachability = await _collect_reachability(config)
 

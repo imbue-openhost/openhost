@@ -104,6 +104,9 @@ def cookies(cfg: Any) -> dict[str, str]:
     return auth_cookie(cfg)
 
 
+_next_local_port = [19500]
+
+
 def _seed_app(
     db_path: str,
     name: str,
@@ -114,12 +117,16 @@ def _seed_app(
     repo_path: str = "/r",
 ) -> str:
     app_id = new_app_id()
+    # Unique per insert so multiple seeded apps don't collide on the
+    # apps.local_port UNIQUE constraint.
+    local_port = _next_local_port[0]
+    _next_local_port[0] += 1
     db = sqlite3.connect(db_path)
     try:
         db.execute(
             "INSERT INTO apps (app_id, name, version, runtime_type, repo_path, local_port, status, manifest_raw) "
-            "VALUES (?, ?, ?, 'serverfull', ?, 19500, ?, ?)",
-            (app_id, name, version, repo_path, status, manifest_raw),
+            "VALUES (?, ?, ?, 'serverfull', ?, ?, ?, ?)",
+            (app_id, name, version, repo_path, local_port, status, manifest_raw),
         )
         db.commit()
     finally:
@@ -794,3 +801,325 @@ def test_app_bundle_has_new_fields(cfg: Any, apps_client: TestClient[Litestar], 
     assert "health" in body
     assert "resources" in body
     assert "resource_pressure" in body
+
+
+# ─── behavioral tests: exact URL / path construction ─────────────────────────
+
+
+class _RecordingClient:
+    """httpx.AsyncClient stand-in that records the exact URL(s) requested."""
+
+    urls: list[str] = []
+
+    def __init__(self, **_: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> _RecordingClient:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+    async def get(self, url: str) -> Any:
+        _RecordingClient.urls.append(url)
+        return _FakeResp(200)
+
+
+@pytest.mark.real_collectors
+def test_health_probe_hits_exact_loopback_url_and_path() -> None:
+    _RecordingClient.urls = []
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _RecordingClient):
+        asyncio.run(diagnostics._collect_app_health(19501, "/api/health"))
+    # Must target loopback on the app's own local_port with the declared path.
+    assert _RecordingClient.urls == ["http://127.0.0.1:19501/api/health"]
+
+
+@pytest.mark.real_collectors
+def test_health_probe_defaults_to_root_and_normalizes_missing_slash() -> None:
+    _RecordingClient.urls = []
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _RecordingClient):
+        # No declared health_check -> "/".
+        asyncio.run(diagnostics._collect_app_health(19502, None))
+        # Declared path missing a leading slash -> normalized.
+        asyncio.run(diagnostics._collect_app_health(19503, "status"))
+    assert _RecordingClient.urls == [
+        "http://127.0.0.1:19502/",
+        "http://127.0.0.1:19503/status",
+    ]
+
+
+@pytest.mark.real_collectors
+def test_health_probe_preserves_query_string_in_path() -> None:
+    _RecordingClient.urls = []
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _RecordingClient):
+        asyncio.run(diagnostics._collect_app_health(19504, "/health?ready=1"))
+    assert _RecordingClient.urls == ["http://127.0.0.1:19504/health?ready=1"]
+
+
+# ─── behavioral: timeouts are actually applied ───────────────────────────────
+
+
+@pytest.mark.real_collectors
+def test_health_probe_passes_configured_timeout() -> None:
+    captured: dict[str, Any] = {}
+
+    class _TimeoutCapturingClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> _TimeoutCapturingClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def get(self, _url: str) -> Any:
+            return _FakeResp(200)
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _TimeoutCapturingClient):
+        asyncio.run(diagnostics._collect_app_health(19505, "/"))
+    # A regression that drops the timeout would let a hung app stall diagnostics.
+    assert captured.get("timeout") == diagnostics._HEALTH_TIMEOUT_S
+
+
+@pytest.mark.real_collectors
+def test_reachability_uses_configured_timeout_and_no_redirects(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+    real = Config(**{f.name: getattr(_make_test_config(tmp_path), f.name) for f in attr.fields(Config)})
+
+    class _CapturingClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> _CapturingClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def get(self, _url: str) -> Any:
+            return _FakeResp(204)
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _CapturingClient):
+        asyncio.run(diagnostics._collect_reachability(real))
+    assert captured.get("timeout") == diagnostics._REACHABILITY_TIMEOUT_S
+    # follow_redirects must be off so a redirect can't be followed to a slow host.
+    assert captured.get("follow_redirects") is False
+
+
+def test_stats_subprocess_uses_bounded_timeout() -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="[]", stderr="")
+
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.subprocess.run", _fake_run),
+    ):
+        diagnostics._collect_app_resources("cid", 0.5, 128)
+    assert captured.get("timeout") == diagnostics._SUBPROCESS_TIMEOUT_S
+
+
+# ─── behavioral: reachability runs concurrently, not serially ────────────────
+
+
+@pytest.mark.real_collectors
+def test_reachability_probes_run_concurrently(tmp_path: Path) -> None:
+    real = Config(**{f.name: getattr(_make_test_config(tmp_path), f.name) for f in attr.fields(Config)})
+    n_targets = len(diagnostics._reachability_targets(real))
+    assert n_targets >= 2  # need >1 to distinguish concurrent from serial
+
+    concurrency = {"current": 0, "max": 0}
+
+    class _SlowClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _SlowClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def get(self, _url: str) -> Any:
+            concurrency["current"] += 1
+            concurrency["max"] = max(concurrency["max"], concurrency["current"])
+            await asyncio.sleep(0.05)
+            concurrency["current"] -= 1
+            return _FakeResp(200)
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _SlowClient):
+        results = asyncio.run(diagnostics._collect_reachability(real))
+    assert len(results) == n_targets
+    # If probes were serial, max in-flight would be 1. Concurrent gather -> >1.
+    assert concurrency["max"] > 1
+
+
+# ─── behavioral: per-app collection is individually fault-isolated ───────────
+
+
+def test_one_bad_app_does_not_drop_the_others(
+    cfg: Any, system_client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    _seed_app(cfg.db_path, "good-a", manifest_raw=_MINIMAL_MANIFEST)
+    _seed_app(cfg.db_path, "good-b", manifest_raw=_MINIMAL_MANIFEST)
+
+    real_summary = diagnostics._collect_app_summary
+
+    async def _flaky_summary(row: Any) -> Any:
+        if row["name"] == "good-a":
+            raise RuntimeError("boom collecting good-a")
+        return await real_summary(row)
+
+    with patch("compute_space.core.diagnostics._collect_app_summary", side_effect=_flaky_summary):
+        body = system_client.get("/api/diagnostics", cookies=cookies).json()
+    names = {a["name"] for a in body["apps"]}
+    # good-a blew up, but good-b must still be present.
+    assert "good-b" in names
+    assert "good-a" not in names
+
+
+def test_apps_query_failure_yields_empty_apps_not_500(cfg: Any) -> None:
+    """A failure querying the apps table degrades to empty apps + a valid bundle
+    (rather than raising), so the rest of the diagnostics still reach the owner."""
+    broken = MagicMock()
+    broken.execute.side_effect = sqlite3.OperationalError("apps table exploded")
+    real_config = Config(**{f.name: getattr(cfg, f.name) for f in attr.fields(Config)})
+    with (
+        patch("compute_space.core.diagnostics.storage_status", return_value={}),
+        patch("compute_space.core.diagnostics._collect_reachability", side_effect=_stub_reach),
+    ):
+        diag = asyncio.run(diagnostics.collect_platform_diagnostics(broken, real_config))
+    assert diag.apps == []
+    # The rest of the bundle is still populated.
+    assert diag.system.python_version
+    assert diag.resource_pressure is not None
+
+
+async def _stub_reach(_config: Any) -> list[Any]:
+    return []
+
+
+# ─── podman stats: partial / unusual shapes ──────────────────────────────────
+
+
+def _stats_run(stdout: str) -> Any:
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+    return (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+    )
+
+
+def test_stats_dict_shape_not_list() -> None:
+    # Some podman versions emit a bare object rather than a list.
+    which_p, run_p = _stats_run(json.dumps({"CPU": "5.0%", "MemUsage": "10MB / 100MB", "MemPerc": "10%"}))
+    with which_p, run_p:
+        r = diagnostics._collect_app_resources("cid", 1.0, 100)
+    assert r.running is True
+    assert r.cpu_percent == 5.0
+    assert r.memory_usage_bytes == 10 * 1000**2
+
+
+def test_stats_empty_list_is_not_running() -> None:
+    which_p, run_p = _stats_run("[]")
+    with which_p, run_p:
+        r = diagnostics._collect_app_resources("cid", 1.0, 100)
+    assert r.running is False
+
+
+def test_stats_missing_memusage_leaves_bytes_none() -> None:
+    which_p, run_p = _stats_run(json.dumps([{"CPU": "7.5%"}]))
+    with which_p, run_p:
+        r = diagnostics._collect_app_resources("cid", 1.0, 100)
+    assert r.running is True
+    assert r.cpu_percent == 7.5
+    assert r.memory_usage_bytes is None
+    assert r.memory_limit_bytes is None
+
+
+def test_stats_dashes_render_as_none() -> None:
+    which_p, run_p = _stats_run(json.dumps([{"CPU": "--", "MemUsage": "-- / --", "MemPerc": "--"}]))
+    with which_p, run_p:
+        r = diagnostics._collect_app_resources("cid", 1.0, 100)
+    assert r.running is True
+    assert r.cpu_percent is None
+    assert r.memory_usage_bytes is None
+    assert r.memory_percent is None
+
+
+# ─── full DTO JSON serialization round-trip ──────────────────────────────────
+
+
+def test_platform_bundle_fully_json_serializable_all_fields(
+    cfg: Any, system_client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    """Exercise the real Litestar serializer over a populated bundle so a
+    non-serializable field (e.g. a stray Path/datetime) would surface as a 500
+    rather than silently. Also asserts every declared nested field is present."""
+    _seed_app(cfg.db_path, "myapp", manifest_raw=_MINIMAL_MANIFEST)
+    resp = system_client.get("/api/diagnostics", cookies=cookies)
+    assert resp.status_code == 200
+    body = resp.json()
+    # It round-trips through JSON cleanly.
+    reparsed = json.loads(json.dumps(body))
+    assert reparsed == body
+
+    rp = body["resource_pressure"]
+    for key in (
+        "memory_total_bytes",
+        "memory_available_bytes",
+        "memory_used_percent",
+        "load_avg_1m",
+        "load_avg_5m",
+        "load_avg_15m",
+        "cpu_count",
+        "error",
+    ):
+        assert key in rp, f"resource_pressure missing {key}"
+
+    app = body["apps"][0]
+    for key in ("checked", "healthy", "status_code", "checked_path", "error"):
+        assert key in app["health"], f"health missing {key}"
+    for key in (
+        "running",
+        "cpu_percent",
+        "memory_usage_bytes",
+        "memory_limit_bytes",
+        "memory_percent",
+        "cpu_cores_limit",
+        "memory_mb_limit",
+        "error",
+    ):
+        assert key in app["resources"], f"resources missing {key}"
+
+
+def test_app_bundle_resource_limits_come_from_manifest_columns(
+    cfg: Any, apps_client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    """The per-app bundle must surface the manifest memory/cpu limits from the
+    apps row even when the container isn't running (so limits are always visible)."""
+    app_id = _seed_app_with_limits(cfg.db_path, "limited", memory_mb=512, cpu_cores=1.5)
+    body = apps_client.get(f"/api/app_diagnostics/{app_id}", cookies=cookies).json()
+    res = body["resources"]
+    assert res["memory_mb_limit"] == 512
+    assert res["cpu_cores_limit"] == 1.5
+    # No container_id seeded -> not running, but limits still reported.
+    assert res["running"] is False
+
+
+def _seed_app_with_limits(db_path: str, name: str, *, memory_mb: int, cpu_cores: float) -> str:
+    app_id = new_app_id()
+    db = sqlite3.connect(db_path)
+    try:
+        db.execute(
+            "INSERT INTO apps (app_id, name, version, runtime_type, repo_path, local_port, status, "
+            "memory_mb, cpu_cores) VALUES (?, ?, '1.0', 'serverfull', '/r', 19600, 'stopped', ?, ?)",
+            (app_id, name, memory_mb, cpu_cores),
+        )
+        db.commit()
+    finally:
+        db.close()
+    return app_id
