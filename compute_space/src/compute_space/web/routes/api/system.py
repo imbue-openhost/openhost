@@ -1,4 +1,5 @@
 import hashlib
+import os
 import secrets
 import sqlite3
 import subprocess
@@ -193,14 +194,24 @@ async def api_tokens_delete(token_id: int, db: sqlite3.Connection) -> None:
 # ─── Compute Space Logs ────────────────────────────────────────────────────
 
 
+# The System page polls this every few seconds; serving the whole file (up to
+# the 10 MB rotation limit) makes each poll take ~1s on a small VPS.
+_LOG_TAIL_BYTES = 256 * 1024
+
+
 @get("/api/compute_space_logs", guards=[require_owner_auth], media_type=MediaType.TEXT, sync_to_thread=False)
 def compute_space_logs() -> Response[str]:
-    """Return the compute space log file contents."""
+    """Return the tail (last 256 KiB) of the compute space log file."""
     log_path = get_log_path()
     if log_path is None:
         return Response(content="Log file not configured", status_code=503, media_type=MediaType.TEXT)
-    with open(log_path) as f:
-        return Response(content=f.read(), status_code=200, media_type=MediaType.TEXT)
+    with open(log_path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - _LOG_TAIL_BYTES))
+        text = f.read().decode("utf-8", errors="replace")
+    if size > _LOG_TAIL_BYTES:
+        text = text[text.find("\n") + 1 :]
+    return Response(content=text, status_code=200, media_type=MediaType.TEXT)
 
 
 # ─── Health & Security ─────────────────────────────────────────────────────
@@ -223,7 +234,9 @@ def listening_ports(db: sqlite3.Connection) -> ListeningPortsResponse:
     return ListeningPortsResponse(ports=external_ports(all_ports), enumeration_failed=not all_ports)
 
 
-@get("/api/storage-status", guards=[require_owner_auth], sync_to_thread=False)
+# sync_to_thread: walking app_data and querying podman take ~1s on a real
+# instance; running on the event loop would stall every concurrent request.
+@get("/api/storage-status", guards=[require_owner_auth], sync_to_thread=True)
 def api_storage_status(config: Config) -> dict[str, object]:
     return storage_status(config)
 

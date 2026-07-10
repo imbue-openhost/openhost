@@ -1,7 +1,16 @@
+let pageHidden = false;
+window.addEventListener('pagehide', () => { pageHidden = true; });
+
 function showError(msg) {
-  const el = document.getElementById('error');
-  el.textContent = msg;
-  el.style.display = '';
+  // Deferred: navigating away aborts in-flight fetches, whose catch handlers
+  // would otherwise flash this banner during page teardown. Timers don't run
+  // once the page is gone, and pageHidden covers the bfcache edge.
+  setTimeout(() => {
+    if (pageHidden) return;
+    const el = document.getElementById('error');
+    el.textContent = msg;
+    el.style.display = '';
+  }, 100);
 }
 function clearError() { document.getElementById('error').style.display = 'none'; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }

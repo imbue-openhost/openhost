@@ -80,18 +80,24 @@ def _dir_size_bytes(path: str) -> int:
     """Return total size of all files under *path* in bytes.
 
     There is no stdlib equivalent — ``shutil.disk_usage`` reports whole-disk
-    stats, not per-directory totals.  ``os.walk`` + ``os.path.getsize`` is the
-    standard approach.
+    stats, not per-directory totals.  Uses ``os.scandir`` recursion rather
+    than ``os.walk`` + ``getsize`` so each file is stat'd once, not twice —
+    this endpoint walks entire app data trees.  Symlinks are not followed.
     """
-    if not os.path.exists(path):
+    try:
+        entries = os.scandir(path)
+    except OSError:
         return 0
-
     total = 0
-    for root, _dirs, files in os.walk(path):
-        for filename in files:
-            file_path = os.path.join(root, filename)
+    with entries:
+        for entry in entries:
             try:
-                total += os.path.getsize(file_path)
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    total += _dir_size_bytes(entry.path)
+                else:
+                    total += entry.stat(follow_symlinks=False).st_size
             except OSError:
                 pass
     return total
@@ -116,11 +122,6 @@ def openhost_data_usage_bytes(config: Config) -> int:
     return _dir_size_bytes(os.path.join(config.persistent_data_dir, "vm_data"))
 
 
-def app_data_usage_bytes(config: Config) -> int:
-    _ensure_storage_roots(config)
-    return _dir_size_bytes(os.path.join(config.persistent_data_dir, "app_data"))
-
-
 def per_app_usage(config: Config) -> dict[str, int]:
     """Return ``{app_name: bytes_used}`` for each subdirectory of app_data."""
     _ensure_storage_roots(config)
@@ -133,6 +134,24 @@ def per_app_usage(config: Config) -> dict[str, int]:
         if os.path.isdir(entry_path):
             result[entry] = _dir_size_bytes(entry_path)
     return result
+
+
+def _app_data_loose_file_bytes(config: Config) -> int:
+    """Size of files sitting directly in app_data (not inside a per-app dir)."""
+    app_data_root = os.path.join(config.persistent_data_dir, "app_data")
+    try:
+        entries = os.scandir(app_data_root)
+    except OSError:
+        return 0
+    total = 0
+    with entries:
+        for entry in entries:
+            try:
+                if entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                pass
+    return total
 
 
 def _check_min_free(config: Config) -> tuple[int, int] | None:
@@ -171,6 +190,10 @@ def storage_status(config: Config) -> dict[str, object]:
 
     min_free = storage_min_free_bytes(config)
 
+    # The app_data total is derived from the per-app walk rather than walked
+    # again — these trees are large enough that a second pass is noticeable.
+    per_app = per_app_usage(config)
+
     return {
         "disk": {
             "total_bytes": disk.total,
@@ -178,9 +201,9 @@ def storage_status(config: Config) -> dict[str, object]:
             "free_bytes": disk.free,
         },
         "openhost_data_used_bytes": openhost_data_usage_bytes(config),
-        "app_data_used_bytes": app_data_usage_bytes(config),
+        "app_data_used_bytes": sum(per_app.values()) + _app_data_loose_file_bytes(config),
         "build_cache_bytes": container_image_storage_bytes(),
-        "per_app": per_app_usage(config),
+        "per_app": per_app,
         "storage_min_free_bytes": min_free,
         "storage_low": storage_low(config),
         "guard_paused": is_guard_paused(),

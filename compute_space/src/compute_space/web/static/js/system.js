@@ -231,12 +231,11 @@ function fetchLogs() {
 }
 
 // ─── Init ───
+// Ports and storage load once per visit (storage also re-fetches after a
+// guard toggle); only the logs tail keeps polling.
 
 updateListeningPorts();
-setInterval(updateListeningPorts, 10000);
-
 updateStorageStatus();
-setInterval(updateStorageStatus, 5000);
 
 fetchLogs();
 setInterval(fetchLogs, 3000);

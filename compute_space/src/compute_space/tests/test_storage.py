@@ -73,6 +73,24 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
     assert status["build_cache_bytes"] is None
 
 
+def test_app_data_total_combines_per_app_and_loose_files(tmp_path, monkeypatch):
+    """The app_data total is derived from the per-app walk plus loose root
+    files — not a second full walk of the tree."""
+    config = _make_test_config(tmp_path)
+    app_data = os.path.join(config.persistent_data_dir, "app_data")
+    os.makedirs(os.path.join(app_data, "immich"), exist_ok=True)
+    with open(os.path.join(app_data, "immich", "photo.bin"), "wb") as f:
+        f.write(b"x" * (300 * 1024))
+    with open(os.path.join(app_data, "loose.bin"), "wb") as f:
+        f.write(b"x" * (200 * 1024))
+    monkeypatch.setattr(storage, "container_image_storage_bytes", lambda: None)
+
+    status = cast(dict[str, Any], storage.storage_status(config))
+
+    assert status["per_app"] == {"immich": 300 * 1024}
+    assert status["app_data_used_bytes"] == 500 * 1024
+
+
 def test_disk_free_bytes_uses_data_root_dir(tmp_path, monkeypatch):
     config = _make_test_config(tmp_path)
     usage = namedtuple("usage", ["total", "used", "free"])
