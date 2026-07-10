@@ -108,6 +108,18 @@ def test_external_ports_excludes_loopback(fake_ss) -> None:
     assert addrs == {"0.0.0.0:443", "[::]:80", "10.0.0.5:9100", "*:53"}
 
 
+def test_external_ports_excludes_container_gateway(fake_ss) -> None:
+    """The openhost0 container-gateway interface (10.200.0.1) is internal —
+    listeners bound to it are not reachable from outside the VM and must not
+    appear in the externally-open-ports table.
+    """
+    fake_ss(["10.200.0.1:8080", "0.0.0.0:443"])
+
+    ports = security.external_ports(security.list_listening_ports(db=None))
+
+    assert {p["address"] for p in ports} == {"0.0.0.0:443"}
+
+
 def test_external_ports_empty_when_all_loopback(fake_ss) -> None:
     fake_ss(["127.0.0.1:8080", "[::1]:9090"])
 

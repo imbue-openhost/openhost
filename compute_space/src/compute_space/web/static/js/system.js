@@ -14,36 +14,70 @@ function formatBytes(bytes) {
   return bytes + ' B';
 }
 
+// ─── First-paint coordination ───
+// All sections fetch immediately on load, but nothing renders until every
+// section is ready or the deadline elapses — avoids a staggered flash of
+// loading/error states on page open. Sections still pending at the deadline
+// show a loading placeholder and fill in when their fetch completes.
+
+var FIRST_PAINT_DEADLINE_MS = 500;
+var sectionRenderers = {ports: null, storage: null, logs: null};
+var firstPaintDone = false;
+
+function presentSection(section, render) {
+  if (firstPaintDone) { render(); return; }
+  sectionRenderers[section] = render;
+  var allReady = Object.keys(sectionRenderers).every(function(k) { return sectionRenderers[k]; });
+  if (allReady) paintAllSections();
+}
+
+function paintAllSections() {
+  if (firstPaintDone) return;
+  firstPaintDone = true;
+  if (sectionRenderers.ports) sectionRenderers.ports();
+  else document.getElementById('ports-body').innerHTML = '<tr><td colspan="3" class="muted">Loading&hellip;</td></tr>';
+  if (sectionRenderers.storage) sectionRenderers.storage();
+  else document.getElementById('storage-body').innerHTML = '<tr><td colspan="2" class="muted">Loading&hellip;</td></tr>';
+  if (sectionRenderers.logs) sectionRenderers.logs();
+  else document.getElementById('cs-logs').textContent = 'Loading...';
+}
+
+setTimeout(paintAllSections, FIRST_PAINT_DEADLINE_MS);
+
 // ─── Listening Ports ───
 
 function updateListeningPorts() {
   fetch(config.listeningPortsUrl, {credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      var body = document.getElementById('ports-body');
-      if (!data || data.enumeration_failed) {
-        body.innerHTML = '<tr><td colspan="3" class="error">Could not enumerate listening ports.</td></tr>';
-        return;
-      }
-      var ports = data.ports || [];
-      if (!ports.length) {
-        body.innerHTML = '<tr><td colspan="3" class="muted">No externally exposed ports.</td></tr>';
-        return;
-      }
-      body.innerHTML = ports.map(function(p) {
-        var cls = '';
-        var label = escHtml(p.label);
-        if (p.classification === 'unexpected') {
-          cls = ' class="status-error"';
-          label = '<strong>' + label + '</strong>';
-        } else if (p.classification === 'secure') {
-          cls = ' class="status-running"';
-        }
-        return '<tr><td><code>' + escHtml(p.port) + '</code></td>'
-          + '<td><code>' + escHtml(p.address) + '</code></td>'
-          + '<td' + cls + '>' + label + '</td></tr>';
-      }).join('');
+      presentSection('ports', function() { renderListeningPorts(data); });
     });
+}
+
+function renderListeningPorts(data) {
+  var body = document.getElementById('ports-body');
+  if (!data || data.enumeration_failed) {
+    body.innerHTML = '<tr><td colspan="3" class="error">Could not enumerate listening ports.</td></tr>';
+    return;
+  }
+  var ports = data.ports || [];
+  if (!ports.length) {
+    body.innerHTML = '<tr><td colspan="3" class="muted">No externally exposed ports.</td></tr>';
+    return;
+  }
+  body.innerHTML = ports.map(function(p) {
+    var cls = '';
+    var label = escHtml(p.label);
+    if (p.classification === 'unexpected') {
+      cls = ' class="status-error"';
+      label = '<strong>' + label + '</strong>';
+    } else if (p.classification === 'secure') {
+      cls = ' class="status-running"';
+    }
+    return '<tr><td><code>' + escHtml(p.port) + '</code></td>'
+      + '<td><code>' + escHtml(p.address) + '</code></td>'
+      + '<td' + cls + '>' + label + '</td></tr>';
+  }).join('');
 }
 
 // ─── Storage Status ───
@@ -130,50 +164,53 @@ function updateStorageStatus() {
   fetch(config.storageStatusUrl, {credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      var disk = data.disk || {};
-      var hasMinFree = data.storage_min_free_bytes != null;
-      var isLow = !!data.storage_low;
-      var guardPaused = !!data.guard_paused;
-
-      var rows = '';
-      var freeText = formatBytes(disk.free_bytes || 0) + ' / ' + formatBytes(disk.total_bytes || 0);
-      if (hasMinFree) {
-        freeText += ' (min ' + formatBytes(data.storage_min_free_bytes) + ' required)';
-      }
-      var freeCls = (hasMinFree && isLow) ? ' class="status-error"' : '';
-      rows += '<tr><th>Disk free</th><td' + freeCls + '>' + escHtml(freeText) + '</td></tr>';
-      rows += '<tr><th>OpenHost data</th><td>' + escHtml(formatBytes(data.openhost_data_used_bytes || 0)) + '</td></tr>';
-      var buildCache = (data.build_cache_bytes == null)
-        ? '<span class="muted">unavailable</span>'
-        : escHtml(formatBytes(data.build_cache_bytes));
-      rows += '<tr><th>App Build Cache</th><td>' + buildCache + '</td></tr>';
-      rows += '<tr><th>App data</th><td>' + escHtml(formatBytes(data.app_data_used_bytes || 0)) + '</td></tr>';
-
-      var perApp = data.per_app || {};
-      if (Object.keys(perApp).length > 0) {
-        rows += '<tr><th>Per app</th><td>' + perAppPieHtml(perApp) + '</td></tr>';
-      }
-
-      if (hasMinFree) {
-        var guardText = guardPaused ? 'Paused' : (isLow ? 'Active (low storage)' : 'Active');
-        var guardCls = (guardPaused || isLow) ? ' class="status-error"' : '';
-        rows += '<tr><th>Storage guard</th><td' + guardCls + '>' + escHtml(guardText) + '</td></tr>';
-      }
-      document.getElementById('storage-body').innerHTML = rows;
-      wirePerAppPie();
-
-      // Guard toggle button (separate row below the table for clarity)
-      var guardRow = document.getElementById('storage-guard-row');
-      if (hasMinFree && guardPaused) {
-        guardRow.innerHTML = '<div class="control-row"><button class="btn" onclick="toggleStorageGuard(false)">Resume Guard</button>'
-          + '<span class="hint">Apps will not be stopped while paused.</span></div>';
-      } else if (hasMinFree && isLow) {
-        guardRow.innerHTML = '<div class="control-row"><button class="btn" onclick="toggleStorageGuard(true)">Pause Guard</button>'
-          + '<span class="hint">Pause to start an app for cleanup.</span></div>';
-      } else {
-        guardRow.innerHTML = '';
-      }
+      presentSection('storage', function() { renderStorageStatus(data); });
     });
+}
+
+function renderStorageStatus(data) {
+  var disk = data.disk || {};
+  var hasMinFree = data.storage_min_free_bytes != null;
+  var isLow = !!data.storage_low;
+  var guardPaused = !!data.guard_paused;
+
+  var rows = '';
+  var freeText = formatBytes(disk.free_bytes || 0) + ' / ' + formatBytes(disk.total_bytes || 0);
+  if (hasMinFree) {
+    freeText += ' (min ' + formatBytes(data.storage_min_free_bytes) + ' required)';
+  }
+  var freeCls = (hasMinFree && isLow) ? ' class="status-error"' : '';
+  rows += '<tr><th>Disk free</th><td' + freeCls + '>' + escHtml(freeText) + '</td></tr>';
+  rows += '<tr><th>OpenHost data</th><td>' + escHtml(formatBytes(data.openhost_data_used_bytes || 0)) + '</td></tr>';
+  var buildCache = (data.build_cache_bytes == null)
+    ? '<span class="muted">unavailable</span>'
+    : escHtml(formatBytes(data.build_cache_bytes));
+  rows += '<tr><th>App Build Cache</th><td>' + buildCache + '</td></tr>';
+
+  var perApp = data.per_app || {};
+  if (Object.keys(perApp).length > 0) {
+    rows += '<tr><th>App data</th><td>' + perAppPieHtml(perApp) + '</td></tr>';
+  }
+
+  if (hasMinFree) {
+    var guardText = guardPaused ? 'Paused' : (isLow ? 'Active (low storage)' : 'Active');
+    var guardCls = (guardPaused || isLow) ? ' class="status-error"' : '';
+    rows += '<tr><th>Storage guard</th><td' + guardCls + '>' + escHtml(guardText) + '</td></tr>';
+  }
+  document.getElementById('storage-body').innerHTML = rows;
+  wirePerAppPie();
+
+  // Guard toggle button (separate row below the table for clarity)
+  var guardRow = document.getElementById('storage-guard-row');
+  if (hasMinFree && guardPaused) {
+    guardRow.innerHTML = '<div class="control-row"><button class="btn" onclick="toggleStorageGuard(false)">Resume Guard</button>'
+      + '<span class="hint">Apps will not be stopped while paused.</span></div>';
+  } else if (hasMinFree && isLow) {
+    guardRow.innerHTML = '<div class="control-row"><button class="btn" onclick="toggleStorageGuard(true)">Pause Guard</button>'
+      + '<span class="hint">Pause to start an app for cleanup.</span></div>';
+  } else {
+    guardRow.innerHTML = '';
+  }
 }
 
 // ─── Logs ───
@@ -183,11 +220,13 @@ function fetchLogs() {
   fetch('/api/compute_space_logs', {credentials: 'same-origin'})
     .then(function(r) { return r.text(); })
     .then(function(text) {
-      var sel = window.getSelection();
-      if (sel && !sel.isCollapsed && logEl.contains(sel.anchorNode)) return;
-      var wasAtBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 50;
-      logEl.textContent = text || 'No log output available.';
-      if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
+      presentSection('logs', function() {
+        var sel = window.getSelection();
+        if (sel && !sel.isCollapsed && logEl.contains(sel.anchorNode)) return;
+        var wasAtBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 50;
+        logEl.textContent = text || 'No log output available.';
+        if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
+      });
     });
 }
 

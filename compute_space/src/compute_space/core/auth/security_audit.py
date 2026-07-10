@@ -11,6 +11,8 @@ import sqlite3
 import subprocess
 from typing import TypedDict
 
+from compute_space.core.containers import CONTAINER_GATEWAY_IP
+
 
 class CheckResult(TypedDict):
     ok: bool
@@ -243,8 +245,17 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
 
 
 def external_ports(ports: list[ListeningPort]) -> list[ListeningPort]:
-    """Filter to ports bound to external-facing or wildcard addresses (loopback excluded)."""
-    return [p for p in ports if not is_loopback_address(p["address"])]
+    """Filter to ports reachable from outside the VM.
+
+    Loopback and the internal container-gateway interface (``openhost0``,
+    10.200.0.1) are excluded; wildcard and specific external binds are kept.
+    """
+
+    def _internal(addr: str) -> bool:
+        host = addr.rsplit(":", 1)[0].strip("[]")
+        return is_loopback_address(addr) or host == CONTAINER_GATEWAY_IP
+
+    return [p for p in ports if not _internal(p["address"])]
 
 
 def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
