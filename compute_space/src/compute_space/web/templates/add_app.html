@@ -1,46 +1,57 @@
 {% extends "layout.html" %}
 {% block title_suffix %} - Deploy App{% endblock %}
 {% block content %}
+<style>
+  .catalog-callout { display: flex; align-items: center; gap: 1.2em; border: 1px solid #cfdcf5; background: #f5f8fe; border-radius: 8px; padding: 1.1em 1.4em; margin: 1.2em 0 2em; }
+  .catalog-callout .callout-icon { font-size: 2.1em; line-height: 1; }
+  .catalog-callout h3 { margin: 0 0 0.25em; }
+  .catalog-callout p { margin: 0; color: #555; }
+  .catalog-callout .callout-action { margin-left: auto; white-space: nowrap; }
+  .repo-url-row { display: flex; gap: 0.5em; margin-top: 0.6em; }
+  .repo-url-row input { flex: 1; }
+  .repo-url-row .btn { white-space: nowrap; }
+  details.url-help { margin-top: 0.8em; color: #555; font-size: 0.9em; }
+  details.url-help summary { cursor: pointer; color: #36c; }
+  details.url-help ul { margin: 0.5em 0 0; }
+</style>
+
 <h2>Deploy New App</h2>
 
 <p id="error" class="error" style="display:none;"></p>
 
 <div id="clone-form">
 
-{% if builtin_apps %}
-<h3>Available Built-in Apps</h3>
-<table>
-  <tr>
-    <th>Name</th>
-    <th>Actions</th>
-  </tr>
-  {% for ba in builtin_apps %}
-  <tr>
-    <td>{{ ba.name }}</td>
-    <td>
-      <button class="btn btn-primary" onclick="cloneApp('{{ ba.url }}')">Deploy</button>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-{% endif %}
+  <div class="catalog-callout">
+    <span class="callout-icon">🧭</span>
+    <div>
+      <h3>Explore the App Catalog</h3>
+      <p>Discover new apps for your compute space and install them with a click.</p>
+    </div>
+    {% if catalog_installed %}
+    <a class="btn btn-primary callout-action" href="{{ app_url(catalog_app_name) }}">Browse the catalog</a>
+    {% else %}
+    <button class="btn btn-primary callout-action" onclick="cloneApp('{{ catalog_repo_url }}')">Install the catalog</button>
+    {% endif %}
+  </div>
 
   <h3>Deploy from Git URL</h3>
   <p>Clone a git repository containing an <code>openhost.toml</code> manifest file.
   Private GitHub repos are supported automatically &mdash; you'll be prompted to connect your
-  GitHub account if needed. You can also access private repos by including an access token directly in the URL.</p>
-  <p>To specify a branch, tag, or commit, append <code>@ref</code> to the URL:</p>
-  <ul style="font-size:0.9em; color:#555">
-    <li><code>https://github.com/user/repo</code> &mdash; default branch</li>
-    <li><code>https://github.com/user/repo@my-branch</code> &mdash; specific branch</li>
-    <li><code>https://github.com/user/repo@v1.0</code> &mdash; tag</li>
-    <li><code>https://github.com/user/repo@abc123</code> &mdash; commit hash</li>
-    <li><code>https://&lt;token&gt;@github.com/user/private-repo</code> &mdash; private repo via access token</li>
-  </ul>
-  <label>Git repository URL</label>
-  <input type="text" id="repo-url" required placeholder="https://github.com/user/my-app@branch">
-  <br><br>
-  <button onclick="cloneApp()" class="btn btn-primary">Deploy</button>
+  GitHub account if needed.</p>
+  <div class="repo-url-row">
+    <input type="text" id="repo-url" required placeholder="https://github.com/user/my-app@branch">
+    <button onclick="cloneApp()" class="btn btn-primary">Deploy</button>
+  </div>
+  <details class="url-help">
+    <summary>URL format examples</summary>
+    <ul>
+      <li><code>https://github.com/user/repo</code> &mdash; default branch</li>
+      <li><code>https://github.com/user/repo@my-branch</code> &mdash; specific branch</li>
+      <li><code>https://github.com/user/repo@v1.0</code> &mdash; tag</li>
+      <li><code>https://github.com/user/repo@abc123</code> &mdash; commit hash</li>
+      <li><code>https://&lt;token&gt;@github.com/user/private-repo</code> &mdash; private repo via access token</li>
+    </ul>
+  </details>
 </div>
 
 <div id="cloning-status" style="display:none;">

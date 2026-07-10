@@ -289,17 +289,15 @@ class TestRouterCore:
         assert r.status_code == 403
         assert "already been set up" in r.text
 
-    def test_add_app_page_hides_hidden_builtin_apps(self, admin_session, config):
-        """Apps with hidden=true in their manifest must not appear on the Deploy page."""
+    def test_add_app_page_shows_catalog_callout(self, admin_session, config):
+        """The Deploy page points at the app catalog instead of listing builtin apps."""
         base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/add_app")
         assert r.status_code == 200
-        # test_app has hidden = true — it must not show up
+        assert "Explore the App Catalog" in r.text
+        assert "Deploy from Git URL" in r.text
+        assert "Available Built-in Apps" not in r.text
         assert "test_app" not in r.text
-        # Non-hidden apps should still be listed (pick one that definitely exists)
-        assert "file_browser" in r.text or "oauth" in r.text, (
-            "Expected at least one non-hidden builtin app on the Deploy page"
-        )
 
     def test_add_app_no_url(self, admin_session, config):
         base_url = _zone_url(config)

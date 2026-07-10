@@ -147,32 +147,6 @@ def find_app_by_name(name: str) -> App | None:
     return App.from_row(row) if row else None
 
 
-def list_builtin_apps(config: Config) -> list[dict[str, str]]:
-    """Return list of dicts with name/url for each app in the builtin apps dir.
-
-    Apps with ``hidden = true`` in their ``[app]`` section are excluded so they
-    don't appear on the dashboard but remain deployable via direct URL.
-    """
-    builtin: list[dict[str, str]] = []
-    if not os.path.isdir(config.apps_dir):
-        return builtin
-    for entry in sorted(os.listdir(config.apps_dir)):
-        app_dir = os.path.join(config.apps_dir, entry)
-        manifest_path = os.path.join(app_dir, "openhost.toml")
-        if not os.path.isfile(manifest_path):
-            continue
-        try:
-            manifest = parse_manifest(app_dir)
-            if manifest.hidden:
-                continue
-        except Exception:
-            # Unparseable manifest — still list it so the user sees the error
-            # at deploy time rather than the app silently disappearing.
-            pass
-        builtin.append({"name": entry, "url": f"file://{app_dir}"})
-    return builtin
-
-
 def inject_github_token_in_url(url: str, token: str) -> str:
     """Inject a GitHub OAuth token into an HTTP(S) URL for authentication."""
     parsed = urllib.parse.urlparse(url)
