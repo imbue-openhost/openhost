@@ -22,12 +22,12 @@ function updateListeningPorts() {
     .then(function(data) {
       var body = document.getElementById('ports-body');
       if (!data || data.enumeration_failed) {
-        body.innerHTML = '<tr><td colspan="4" class="error">Could not enumerate listening ports.</td></tr>';
+        body.innerHTML = '<tr><td colspan="3" class="error">Could not enumerate listening ports.</td></tr>';
         return;
       }
       var ports = data.ports || [];
       if (!ports.length) {
-        body.innerHTML = '<tr><td colspan="4" class="muted">No externally exposed ports.</td></tr>';
+        body.innerHTML = '<tr><td colspan="3" class="muted">No externally exposed ports.</td></tr>';
         return;
       }
       body.innerHTML = ports.map(function(p) {
@@ -41,8 +41,7 @@ function updateListeningPorts() {
         }
         return '<tr><td><code>' + escHtml(p.port) + '</code></td>'
           + '<td><code>' + escHtml(p.address) + '</code></td>'
-          + '<td' + cls + '>' + escHtml(p.classification) + '</td>'
-          + '<td>' + label + '</td></tr>';
+          + '<td' + cls + '>' + label + '</td></tr>';
       }).join('');
     });
 }
@@ -58,17 +57,73 @@ function toggleStorageGuard(pause) {
   }).then(function() { updateStorageStatus(); });
 }
 
-function perAppBarsHtml(perApp) {
+function escAttr(s) {
+  return escHtml(s).replace(/"/g, '&quot;');
+}
+
+// Donut chart of per-app usage. Hovering a slice shows the app name and size
+// in the center; slices are sorted by size, largest first at 12 o'clock.
+function perAppPieHtml(perApp) {
   var names = Object.keys(perApp).sort(function(a, b) { return perApp[b] - perApp[a]; });
-  var maxBytes = names.length ? (perApp[names[0]] || 1) : 1;
-  return names.map(function(name) {
-    var pct = Math.max(1, Math.round((perApp[name] / maxBytes) * 100));
-    return '<div class="usage-bar-row">'
-      + '<span class="usage-bar-name">' + escHtml(name) + '</span>'
-      + '<div class="usage-bar-track"><div class="usage-bar-fill" style="width:' + pct + '%"></div></div>'
-      + '<span class="usage-bar-size">' + escHtml(formatBytes(perApp[name])) + '</span>'
-      + '</div>';
+  var total = 0;
+  names.forEach(function(n) { total += perApp[n]; });
+  if (!total) return '<span class="muted">No app data yet.</span>';
+
+  var cx = 100, cy = 100, rOuter = 92, rInner = 58;
+  var TAU = 2 * Math.PI;
+  var angle = -Math.PI / 2;
+
+  function pt(r, a) {
+    return (cx + r * Math.cos(a)).toFixed(2) + ' ' + (cy + r * Math.sin(a)).toFixed(2);
+  }
+
+  var slices = names.map(function(name, i) {
+    var frac = perApp[name] / total;
+    // Clamp just under a full turn so a single-app "circle" still renders as one arc.
+    var sweep = Math.min(frac * TAU, TAU - 0.0004);
+    var a0 = angle;
+    var a1 = a0 + sweep;
+    angle += frac * TAU;
+    var large = sweep > Math.PI ? 1 : 0;
+    // Golden-angle hue steps keep adjacent slices distinct at any app count;
+    // fixed low saturation keeps the palette muted.
+    var hue = (215 + i * 137.5) % 360;
+    var d = 'M ' + pt(rOuter, a0) + ' A ' + rOuter + ' ' + rOuter + ' 0 ' + large + ' 1 ' + pt(rOuter, a1)
+      + ' L ' + pt(rInner, a1) + ' A ' + rInner + ' ' + rInner + ' 0 ' + large + ' 0 ' + pt(rInner, a0) + ' Z';
+    return '<path class="pie-slice" d="' + d + '" fill="hsl(' + hue.toFixed(1) + ', 45%, 62%)"'
+      + ' data-name="' + escAttr(name) + '" data-size="' + escAttr(formatBytes(perApp[name])) + '"></path>';
   }).join('');
+
+  var defaultName = names.length + (names.length === 1 ? ' app' : ' apps');
+  return '<svg id="per-app-pie" viewBox="0 0 200 200" width="220" height="220" role="img"'
+    + ' data-default-name="' + escAttr(defaultName) + '" data-default-size="' + escAttr(formatBytes(total)) + '">'
+    + slices
+    + '<text id="pie-label-name" class="pie-center-name" x="100" y="96">' + escHtml(defaultName) + '</text>'
+    + '<text id="pie-label-size" class="pie-center-size" x="100" y="114">' + escHtml(formatBytes(total)) + '</text>'
+    + '</svg>';
+}
+
+function wirePerAppPie() {
+  var svg = document.getElementById('per-app-pie');
+  if (!svg) return;
+  var nameEl = document.getElementById('pie-label-name');
+  var sizeEl = document.getElementById('pie-label-size');
+  function setLabel(name, size) {
+    nameEl.textContent = name.length > 18 ? name.slice(0, 17) + '…' : name;
+    sizeEl.textContent = size;
+  }
+  function reset() {
+    setLabel(svg.getAttribute('data-default-name'), svg.getAttribute('data-default-size'));
+  }
+  svg.addEventListener('mouseover', function(e) {
+    var t = e.target;
+    if (t && t.classList && t.classList.contains('pie-slice')) {
+      setLabel(t.getAttribute('data-name'), t.getAttribute('data-size'));
+    } else if (t === svg) {
+      reset();
+    }
+  });
+  svg.addEventListener('mouseleave', reset);
 }
 
 function updateStorageStatus() {
@@ -91,12 +146,12 @@ function updateStorageStatus() {
       var buildCache = (data.build_cache_bytes == null)
         ? '<span class="muted">unavailable</span>'
         : escHtml(formatBytes(data.build_cache_bytes));
-      rows += '<tr><th>Build cache</th><td>' + buildCache + '</td></tr>';
+      rows += '<tr><th>App Build Cache</th><td>' + buildCache + '</td></tr>';
       rows += '<tr><th>App data</th><td>' + escHtml(formatBytes(data.app_data_used_bytes || 0)) + '</td></tr>';
 
       var perApp = data.per_app || {};
       if (Object.keys(perApp).length > 0) {
-        rows += '<tr><th>Per app</th><td>' + perAppBarsHtml(perApp) + '</td></tr>';
+        rows += '<tr><th>Per app</th><td>' + perAppPieHtml(perApp) + '</td></tr>';
       }
 
       if (hasMinFree) {
@@ -105,6 +160,7 @@ function updateStorageStatus() {
         rows += '<tr><th>Storage guard</th><td' + guardCls + '>' + escHtml(guardText) + '</td></tr>';
       }
       document.getElementById('storage-body').innerHTML = rows;
+      wirePerAppPie();
 
       // Guard toggle button (separate row below the table for clarity)
       var guardRow = document.getElementById('storage-guard-row');
