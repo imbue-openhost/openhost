@@ -1,69 +1,81 @@
 {% extends "layout.html" %}
 {% block title_suffix %} - Settings{% endblock %}
 {% block content %}
-<h2>Settings</h2>
-
 <p id="error" class="error" style="display:none;"></p>
 
-<h3>Owner username</h3>
-<p style="font-size:0.85em; color:#666; margin:0 0 0.5em;">
-  The name apps you install (PeerTube, Mastodon, etc.) use as your
-  account name when they receive your identity from OpenHost. Sign-in
-  only requires the password; this name is for downstream apps.
-  Already-running apps will pick up changes on their next reload.
-  <br>
-  Allowed: lowercase letters, digits, and <code>.</code>
-  <code>_</code> <code>-</code>; must start with a letter or digit;
-  max&nbsp;30 characters. No <code>@</code>, spaces, or uppercase.
-</p>
-<div id="username-status">
-  <div style="display:flex; gap:0.5em; align-items:center;">
-    <input type="text" id="username-input"
-           pattern="[a-z0-9][a-z0-9._\-]{0,29}" maxlength="30"
-           aria-describedby="username-msg"
-           placeholder="Loading…" disabled style="flex:1;">
-    <button onclick="setOwnerUsername()" class="btn btn-primary"
-            id="set-username-btn" disabled>Save</button>
-  </div>
-  <p id="username-msg" style="margin-top:0.3em; display:none;"></p>
-</div>
+<h2 class="section-title">Account</h2>
+<table class="form-table">
+  <tr>
+    <th><label for="username-input">Owner username</label></th>
+    <td>
+      <input type="text" id="username-input"
+             pattern="[a-z0-9][a-z0-9._\-]{0,29}" maxlength="30"
+             aria-describedby="username-msg"
+             placeholder="Loading…" disabled>
+      <button onclick="setOwnerUsername()" class="btn btn-primary"
+              id="set-username-btn" disabled>Save</button>
+      <p class="hint">Used as your account name inside installed apps.</p>
+      <p id="username-msg" style="display:none;"></p>
+    </td>
+  </tr>
+  <tr>
+    <th>Password</th>
+    <td>
+      <button id="show-pw-form-btn" class="btn"
+              onclick="this.style.display = 'none'; document.getElementById('pw-form').hidden = false;">Change password</button>
+      <div id="pw-form" hidden>
+        <input type="password" id="current-pw" placeholder="Current password" style="display:block; margin-bottom:0.3em;">
+        <input type="password" id="new-pw" placeholder="New password" style="display:block; margin-bottom:0.3em;">
+        <input type="password" id="confirm-pw" placeholder="Confirm new password" style="display:block; margin-bottom:0.5em;">
+        <button onclick="changePassword()" class="btn btn-primary">Change password</button>
+        <span id="pw-msg" style="display:none;"></span>
+      </div>
+    </td>
+  </tr>
+  <tr>
+    <th>Session</th>
+    <td>
+      <form method="post" action="/logout" style="margin:0;">
+        <button type="submit" class="btn btn-danger">Log out</button>
+      </form>
+    </td>
+  </tr>
+</table>
 
-<h3>Git Remote</h3>
-<div id="remote-status">
-  <div style="display:flex; gap:0.5em; align-items:center;">
-    <input type="text" id="remote-url" placeholder="Loading…" disabled style="flex:1;">
-    <button onclick="setRemote()" class="btn btn-primary" id="set-remote-btn" disabled>Set &amp; restart</button>
-  </div>
-  <p id="remote-msg" style="margin-top:0.3em; display:none;"></p>
-</div>
+<h2 class="section-title">Software updates</h2>
+<table class="form-table">
+  <tr>
+    <th><label for="remote-url">Git remote</label></th>
+    <td>
+      <input type="text" id="remote-url" placeholder="Loading…" disabled style="width:32em;">
+      <button onclick="setRemote()" class="btn btn-primary" id="set-remote-btn" disabled>Set &amp; restart</button>
+      <p class="hint">Repository this instance updates from.</p>
+      <p id="remote-msg" style="display:none;"></p>
+    </td>
+  </tr>
+  <tr>
+    <th>Status</th>
+    <td>
+      <div id="update-status">
+        <p>Checking for updates&hellip;</p>
+      </div>
+      <div id="restart-overlay" style="display:none;">
+        <p id="restart-status"><strong>Waiting for shutdown&hellip;</strong></p>
+      </div>
+    </td>
+  </tr>
+</table>
 
-<h3>Updates</h3>
-<div id="update-status">
-  <p>Checking for updates&hellip;</p>
-</div>
-<div id="restart-overlay" style="display:none;">
-  <p id="restart-status"><strong>Waiting for shutdown&hellip;</strong></p>
-</div>
+<h2 class="section-title">API tokens</h2>
+<p class="hint">Bearer tokens for programmatic access (e.g. AI agents). Each token grants owner-level access until it expires.</p>
 
-<h3>Change Password</h3>
-<div>
-  <input type="password" id="current-pw" placeholder="Current password" style="margin-bottom:0.3em;">
-  <input type="password" id="new-pw" placeholder="New password" style="margin-bottom:0.3em;">
-  <input type="password" id="confirm-pw" placeholder="Confirm new password" style="margin-bottom:0.3em;">
-  <button onclick="changePassword()" class="btn btn-primary">Change Password</button>
-  <p id="pw-msg" style="display:none; margin-top:0.3em;"></p>
-</div>
-
-<h2>API Tokens</h2>
-<p style="color: #666; font-size: 0.9em;">Bearer tokens for programmatic access (e.g. AI agents). Each token grants owner-level access until it expires.</p>
-
-<div style="margin-bottom: 1em; display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;">
-  <label>name: <input type="text" id="token-name" style="width: 200px;"></label>
+<div class="control-row">
+  <label>Name <input type="text" id="token-name" style="width: 200px;"></label>
   <label>Expires in
     <input type="number" id="token-expiry" value="8" min="0.1" step="any" style="width: 70px;" disabled> hours
   </label>
   <label><input type="checkbox" id="token-no-expiry" checked onchange="document.getElementById('token-expiry').disabled = this.checked;"> Never expires</label>
-  <button class="btn btn-primary" onclick="createToken()">Create Token</button>
+  <button class="btn btn-primary" onclick="createToken()">Create token</button>
 </div>
 
 <div id="token-created" style="display:none; background: #d4edda; border: 1px solid #28a745; padding: 0.8em 1em; border-radius: 4px; margin-bottom: 1em;">
@@ -76,32 +88,34 @@
   <thead><tr><th>Name</th><th>Created</th><th>Expires</th><th>Actions</th></tr></thead>
   <tbody id="tokens-body"></tbody>
 </table>
-<p id="no-tokens" style="color: #888;">No API tokens.</p>
+<p id="no-tokens" class="muted">No API tokens.</p>
 
-<h2>Archive Backend</h2>
-<p class="hint">Where the <code>app_archive</code> data tier lives. Disabled by default; configure an S3 bucket here once and apps with <code>app_archive = true</code> get a JuiceFS-backed mount whose contents survive a zone reinstall. The prefix lets multiple zones share one bucket. Configuration is one-shot per zone.</p>
+<h2 class="section-title">Archive backend</h2>
+<p class="hint">An optional S3-backed data tier (<code>app_archive</code>), used by apps that store large amounts of data which might not fit an instance's local storage.</p>
 <div id="archive-backend-status">
   <div class="muted">Loading&hellip;</div>
 </div>
 
-<h2>Maintenance</h2>
-<table>
+<h2 class="section-title">Maintenance</h2>
+<table class="form-table">
   <tr>
-    <th class="label-col">Restart compute space</th>
+    <th>Restart compute space</th>
     <td>
-      <button class="btn btn-danger" onclick="restartComputeSpace()">Restart Compute Space</button>
+      <button class="btn btn-danger" onclick="restartComputeSpace()">Restart compute space</button>
       <span id="restart-msg" class="muted"></span>
+      <p class="hint">Restarts the router process; running apps are not interrupted.</p>
     </td>
   </tr>
   <tr>
-    <th class="label-col">Build cache</th>
+    <th>Build cache</th>
     <td>
-      <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop Build Cache</button>
+      <button class="btn btn-danger" id="drop-build-cache-btn" onclick="dropBuildCache()">Drop build cache</button>
       <span id="drop-build-cache-msg" class="muted"></span>
+      <p class="hint">Removes images for stopped apps; they are rebuilt on next deploy.</p>
     </td>
   </tr>
   <tr>
-    <th class="label-col">SSH</th>
+    <th>SSH</th>
     <td>
       <button class="btn" id="ssh-btn" onclick="toggleSsh()" disabled>SSH</button>
       <span id="ssh-status" class="muted"></span>
