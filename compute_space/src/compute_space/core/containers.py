@@ -19,6 +19,7 @@ via ``--add-host`` so existing Dockerfiles keep resolving.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -444,6 +445,30 @@ def remove_image(app_name: str) -> None:
     """Remove the image built for an app.  Idempotent."""
     image_tag = f"openhost-{app_name}:latest"
     subprocess.run(["podman", "rmi", image_tag], capture_output=True, timeout=30)
+
+
+def container_image_storage_bytes() -> int | None:
+    """Total bytes podman uses for image storage (the build cache), from ``podman system df``.
+
+    Returns None when podman is unavailable or the output can't be parsed,
+    so status reporting degrades instead of failing the whole endpoint.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "system", "df", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        for row in json.loads(result.stdout):
+            if row.get("Type") == "Images":
+                return int(row["RawSize"])
+        return None
+    except Exception as e:
+        logger.warning("Could not query podman image storage size: %s", e)
+        return None
 
 
 def drop_docker_build_cache() -> str:

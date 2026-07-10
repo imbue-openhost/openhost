@@ -17,6 +17,7 @@ import threading
 import time
 
 from compute_space.config import Config
+from compute_space.core.containers import container_image_storage_bytes
 from compute_space.core.containers import stop_app_process
 from compute_space.core.logging import logger
 
@@ -178,6 +179,7 @@ def storage_status(config: Config) -> dict[str, object]:
         },
         "openhost_data_used_bytes": openhost_data_usage_bytes(config),
         "app_data_used_bytes": app_data_usage_bytes(config),
+        "build_cache_bytes": container_image_storage_bytes(),
         "per_app": per_app_usage(config),
         "storage_min_free_bytes": min_free,
         "storage_low": storage_low(config),

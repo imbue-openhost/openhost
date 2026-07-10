@@ -14,26 +14,6 @@ function formatBytes(bytes) {
   return bytes + ' B';
 }
 
-// ─── Security Audit ───
-
-function updateSecurityAudit() {
-  fetch(config.securityAuditUrl, {credentials: 'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      var body = document.getElementById('security-body');
-      var rows = '';
-      Object.keys(data.checks).sort().forEach(function(name) {
-        var c = data.checks[name];
-        var statusCls = c.ok ? 'status-running' : 'status-error';
-        var statusText = c.ok ? 'OK' : 'FAIL';
-        rows += '<tr><td><code>' + escHtml(name) + '</code></td>'
-          + '<td class="' + statusCls + '">' + statusText + '</td>'
-          + '<td>' + escHtml(c.detail) + '</td></tr>';
-      });
-      body.innerHTML = rows || '<tr><td colspan="3" class="muted">No checks reported.</td></tr>';
-    });
-}
-
 // ─── Listening Ports ───
 
 function updateListeningPorts() {
@@ -41,9 +21,13 @@ function updateListeningPorts() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var body = document.getElementById('ports-body');
-      var ports = (data && data.ports) || [];
-      if (!ports.length) {
+      if (!data || data.enumeration_failed) {
         body.innerHTML = '<tr><td colspan="4" class="error">Could not enumerate listening ports.</td></tr>';
+        return;
+      }
+      var ports = data.ports || [];
+      if (!ports.length) {
+        body.innerHTML = '<tr><td colspan="4" class="muted">No externally exposed ports.</td></tr>';
         return;
       }
       body.innerHTML = ports.map(function(p) {
@@ -74,6 +58,19 @@ function toggleStorageGuard(pause) {
   }).then(function() { updateStorageStatus(); });
 }
 
+function perAppBarsHtml(perApp) {
+  var names = Object.keys(perApp).sort(function(a, b) { return perApp[b] - perApp[a]; });
+  var maxBytes = names.length ? (perApp[names[0]] || 1) : 1;
+  return names.map(function(name) {
+    var pct = Math.max(1, Math.round((perApp[name] / maxBytes) * 100));
+    return '<div class="usage-bar-row">'
+      + '<span class="usage-bar-name">' + escHtml(name) + '</span>'
+      + '<div class="usage-bar-track"><div class="usage-bar-fill" style="width:' + pct + '%"></div></div>'
+      + '<span class="usage-bar-size">' + escHtml(formatBytes(perApp[name])) + '</span>'
+      + '</div>';
+  }).join('');
+}
+
 function updateStorageStatus() {
   fetch(config.storageStatusUrl, {credentials: 'same-origin'})
     .then(function(r) { return r.json(); })
@@ -89,23 +86,23 @@ function updateStorageStatus() {
         freeText += ' (min ' + formatBytes(data.storage_min_free_bytes) + ' required)';
       }
       var freeCls = (hasMinFree && isLow) ? ' class="status-error"' : '';
-      rows += '<tr><th class="label-col">Disk free</th><td' + freeCls + '>' + escHtml(freeText) + '</td></tr>';
-      rows += '<tr><th class="label-col">OpenHost data</th><td>' + escHtml(formatBytes(data.openhost_data_used_bytes || 0)) + '</td></tr>';
-      rows += '<tr><th class="label-col">App data</th><td>' + escHtml(formatBytes(data.app_data_used_bytes || 0)) + '</td></tr>';
+      rows += '<tr><th>Disk free</th><td' + freeCls + '>' + escHtml(freeText) + '</td></tr>';
+      rows += '<tr><th>OpenHost data</th><td>' + escHtml(formatBytes(data.openhost_data_used_bytes || 0)) + '</td></tr>';
+      var buildCache = (data.build_cache_bytes == null)
+        ? '<span class="muted">unavailable</span>'
+        : escHtml(formatBytes(data.build_cache_bytes));
+      rows += '<tr><th>Build cache</th><td>' + buildCache + '</td></tr>';
+      rows += '<tr><th>App data</th><td>' + escHtml(formatBytes(data.app_data_used_bytes || 0)) + '</td></tr>';
 
       var perApp = data.per_app || {};
-      var appNames = Object.keys(perApp).sort();
-      if (appNames.length > 0) {
-        var perAppHtml = appNames.map(function(name) {
-          return escHtml(name) + ' ' + escHtml(formatBytes(perApp[name]));
-        }).join(' &middot; ');
-        rows += '<tr><th class="label-col">Per app</th><td>' + perAppHtml + '</td></tr>';
+      if (Object.keys(perApp).length > 0) {
+        rows += '<tr><th>Per app</th><td>' + perAppBarsHtml(perApp) + '</td></tr>';
       }
 
       if (hasMinFree) {
         var guardText = guardPaused ? 'Paused' : (isLow ? 'Active (low storage)' : 'Active');
         var guardCls = (guardPaused || isLow) ? ' class="status-error"' : '';
-        rows += '<tr><th class="label-col">Storage guard</th><td' + guardCls + '>' + escHtml(guardText) + '</td></tr>';
+        rows += '<tr><th>Storage guard</th><td' + guardCls + '>' + escHtml(guardText) + '</td></tr>';
       }
       document.getElementById('storage-body').innerHTML = rows;
 
@@ -139,9 +136,6 @@ function fetchLogs() {
 }
 
 // ─── Init ───
-
-updateSecurityAudit();
-setInterval(updateSecurityAudit, 10000);
 
 updateListeningPorts();
 setInterval(updateListeningPorts, 10000);

@@ -16,11 +16,10 @@ from litestar import post
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
-from compute_space.core.auth.security_audit import AuditResult
 from compute_space.core.auth.security_audit import ListeningPort
+from compute_space.core.auth.security_audit import external_ports
 from compute_space.core.auth.security_audit import is_sshd_active
 from compute_space.core.auth.security_audit import list_listening_ports
-from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
@@ -87,6 +86,9 @@ class HealthRestarting:
 @attr.s(auto_attribs=True, frozen=True)
 class ListeningPortsResponse:
     ports: list[ListeningPort]
+    # True when the port list could not be enumerated at all (e.g. ``ss`` failed),
+    # as opposed to no ports surviving the external-interface filter.
+    enumeration_failed: bool
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -211,15 +213,14 @@ def health() -> Response[HealthRestarting] | HealthOk:
     return HealthOk(status="ok")
 
 
-@get("/api/security-audit", guards=[require_owner_auth], sync_to_thread=False)
-def security_audit(db: sqlite3.Connection) -> AuditResult:
-    return run_audit(db=db)
-
-
 @get("/api/listening-ports", guards=[require_owner_auth], sync_to_thread=False)
 def listening_ports(db: sqlite3.Connection) -> ListeningPortsResponse:
-    """Return every TCP port the VM is listening on, with classification."""
-    return ListeningPortsResponse(ports=list_listening_ports(db=db))
+    """Return TCP ports listening on external-facing or wildcard interfaces, with classification.
+
+    Loopback-only listeners are excluded — they are not reachable from outside the VM.
+    """
+    all_ports = list_listening_ports(db=db)
+    return ListeningPortsResponse(ports=external_ports(all_ports), enumeration_failed=not all_ports)
 
 
 @get("/api/storage-status", guards=[require_owner_auth], sync_to_thread=False)
@@ -314,7 +315,6 @@ system_routes = Router(
         api_tokens_delete,
         compute_space_logs,
         health,
-        security_audit,
         listening_ports,
         api_storage_status,
         toggle_storage_guard,

@@ -1,15 +1,16 @@
 {% extends "layout.html" %}
 {% block title_suffix %} - System Info{% endblock %}
 {% block content %}
-<h2>Security Audit</h2>
-<table id="security-table">
-  <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
-  <tbody id="security-body">
-    <tr><td colspan="3" class="muted">Loading&hellip;</td></tr>
+<h2 class="section-title">Storage</h2>
+<table id="storage-table" class="form-table">
+  <tbody id="storage-body">
+    <tr><td colspan="2" class="muted">Loading&hellip;</td></tr>
   </tbody>
 </table>
+<div id="storage-guard-row"></div>
 
-<h2>Listening Ports</h2>
+<h2 class="section-title">Listening ports</h2>
+<p class="hint">Ports listening on external-facing or wildcard interfaces. Loopback-only listeners are not shown.</p>
 <table id="ports-table">
   <thead><tr><th>Port</th><th>Address</th><th>Classification</th><th>Detail</th></tr></thead>
   <tbody id="ports-body">
@@ -17,20 +18,11 @@
   </tbody>
 </table>
 
-<h2>Storage</h2>
-<table id="storage-table">
-  <tbody id="storage-body">
-    <tr><td colspan="2" class="muted">Loading&hellip;</td></tr>
-  </tbody>
-</table>
-<div id="storage-guard-row"></div>
-
-<h2>Logs</h2>
+<h2 class="section-title">Logs</h2>
 <pre class="log-output" id="cs-logs" style="max-height: 120em; white-space: pre-wrap; word-break: break-all; width: calc(100vw - 2em); position: relative; left: 50%; margin-left: calc(-50vw + 1em); box-sizing: border-box;">Loading...</pre>
 
 <script id="page-config" type="application/json">
 {
-  "securityAuditUrl": "/api/security-audit",
   "listeningPortsUrl": "/api/listening-ports",
   "storageStatusUrl": "/api/storage-status",
   "toggleStorageGuardUrl": "/api/storage-guard"

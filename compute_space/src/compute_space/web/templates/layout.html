@@ -43,6 +43,11 @@
     table.form-table input[type="text"], table.form-table input[type="password"] { width: 24em; max-width: 100%; }
     table.form-table td p { margin: 0.4em 0 0; }
     table.form-table td p:first-child { margin-top: 0; }
+    .usage-bar-row { display: flex; align-items: center; gap: 0.8em; margin: 0.15em 0; }
+    .usage-bar-name { flex: 0 0 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .usage-bar-track { flex: 1; height: 1.1em; background: #f0f0f0; border-radius: 3px; overflow: hidden; }
+    .usage-bar-fill { height: 100%; background: #8fb0e8; }
+    .usage-bar-size { flex: 0 0 6em; text-align: right; color: #555; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
