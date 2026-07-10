@@ -147,6 +147,24 @@ def find_app_by_name(name: str) -> App | None:
     return App.from_row(row) if row else None
 
 
+def find_app_by_alt_domain(host: str) -> App | None:
+    """Find an app by a registered alternate (custom) domain, exact match only.
+
+    ``host`` must already be normalized: lowercase, no port, no trailing dot.
+    """
+    row = (
+        get_db()
+        .execute(
+            "SELECT apps.* FROM apps"
+            " JOIN app_alt_domains ON app_alt_domains.app_id = apps.app_id"
+            " WHERE app_alt_domains.domain = ?",
+            (host,),
+        )
+        .fetchone()
+    )
+    return App.from_row(row) if row else None
+
+
 def list_builtin_apps(config: Config) -> list[dict[str, str]]:
     """Return list of dicts with name/url for each app in the builtin apps dir.
 
@@ -1012,8 +1030,10 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
 
 
 def get_app_from_hostname(host: str) -> App | None:
-    """Extract+validate app name from a Host header value (or litestar's request.url.netloc; ie example.com[:port])
-    by assuming that app_name is a subdir of zone_domain (as is convention).
+    """Match a Host header value (or litestar's request.url.netloc; ie example.com[:port]) to an app.
+
+    Hosts under zone_domain match by app name (app_name is a subdir of zone_domain, as is convention);
+    any other host matches a registered alternate (custom) domain, if one exists.
 
     returns None if an app cannot be matched from the header.
 
@@ -1024,7 +1044,7 @@ def get_app_from_hostname(host: str) -> App | None:
     """
     config = get_config()
     zone_domain_no_port = config.zone_domain_no_port
-    host_no_port = host.split(":", 1)[0]
+    host_no_port = host.split(":", 1)[0].lower().rstrip(".")
     if host_no_port == zone_domain_no_port:
         return None
     if host_no_port.endswith("." + zone_domain_no_port):
@@ -1032,7 +1052,8 @@ def get_app_from_hostname(host: str) -> App | None:
         if "." not in app_name:
             if app := find_app_by_name(app_name):
                 return app
-    return None
+        return None
+    return find_app_by_alt_domain(host_no_port)
 
 
 def is_public_path(app: App, request_path: str) -> bool:

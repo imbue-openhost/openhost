@@ -43,6 +43,25 @@
     </span>
   </td></tr>
   {% endif %}
+  <tr><th>Custom Domains</th><td>
+    <span id="domains-display">
+      {% if alt_domains %}{% for d in alt_domains %}<code>{{ d }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}---{% endif %}
+      <button class="btn" onclick="editDomains()" style="margin-left:0.5em;">Edit</button>
+    </span>
+    <span id="domains-edit" style="display:none;">
+      <textarea id="domains-input" rows="3" style="font-family:monospace;width:28em;vertical-align:top;" placeholder="myapp.example.com">{{ alt_domains | join('\n') }}</textarea>
+      <button class="btn btn-primary" onclick="saveDomains()">Save</button>
+      <button class="btn" onclick="cancelDomains()">Cancel</button>
+      <div class="hint" style="margin-top:0.25em;">
+        One domain per line. For each, create a DNS record at your provider pointing it at this app:
+        <code>CNAME &rarr; {{ app.name }}.{{ zone_domain.split(':')[0] }}</code>
+        (apex/root domains need an ALIAS or ANAME record instead).
+        The first HTTPS request to a new domain takes a few seconds while a certificate is issued.
+        Custom domains serve the app's public paths; owner-only paths stay on <code>{{ app.name }}.{{ zone_domain }}</code>.
+      </div>
+      <span id="domains-error" class="field-error"></span>
+    </span>
+  </td></tr>
   <tr><th>Repo Path</th><td>{{ app.repo_path }}</td></tr>
   <tr><th>Created</th><td>{{ app.created_at }}</td></tr>
   {% if app.error_message %}
@@ -194,6 +213,7 @@ async function grantPermission(btn) {
   "nextUrl": {{ next_url | default("", true) | tojson }},
   "reloadAppUrl": "/reload_app/{{ app.app_id }}",
   "setAppRemoteUrl": "/set_app_remote/{{ app.app_id }}",
+  "setAppDomainsUrl": "/set_app_domains/{{ app.app_id }}",
   "dropBuildCacheUrl": "/api/drop-docker-cache"
 }
 </script>

@@ -110,9 +110,7 @@ def main() -> None:
     # Caddy reverse proxy. mainly for TLS termination, but also some other features
     caddy: CaddyProcess | None = None
     if config.start_caddy:
-        caddy = start_caddy(
-            config.caddyfile_path, config.tls_enabled, config.tls_cert_path, config.tls_key_path, config.port
-        )
+        caddy = start_caddy(config)
         if config.tls_enabled and config.coredns_enabled and config.acquire_tls_cert_if_missing:
             start_renewal_thread(config, caddy.restart)
     else:

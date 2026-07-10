@@ -6,6 +6,13 @@ CREATE TABLE api_tokens (
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE app_alt_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    domain TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
+);
 CREATE TABLE "app_databases" (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 app_id TEXT NOT NULL,
@@ -79,7 +86,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,11);
+INSERT INTO "schema_version" VALUES(1,12);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
@@ -108,4 +115,5 @@ CREATE INDEX idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX idx_apps_app_id ON apps(app_id);
 CREATE UNIQUE INDEX idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX sessions_user_id_idx ON sessions(user_id);
+CREATE INDEX idx_alt_domains_app_id ON app_alt_domains(app_id);
 COMMIT;

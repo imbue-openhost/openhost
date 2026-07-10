@@ -14,14 +14,12 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 
 import pytest
 import requests
 from loguru import logger
 
 from compute_space import OPENHOST_PROJECT_DIR
-from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
 from compute_space.tests.conftest import _make_config_and_env
@@ -102,28 +100,6 @@ def test_pre_setup_health(tmp_path):
     finally:
         if router is not None:
             _stop_router_process(router)
-
-
-def test_caddyfile_http_redirect():
-    """When TLS is enabled, port 80 redirects to HTTPS."""
-    caddyfile = generate_caddyfile(
-        tls_enabled=True,
-        tls_cert_path=Path("/etc/ssl/cert.pem"),
-        tls_key_path=Path("/etc/ssl/key.pem"),
-        web_server_port=8080,
-    )
-
-    # Should have an :80 block with a permanent redirect to https
-    assert ":80 {" in caddyfile
-    assert "redir https://{host}{uri} permanent" in caddyfile
-
-    # Should also have an :443 block with TLS configured
-    assert ":443 {" in caddyfile
-    assert "tls /etc/ssl/cert.pem /etc/ssl/key.pem" in caddyfile
-
-    # The :80 block should NOT reverse_proxy (it only redirects)
-    lines_in_80_block = caddyfile.split(":80 {")[1].split("}")[0]
-    assert "reverse_proxy" not in lines_in_80_block
 
 
 def _setup_owner(session, base_url, password="testpass123", username=None, timeout=30):

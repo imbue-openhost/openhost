@@ -4,23 +4,49 @@ from pathlib import Path
 
 import attr
 
+from compute_space.config import Config
 from compute_space.core.logging import logger
 
 
-def generate_caddyfile(tls_enabled: bool, tls_cert_path: Path, tls_key_path: Path, web_server_port: int) -> str:
+def generate_caddyfile(config: Config) -> str:
     """Generate Caddyfile content based on config."""
-    if tls_enabled:
+    if config.tls_enabled:
+        zone = config.zone_domain_no_port
+        email_line = f"    email {config.acme_email}\n" if config.acme_email else ""
         return (
             "{\n"
-            "    auto_https off\n"
             "    admin off\n"
+            # ACME must stay enabled for on-demand issuance; we own the :80
+            # redirect ourselves via the http:// site below.
+            "    auto_https disable_redirects\n"
+            "    storage file_system {\n"
+            f"        root {config.caddy_storage_dir}\n"
+            "    }\n"
+            f"{email_line}"
+            "    on_demand_tls {\n"
+            f"        ask http://127.0.0.1:{config.port}/api/tls/on_demand_check\n"
+            "    }\n"
             "}\n"
-            ":443 {\n"
-            f"    tls {tls_cert_path} {tls_key_path}\n"
+            # Zone + app subdomains: served from the wildcard cert on disk
+            # (DNS-01 acquired); the explicit cert/key means Caddy never
+            # attempts ACME for these hosts.
+            f"https://{zone}, https://*.{zone} {{\n"
+            f"    tls {config.tls_cert_path} {config.tls_key_path}\n"
             "    encode gzip zstd\n"
-            f"    reverse_proxy localhost:{web_server_port}\n"
+            f"    reverse_proxy localhost:{config.port}\n"
             "}\n"
-            ":80 {\n"
+            # Any other hostname is a custom (alternate) app domain: Caddy
+            # obtains a Let's Encrypt cert on first handshake, gated by the
+            # ask endpoint above so only registered domains get certs.
+            "https:// {\n"
+            "    tls {\n"
+            "        on_demand\n"
+            "    }\n"
+            "    encode gzip zstd\n"
+            f"    reverse_proxy localhost:{config.port}\n"
+            "}\n"
+            # Caddy serves /.well-known/acme-challenge/ on :80 ahead of this site.
+            "http:// {\n"
             "    redir https://{host}{uri} permanent\n"
             "}\n"
         )
@@ -32,7 +58,7 @@ def generate_caddyfile(tls_enabled: bool, tls_cert_path: Path, tls_key_path: Pat
             "}\n"
             ":80 {\n"
             "    encode gzip zstd\n"
-            f"    reverse_proxy localhost:{web_server_port}\n"
+            f"    reverse_proxy localhost:{config.port}\n"
             "}\n"
         )
 
@@ -79,10 +105,9 @@ class CaddyProcess:
         self.proc = _spawn_caddy(self.caddyfile_path)
 
 
-def start_caddy(
-    caddyfile_path: Path, tls_enabled: bool, tls_cert_path: Path, tls_key_path: Path, web_server_port: int
-) -> CaddyProcess:
+def start_caddy(config: Config) -> CaddyProcess:
     """Generate Caddyfile and start Caddy."""
+    caddyfile_path = config.caddyfile_path
     caddyfile_path.parent.mkdir(parents=True, exist_ok=True)
-    caddyfile_path.write_text(generate_caddyfile(tls_enabled, tls_cert_path, tls_key_path, web_server_port))
+    caddyfile_path.write_text(generate_caddyfile(config))
     return CaddyProcess(proc=_spawn_caddy(caddyfile_path), caddyfile_path=caddyfile_path)

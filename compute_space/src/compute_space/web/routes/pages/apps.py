@@ -56,6 +56,13 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
     # User-facing links the app advertised in its manifest's [[links]].
     links = deserialize_links(app_row["links"])
 
+    alt_domains = [
+        r["domain"]
+        for r in db.execute(
+            "SELECT domain FROM app_alt_domains WHERE app_id = ? ORDER BY domain", (app_id,)
+        ).fetchall()
+    ]
+
     # Permissions: granted + manifest-declared but not yet granted
     granted_perms = [
         {"service_url": p.service_url, "grant": p.grant, "scope": p.scope}
@@ -87,6 +94,7 @@ async def app_detail(app_name: str, db: sqlite3.Connection, config: Config, next
         template_name="app_detail.html",
         context={
             "app": app_row,
+            "alt_domains": alt_domains,
             "links": links,
             "databases": databases,
             "port_mappings": port_mappings,

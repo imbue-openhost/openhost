@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS app_port_mappings (
     UNIQUE(app_id, label)
 );
 
+-- Custom domains (CNAME'd at <app_name>.<zone_domain>) that route to an app.
+-- ``domain`` is globally UNIQUE so two apps can't claim the same domain.
+CREATE TABLE IF NOT EXISTS app_alt_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    domain TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_alt_domains_app_id ON app_alt_domains(app_id);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_port_mappings_host_port ON app_port_mappings(host_port);
 CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_apps_app_id ON apps(app_id);

@@ -195,6 +195,12 @@ class Config:
         return self.openhost_data_path / "Caddyfile"
 
     @property
+    def caddy_storage_dir(self) -> Path:
+        # Caddy's cert storage — holds on-demand TLS certs issued for apps'
+        # custom domains, so they survive Caddy restarts.
+        return self.openhost_data_path / "caddy"
+
+    @property
     def keys_dir(self) -> str:
         return str(Path(self.openhost_data_path) / "keys")
 
@@ -215,6 +221,7 @@ class Config:
         # the JuiceFS mount once attach_on_startup brings it up.
         os.makedirs(self.apps_dir, exist_ok=True)
         os.makedirs(self.openhost_data_path, exist_ok=True)
+        os.makedirs(self.caddy_storage_dir, exist_ok=True)
         os.makedirs(self.keys_dir, exist_ok=True)
 
 

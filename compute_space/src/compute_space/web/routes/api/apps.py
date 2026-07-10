@@ -181,6 +181,17 @@ class SetAppRemoteResponse:
     repo_url: str
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class SetAppDomainsRequest:
+    domains: list[str]
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetAppDomainsResponse:
+    ok: bool
+    alt_domains: list[str]
+
+
 # ─── helpers ───────────────────────────────────────────────────────────────
 
 
@@ -960,6 +971,81 @@ async def set_app_remote(
     )
 
 
+_MAX_ALT_DOMAINS_PER_APP = 20
+# FQDN: two or more dot-separated labels, each 1-63 chars of lowercase alnum with interior hyphens.
+_DOMAIN_LABEL = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+_ALT_DOMAIN_RE = re.compile(rf"^{_DOMAIN_LABEL}(\.{_DOMAIN_LABEL})+$")
+
+
+@post("/set_app_domains/{app_id:str}", status_code=200, guards=[require_owner_auth])
+async def set_app_domains(
+    app_id: str,
+    data: SetAppDomainsRequest,
+    db: sqlite3.Connection,
+    config: Config,
+) -> Response[SetAppDomainsResponse] | Response[ErrorResponse]:
+    """Replace an app's set of alternate (custom) domains.
+
+    Registered domains are matched against incoming Host headers by ``get_app_from_hostname`` and
+    gate on-demand TLS issuance. The owner must point a CNAME at ``<app_name>.<zone_domain>``
+    themselves; openhost does not manage the external DNS.
+    """
+    app_row, err = _resolve_app_or_error(app_id, db)
+    if err is not None:
+        return err
+    assert app_row is not None
+    if _is_removing(app_row):
+        return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
+
+    zone = config.zone_domain_no_port
+    domains: list[str] = []
+    for raw in data.domains:
+        domain = raw.strip().lower().rstrip(".")
+        if not domain:
+            continue
+        if len(domain) > 253 or not _ALT_DOMAIN_RE.match(domain):
+            return Response(content=ErrorResponse(error=f"Invalid domain: {raw.strip()!r}"), status_code=400)
+        if domain == zone or domain.endswith("." + zone):
+            return Response(
+                content=ErrorResponse(
+                    error=f"'{domain}' is under {zone}; custom domains must be outside the openhost zone"
+                ),
+                status_code=400,
+            )
+        if domain not in domains:
+            domains.append(domain)
+    if len(domains) > _MAX_ALT_DOMAINS_PER_APP:
+        return Response(
+            content=ErrorResponse(error=f"At most {_MAX_ALT_DOMAINS_PER_APP} custom domains per app"),
+            status_code=400,
+        )
+
+    # Replace the whole set atomically. The UNIQUE(domain) constraint is the
+    # race-safe cross-app duplicate check: a concurrent claim surfaces as
+    # IntegrityError rather than a TOCTOU window.
+    try:
+        db.execute("DELETE FROM app_alt_domains WHERE app_id = ?", (app_id,))
+        db.executemany("INSERT INTO app_alt_domains (app_id, domain) VALUES (?, ?)", [(app_id, d) for d in domains])
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        taken = [
+            d
+            for d in domains
+            if db.execute("SELECT 1 FROM app_alt_domains WHERE domain = ? AND app_id != ?", (d, app_id)).fetchone()
+        ]
+        return Response(
+            content=ErrorResponse(error=f"Already used by another app: {', '.join(taken)}"),
+            status_code=409,
+        )
+
+    return Response(
+        content=SetAppDomainsResponse(ok=True, alt_domains=domains),
+        status_code=200,
+        media_type=MediaType.JSON,
+    )
+
+
 api_apps_routes = Router(
     path="/",
     route_handlers=[
@@ -975,5 +1061,6 @@ api_apps_routes = Router(
         remove_app,
         rename_app,
         set_app_remote,
+        set_app_domains,
     ],
 )

@@ -68,6 +68,42 @@ function saveRemote() {
     .catch(function() { errEl.textContent = 'Failed to save'; });
 }
 
+// ─── Edit custom domains ───
+
+function editDomains() {
+  document.getElementById('domains-display').style.display = 'none';
+  document.getElementById('domains-edit').style.display = '';
+  document.getElementById('domains-input').focus();
+  document.getElementById('domains-error').textContent = '';
+}
+
+function cancelDomains() {
+  document.getElementById('domains-edit').style.display = 'none';
+  document.getElementById('domains-display').style.display = '';
+}
+
+function saveDomains() {
+  var input = document.getElementById('domains-input');
+  var errEl = document.getElementById('domains-error');
+  errEl.textContent = '';
+  var domains = input.value.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+  fetch(config.setAppDomainsUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domains: domains}),
+  })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+    .then(function(res) {
+      if (!res.ok || (res.data && res.data.error)) {
+        errEl.textContent = (res.data && res.data.error) || 'Failed to save';
+        return;
+      }
+      location.reload();
+    })
+    .catch(function() { errEl.textContent = 'Failed to save'; });
+}
+
 // ─── App Actions (stop, reload, remove) ───
 
 function setActionsBusy(label) {
