@@ -64,11 +64,22 @@ def _sanitize_forwarded_headers(headers: Iterable[tuple[str, str]]) -> list[tupl
     return sanitized
 
 
+def _canonicalize_header_name(name: str) -> str:
+    """ASGI hands us header names lowercased (required by spec), and forwarding them that way breaks backends
+    that read header names case-sensitively — e.g. PHP's getallheaders() preserves wire casing, so LimeSurvey's
+    REST auth misses a lowercase `authorization` and 401s.  Forward in canonical Title-Case form instead,
+    matching what clients conventionally send: authorization -> Authorization, x-real-ip -> X-Real-Ip.
+    """
+    return "-".join(part.capitalize() for part in name.split("-"))
+
+
 def _build_forwarded_request_headers(
     headers: Headers, proto_excluded_headers: Set[str], extra_headers: Iterable[tuple[str, str]]
 ) -> list[tuple[str, str]]:
     new_headers = _sanitize_forwarded_headers(headers.multi_items())
-    new_headers = [(k, v) for k, v in new_headers if k.lower() not in proto_excluded_headers]
+    new_headers = [
+        (_canonicalize_header_name(k), v) for k, v in new_headers if k.lower() not in proto_excluded_headers
+    ]
     new_headers.extend(extra_headers)
     return new_headers
 
