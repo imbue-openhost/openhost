@@ -7,6 +7,7 @@ See ``tests/gcp/`` or ``tests/ec2/`` for infrastructure setup scripts.
 import asyncio
 import os
 import secrets
+import shlex
 import socket
 import ssl
 import string
@@ -604,13 +605,13 @@ class TestSelfHost:
         # Install mc (MinIO client), configure alias, create bucket.
         # Detect the VM's arch so this works on both amd64 and arm64 hosts.
         commands = (
-            'mcarch=$(case "$(uname -m)" in aarch64|arm64) echo linux-arm64;; *) echo linux-amd64;; esac) && '
+            'mcarch=$(case "$(uname -m)" in (aarch64|arm64) echo linux-arm64;; *) echo linux-amd64;; esac) && '
             "curl -sL https://dl.min.io/client/mc/release/$mcarch/mc -o /tmp/mc && chmod +x /tmp/mc && "
             f"/tmp/mc alias set e2e {endpoint} '{minio_user}' '{minio_password}' && "
             f"/tmp/mc mb --ignore-existing e2e/{bucket}"
         )
         result = subprocess.run(
-            f"ssh {ssh_opts} host@{public_ip} {commands!r}",
+            f"ssh {ssh_opts} host@{public_ip} {shlex.quote(commands)}",
             shell=True,
             capture_output=True,
             text=True,

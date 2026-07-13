@@ -106,5 +106,5 @@ def install_pinned_binary(binary: PinnedBinary, dest_path: str) -> None:
             raise RuntimeError(f"{binary.name} tarball entry {binary.archive_member!r} was unreadable")
         with f, open(dest_path, "wb") as out:
             shutil.copyfileobj(f, out)
-    os.chmod(dest_path, 0o750)
+    os.chmod(dest_path, 0o700)
     logger.info("%s installed at %s", binary.name, dest_path)
