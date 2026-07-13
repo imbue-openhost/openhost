@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pytest
 
+from openhost_system_agent.migrations.registry import REGISTRY
+from openhost_system_agent.migrations.registry import latest_registry_version
+
 requires_containers = pytest.mark.requires_containers
 
 _IMAGE_NAME = "openhost-migration-test:latest"
@@ -203,10 +206,11 @@ class TestApplyUpdateWalk:
         tag = _host_sh(c, f"cd {_REPO} && git describe --tags --exact-match HEAD")
         assert tag.stdout.strip() == "v2", f"HEAD not on v2: {tag.stdout!r}"
 
-        # The migration log advanced through the latest migration (the pixi
-        # upgrade), which is the highest version in the registry.
+        # The migration log advanced through to the registry's highest version.
+        # Reference the registry so this can't drift when a migration is added.
+        latest = latest_registry_version(REGISTRY)
         log = _exec(c, "cat", "/etc/openhost/migrations.jsonl")
-        assert '"version":4' in log.stdout.replace(" ", ""), f"log did not reach v4:\n{log.stdout}"
+        assert f'"version":{latest}' in log.stdout.replace(" ", ""), f"log did not reach v{latest}:\n{log.stdout}"
 
         # openhost was restarted by the walk and serves /health.
         try:

@@ -1,4 +1,5 @@
 import hashlib
+import os
 import secrets
 import sqlite3
 import subprocess
@@ -16,11 +17,10 @@ from litestar import post
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
-from compute_space.core.auth.security_audit import AuditResult
 from compute_space.core.auth.security_audit import ListeningPort
+from compute_space.core.auth.security_audit import external_ports
 from compute_space.core.auth.security_audit import is_sshd_active
 from compute_space.core.auth.security_audit import list_listening_ports
-from compute_space.core.auth.security_audit import run_audit
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
@@ -87,6 +87,9 @@ class HealthRestarting:
 @attr.s(auto_attribs=True, frozen=True)
 class ListeningPortsResponse:
     ports: list[ListeningPort]
+    # True when the port list could not be enumerated at all (e.g. ``ss`` failed),
+    # as opposed to no ports surviving the external-interface filter.
+    enumeration_failed: bool
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -191,14 +194,24 @@ async def api_tokens_delete(token_id: int, db: sqlite3.Connection) -> None:
 # ─── Compute Space Logs ────────────────────────────────────────────────────
 
 
+# The System page polls this every few seconds; serving the whole file (up to
+# the 10 MB rotation limit) makes each poll take ~1s on a small VPS.
+_LOG_TAIL_BYTES = 256 * 1024
+
+
 @get("/api/compute_space_logs", guards=[require_owner_auth], media_type=MediaType.TEXT, sync_to_thread=False)
 def compute_space_logs() -> Response[str]:
-    """Return the compute space log file contents."""
+    """Return the tail (last 256 KiB) of the compute space log file."""
     log_path = get_log_path()
     if log_path is None:
         return Response(content="Log file not configured", status_code=503, media_type=MediaType.TEXT)
-    with open(log_path) as f:
-        return Response(content=f.read(), status_code=200, media_type=MediaType.TEXT)
+    with open(log_path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - _LOG_TAIL_BYTES))
+        text = f.read().decode("utf-8", errors="replace")
+    if size > _LOG_TAIL_BYTES:
+        text = text[text.find("\n") + 1 :]
+    return Response(content=text, status_code=200, media_type=MediaType.TEXT)
 
 
 # ─── Health & Security ─────────────────────────────────────────────────────
@@ -211,18 +224,19 @@ def health() -> Response[HealthRestarting] | HealthOk:
     return HealthOk(status="ok")
 
 
-@get("/api/security-audit", guards=[require_owner_auth], sync_to_thread=False)
-def security_audit(db: sqlite3.Connection) -> AuditResult:
-    return run_audit(db=db)
-
-
 @get("/api/listening-ports", guards=[require_owner_auth], sync_to_thread=False)
 def listening_ports(db: sqlite3.Connection) -> ListeningPortsResponse:
-    """Return every TCP port the VM is listening on, with classification."""
-    return ListeningPortsResponse(ports=list_listening_ports(db=db))
+    """Return TCP ports listening on external-facing or wildcard interfaces, with classification.
+
+    Loopback-only listeners are excluded — they are not reachable from outside the VM.
+    """
+    all_ports = list_listening_ports(db=db)
+    return ListeningPortsResponse(ports=external_ports(all_ports), enumeration_failed=not all_ports)
 
 
-@get("/api/storage-status", guards=[require_owner_auth], sync_to_thread=False)
+# sync_to_thread: walking app_data and querying podman take ~1s on a real
+# instance; running on the event loop would stall every concurrent request.
+@get("/api/storage-status", guards=[require_owner_auth], sync_to_thread=True)
 def api_storage_status(config: Config) -> dict[str, object]:
     return storage_status(config)
 
@@ -314,7 +328,6 @@ system_routes = Router(
         api_tokens_delete,
         compute_space_logs,
         health,
-        security_audit,
         listening_ports,
         api_storage_status,
         toggle_storage_guard,

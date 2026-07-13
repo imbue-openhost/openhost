@@ -17,7 +17,7 @@ DESIGN DECISION — migrations run once up front, then re-run as no-ops.
 ``setup_class`` runs the real migrations once so the baseline (v2) installs and
 enables the ``openhost.service`` systemd unit — the apply-walk's final step does
 ``systemctl restart openhost`` and needs that unit to exist. Running them also
-advances the migration log to the registry's highest version (v4), so each
+advances the migration log to the registry's highest version, so each
 per-test walk re-runs migrations as fast no-ops (the runner skips every
 migration whose version is ``<= current``) — the walk then only does
 ``pixi install`` + git checkout at each step, keeping the tests fast and
@@ -42,6 +42,12 @@ import subprocess
 import time
 from typing import cast
 
+# Bootstrapping the migration log to the registry's highest version makes every
+# migration a skipped no-op during a pure tag walk. Derived from the registry so
+# it can't drift when a migration is added.
+from openhost_system_agent.migrations.registry import REGISTRY as _REGISTRY
+from openhost_system_agent.migrations.registry import latest_registry_version as _latest_registry_version
+
 # Reuse the container-test helper toolkit and the shared, module-scoped image
 # fixture from the sibling container test module. Importing keeps a single
 # source of truth for _start_container / _exec / _host_sh / health-wait / the
@@ -59,9 +65,7 @@ from openhost_system_agent.tests.test_migration_container import _start_containe
 from openhost_system_agent.tests.test_migration_container import _wait_for_health
 from openhost_system_agent.tests.test_migration_container import requires_containers
 
-# The migration registry tops out at v4 (v0004_pixi_version). Bootstrapping the
-# log here makes every migration a skipped no-op during a pure tag walk.
-_LATEST_MIGRATION_VERSION = 4
+_LATEST_MIGRATION_VERSION = _latest_registry_version(_REGISTRY)
 
 
 # ── Shared per-container setup helpers ───────────────────────────────

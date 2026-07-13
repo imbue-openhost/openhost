@@ -132,9 +132,13 @@ if [ "$LOCAL_HTTP_ONLY" != "true" ]; then
     fi
 fi
 
-# ---- Start the service ----
+# ---- Enable + start the service ----
+# `enable` here (not just `start`) because the ansible run above was invoked
+# with skip_service_start=true, which now also skips enabling the unit for boot
+# persistence (so warm-pool prebakes stay fully dormant). This is the point in
+# the bare-metal flow where openhost is meant to come up for good, so enable it.
 echo "--- Starting OpenHost ---"
-systemctl start openhost
+systemctl enable --now openhost
 
 echo ""
 echo "=== OpenHost provisioning complete ==="

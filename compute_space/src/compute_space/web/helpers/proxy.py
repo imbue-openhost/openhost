@@ -128,6 +128,7 @@ async def proxy_http_request(
     override_path: str | None = None,
     extra_headers: Iterable[tuple[str, str]] = (),
     timeout: float = 30,
+    read_timeout: float | None = None,
 ) -> ASGIResponse:
     """Forward an HTTP request to a local port and return the response.
 
@@ -141,6 +142,13 @@ async def proxy_http_request(
     buffered into a plain ``ASGIResponse`` (which sets ``Content-Length`` and
     avoids chunked encoding).  Larger or unknown-length responses are streamed
     back via ``ASGIStreamingResponse`` so they don't have to fit in memory.
+
+    ``timeout`` bounds connect/write/pool operations.  ``read_timeout`` bounds
+    the wait for bytes from the backend and defaults to ``None`` (unbounded) so
+    long-lived responses -- HTTP long-polls and streaming/SSE with long
+    inter-chunk gaps -- are not killed by a blanket read deadline.  Callers that
+    want to bound how long they'll wait on a backend (e.g. internal service
+    calls) can pass an explicit ``read_timeout``.
     """
     target_url = _format_proxy_request_url(request.scope, target_port, override_path)
     new_request_headers = _build_forwarded_request_headers(
@@ -174,7 +182,15 @@ async def proxy_http_request(
     has_declared_body = "content-length" in request.headers or "transfer-encoding" in request.headers
     content = request_body if has_declared_body else None
 
-    client = httpx.AsyncClient(timeout=timeout)
+    # ``timeout`` bounds connect/write/pool so we fail fast when an app is down.
+    # ``read_timeout`` is kept separate and defaults to None (no read deadline):
+    # a single blanket read timeout would kill legitimate long-lived responses
+    # -- HTTP long-polls (e.g. Matrix /sync) that stay quiet for tens of seconds,
+    # and streaming/SSE responses with long inter-chunk gaps -- treating them as
+    # a backend hang and returning 504 (or truncating the stream mid-flight).
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, read=read_timeout),
+    )
     try:
         new_request = client.build_request(
             method=str(request.method),

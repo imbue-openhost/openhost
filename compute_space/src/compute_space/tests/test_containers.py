@@ -7,6 +7,7 @@ end-to-end tests that actually exercise podman live under the
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 
@@ -826,3 +827,32 @@ def test_bind_mount_arg_preserves_absolute_paths_verbatim() -> None:
     target vs. what the app's env var points at."""
     arg = _bind_mount_arg("/a/b/c/", "/data/app_data/myapp/")
     assert arg == "/a/b/c/:/data/app_data/myapp/:idmap"
+
+
+# ---------------------------------------------------------------------------
+# container_image_storage_bytes
+# ---------------------------------------------------------------------------
+
+
+def test_container_image_storage_bytes_parses_images_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    df_json = json.dumps(
+        [
+            {"Type": "Images", "Total": 3, "Active": 1, "RawSize": 4567, "RawReclaimable": 100},
+            {"Type": "Containers", "Total": 1, "Active": 1, "RawSize": 99, "RawReclaimable": 0},
+        ]
+    )
+    _patch_subprocess_run(monkeypatch, lambda *a, **k: _FakeCompleted(stdout=df_json))
+    assert containers.container_image_storage_bytes() == 4567
+
+
+def test_container_image_storage_bytes_none_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_subprocess_run(monkeypatch, lambda *a, **k: _FakeCompleted(returncode=1))
+    assert containers.container_image_storage_bytes() is None
+
+
+def test_container_image_storage_bytes_none_when_podman_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*a, **k):
+        raise FileNotFoundError("podman")
+
+    _patch_subprocess_run(monkeypatch, _raise)
+    assert containers.container_image_storage_bytes() is None

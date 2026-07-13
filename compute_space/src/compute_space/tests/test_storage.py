@@ -33,6 +33,7 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
         return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
+    monkeypatch.setattr(storage, "container_image_storage_bytes", lambda: 7 * 1024**3)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
@@ -44,6 +45,7 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
     assert "temporary" not in status
     assert status["openhost_data_used_bytes"] > 0
     assert status["app_data_used_bytes"] > 0
+    assert status["build_cache_bytes"] == 7 * 1024**3
     assert status["storage_min_free_bytes"] is None
     assert status["storage_low"] is False
     assert status["guard_paused"] is False
@@ -60,12 +62,33 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
         return usage(total=10 * 1024**3, used=4 * 1024**3, free=6 * 1024**3)
 
     monkeypatch.setattr(storage.shutil, "disk_usage", fake_disk_usage)
+    monkeypatch.setattr(storage, "container_image_storage_bytes", lambda: None)
 
     status = cast(dict[str, Any], storage.storage_status(config))
 
     assert config.data_root_dir in calls, "storage_status should query data_root_dir"
     assert status["storage_min_free_bytes"] == 1000 * 1024 * 1024
     assert status["storage_low"] is False  # 6 GiB free > 1000 MiB required
+    # Podman unavailable → the category degrades to None rather than failing the endpoint.
+    assert status["build_cache_bytes"] is None
+
+
+def test_app_data_total_combines_per_app_and_loose_files(tmp_path, monkeypatch):
+    """The app_data total is derived from the per-app walk plus loose root
+    files — not a second full walk of the tree."""
+    config = _make_test_config(tmp_path)
+    app_data = os.path.join(config.persistent_data_dir, "app_data")
+    os.makedirs(os.path.join(app_data, "immich"), exist_ok=True)
+    with open(os.path.join(app_data, "immich", "photo.bin"), "wb") as f:
+        f.write(b"x" * (300 * 1024))
+    with open(os.path.join(app_data, "loose.bin"), "wb") as f:
+        f.write(b"x" * (200 * 1024))
+    monkeypatch.setattr(storage, "container_image_storage_bytes", lambda: None)
+
+    status = cast(dict[str, Any], storage.storage_status(config))
+
+    assert status["per_app"] == {"immich": 300 * 1024}
+    assert status["app_data_used_bytes"] == 500 * 1024
 
 
 def test_disk_free_bytes_uses_data_root_dir(tmp_path, monkeypatch):

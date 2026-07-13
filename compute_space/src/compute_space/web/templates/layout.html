@@ -4,7 +4,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>{% if display_name %}{{ display_name }}'s Private Compute Space{% else %}OpenHost{% endif %}{% block title_suffix %}{% endblock %}</title>
+  <title>{% if display_name %}{{ display_name }}'s personal compute space{% else %}OpenHost{% endif %}{% block title_suffix %}{% endblock %}</title>
   <style>
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
     table { border-collapse: collapse; width: 100%; margin: 1em 0; }
@@ -15,10 +15,7 @@
     .btn-danger { background: #fee; border-color: #c00; color: #c00; }
     .btn-primary { background: #e8f0fe; border-color: #36c; color: #36c; }
     nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid #e8e8e8; }
-    nav .spacer { flex: 1; }
     nav .nav-user { color: #888; font-size: 0.9em; margin-right: 0.5em; align-self: center; }
-    nav form.logout-form { margin: 0; align-self: center; }
-    nav .btn-logout { padding: 0.3em 0.9em; font-size: 0.9em; }
     .nav-tab { display: inline-block; padding: 0.4em 1em; border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; text-decoration: none; color: #444; background: transparent; }
     .nav-tab:hover { background: #f0f0f0; color: #222; border-color: #ddd; }
     .nav-tab.active { background: #fff; border-color: #ddd; color: #222; margin-bottom: -1px; padding-bottom: calc(0.4em + 1px); }
@@ -34,6 +31,7 @@
     .toast p { margin: 0 0 0.75em 0; }
     .toast .toast-actions { display: flex; gap: 0.5em; }
     h2 { margin-top: 2em; }
+    h2.section-title { border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
     .app-link { color: #36c; text-decoration: none; font-weight: bold; }
     .app-link:visited { color: #36c; }
     .app-link:hover { text-decoration: underline; }
@@ -43,34 +41,17 @@
     .control-row { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin: 1em 0; }
     table.form-table th { font-weight: normal; width: 12em; vertical-align: top; }
     table.form-table input[type="text"], table.form-table input[type="password"] { width: 24em; max-width: 100%; }
+    table.form-table td p { margin: 0.4em 0 0; }
+    table.form-table td p:first-child { margin-top: 0; }
+    .pie-slice { stroke: #fff; stroke-width: 1.5; }
+    .pie-slice:hover { filter: brightness(0.88); }
+    .pie-center-name { font-size: 14px; font-weight: 600; fill: #222; text-anchor: middle; }
+    .pie-center-size { font-size: 12px; fill: #666; text-anchor: middle; }
   </style>
 </head>
 <body>
-  <h1>{% if display_name %}{{ display_name }}'s Private Compute Space{% else %}OpenHost{% endif %}</h1>
-  <nav id="main-nav">
-    <a href="/dashboard" class="nav-tab">Dashboard</a>
-    <a href="/docs/" target="_blank" rel="noopener" class="nav-tab">Docs</a>
-    <a href="/add_app" class="nav-tab">Deploy App</a>
-    <a href="/terminal/" class="nav-tab">Terminal</a>
-    <a href="/system/" class="nav-tab">System Info</a>
-    <a href="/settings" class="nav-tab">Settings</a>
-    <span class="spacer"></span>
-    {% if display_name %}<span class="nav-user">Logged in as {{ display_name }}</span>{% endif %}
-    <form class="logout-form" method="post" action="/logout">
-      <button type="submit" class="btn btn-danger btn-logout">Log out</button>
-    </form>
-  </nav>
-  <script>
-    (function() {
-      var p = window.location.pathname.replace(/\/+$/, '') || '/';
-      document.querySelectorAll('#main-nav .nav-tab').forEach(function(a) {
-        var href = a.getAttribute('href').replace(/\/+$/, '') || '/';
-        if (href !== '/docs' && (p === href || p === '/' && href === '/dashboard' || (href !== '/dashboard' && p.startsWith(href)))) {
-          a.classList.add('active');
-        }
-      });
-    })();
-  </script>
+  <h1>{% if display_name %}{{ display_name }}'s personal compute space{% else %}OpenHost{% endif %}</h1>
+  {% include "_nav_header.html" %}
   {% block content %}{% endblock %}
 </body>
 </html>

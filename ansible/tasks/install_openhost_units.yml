@@ -1,52 +1,16 @@
 ---
-# Write config, install and start the openhost systemd service.
-
-- name: Create config directory
-  file:
-    path: /home/host/.openhost/local_compute_space
-    state: directory
-    owner: host
-    group: host
-
-- name: Write compute_space config
-  template:
-    src: templates/config.toml.j2
-    dest: /home/host/.openhost/local_compute_space/config.toml
-    owner: host
-    group: host
-  register: config_file
-
-# First-boot claim token. `claim_token_required = true` is baked into the
-# rendered config above, so /setup rejects every caller unless their request
-# carries a token matching this file. If the operator doesn't pass
-# `-e claim_token=…`, we generate a fresh URL-safe random one and print the
-# claim URL at the end of the play — handing the secret to the human who
-# will claim the workspace. vm-manager passes the var to control the value.
-# setup_app deletes this file after a successful claim, so on re-deploys
-# (where the instance is already claimed) the rewritten file is inert.
-- name: Ensure claim-token directory exists
-  file:
-    path: /home/host/.openhost/local_compute_space/persistent_data/openhost
-    state: directory
-    owner: host
-    group: host
-    mode: "0755"
-
-- name: Resolve effective claim token
-  set_fact:
-    effective_claim_token: "{{ claim_token | default(lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
-
-- name: Write claim token
-  copy:
-    content: "{{ effective_claim_token }}"
-    dest: /home/host/.openhost/local_compute_space/persistent_data/openhost/claim_token
-    owner: host
-    group: host
-    mode: "0600"
-
-- name: Show claim URL
-  debug:
-    msg: "Claim URL: {{ ('http://' + domain + ':8080') if (local_http_only | default(false) | bool) else ('https://' + domain) }}/setup?claim={{ effective_claim_token }}"
+# Domain-INDEPENDENT systemd unit install: resolve the host UID, symlink the
+# system-agent onto sudo's secure_path, install the pixi-reclaim script, render
+# and install the openhost + openhost-juicefs unit files, reload systemd, and
+# enable the service. Contains NOTHING that needs `domain` — so a warm-pool
+# prebake can install the units without knowing the eventual domain. The
+# domain-dependent config.toml + claim token live in tasks/write_openhost_config.yml.
+#
+# Note: this installs the unit files but does NOT enable or start the service.
+# Both enable (boot persistence) and start live in
+# tasks/restart_openhost_service.yml, gated by skip_service_start — so a
+# domain-less prebaked host never auto-starts openhost (e.g. on reboot) with no
+# config.toml and no claim token. Finalize is what enables + starts it.
 
 # Look up the host user's UID so the service template can reference
 # the right /run/user/<uid> path and user@<uid>.service unit. The
@@ -80,6 +44,20 @@
     state: link
     force: yes
 
+# The openhost.service ExecStartPre reclaims ownership of the pixi trees as
+# root before the host-user ExecStart runs `pixi run`. It lives at a fixed
+# system path so the unit references it without any $VAR that systemd would
+# substitute, and so it works even when the pixi env is broken.
+- name: Install pixi-ownership reclaim script
+  become: yes
+  become_user: root
+  copy:
+    src: files/openhost-reclaim-pixi
+    dest: /usr/local/bin/openhost-reclaim-pixi
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install openhost systemd service
   become: yes
   become_user: root
@@ -111,12 +89,9 @@
     daemon_reload: yes
   when: service_file.changed or juicefs_service_file.changed
 
-- name: Enable openhost service
-  become: yes
-  become_user: root
-  systemd:
-    name: openhost
-    enabled: yes
+# Enabling openhost is deliberately NOT done here — see the note at the top of
+# this file. It happens in tasks/restart_openhost_service.yml alongside the
+# start, so a prebaked (domain-less) host stays fully dormant.
 
 # Do NOT enable openhost-juicefs here; it stays disabled until the
 # operator configures the archive backend via the dashboard.  The
