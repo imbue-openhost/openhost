@@ -120,7 +120,7 @@ def _stub_popen(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_container_dns_view_rendered_when_gateway_bindable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip, override=None: "10.0.0.5")
     monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: True)
     monkeypatch.setattr(dns_mod, "_host_upstream_resolvers", lambda: ["9.9.9.9"])
     _stub_popen(monkeypatch)
@@ -145,7 +145,7 @@ def test_container_dns_view_rendered_when_gateway_bindable(tmp_path: Path, monke
 
 
 def test_container_dns_view_skipped_when_gateway_not_bindable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip, override=None: "10.0.0.5")
     monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: False)
     _stub_popen(monkeypatch)
 
@@ -207,7 +207,7 @@ def test_container_view_forward_uses_discovered_resolvers_and_distinct_bind(
     # The public view and the container view must bind different addresses (the
     # default-route source vs the gateway), and the container catch-all must
     # forward to the discovered upstreams.
-    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip, override=None: "10.0.0.5")
     monkeypatch.setattr(dns_mod, "_gateway_ip_is_bindable", lambda ip: True)
     monkeypatch.setattr(dns_mod, "_host_upstream_resolvers", lambda: ["185.12.64.1", "1.1.1.1"])
     _stub_popen(monkeypatch)

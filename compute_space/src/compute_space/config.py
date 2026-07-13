@@ -60,6 +60,9 @@ class Config:
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
     public_ip: str | None
+    # Local address CoreDNS binds for the authoritative view. Set it explicitly
+    # when inbound traffic lands on a different interface than egress — e.g. WireGuard
+    coredns_bind_ip: str | None
 
     start_caddy: bool
 
@@ -230,6 +233,8 @@ class DefaultConfig(Config):
     # coredns (only truly needed if tls_enabled)
     coredns_enabled: bool = False
     public_ip: str | None = None
+    # None -> auto-detect the bind address (see Config.coredns_bind_ip).
+    coredns_bind_ip: str | None = None
 
     # TLS
     tls_enabled: bool = False

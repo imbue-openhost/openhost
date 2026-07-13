@@ -100,7 +100,11 @@ def main() -> None:
             raise RuntimeError("Public IP must be set in config to use CoreDNS")
         children.append(
             start_coredns(
-                config.zone_domain, config.public_ip, config.coredns_corefile_path, config.coredns_zonefile_path
+                config.zone_domain,
+                config.public_ip,
+                config.coredns_corefile_path,
+                config.coredns_zonefile_path,
+                bind_ip_override=config.coredns_bind_ip,
             )
         )
 

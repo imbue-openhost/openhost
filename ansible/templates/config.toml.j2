@@ -18,6 +18,11 @@ acme_directory_url = "{{ acme_directory_url }}"
 {% endif %}
 coredns_enabled = {{ 'false' if http_only else 'true' }}
 public_ip = "{{ public_ip | default(inventory_hostname) }}"
+{% if coredns_bind_ip is defined %}
+# Address CoreDNS binds for the authoritative view. Set this when inbound public
+# traffic reaches this host on a different interface than its default egress (e.g. wg)
+coredns_bind_ip = "{{ coredns_bind_ip }}"
+{% endif %}
 start_caddy = {{ 'false' if http_only else 'true' }}
 claim_token_required = true
 data_root_dir = "/home/host/.openhost/local_compute_space"

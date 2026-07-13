@@ -74,15 +74,22 @@ def _host_upstream_resolvers() -> list[str]:
     return resolvers or list(_FALLBACK_UPSTREAM_DNS)
 
 
-def _coredns_bind_ip(public_ip: str) -> str:
+def _coredns_bind_ip(public_ip: str, override: str | None = None) -> str:
     """Return the local address CoreDNS should bind for authoritative DNS.
 
-    Binding wildcard :53 conflicts with Podman's aardvark-dns on 10.89.0.1:53.
+    An explicit ``override`` (config ``coredns_bind_ip``) wins when set. It is needed
+    when inbound public traffic arrives on a different interface than default egress —
+    e.g. a split-tunnel WireGuard host where a front proxy DNATs :53 to the WG address —
+    which the auto-detection below cannot infer.
+
+    Otherwise: binding wildcard :53 conflicts with Podman's aardvark-dns on 10.89.0.1:53.
     Binding the configured public IP works on hosts where that IP is assigned to
     an interface (for example Hetzner), but fails on AWS/GCP where public IPs are
     NATed to a private VM address. The default-route source address is the local
     interface address that receives that NATed traffic.
     """
+    if override:
+        return override
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.connect(("8.8.8.8", 80))
@@ -97,6 +104,7 @@ def start_coredns(
     corefile_path: Path,
     zonefile_path: Path,
     container_gateway_ip: str | None = CONTAINER_GATEWAY_IP,
+    bind_ip_override: str | None = None,
 ) -> subprocess.Popen[bytes]:
     """Write CoreDNS config + zone file, start CoreDNS, return the process.
 
@@ -124,7 +132,7 @@ def start_coredns(
     # Write Corefile. this is coredns's config.
     corefile = _jinja_env.get_template("Corefile").render(
         zone_domain=zone_domain,
-        bind_ip=_coredns_bind_ip(public_ip),
+        bind_ip=_coredns_bind_ip(public_ip, bind_ip_override),
         zone_file_path=zonefile_path,
         container_gateway_ip=container_gateway_ip,
         container_zone_file_path=container_zonefile_path,
