@@ -47,25 +47,7 @@
 </head>
 <body>
   <h1>{% if display_name %}{{ display_name }}'s personal compute space{% else %}OpenHost{% endif %}</h1>
-  <nav id="main-nav">
-    <a href="/dashboard" class="nav-tab">Dashboard</a>
-    <a href="/docs/" target="_blank" rel="noopener" class="nav-tab">Docs</a>
-    <a href="/add_app" class="nav-tab">Deploy App</a>
-    <a href="/terminal/" class="nav-tab">Terminal</a>
-    <a href="/system/" class="nav-tab">System Info</a>
-    <a href="/settings" class="nav-tab">Settings</a>
-  </nav>
-  <script>
-    (function() {
-      var p = window.location.pathname.replace(/\/+$/, '') || '/';
-      document.querySelectorAll('#main-nav .nav-tab').forEach(function(a) {
-        var href = a.getAttribute('href').replace(/\/+$/, '') || '/';
-        if (href !== '/docs' && (p === href || p === '/' && href === '/dashboard' || (href !== '/dashboard' && p.startsWith(href)))) {
-          a.classList.add('active');
-        }
-      });
-    })();
-  </script>
+  {% include "_nav_header.html" %}
   {% block content %}{% endblock %}
 </body>
 </html>
