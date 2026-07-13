@@ -453,24 +453,33 @@ _TEMPLATE = """<!DOCTYPE html>
       }
     }
     body {
-      font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI",
-                   Roboto, "Helvetica Neue", Arial, sans-serif;
+      /* Match layout.html's font stack so the docs page reads with the
+         same typography as the rest of the compute space. */
+      font-family: -apple-system, system-ui, sans-serif;
       color: var(--fg);
       background: var(--bg);
       margin: 0;
       line-height: 1.55;
     }
+    /* The docs layout is pinned to the same centred column as every other
+       in-space page (layout.html uses max-width:960px + 1em side padding),
+       so navigating between Dashboard and Docs doesn't jump the header
+       wider or shift it sideways.  The sidebar's left edge lines up with
+       the nav header / title above it. */
     .layout {
       display: flex;
-      max-width: 1200px;
+      max-width: 960px;
       margin: 0 auto;
+      padding: 0 1em;
     }
     aside.sidebar {
-      width: 240px;
+      width: 200px;
       flex-shrink: 0;
       background: var(--sidebar-bg);
       border-right: 1px solid var(--border);
-      padding: 1.5em 1em;
+      /* No left padding so the sidebar text lines up with the nav header
+         and title above it (both sit at the .layout's 1em left edge). */
+      padding: 1.5em 1em 1.5em 0;
       box-sizing: border-box;
       font-size: 0.95em;
     }
@@ -505,7 +514,7 @@ _TEMPLATE = """<!DOCTYPE html>
     }
     main.content {
       flex: 1;
-      padding: 2em 2.5em;
+      padding: 1.5em 0 2em 1.5em;
       box-sizing: border-box;
       min-width: 0;
     }
@@ -571,8 +580,8 @@ _TEMPLATE = """<!DOCTYPE html>
     .footer-nav a { color: var(--link); text-decoration: none; }
     /* Space navigation header — mirrors layout.html so the docs page
        keeps the same top nav as the rest of the compute space. */
-    .space-header { max-width: 1200px; margin: 0 auto; padding: 1.5em 2.5em 0; box-sizing: border-box; }
-    .space-header h1.space-title { font-size: 1.5em; margin: 0 0 0.5em; }
+    .space-header { max-width: 960px; margin: 2em auto 0; padding: 0 1em; }
+    .space-header h1.space-title { font-size: 2em; font-weight: bold; margin: 0 0 0.67em; }
     nav#main-nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid var(--border); }
     nav#main-nav .nav-tab {
       display: inline-block; padding: 0.4em 1em; border: 1px solid transparent;
