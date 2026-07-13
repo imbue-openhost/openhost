@@ -1,0 +1,25 @@
+{#- Shared compute-space navigation header: the tab list + active-tab
+    highlighter.  Included by ``layout.html`` (every standard page) and by
+    the docs route's standalone template so the manual carries the same nav.
+    Keeping the tab list + script here means adding/renaming a tab or tweaking
+    the highlight logic touches exactly one file. Styling is left to each
+    including template (they use different colour palettes). -#}
+<nav id="main-nav">
+  <a href="/dashboard" class="nav-tab">Dashboard</a>
+  <a href="/docs/" class="nav-tab">Docs</a>
+  <a href="/add_app" class="nav-tab">Deploy App</a>
+  <a href="/terminal/" class="nav-tab">Terminal</a>
+  <a href="/system/" class="nav-tab">System Info</a>
+  <a href="/settings" class="nav-tab">Settings</a>
+</nav>
+<script>
+  (function() {
+    var p = window.location.pathname.replace(/\/+$/, '') || '/';
+    document.querySelectorAll('#main-nav .nav-tab').forEach(function(a) {
+      var href = a.getAttribute('href').replace(/\/+$/, '') || '/';
+      if (p === href || p === '/' && href === '/dashboard' || (href !== '/dashboard' && p.startsWith(href))) {
+        a.classList.add('active');
+      }
+    });
+  })();
+</script>

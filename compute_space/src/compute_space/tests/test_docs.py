@@ -174,6 +174,26 @@ def test_active_sidebar_link_marked(client_with_docs: TestClient[Litestar]) -> N
     assert 'href="/docs/manifest_spec"' in body and "active" in body
 
 
+def test_page_carries_space_nav_header(client_with_docs: TestClient[Litestar]) -> None:
+    """The docs page must render the shared compute-space nav header
+    (Dashboard / Docs / Deploy App / ...) so the manual reads as an
+    in-space page rather than a standalone site."""
+    resp = client_with_docs.get("/docs/")
+    body = resp.text
+    assert 'id="main-nav"' in body
+    assert 'href="/dashboard"' in body
+    assert 'href="/add_app"' in body
+    assert 'href="/settings"' in body
+
+
+def test_docs_nav_link_stays_in_same_tab(client_with_docs: TestClient[Litestar]) -> None:
+    """The Docs nav link must not open in a new tab — no
+    ``target="_blank"`` on any nav tab in the rendered header."""
+    resp = client_with_docs.get("/docs/")
+    body = resp.text
+    assert 'target="_blank"' not in body
+
+
 def test_internal_md_links_rewritten(client_with_docs: TestClient[Litestar]) -> None:
     """Markdown like ``[manifest spec](./manifest_spec.md)`` should
     render as a link to ``/docs/manifest_spec``, NOT a literal

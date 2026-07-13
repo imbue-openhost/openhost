@@ -5,6 +5,16 @@ through ``markdown-it-py`` + ``pygments``, and inject into a Jinja
 template that matches the OpenHost dashboard's visual language.
 There is no build step: ``git pull`` is enough to ship doc changes.
 
+The rendered page carries the same top navigation header as the rest
+of the compute space (Dashboard / Docs / Deploy App / ...), so the
+manual reads as an in-space page rather than a standalone site — the
+Docs nav link stays in the same tab.  The nav tab list + active-tab
+highlighter are shared with ``layout.html`` via the ``_nav_header.html``
+partial (this route's inline template ``{% include %}``s it through a
+Jinja ``Environment`` whose loader points at the templates dir), so the
+nav can't drift from the rest of the UI.  The docs page's own
+body/sidebar layout stays inline here.
+
 Why server-side render instead of mdBook (or any other static-site
 generator)?
 
@@ -52,7 +62,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from jinja2 import Template as JinjaTemplate
+from jinja2 import Environment
+from jinja2 import FileSystemLoader
 from litestar import MediaType
 from litestar import Response
 from litestar import Router
@@ -68,6 +79,9 @@ from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from compute_space.config import get_config
+from compute_space.core.auth.auth import read_owner_username
+from compute_space.core.logging import logger
+from compute_space.db import get_db
 
 # ─── Filesystem layout ──────────────────────────────────────────────
 
@@ -83,6 +97,41 @@ def _docs_src_dir() -> Path:
 
 _DEFAULT_INDEX = "introduction"
 _SUMMARY_FILENAME = "SUMMARY.md"
+
+
+# ─── Space navigation header ────────────────────────────────────────
+
+
+def _space_display_name() -> str | None:
+    """The instance name shown in the nav header — owner username if
+    set, else the zone subdomain, mirroring ``layout.html``.
+
+    Every lookup is wrapped defensively: the docs template renders
+    through a standalone Jinja environment (not the app engine), so the
+    header must degrade gracefully rather than break the manual if the
+    DB or config is unavailable (e.g. pre-setup, or the route-level test
+    harness that stubs a minimal config without ``zone_domain``).
+    """
+    owner: str | None = None
+    try:
+        db = get_db()
+        try:
+            owner = read_owner_username(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        # Benign pre-setup / uninitialised-DB paths (and the route-level
+        # test harness) land here; the header just falls back to the zone
+        # name.  Debug-level so we don't spam ERROR logs for an expected,
+        # non-fatal condition.
+        logger.debug("could not read owner username for docs header: {}", exc)
+    if owner:
+        return owner
+    try:
+        zone_domain = get_config().zone_domain
+    except Exception:
+        return None
+    return zone_domain.split(".")[0] if zone_domain else None
 
 
 # ─── Markdown engine ────────────────────────────────────────────────
@@ -415,7 +464,6 @@ _TEMPLATE = """<!DOCTYPE html>
       display: flex;
       max-width: 1200px;
       margin: 0 auto;
-      min-height: 100vh;
     }
     aside.sidebar {
       width: 240px;
@@ -521,10 +569,29 @@ _TEMPLATE = """<!DOCTYPE html>
       font-size: 0.9em;
     }
     .footer-nav a { color: var(--link); text-decoration: none; }
+    /* Space navigation header — mirrors layout.html so the docs page
+       keeps the same top nav as the rest of the compute space. */
+    .space-header { max-width: 1200px; margin: 0 auto; padding: 1.5em 2.5em 0; box-sizing: border-box; }
+    .space-header h1.space-title { font-size: 1.5em; margin: 0 0 0.5em; }
+    nav#main-nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid var(--border); }
+    nav#main-nav .nav-tab {
+      display: inline-block; padding: 0.4em 1em; border: 1px solid transparent;
+      border-bottom: none; border-radius: 4px 4px 0 0; text-decoration: none;
+      color: var(--fg); background: transparent;
+    }
+    nav#main-nav .nav-tab:hover { background: rgba(0,0,0,0.05); border-color: var(--border); }
+    nav#main-nav .nav-tab.active {
+      background: var(--bg); border-color: var(--border); color: var(--fg);
+      margin-bottom: -1px; padding-bottom: calc(0.4em + 1px);
+    }
     {{ pygments_css }}
   </style>
 </head>
 <body>
+  <header class="space-header">
+    <h1 class="space-title">{% if display_name %}{{ display_name }}'s personal compute space{% else %}OpenHost{% endif %}</h1>
+    {% include "_nav_header.html" %}
+  </header>
   <div class="layout">
     <aside class="sidebar">
       <h1><a href="/docs/">OpenHost Manual</a></h1>
@@ -555,7 +622,15 @@ _TEMPLATE = """<!DOCTYPE html>
 """
 
 
-_COMPILED_TEMPLATE = JinjaTemplate(_TEMPLATE)
+# Build the docs template through a Jinja Environment whose loader points at
+# the shared templates directory, so ``{% include "_nav_header.html" %}`` pulls
+# in the same nav partial the rest of the compute space uses (rather than
+# duplicating the tab list + highlighter here).  The docs page's HTML body
+# itself is still an inline string — only the shared partial is loaded from
+# disk — keeping the route's serving surface self-contained.
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+_JINJA_ENV = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
+_COMPILED_TEMPLATE = _JINJA_ENV.from_string(_TEMPLATE)
 
 
 def _flatten_links(sections: tuple[_SidebarSection, ...]) -> list[_SidebarLink]:
@@ -669,6 +744,7 @@ def _render_doc(slug: str) -> Response[str]:
         prev_link=prev_l,
         next_link=next_l,
         pygments_css=PYGMENTS_CSS,
+        display_name=_space_display_name(),
     )
     return Response(content=html, media_type=MediaType.HTML)
 
