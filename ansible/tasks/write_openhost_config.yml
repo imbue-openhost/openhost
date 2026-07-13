@@ -1,0 +1,54 @@
+---
+# Domain-DEPENDENT last mile: render config.toml, write the claim token, and
+# show the claim URL. Needs `domain` (and the cert_provider/cert_api_* vars the
+# config template references). Imported by setup.yml (full run), local_setup.yml,
+# and finalize.yml (warm-pool claim-time). Deliberately contains NOTHING that a
+# domain-less prebake needs — the systemd unit install lives in
+# tasks/install_openhost_units.yml.
+
+- name: Create config directory
+  file:
+    path: /home/host/.openhost/local_compute_space
+    state: directory
+    owner: host
+    group: host
+
+- name: Write compute_space config
+  template:
+    src: templates/config.toml.j2
+    dest: /home/host/.openhost/local_compute_space/config.toml
+    owner: host
+    group: host
+  register: config_file
+
+# First-boot claim token. `claim_token_required = true` is baked into the
+# rendered config above, so /setup rejects every caller unless their request
+# carries a token matching this file. If the operator doesn't pass
+# `-e claim_token=…`, we generate a fresh URL-safe random one and print the
+# claim URL at the end of the play — handing the secret to the human who
+# will claim the workspace. vm-manager passes the var to control the value.
+# setup_app deletes this file after a successful claim, so on re-deploys
+# (where the instance is already claimed) the rewritten file is inert.
+- name: Ensure claim-token directory exists
+  file:
+    path: /home/host/.openhost/local_compute_space/persistent_data/openhost
+    state: directory
+    owner: host
+    group: host
+    mode: "0755"
+
+- name: Resolve effective claim token
+  set_fact:
+    effective_claim_token: "{{ claim_token | default(lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+
+- name: Write claim token
+  copy:
+    content: "{{ effective_claim_token }}"
+    dest: /home/host/.openhost/local_compute_space/persistent_data/openhost/claim_token
+    owner: host
+    group: host
+    mode: "0600"
+
+- name: Show claim URL
+  debug:
+    msg: "Claim URL: https://{{ domain }}/setup?claim={{ effective_claim_token }}"

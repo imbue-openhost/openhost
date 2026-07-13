@@ -38,7 +38,7 @@ def _run_system_agent(*args: str, timeout: int = 300) -> str:
             error = result.stderr or result.stdout
         # sudo prints `sudo: openhost_system_agent: command not found` when
         # the symlink at /usr/local/bin/openhost_system_agent is missing.
-        # ansible installs it (setup_openhost_service.yml); pre-symlink
+        # ansible installs it (install_openhost_units.yml); pre-symlink
         # installs hit this and need to re-run ansible to fix it.
         if "openhost_system_agent: command not found" in str(error):
             raise SystemAgentError(
