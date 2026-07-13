@@ -422,44 +422,19 @@ _TEMPLATE = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ page_title }} - OpenHost Manual</title>
   <style>
-    :root {
-      --bg: #ffffff;
-      --fg: #222222;
-      --muted: #666666;
-      --border: #dddddd;
-      --sidebar-bg: #fafafa;
-      --sidebar-active: #3366cc;
-      --table-header: #f5f5f5;
-      --link: #3366cc;
-      --code-bg: #1e1e1e;
-      --code-fg: #d4d4d4;
-      --inline-code-bg: #f5f5f5;
-      --inline-code-fg: #c0392b;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #1e1e1e;
-        --fg: #d4d4d4;
-        --muted: #888888;
-        --border: #444444;
-        --sidebar-bg: #181818;
-        --sidebar-active: #6ea8e6;
-        --table-header: #2a2a2a;
-        --link: #6ea8e6;
-        --code-bg: #161616;
-        --code-fg: #d4d4d4;
-        --inline-code-bg: #2a2a2a;
-        --inline-code-fg: #e89999;
-      }
-    }
+    /* The docs page deliberately reuses layout.html's exact palette and
+       typography (hardcoded light colours, #222 text on #fff, #ddd
+       borders, #36c links, #f5f5f5 table headers) rather than its own
+       CSS-variable theme.  layout.html has no dark-mode media query, so
+       neither does this page — otherwise a dark-preference browser would
+       flip from light (Dashboard) to dark (Docs) mid-navigation.  Keeping
+       the two in lockstep is the whole point: the manual should look like
+       just another in-space page. */
     body {
-      /* Match layout.html's font stack so the docs page reads with the
-         same typography as the rest of the compute space. */
       font-family: -apple-system, system-ui, sans-serif;
-      color: var(--fg);
-      background: var(--bg);
+      color: #222;
+      background: #fff;
       margin: 0;
-      line-height: 1.55;
     }
     /* The docs layout is pinned to the same centred column as every other
        in-space page (layout.html uses max-width:960px + 1em side padding),
@@ -475,8 +450,7 @@ _TEMPLATE = """<!DOCTYPE html>
     aside.sidebar {
       width: 200px;
       flex-shrink: 0;
-      background: var(--sidebar-bg);
-      border-right: 1px solid var(--border);
+      border-right: 1px solid #e8e8e8;
       /* No left padding so the sidebar text lines up with the nav header
          and title above it (both sit at the .layout's 1em left edge). */
       padding: 1.5em 1em 1.5em 0;
@@ -488,40 +462,45 @@ _TEMPLATE = """<!DOCTYPE html>
       margin: 0 0 1em;
       padding: 0;
     }
-    aside.sidebar h1 a { color: var(--fg); text-decoration: none; }
+    aside.sidebar h1 a { color: #222; text-decoration: none; }
     aside.sidebar .section { margin: 1.2em 0; }
     aside.sidebar .section-title {
       font-size: 0.8em;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: var(--muted);
+      color: #888;
       margin: 0 0 0.4em;
     }
     aside.sidebar ul { list-style: none; margin: 0; padding: 0; }
     aside.sidebar li { margin: 0.25em 0; }
     aside.sidebar li a {
-      color: var(--fg);
+      color: #222;
       text-decoration: none;
       display: block;
       padding: 0.2em 0.4em;
       border-radius: 3px;
     }
-    aside.sidebar li a:hover { background: rgba(0,0,0,0.04); }
+    aside.sidebar li a:hover { background: #f0f0f0; }
     aside.sidebar li a.active {
-      color: var(--sidebar-active);
-      font-weight: 600;
-      background: rgba(51,102,204,0.08);
+      color: #36c;
+      font-weight: bold;
+      background: #e8f0fe;
     }
+    /* line-height lives on the prose column only (like the dashboard's
+       default body line-height) so the space-title h1 above renders at
+       the same height as layout.html's <h1> — otherwise the nav row would
+       sit lower here than on the dashboard and appear to jump on nav. */
     main.content {
       flex: 1;
       padding: 1.5em 0 2em 1.5em;
       box-sizing: border-box;
       min-width: 0;
+      line-height: 1.55;
     }
     main.content h1 { margin-top: 0; font-size: 1.7em; }
     main.content h2 { margin-top: 2em; font-size: 1.3em; }
     main.content h3 { margin-top: 1.5em; font-size: 1.1em; }
-    main.content a { color: var(--link); text-decoration: none; }
+    main.content a { color: #36c; text-decoration: none; }
     main.content a:hover { text-decoration: underline; }
     main.content table {
       border-collapse: collapse;
@@ -529,29 +508,32 @@ _TEMPLATE = """<!DOCTYPE html>
       margin: 1em 0;
     }
     main.content th, main.content td {
-      border: 1px solid var(--border);
+      border: 1px solid #ddd;
       padding: 0.5em 0.8em;
       text-align: left;
     }
-    main.content th { background: var(--table-header); font-weight: 600; }
+    main.content th { background: #f5f5f5; font-weight: bold; }
     main.content blockquote {
       margin: 1em 0;
       padding: 0.4em 1em;
-      border-left: 4px solid var(--border);
-      background: var(--sidebar-bg);
-      color: var(--muted);
+      border-left: 4px solid #ddd;
+      background: #fafafa;
+      color: #666;
     }
     main.content code {
-      background: var(--inline-code-bg);
-      color: var(--inline-code-fg);
+      background: #f5f5f5;
+      color: #c0392b;
       padding: 0.1em 0.35em;
       border-radius: 3px;
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
       font-size: 0.9em;
     }
+    /* Code blocks reuse the dashboard's .log-output panel styling
+       (dark #1e1e1e panel, #d4d4d4 text) so fenced code looks the same
+       as the log output shown elsewhere in the space. */
     main.content pre {
-      background: var(--code-bg);
-      color: var(--code-fg);
+      background: #1e1e1e;
+      color: #d4d4d4;
       padding: 1em;
       border-radius: 4px;
       overflow-x: auto;
@@ -567,30 +549,33 @@ _TEMPLATE = """<!DOCTYPE html>
     }
     main.content .codehilite pre { background: transparent; padding: 0; }
     main.content ul, main.content ol { padding-left: 1.5em; }
-    main.content hr { border: 0; border-top: 1px solid var(--border); margin: 2em 0; }
+    main.content hr { border: 0; border-top: 1px solid #ddd; margin: 2em 0; }
     main.content img { max-width: 100%; }
     .footer-nav {
       display: flex;
       justify-content: space-between;
       margin-top: 3em;
       padding-top: 1em;
-      border-top: 1px solid var(--border);
+      border-top: 1px solid #ddd;
       font-size: 0.9em;
     }
-    .footer-nav a { color: var(--link); text-decoration: none; }
-    /* Space navigation header — mirrors layout.html so the docs page
-       keeps the same top nav as the rest of the compute space. */
+    .footer-nav a { color: #36c; text-decoration: none; }
+    /* Space navigation header — mirrors layout.html so the docs page keeps
+       the same top nav (and header geometry) as the rest of the compute
+       space.  The h1 uses the browser-default h1 size/margins (2em, 0.67em)
+       exactly like layout.html's bare <h1>, so the title + nav land at the
+       same vertical position on both pages. */
     .space-header { max-width: 960px; margin: 2em auto 0; padding: 0 1em; }
-    .space-header h1.space-title { font-size: 2em; font-weight: bold; margin: 0 0 0.67em; }
-    nav#main-nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid var(--border); }
+    .space-header h1.space-title { font-size: 2em; font-weight: bold; margin: 0.67em 0; }
+    nav#main-nav { display: flex; align-items: flex-end; gap: 0.25em; border-bottom: 1px solid #e8e8e8; }
     nav#main-nav .nav-tab {
       display: inline-block; padding: 0.4em 1em; border: 1px solid transparent;
       border-bottom: none; border-radius: 4px 4px 0 0; text-decoration: none;
-      color: var(--fg); background: transparent;
+      color: #444; background: transparent;
     }
-    nav#main-nav .nav-tab:hover { background: rgba(0,0,0,0.05); border-color: var(--border); }
+    nav#main-nav .nav-tab:hover { background: #f0f0f0; color: #222; border-color: #ddd; }
     nav#main-nav .nav-tab.active {
-      background: var(--bg); border-color: var(--border); color: var(--fg);
+      background: #fff; border-color: #ddd; color: #222;
       margin-bottom: -1px; padding-bottom: calc(0.4em + 1px);
     }
     {{ pygments_css }}
