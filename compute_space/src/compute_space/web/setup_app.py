@@ -165,9 +165,7 @@ async def _trigger_restart_after_response() -> None:
 
 @get("/health", sync_to_thread=False)
 def health() -> Response[dict[str, str]]:
-    """Liveness probe.  Returns ``{"status": "ok"}`` (or 503 when restarting).
-    Security audit data is only available via the authenticated
-    ``/api/security-audit`` endpoint."""
+    """Liveness probe.  Returns ``{"status": "ok"}`` (or 503 when restarting)."""
     if is_shutdown_pending() or _setup_completed:
         return Response(content={"status": "restarting"}, status_code=503)
     return Response(content={"status": "ok"})

@@ -11,6 +11,8 @@ import sqlite3
 import subprocess
 from typing import TypedDict
 
+from compute_space.core.containers import CONTAINER_GATEWAY_IP
+
 
 class CheckResult(TypedDict):
     ok: bool
@@ -167,7 +169,7 @@ def _secure_ports() -> dict[int, str]:
     return secure
 
 
-def _is_loopback(addr: str) -> bool:
+def is_loopback_address(addr: str) -> bool:
     host = addr.rsplit(":", 1)[0]
     host = host.strip("[]")
     return host in ("127.0.0.1", "::1") or host.startswith("127.")
@@ -229,7 +231,7 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
             classification, label = "allocated", f"App: {app_by_port[port]}"
         elif 9000 <= port <= 9999:
             classification, label = "app_range", "App range (9000-9999)"
-        elif _is_loopback(addr) and 6060 <= port <= 6099:
+        elif is_loopback_address(addr) and 6060 <= port <= 6099:
             classification, label = "secure", "JuiceFS pprof agent (loopback)"
         else:
             classification, label = "unexpected", "Unexpected"
@@ -240,6 +242,20 @@ def list_listening_ports(db: sqlite3.Connection | None = None) -> list[Listening
 
     ports.sort(key=lambda p: (p["port"], p["address"]))
     return ports
+
+
+def external_ports(ports: list[ListeningPort]) -> list[ListeningPort]:
+    """Filter to ports reachable from outside the VM.
+
+    Loopback and the internal container-gateway interface (``openhost0``,
+    10.200.0.1) are excluded; wildcard and specific external binds are kept.
+    """
+
+    def _internal(addr: str) -> bool:
+        host = addr.rsplit(":", 1)[0].strip("[]")
+        return is_loopback_address(addr) or host == CONTAINER_GATEWAY_IP
+
+    return [p for p in ports if not _internal(p["address"])]
 
 
 def _check_no_unexpected_ports(db: sqlite3.Connection | None = None) -> CheckResult:
