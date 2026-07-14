@@ -1,10 +1,6 @@
 ---
-# CoreDNS binary install + cap_net_bind_service (CoreDNS binds :53).
-#
-# conda-forge ships CoreDNS only for linux-64, so pixi provides it there and we
-# just locate + setcap it.  On other arches (e.g. aarch64) pixi can't, so we
-# install a pinned CoreDNS release from GitHub, verified against its published
-# sha256, into /usr/local/bin (on the openhost service PATH).
+# CoreDNS binary install + cap_net_bind_service
+# conda-forge does not support CoreDNS on ARM, so install from github
 #
 # This pin is provisioning-only and lives here on purpose -- it is separate from
 # compute_space's runtime pinned_binaries.toml.  Bump: update coredns_version +
@@ -18,21 +14,6 @@
       amd64: "5b0e6a6a8b97bdcaec65baa70e83ca88ce03ab852355c656e3f7953405cfe36e"
       arm64: "b3491ed0fbe530a549640a4073d90037ffafa483f007936e1943c1ae0def7325"
 
-# ---- amd64: CoreDNS was installed by pixi (see pixi.yml) ----
-- name: Locate pixi-provided CoreDNS (amd64)
-  shell: /home/host/.pixi/bin/pixi run which coredns
-  args:
-    chdir: /home/host/openhost
-  register: pixi_coredns
-  changed_when: false
-  when: coredns_arch == 'amd64'
-
-- name: Use pixi CoreDNS binary (amd64)
-  set_fact:
-    coredns_bin: "{{ pixi_coredns.stdout }}"
-  when: coredns_arch == 'amd64'
-
-# ---- other arches: install the pinned GitHub release ----
 - name: Download pinned CoreDNS tarball (checksum-verified)
   become: yes
   become_user: root
@@ -41,7 +22,6 @@
     dest: /tmp/coredns-pinned.tgz
     checksum: "sha256:{{ coredns_sha256[coredns_arch] }}"
     mode: "0644"
-  when: coredns_arch != 'amd64'
 
 - name: Install CoreDNS to /usr/local/bin
   become: yes
@@ -53,15 +33,8 @@
     include:
       - coredns
     mode: "0755"
-  when: coredns_arch != 'amd64'
 
-- name: Use pinned CoreDNS binary
-  set_fact:
-    coredns_bin: /usr/local/bin/coredns
-  when: coredns_arch != 'amd64'
-
-# ---- both paths: allow binding the privileged :53 port ----
 - name: Set cap_net_bind_service on CoreDNS
   become: yes
   become_user: root
-  shell: setcap 'cap_net_bind_service=+ep' {{ coredns_bin }}
+  shell: setcap 'cap_net_bind_service=+ep' /usr/local/bin/coredns
