@@ -8,6 +8,9 @@
 #   GCP_PROJECT      — GCP project ID
 #   GCP_ZONE         — preferred zone (default: us-central1-a)
 #   GCP_MACHINE_TYPE — instance type (default: e2-standard-4)
+#   GCP_IMAGE_FAMILY — OS image family (default: ubuntu-2404-lts-amd64).
+#                      For arm64, use ubuntu-2404-lts-arm64 together with an
+#                      arm64 machine type (e.g. GCP_MACHINE_TYPE=t2a-standard-4).
 #   GCP_NETWORK_TAG  — firewall rule target tag
 #   GCP_SSH_KEY      — path to SSH private key
 #   GCP_SSH_USER     — SSH user (default: ubuntu)
@@ -17,6 +20,7 @@
 : "${GCP_NETWORK_TAG:?GCP_NETWORK_TAG is required}"
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 GCP_MACHINE_TYPE="${GCP_MACHINE_TYPE:-e2-standard-4}"
+GCP_IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-ubuntu-2404-lts-amd64}"
 GCP_SSH_USER="${GCP_SSH_USER:-ubuntu}"
 GCP_DISK_SIZE="${GCP_DISK_SIZE:-30}"
 
@@ -58,7 +62,7 @@ provider_create() {
             --project="$GCP_PROJECT" \
             --zone="$zone" \
             --machine-type="$GCP_MACHINE_TYPE" \
-            --image-family=ubuntu-2404-lts-amd64 \
+            --image-family="$GCP_IMAGE_FAMILY" \
             --image-project=ubuntu-os-cloud \
             --boot-disk-size="${GCP_DISK_SIZE}GB" \
             --boot-disk-type=pd-ssd \

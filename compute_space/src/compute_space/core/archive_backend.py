@@ -3,17 +3,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import io
 import os
-import shutil
 import sqlite3
 import subprocess
-import tarfile
 import time
 import tomllib
-import urllib.error
-import urllib.request
 from typing import Any
 
 import attr
@@ -22,27 +16,17 @@ import botocore.exceptions  # noqa: F401  -- imported for ``except`` matching do
 
 from compute_space.config import Config
 from compute_space.core.logging import logger
+from compute_space.core.pinned_binary import get_pinned_binary
+from compute_space.core.pinned_binary import install_pinned_binary
 
 # Name of the systemd unit that manages the JuiceFS FUSE mount.
 # Installed by ansible (disabled); enabled by compute_space when the
 # operator configures the archive backend.
 JUICEFS_SERVICE = "openhost-juicefs"
 
-# Pin a specific JuiceFS release; sha256 is verified before extract so a
-# compromised release page can't swap the tarball.
-JUICEFS_VERSION = "1.3.1"
-JUICEFS_SHA256 = {
-    "amd64": "eb67a7be5d174b420cb3734d441971b3a462ab522b78ad2a6ed993e7deddcd44",
-    "arm64": "c29bff8f609366011cee03b9abcc76c11a06308b2c314364b8c340a2bfbc6c48",
-}
-
-
-def _arch() -> str:
-    """Return the JuiceFS-release-asset arch string for the running host."""
-    machine = os.uname().machine
-    if machine in ("aarch64", "arm64"):
-        return "arm64"
-    return "amd64"
+# JuiceFS binary: pinned version + per-arch download URLs/checksums live in
+# ``pinned_binary.py``.
+_JUICEFS = get_pinned_binary("juicefs")
 
 
 def _juicefs_state_dir(config: Config) -> str:
@@ -60,7 +44,7 @@ def _juicefs_install_dir(config: Config) -> str:
 
 
 def _juicefs_binary(config: Config) -> str:
-    return os.path.join(_juicefs_install_dir(config), f"juicefs-{JUICEFS_VERSION}")
+    return os.path.join(_juicefs_install_dir(config), f"juicefs-{_JUICEFS.version}")
 
 
 def _juicefs_meta_db(config: Config) -> str:
@@ -86,43 +70,7 @@ def is_juicefs_installed(config: Config) -> bool:
 
 def install_juicefs(config: Config) -> None:
     """Download + verify + extract the JuiceFS binary.  Idempotent."""
-    if is_juicefs_installed(config):
-        return
-    install_dir = _juicefs_install_dir(config)
-    os.makedirs(install_dir, exist_ok=True)
-    arch = _arch()
-    expected_sha = JUICEFS_SHA256.get(arch)
-    if not expected_sha:
-        raise RuntimeError(f"No pinned JuiceFS sha256 for arch {arch!r}; refusing to install.")
-    url = (
-        f"https://github.com/juicedata/juicefs/releases/download/"
-        f"v{JUICEFS_VERSION}/juicefs-{JUICEFS_VERSION}-linux-{arch}.tar.gz"
-    )
-    logger.info("Downloading JuiceFS %s for %s", JUICEFS_VERSION, arch)
-    try:
-        with urllib.request.urlopen(url, timeout=120) as resp:
-            tarball_bytes = resp.read()
-    except (TimeoutError, urllib.error.URLError) as exc:
-        raise RuntimeError(f"Failed to download JuiceFS: {exc}") from exc
-
-    actual_sha = hashlib.sha256(tarball_bytes).hexdigest()
-    if actual_sha != expected_sha:
-        raise RuntimeError(
-            f"JuiceFS tarball sha256 mismatch (expected {expected_sha}, got {actual_sha}).  Refusing to install."
-        )
-
-    with tarfile.open(fileobj=io.BytesIO(tarball_bytes), mode="r:gz") as tar:
-        member = next((m for m in tar.getmembers() if m.name == "juicefs"), None)
-        if member is None:
-            raise RuntimeError("JuiceFS tarball missing the ``juicefs`` binary")
-        f = tar.extractfile(member)
-        if f is None:
-            raise RuntimeError("JuiceFS tarball entry was unreadable")
-        binary_path = _juicefs_binary(config)
-        with f, open(binary_path, "wb") as out:
-            shutil.copyfileobj(f, out)
-    os.chmod(_juicefs_binary(config), 0o750)
-    logger.info("JuiceFS installed at %s", _juicefs_binary(config))
+    install_pinned_binary(_JUICEFS, _juicefs_binary(config))
 
 
 def _format_meta_dsn(config: Config) -> str:

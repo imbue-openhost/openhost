@@ -1,0 +1,40 @@
+---
+# CoreDNS binary install + cap_net_bind_service
+# conda-forge does not support CoreDNS on ARM, so install from github
+#
+# This pin is provisioning-only and lives here on purpose -- it is separate from
+# compute_space's runtime pinned_binaries.toml.  Bump: update coredns_version +
+# both checksums (the vendor's coredns_<ver>_linux_<arch>.tgz.sha256 files).
+
+- name: Pin CoreDNS release
+  set_fact:
+    coredns_version: "1.14.4"
+    coredns_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+    coredns_sha256:
+      amd64: "5b0e6a6a8b97bdcaec65baa70e83ca88ce03ab852355c656e3f7953405cfe36e"
+      arm64: "b3491ed0fbe530a549640a4073d90037ffafa483f007936e1943c1ae0def7325"
+
+- name: Download pinned CoreDNS tarball (checksum-verified)
+  become: yes
+  become_user: root
+  get_url:
+    url: "https://github.com/coredns/coredns/releases/download/v{{ coredns_version }}/coredns_{{ coredns_version }}_linux_{{ coredns_arch }}.tgz"
+    dest: /tmp/coredns-pinned.tgz
+    checksum: "sha256:{{ coredns_sha256[coredns_arch] }}"
+    mode: "0644"
+
+- name: Install CoreDNS to /usr/local/bin
+  become: yes
+  become_user: root
+  unarchive:
+    src: /tmp/coredns-pinned.tgz
+    dest: /usr/local/bin
+    remote_src: yes
+    include:
+      - coredns
+    mode: "0755"
+
+- name: Set cap_net_bind_service on CoreDNS
+  become: yes
+  become_user: root
+  shell: setcap 'cap_net_bind_service=+ep' /usr/local/bin/coredns
