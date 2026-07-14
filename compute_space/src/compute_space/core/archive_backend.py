@@ -25,7 +25,7 @@ from compute_space.core.pinned_binary import install_pinned_binary
 JUICEFS_SERVICE = "openhost-juicefs"
 
 # JuiceFS binary: pinned version + per-arch download URLs/checksums live in
-# ``pinned_binaries.toml``.
+# ``pinned_binary.py``.
 _JUICEFS = get_pinned_binary("juicefs")
 
 
