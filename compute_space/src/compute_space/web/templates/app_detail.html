@@ -140,15 +140,25 @@
 
 <br>
 <style>
-  /* Keep the app action buttons on a single row in the standard content
-     column. They still wrap on genuinely narrow (mobile) viewports rather than
-     overflowing, but the slightly tighter padding + gap lets the full set fit
-     one line at the normal desktop width instead of spilling onto two. Scoped
-     to this row so the global .btn sizing elsewhere is unchanged. */
-  #app-action-buttons { gap: 0.4rem; }
-  #app-action-buttons .btn { padding: 0.4em 0.6em; }
+  /* Keep the app action buttons on a single row. The full set (Stop / Reload /
+     Update & Reload / Copy Diagnostics / Edit / Remove / Remove & Data) is a
+     little wider than the 960px content column, which previously made it wrap
+     onto two lines. Slightly tighter padding + gap gets it close, and
+     nowrap + horizontal auto-scroll guarantees it stays on one line (scrolling
+     sideways in the rare case it still doesn't fit) rather than wrapping.
+     Scoped to this row so the global .btn sizing elsewhere is unchanged. */
+  #app-action-buttons {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+  }
+  #app-action-buttons .btn { padding: 0.4em 0.6em; flex: 0 0 auto; white-space: nowrap; }
+  #app-action-buttons #app-action-msg { flex: 0 0 auto; }
 </style>
-<div id="app-action-buttons" style="display: flex; align-items: center; flex-wrap: wrap;">
+<div id="app-action-buttons">
   <button class="btn" onclick="appAction('/stop_app/{{ app.app_id }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', null, {label: 'Reloading'})">Reload App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
