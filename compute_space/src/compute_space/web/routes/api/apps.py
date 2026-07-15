@@ -3,6 +3,8 @@ import os
 import re
 import shutil
 import sqlite3
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from threading import Thread
 from typing import Annotated
@@ -39,6 +41,8 @@ from compute_space.core.containers import get_docker_logs
 from compute_space.core.containers import log_timestamp
 from compute_space.core.containers import stop_app_process
 from compute_space.core.containers import stop_container
+from compute_space.core.diagnostics import AppDiagnostics
+from compute_space.core.diagnostics import collect_app_diagnostics
 from compute_space.core.git_ops import UnsupportedRepoUrlError
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
@@ -465,6 +469,35 @@ async def app_status(app_id: str, db: sqlite3.Connection) -> Response[AppStatusR
         status_code=200,
         media_type=MediaType.JSON,
     )
+
+
+def _app_diagnostics_filename(app_name: str) -> str:
+    """Build a safe, timestamped filename for a downloaded app diagnostics bundle."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    safe_name = "".join(c if c.isalnum() or c in "-." else "_" for c in app_name) or "app"
+    return f"openhost-app-diagnostics-{safe_name}-{stamp}.json"
+
+
+@get("/api/app_diagnostics/{app_id:str}", guards=[require_owner_auth])
+async def app_diagnostics(
+    app_id: str, db: sqlite3.Connection, config: Config, download: bool = False
+) -> Response[AppDiagnostics] | Response[ErrorResponse]:
+    """Return a per-app diagnostics bundle: app version + manifest git checkout,
+    container status, and a slice of host/system info so the report is
+    self-contained.
+
+    ``?download=1`` adds a Content-Disposition header so browsers save the JSON
+    to a timestamped file instead of rendering it inline.
+    """
+    app_row, err = _resolve_app_or_error(app_id, db)
+    if err is not None:
+        return err
+    assert app_row is not None
+    diagnostics = await collect_app_diagnostics(app_row, config)
+    headers = None
+    if download:
+        headers = {"Content-Disposition": f'attachment; filename="{_app_diagnostics_filename(app_row["name"])}"'}
+    return Response(content=diagnostics, status_code=200, media_type=MediaType.JSON, headers=headers)
 
 
 @get("/app_logs/{app_id:str}", guards=[require_owner_auth], media_type=MediaType.TEXT)
@@ -968,6 +1001,7 @@ api_apps_routes = Router(
         api_add_app,
         api_apps,
         app_status,
+        app_diagnostics,
         app_logs,
         stop_app,
         reload_app,

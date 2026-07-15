@@ -1,0 +1,821 @@
+"""Collect diagnostic information for debugging OpenHost instances and apps.
+
+Two public entry points:
+
+  - :func:`collect_platform_diagnostics` — a snapshot of the whole instance:
+    OpenHost git checkout (branch/SHA/dirty), host OS/kernel, Python and
+    installed dependency versions, container runtime (podman) info, disk usage,
+    and a summary of every installed app.  Owner-only; intended to be copied or
+    downloaded and pasted into a bug report.
+
+  - :func:`collect_app_diagnostics` — a per-app snapshot: the app's declared
+    version + manifest git checkout, container status, plus a slim slice of the
+    same host/system info so an app report is self-contained.
+
+Every collector is defensive: a failure gathering one field degrades that field
+to ``None``/an error string rather than failing the whole report, because a
+diagnostics bundle is most valuable precisely when the instance is unhealthy.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.metadata
+import json
+import os
+import platform
+import shutil
+import sqlite3
+import subprocess
+from datetime import UTC
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import attr
+import httpx
+
+from compute_space import OPENHOST_PROJECT_DIR
+from compute_space.config import Config
+from compute_space.core.containers import is_container_running
+from compute_space.core.git_ops import get_branch_name
+from compute_space.core.git_ops import get_head_sha
+from compute_space.core.git_ops import get_remote_url
+from compute_space.core.git_ops import is_dirty
+from compute_space.core.logging import logger
+from compute_space.core.manifest import parse_manifest_from_string
+from compute_space.core.storage import storage_status
+
+# The schema version of the diagnostics payload.  Bump when the shape changes
+# so consumers (support tooling, the CLI, the dashboard) can detect an
+# incompatible bundle.  Present on both the platform and per-app bundles.
+#
+# v2: added resource_pressure, reachability (platform) and health + resources
+#     (per-app).
+DIAGNOSTICS_SCHEMA_VERSION = 2
+
+# Distribution names whose versions are worth surfacing in a bug report.  These
+# are the packages most likely to explain a runtime bug; the full environment is
+# large and noisy, so we curate rather than dump everything.
+_KEY_DEPENDENCIES = (
+    "litestar",
+    "hypercorn",
+    "GitPython",
+    "attrs",
+    "cattrs",
+    "typed-settings",
+    "httpx",
+    "bcrypt",
+    "jinja2",
+    "tomli-w",
+    "cappa",
+)
+
+_SUBPROCESS_TIMEOUT_S = 10
+
+# Per-target timeout for outbound reachability probes and per-app health checks.
+# Kept short so a diagnostics request can't hang for long on a dead network.
+_HEALTH_TIMEOUT_S = 5.0
+_REACHABILITY_TIMEOUT_S = 5.0
+
+# External hosts the platform depends on.  We probe these so a diagnostics
+# bundle shows whether the instance can reach the services it needs (app clones,
+# TLS cert issuance/brokering).  Each entry is (label, url); the URL only needs
+# to resolve + connect, so a HEAD/GET that returns any HTTP status counts as
+# "reachable".
+_STATIC_REACHABILITY_TARGETS: tuple[tuple[str, str], ...] = (
+    ("github", "https://github.com"),
+    ("github_api", "https://api.github.com"),
+    ("acme_gts", "https://dv.acme-v02.api.pki.goog/directory"),
+)
+
+
+# ─── attrs models ────────────────────────────────────────────────────────────
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class GitInfo:
+    """Git checkout state for a repository on disk.
+
+    ``sha`` is empty and ``branch`` is None when the path isn't a git checkout
+    (e.g. builtin apps or tarball deploys). ``branch`` is None when HEAD is
+    detached even if ``sha`` is populated.
+    """
+
+    branch: str | None
+    sha: str
+    short_sha: str
+    dirty: bool
+    remote_url: str | None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SystemInfo:
+    """Host OS / Python / process facts."""
+
+    hostname: str
+    platform: str
+    system: str
+    release: str
+    machine: str
+    processor: str
+    python_version: str
+    python_implementation: str
+    cpu_count: int | None
+    boot_time: str | None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ContainerRuntimeInfo:
+    """Facts about the container runtime (podman)."""
+
+    available: bool
+    version: str | None
+    rootless: bool | None
+    error: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class HostResourcePressure:
+    """Host-level memory + load, for spotting pressure / OOM conditions."""
+
+    memory_total_bytes: int | None
+    memory_available_bytes: int | None
+    memory_used_percent: float | None
+    load_avg_1m: float | None
+    load_avg_5m: float | None
+    load_avg_15m: float | None
+    cpu_count: int | None
+    error: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class AppResourceUsage:
+    """Live container resource usage for one app vs its manifest limits.
+
+    All ``*_actual`` fields are None when the app has no running container or
+    podman stats can't be read; ``*_limit`` reflects the manifest.
+    """
+
+    running: bool
+    cpu_percent: float | None
+    memory_usage_bytes: int | None
+    memory_limit_bytes: int | None
+    memory_percent: float | None
+    cpu_cores_limit: float | None
+    memory_mb_limit: int | None
+    error: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class AppHealth:
+    """Result of probing an app's health endpoint over the loopback proxy port.
+
+    ``checked_path`` is the app's declared ``health_check`` path, or ``/`` when
+    none is declared.  ``healthy`` is True when the endpoint responds with an
+    HTTP status < 500 (matching the router's readiness contract).
+    """
+
+    checked: bool
+    healthy: bool | None
+    status_code: int | None
+    checked_path: str
+    error: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class ReachabilityResult:
+    """Outcome of an outbound reachability probe to one external host."""
+
+    label: str
+    url: str
+    reachable: bool
+    status_code: int | None
+    latency_ms: float | None
+    error: str | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class AppDiagnosticsSummary:
+    """Per-app entry in the platform diagnostics bundle."""
+
+    app_id: str
+    name: str
+    status: str
+    version: str | None
+    runtime_type: str | None
+    error_message: str | None
+    git: GitInfo | None
+    health: AppHealth | None = None
+    resources: AppResourceUsage | None = None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class PlatformDiagnostics:
+    """Full instance diagnostics bundle (owner-only)."""
+
+    schema_version: int
+    generated_at: str
+    zone_domain: str
+    openhost: GitInfo
+    system: SystemInfo
+    container_runtime: ContainerRuntimeInfo
+    dependencies: dict[str, str]
+    storage: dict[str, object]
+    resource_pressure: HostResourcePressure
+    reachability: list[ReachabilityResult]
+    apps: list[AppDiagnosticsSummary]
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class AppDiagnostics:
+    """Per-app diagnostics bundle (owner-only).
+
+    Includes a slice of host/system info so an app report is self-contained and
+    useful on its own, without the caller also having to grab the platform
+    bundle.
+    """
+
+    schema_version: int
+    generated_at: str
+    zone_domain: str
+    app_id: str
+    name: str
+    status: str
+    version: str | None
+    runtime_type: str | None
+    error_message: str | None
+    container_id: str | None
+    git: GitInfo | None
+    health: AppHealth | None
+    resources: AppResourceUsage | None
+    system: SystemInfo
+    container_runtime: ContainerRuntimeInfo
+    resource_pressure: HostResourcePressure
+    openhost: GitInfo
+
+
+# ─── low-level collectors ──────────────────────────────────────────────────
+
+
+async def _collect_git_info(repo_path: Path | None) -> GitInfo | None:
+    """Return :class:`GitInfo` for ``repo_path`` or None when it has no .git.
+
+    Never raises: any error while reading git state degrades to None so a
+    single bad repo doesn't sink the whole bundle.
+    """
+    if repo_path is None:
+        return None
+    if not (repo_path / ".git").exists():
+        return None
+    try:
+        branch = await get_branch_name(repo_path)
+        sha = await get_head_sha(repo_path)
+        dirty = await is_dirty(repo_path)
+    except Exception:
+        logger.opt(exception=True).warning("Failed to read git info for %s", repo_path)
+        return None
+    remote_url: str | None
+    try:
+        remote_url = await get_remote_url(repo_path)
+    except Exception:
+        # Missing/unreadable remote is common (no 'origin'); not worth a warning.
+        remote_url = None
+    return GitInfo(branch=branch, sha=sha, short_sha=sha[:8], dirty=dirty, remote_url=remote_url)
+
+
+def _collect_system_info() -> SystemInfo:
+    """Gather host OS / Python facts. Best-effort; missing fields become None."""
+    uname = platform.uname()
+    try:
+        cpu_count = os.cpu_count()
+    except Exception:
+        cpu_count = None
+    boot_time = _read_boot_time()
+    return SystemInfo(
+        hostname=uname.node,
+        platform=platform.platform(),
+        system=uname.system,
+        release=uname.release,
+        machine=uname.machine,
+        processor=uname.processor,
+        python_version=platform.python_version(),
+        python_implementation=platform.python_implementation(),
+        cpu_count=cpu_count,
+        boot_time=boot_time,
+    )
+
+
+def _read_boot_time() -> str | None:
+    """Return system boot time as an ISO-8601 UTC string, or None if unavailable.
+
+    Reads /proc/stat's ``btime`` (Linux only); avoids adding a psutil dependency.
+    """
+    try:
+        with open("/proc/stat") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    epoch = int(line.split()[1])
+                    return datetime.fromtimestamp(epoch, UTC).isoformat()
+    except Exception:
+        return None
+    return None
+
+
+def _collect_dependencies() -> dict[str, str]:
+    """Return {distribution_name: version} for the curated key dependencies.
+
+    A dependency that isn't installed maps to ``"(not installed)"`` rather than
+    being omitted, so a missing package is visible in the report.
+    """
+    versions: dict[str, str] = {}
+    for name in _KEY_DEPENDENCIES:
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[name] = "(not installed)"
+        except Exception:
+            versions[name] = "(error)"
+    return versions
+
+
+def _collect_container_runtime() -> ContainerRuntimeInfo:
+    """Probe podman for version + rootless status.
+
+    Mirrors the ``openhost doctor`` probe (parse ``podman info --format json``,
+    assert the rootless flag) so the two agree on what "healthy" looks like.
+    """
+    if shutil.which("podman") is None:
+        return ContainerRuntimeInfo(available=False, version=None, rootless=None, error="podman not found on PATH")
+    try:
+        info_proc = subprocess.run(
+            ["podman", "info", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return ContainerRuntimeInfo(available=False, version=None, rootless=None, error="podman info timed out")
+    except Exception as e:
+        return ContainerRuntimeInfo(available=False, version=None, rootless=None, error=str(e))
+
+    if info_proc.returncode != 0:
+        return ContainerRuntimeInfo(available=False, version=None, rootless=None, error="podman info failed")
+
+    version: str | None = None
+    rootless: bool | None = None
+    try:
+        info = json.loads(info_proc.stdout)
+        host = info.get("host", {})
+        # podman reports its own version under the top-level ``version`` table
+        # (``version.Version``); ``host.serverVersion`` is not populated in
+        # current releases, so read the former and fall back to the latter.
+        version = info.get("version", {}).get("Version") or host.get("serverVersion")
+        rootless_val = host.get("security", {}).get("rootless")
+        rootless = rootless_val if isinstance(rootless_val, bool) else None
+    except (json.JSONDecodeError, AttributeError):
+        return ContainerRuntimeInfo(
+            available=True, version=None, rootless=None, error="podman info returned non-JSON output"
+        )
+    return ContainerRuntimeInfo(available=True, version=version, rootless=rootless, error=None)
+
+
+def _manifest_fields(manifest_raw: str | None) -> tuple[str | None, str | None]:
+    """Parse (version, runtime_type) from a stored manifest, or (None, None).
+
+    Re-parsing ``manifest_raw`` is more accurate than the ``apps.version``
+    column, which is only written at install time and not on reload.
+    """
+    if not manifest_raw:
+        return None, None
+    try:
+        manifest = parse_manifest_from_string(manifest_raw)
+    except Exception:
+        return None, None
+    return manifest.version, manifest.runtime_type
+
+
+# ─── resource pressure ───────────────────────────────────────────────────────
+
+
+def _read_meminfo() -> tuple[int | None, int | None]:
+    """Return (MemTotal, MemAvailable) in bytes from /proc/meminfo, or (None, None).
+
+    /proc/meminfo reports values in kibibytes; we convert to bytes. Best-effort,
+    never raises (Linux-only path).
+    """
+    total: int | None = None
+    available: int | None = None
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total = int(line.split()[1]) * 1024
+                elif line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+                if total is not None and available is not None:
+                    break
+    except Exception:
+        return None, None
+    return total, available
+
+
+def _collect_resource_pressure() -> HostResourcePressure:
+    """Gather host memory + load average. Defensive: fields degrade to None."""
+    total, available = _read_meminfo()
+    used_percent: float | None = None
+    if total and available is not None and total > 0:
+        used_percent = round((total - available) / total * 100, 1)
+
+    load_1m: float | None = None
+    load_5m: float | None = None
+    load_15m: float | None = None
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+    except (OSError, AttributeError):
+        pass
+
+    try:
+        cpu_count = os.cpu_count()
+    except Exception:
+        cpu_count = None
+
+    return HostResourcePressure(
+        memory_total_bytes=total,
+        memory_available_bytes=available,
+        memory_used_percent=used_percent,
+        load_avg_1m=load_1m,
+        load_avg_5m=load_5m,
+        load_avg_15m=load_15m,
+        cpu_count=cpu_count,
+    )
+
+
+def _parse_stats_bytes(value: object) -> int | None:
+    """Parse a podman-stats size token like '12.3MB' / '1.2GiB' / '512kB' to bytes.
+
+    podman renders memory usage as a human string; we normalise to bytes so the
+    bundle carries machine-comparable numbers. Returns None on anything unparseable.
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s or s.lower() in ("--", "n/a"):
+        return None
+    units = {
+        "b": 1,
+        "kb": 1000,
+        "mb": 1000**2,
+        "gb": 1000**3,
+        "tb": 1000**4,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+        "tib": 1024**4,
+    }
+    # Split trailing unit letters from the leading number.
+    num = s
+    unit = ""
+    for i, ch in enumerate(s):
+        if ch.isalpha() or ch == "%":
+            num, unit = s[:i], s[i:]
+            break
+    try:
+        magnitude = float(num)
+    except ValueError:
+        return None
+    factor = units.get(unit.strip().lower(), 1)
+    return int(magnitude * factor)
+
+
+def _parse_stats_percent(value: object) -> float | None:
+    """Parse a podman-stats percent token like '3.14%' to a float, or None."""
+    if not isinstance(value, str):
+        return None
+    s = value.strip().rstrip("%").strip()
+    if not s or s in ("--", "N/A"):
+        return None
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return None
+
+
+def _collect_app_resources(
+    container_id: str | None, cpu_cores_limit: float | None, memory_mb_limit: int | None
+) -> AppResourceUsage:
+    """Read live container resource usage via ``podman stats`` for one app.
+
+    Never raises: a missing container / stats failure degrades to a not-running
+    or error result while still reporting the manifest limits.
+    """
+    base = AppResourceUsage(
+        running=False,
+        cpu_percent=None,
+        memory_usage_bytes=None,
+        memory_limit_bytes=None,
+        memory_percent=None,
+        cpu_cores_limit=cpu_cores_limit,
+        memory_mb_limit=memory_mb_limit,
+    )
+    if not container_id:
+        return base
+    if shutil.which("podman") is None:
+        return attr.evolve(base, error="podman not found on PATH")
+    # Determine "running" authoritatively from the container's actual state
+    # rather than from whether ``podman stats`` returned data: on current podman
+    # ``stats --no-stream`` exits 0 and emits a zero-valued entry even for an
+    # *exited* container, which would otherwise be reported as running=True with
+    # 0% CPU / 0 B memory — misleading in a report whose job is to debug a down
+    # app (e.g. a container that crashed while the DB row still says "running").
+    if not is_container_running(container_id):
+        return base
+    try:
+        proc = subprocess.run(
+            ["podman", "stats", "--no-stream", "--format", "json", container_id],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return attr.evolve(base, error="podman stats timed out")
+    except Exception as e:
+        return attr.evolve(base, error=str(e))
+
+    if proc.returncode != 0:
+        # Non-zero is expected when the container isn't running.
+        return base
+
+    try:
+        data = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return attr.evolve(base, error="podman stats returned non-JSON output")
+
+    # podman stats --format json returns a list of per-container objects.
+    if isinstance(data, list):
+        if not data:
+            return base
+        entry = data[0]
+    elif isinstance(data, dict):
+        entry = data
+    else:
+        return attr.evolve(base, error="unexpected podman stats shape")
+
+    if not isinstance(entry, dict):
+        return attr.evolve(base, error="unexpected podman stats entry")
+
+    cpu_percent = _parse_stats_percent(entry.get("CPU") or entry.get("cpu_percent"))
+    mem_percent = _parse_stats_percent(entry.get("MemPerc") or entry.get("mem_percent"))
+    # MemUsage looks like "12.3MB / 128MB"; split usage/limit.
+    mem_usage_bytes: int | None = None
+    mem_limit_bytes: int | None = None
+    mem_usage_raw = entry.get("MemUsage") or entry.get("mem_usage")
+    if isinstance(mem_usage_raw, str) and "/" in mem_usage_raw:
+        usage_part, _, limit_part = mem_usage_raw.partition("/")
+        mem_usage_bytes = _parse_stats_bytes(usage_part)
+        mem_limit_bytes = _parse_stats_bytes(limit_part)
+
+    return AppResourceUsage(
+        running=True,
+        cpu_percent=cpu_percent,
+        memory_usage_bytes=mem_usage_bytes,
+        memory_limit_bytes=mem_limit_bytes,
+        memory_percent=mem_percent,
+        cpu_cores_limit=cpu_cores_limit,
+        memory_mb_limit=memory_mb_limit,
+    )
+
+
+# ─── health checks ───────────────────────────────────────────────────────────
+
+
+async def _collect_app_health(local_port: int | None, health_check: str | None) -> AppHealth:
+    """Probe an app's health endpoint over its loopback proxy port.
+
+    Mirrors the router's readiness contract (any HTTP status < 500 = healthy)
+    and honours the app's declared ``health_check`` path, defaulting to ``/``.
+    Never raises: connection/timeout errors degrade to healthy=False + an error.
+    """
+    path = health_check or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    checked_path = path
+    if not local_port:
+        return AppHealth(
+            checked=False, healthy=None, status_code=None, checked_path=checked_path, error="no local port"
+        )
+    url = f"http://127.0.0.1:{local_port}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=_HEALTH_TIMEOUT_S) as client:
+            resp = await client.get(url)
+    except httpx.TimeoutException:
+        return AppHealth(checked=True, healthy=False, status_code=None, checked_path=checked_path, error="timeout")
+    except httpx.HTTPError as e:
+        return AppHealth(checked=True, healthy=False, status_code=None, checked_path=checked_path, error=str(e))
+    except Exception as e:
+        return AppHealth(checked=True, healthy=False, status_code=None, checked_path=checked_path, error=str(e))
+    return AppHealth(
+        checked=True,
+        healthy=resp.status_code < 500,
+        status_code=resp.status_code,
+        checked_path=checked_path,
+    )
+
+
+# ─── outbound reachability ───────────────────────────────────────────────────
+
+
+def _reachability_targets(config: Config) -> list[tuple[str, str]]:
+    """Assemble the list of (label, url) reachability targets from static hosts
+    plus any config-driven URLs (cert-api Keycloak issuer, ACME directory,
+    redirect domain). The cert-api base URL is deliberately not probed."""
+    targets: list[tuple[str, str]] = list(_STATIC_REACHABILITY_TARGETS)
+    if config.cert_api_keycloak_issuer_url:
+        targets.append(("cert_api_keycloak", config.cert_api_keycloak_issuer_url))
+    if config.acme_directory_url:
+        targets.append(("acme_directory", config.acme_directory_url))
+    if config.my_openhost_redirect_domain:
+        targets.append(("openhost_redirect", f"https://{config.my_openhost_redirect_domain}"))
+    # De-duplicate by URL while preserving order (static ACME may equal config ACME).
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for label, url in targets:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append((label, url))
+    return deduped
+
+
+async def _probe_reachability(client: httpx.AsyncClient, label: str, url: str) -> ReachabilityResult:
+    """Probe a single external URL. Any HTTP response = reachable (we only care
+    that DNS + TCP + TLS succeeded, not the status)."""
+    start = asyncio.get_event_loop().time()
+    try:
+        resp = await client.get(url)
+    except httpx.TimeoutException:
+        return ReachabilityResult(
+            label=label, url=url, reachable=False, status_code=None, latency_ms=None, error="timeout"
+        )
+    except httpx.HTTPError as e:
+        return ReachabilityResult(
+            label=label, url=url, reachable=False, status_code=None, latency_ms=None, error=str(e)
+        )
+    except Exception as e:
+        return ReachabilityResult(
+            label=label, url=url, reachable=False, status_code=None, latency_ms=None, error=str(e)
+        )
+    latency_ms = round((asyncio.get_event_loop().time() - start) * 1000, 1)
+    return ReachabilityResult(
+        label=label, url=url, reachable=True, status_code=resp.status_code, latency_ms=latency_ms
+    )
+
+
+async def _collect_reachability(config: Config) -> list[ReachabilityResult]:
+    """Probe all external dependency hosts concurrently. Never raises."""
+    targets = _reachability_targets(config)
+    try:
+        async with httpx.AsyncClient(timeout=_REACHABILITY_TIMEOUT_S, follow_redirects=False) as client:
+            return list(await asyncio.gather(*(_probe_reachability(client, label, url) for label, url in targets)))
+    except Exception:
+        logger.opt(exception=True).warning("Failed to collect reachability diagnostics")
+        return []
+
+
+# ─── platform diagnostics ────────────────────────────────────────────────────
+
+
+def _row_get(row: sqlite3.Row, key: str) -> Any:
+    """Safe column access: returns None when the column is absent from the row."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
+async def _collect_app_health_and_resources(row: sqlite3.Row) -> tuple[AppHealth, AppResourceUsage]:
+    """Collect the (health, resource-usage) pair for one app row.
+
+    Shared by the platform summary and the per-app bundle so both surface the
+    same live data with the same defensive semantics.
+    """
+    local_port = _row_get(row, "local_port")
+    health = await _collect_app_health(
+        local_port if isinstance(local_port, int) else None,
+        _row_get(row, "health_check"),
+    )
+    resources = _collect_app_resources(
+        _row_get(row, "container_id"),
+        _row_get(row, "cpu_cores"),
+        _row_get(row, "memory_mb"),
+    )
+    return health, resources
+
+
+async def _collect_app_summary(row: sqlite3.Row) -> AppDiagnosticsSummary:
+    version, runtime_type = _manifest_fields(row["manifest_raw"])
+    # Fall back to the stored column when the manifest can't be re-parsed.
+    if version is None:
+        version = _row_get(row, "version")
+    repo_path = row["repo_path"]
+    git = await _collect_git_info(Path(repo_path) if repo_path else None)
+    health, resources = await _collect_app_health_and_resources(row)
+    return AppDiagnosticsSummary(
+        app_id=row["app_id"],
+        name=row["name"],
+        status=row["status"],
+        version=version,
+        runtime_type=runtime_type,
+        error_message=row["error_message"],
+        git=git,
+        health=health,
+        resources=resources,
+    )
+
+
+async def collect_platform_diagnostics(db: sqlite3.Connection, config: Config) -> PlatformDiagnostics:
+    """Assemble the full instance diagnostics bundle."""
+    openhost_git = await _collect_git_info(OPENHOST_PROJECT_DIR)
+    if openhost_git is None:
+        # OPENHOST_PROJECT_DIR isn't a git checkout (tarball deploy): still
+        # emit a GitInfo so the field shape is stable for consumers.
+        openhost_git = GitInfo(branch=None, sha="", short_sha="", dirty=False, remote_url=None)
+
+    try:
+        storage = storage_status(config)
+    except Exception:
+        logger.opt(exception=True).warning("Failed to collect storage status for diagnostics")
+        storage = {}
+
+    apps: list[AppDiagnosticsSummary] = []
+    try:
+        rows = db.execute(
+            "SELECT app_id, name, status, version, runtime_type, error_message, repo_path, "
+            "manifest_raw, local_port, health_check, container_id, cpu_cores, memory_mb "
+            "FROM apps ORDER BY name"
+        ).fetchall()
+    except Exception:
+        logger.opt(exception=True).warning("Failed to query apps for diagnostics summary")
+        rows = []
+    for row in rows:
+        # Collect each app independently so one malformed row can't drop the
+        # rest of the fleet from the bundle.
+        try:
+            apps.append(await _collect_app_summary(row))
+        except Exception:
+            logger.opt(exception=True).warning("Failed to collect diagnostics for one app; skipping it")
+
+    reachability = await _collect_reachability(config)
+
+    return PlatformDiagnostics(
+        schema_version=DIAGNOSTICS_SCHEMA_VERSION,
+        generated_at=datetime.now(UTC).isoformat(),
+        zone_domain=config.zone_domain,
+        openhost=openhost_git,
+        system=_collect_system_info(),
+        container_runtime=_collect_container_runtime(),
+        dependencies=_collect_dependencies(),
+        storage=storage,
+        resource_pressure=_collect_resource_pressure(),
+        reachability=reachability,
+        apps=apps,
+    )
+
+
+async def collect_app_diagnostics(row: sqlite3.Row, config: Config) -> AppDiagnostics:
+    """Assemble a per-app diagnostics bundle for the given ``apps`` row."""
+    version, runtime_type = _manifest_fields(row["manifest_raw"])
+    if version is None:
+        try:
+            version = row["version"]
+        except (IndexError, KeyError):
+            version = None
+
+    repo_path = row["repo_path"]
+    git = await _collect_git_info(Path(repo_path) if repo_path else None)
+
+    openhost_git = await _collect_git_info(OPENHOST_PROJECT_DIR)
+    if openhost_git is None:
+        openhost_git = GitInfo(branch=None, sha="", short_sha="", dirty=False, remote_url=None)
+
+    health, resources = await _collect_app_health_and_resources(row)
+
+    return AppDiagnostics(
+        schema_version=DIAGNOSTICS_SCHEMA_VERSION,
+        generated_at=datetime.now(UTC).isoformat(),
+        zone_domain=config.zone_domain,
+        app_id=row["app_id"],
+        name=row["name"],
+        status=row["status"],
+        version=version,
+        runtime_type=runtime_type,
+        error_message=row["error_message"],
+        container_id=row["container_id"],
+        git=git,
+        health=health,
+        resources=resources,
+        system=_collect_system_info(),
+        container_runtime=_collect_container_runtime(),
+        resource_pressure=_collect_resource_pressure(),
+        openhost=openhost_git,
+    )

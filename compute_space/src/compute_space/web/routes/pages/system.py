@@ -19,6 +19,12 @@ async def system_page() -> Template:
     return Template(template_name="system.html")
 
 
+@get("/diagnostics/", guards=[require_owner_auth])
+async def diagnostics_page() -> Template:
+    """Serve the Diagnostics page (copyable/downloadable debug bundle)."""
+    return Template(template_name="diagnostics.html")
+
+
 @get("/terminal/", guards=[require_owner_auth])
 async def terminal_page() -> Template:
     """Serve the web terminal UI."""
@@ -59,5 +65,5 @@ async def terminal_ws(socket: WebSocket[Any, Any, Any]) -> None:
 
 pages_system_routes = Router(
     path="/",
-    route_handlers=[system_page, terminal_page, terminal_ws],
+    route_handlers=[system_page, diagnostics_page, terminal_page, terminal_ws],
 )

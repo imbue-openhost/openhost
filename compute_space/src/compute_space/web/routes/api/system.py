@@ -22,6 +22,8 @@ from compute_space.core.auth.security_audit import external_ports
 from compute_space.core.auth.security_audit import is_sshd_active
 from compute_space.core.auth.security_audit import list_listening_ports
 from compute_space.core.containers import drop_docker_build_cache
+from compute_space.core.diagnostics import PlatformDiagnostics
+from compute_space.core.diagnostics import collect_platform_diagnostics
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
@@ -304,6 +306,36 @@ async def api_version() -> VersionInfo:
     return VersionInfo(branch=branch, sha=sha, short_sha=sha[:8], dirty=dirty)
 
 
+# ─── Diagnostics ─────────────────────────────────────────────────────────
+
+
+def _diagnostics_filename(zone_domain: str) -> str:
+    """Build a safe, timestamped filename for a downloaded diagnostics bundle."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    # zone_domain may contain a ':<port>' and dots; keep only filename-safe chars.
+    safe_zone = "".join(c if c.isalnum() or c in "-." else "_" for c in zone_domain) or "openhost"
+    return f"openhost-diagnostics-{safe_zone}-{stamp}.json"
+
+
+@get("/api/diagnostics", guards=[require_owner_auth])
+async def api_diagnostics(
+    db: sqlite3.Connection, config: Config, download: bool = False
+) -> Response[PlatformDiagnostics]:
+    """Return a full instance diagnostics bundle for debugging.
+
+    Includes the OpenHost git checkout, host OS/Python/dependency versions,
+    container runtime info, disk usage, and a summary of every installed app.
+
+    ``?download=1`` adds a Content-Disposition header so browsers save the JSON
+    to a timestamped file instead of rendering it inline.
+    """
+    diagnostics = await collect_platform_diagnostics(db, config)
+    headers = None
+    if download:
+        headers = {"Content-Disposition": f'attachment; filename="{_diagnostics_filename(config.zone_domain)}"'}
+    return Response(content=diagnostics, status_code=200, media_type=MediaType.JSON, headers=headers)
+
+
 @post("/restart_router", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
 def restart_router() -> OkResponse:
     """Restart the router systemd service to pick up code changes."""
@@ -335,6 +367,7 @@ system_routes = Router(
         toggle_ssh,
         drop_docker_cache,
         api_version,
+        api_diagnostics,
         restart_router,
     ],
 )

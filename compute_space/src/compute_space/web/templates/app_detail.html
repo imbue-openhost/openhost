@@ -139,10 +139,30 @@
 <pre class="log-output" id="app-logs">{{ logs or "No log output available." }}</pre>
 
 <br>
-<div id="app-action-buttons" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+<style>
+  /* Keep the app action buttons on a single row. The full set (Stop / Reload /
+     Update & Reload / Copy Diagnostics / Edit / Remove / Remove & Data) is a
+     little wider than the 960px content column, which previously made it wrap
+     onto two lines. Slightly tighter padding + gap gets it close, and
+     nowrap + horizontal auto-scroll guarantees it stays on one line (scrolling
+     sideways in the rare case it still doesn't fit) rather than wrapping.
+     Scoped to this row so the global .btn sizing elsewhere is unchanged. */
+  #app-action-buttons {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+  }
+  #app-action-buttons .btn { padding: 0.4em 0.7em; flex: 0 0 auto; white-space: nowrap; }
+  #app-action-buttons #app-action-msg { flex: 0 0 auto; }
+</style>
+<div id="app-action-buttons">
   <button class="btn" onclick="appAction('/stop_app/{{ app.app_id }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', null, {label: 'Reloading'})">Reload App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
+  <button class="btn" id="copy-diagnostics-btn" onclick="copyAppDiagnostics(this)">Copy Diagnostics</button>
   {% if edit_app %}
     {% if edit_app.mode == 'service' %}
       <form method="POST" action="{{ edit_app.action }}" target="_blank" style="display:contents;">
@@ -154,8 +174,8 @@
       <a href="{{ edit_app.href }}" class="btn" target="_blank" rel="noopener">Edit App</a>
     {% endif %}
   {% endif %}
-  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('/remove_app/{{ app.app_id }}', {keep_data: true}, {isRemove: true, label: 'Removing (keeping data)'})">Remove App (Keep Data)</button>
-  <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('/remove_app/{{ app.app_id }}', {}, {isRemove: true, label: 'Removing'})">Remove App &amp; Data</button>
+  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('/remove_app/{{ app.app_id }}', {keep_data: true}, {isRemove: true, label: 'Removing (keeping data)'})">Remove (Keep Data)</button>
+  <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('/remove_app/{{ app.app_id }}', {}, {isRemove: true, label: 'Removing'})">Remove &amp; Data</button>
   <span id="app-action-msg" style="margin-left:0.5em;"></span>
 </div>
 
@@ -181,6 +201,42 @@ async function grantPermission(btn) {
     btn.textContent = 'Error';
     btn.disabled = false;
     alert('Failed to grant: ' + e.message);
+  }
+}
+
+// Fetch this app's diagnostics bundle and copy the JSON to the clipboard.
+// Uses the async Clipboard API where available, with a textarea fallback for
+// non-secure (plain-HTTP dev) contexts, mirroring the Diagnostics page.
+async function copyAppDiagnostics(btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Copying\u2026';
+  const restore = function(label) {
+    btn.textContent = label;
+    setTimeout(function() { btn.textContent = original; btn.disabled = false; }, 1500);
+  };
+  try {
+    const resp = await fetch('/api/app_diagnostics/{{ app.app_id }}');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const text = JSON.stringify(data, null, 2);
+    let copied = false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(text); copied = true; } catch (e) { copied = false; }
+    }
+    if (!copied) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+      document.body.removeChild(ta);
+    }
+    restore(copied ? 'Copied!' : 'Copy failed');
+  } catch (e) {
+    restore('Copy failed');
   }
 }
 </script>

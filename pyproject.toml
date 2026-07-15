@@ -70,6 +70,7 @@ addopts = "-p no:randomly -v"
 markers = [
     "requires_containers: needs --run-containers flag and a working rootless podman setup",
     "requires_tls: needs --run-tls flag, pebble, and coredns",
+    "real_collectors: opt out of the diagnostics network-collector stub (patches httpx directly)",
 ]
 
 [tool.ruff]
