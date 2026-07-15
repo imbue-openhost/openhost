@@ -15,6 +15,12 @@
 #                                  If omitted, the play generates a random
 #                                  token and prints the claim URL. Hand the
 #                                  URL to whoever will claim the instance.)
+#   -e relay_enroll=true          (relay-enrollment mode: the node fetches a
+#                                  WireGuard address + domain from the relay's
+#                                  /enroll endpoint and brings up the tunnel.
+#                                  Requires -e enroll_token=<token>; domain and
+#                                  public_ip come from the relay, so omit them.
+#                                  See tasks/relay_enroll.yml for the full options.)
 
 - name: Bootstrap host user
   hosts: all
@@ -56,6 +62,8 @@
     - import_tasks: tasks/pixi.yml
     - import_tasks: tasks/coredns.yml
       when: not (local_http_only | default(false) | bool)
+    - import_tasks: tasks/relay_enroll.yml
+      when: relay_enroll | default(false) | bool
     - import_tasks: tasks/write_openhost_config.yml
     - import_tasks: tasks/install_openhost_units.yml
     - import_tasks: tasks/restart_openhost_service.yml

@@ -62,6 +62,37 @@ version precedence: `openhost_branch` > `openhost_commit` > default `main`.
 | `cert_api_keycloak_client_id` | keycloak client id (required with `cert_api`) |
 | `cert_api_keycloak_client_secret` | keycloak client secret (required with `cert_api`) |
 
+### wireguard relay enrollment (opt-in)
+
+for a server on a private network to operate as a server, we set up a relay which
+exposes many public ips. this requires a token in `enroll_token`, which currently
+requires admin on the relay to obtain. from its `/enroll` endpoint on the relay,
+the openhost instance gets its `domain`, `public_ip`, and `coredns_bind_ip`, so
+these should **not** be passed.
+
+```bash
+ansible-playbook ansible/setup.yml -i <IP>, \
+  -e relay_enroll=true \
+  -e enroll_token=<bearer token> \
+  -e subdomain=node01 \
+  --private-key=~/.ssh/YOUR_SSH_KEY
+```
+
+| variable | default | purpose |
+|---|---|---|
+| `relay_enroll` | `false` | enable relay-enrollment mode |
+| `enroll_token` | *(required with `relay_enroll`)* | bearer token for the relay's `/enroll` (needs relay-admin rights to obtain; sensitive) |
+| `subdomain` | `""` | requested DNS label; empty → the relay assigns a random name |
+| `enroll_url` | production relay `/enroll` | override the relay endpoint |
+| `wg_interface` | `wg0` | WireGuard interface name |
+| `wg_table` | `51820` | policy routing table for the split tunnel |
+| `relay_enroll_debug` | `false` | reveal the `/enroll` request/response in logs (disables `no_log`) for first-run debugging |
+
+the tunnel is brought up before the openhost service starts, so openhost acquires
+its TLS cert on first boot (CoreDNS binds the tunnel address and answers the DNS-01
+challenge over the tunnel). the node's WireGuard private key is generated once and
+persisted at `/etc/wireguard/<interface>.key`, so re-runs reuse the same key.
+
 ## after setup
 
 ```bash

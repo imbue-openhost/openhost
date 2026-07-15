@@ -1,0 +1,164 @@
+---
+# Relay-enrollment mode (-e relay_enroll=true): a node on a private network reaches
+# out to the openhost relay's /enroll endpoint to obtain a WireGuard address and
+# a public domain, then brings up a split-tunnel WG interface.  The relay is
+# separate infrastructure this repo never touches.
+#
+# The /enroll response also supplies `domain`, `public_ip`, and `coredns_bind_ip`,
+# so those need NOT be passed on the command line in this mode -- they're set as
+# facts here and consumed by tasks/write_openhost_config.yml (via config.toml.j2).
+#
+# Ordering matters: this runs BEFORE the service starts so the tunnel is up when
+# openhost boots -- CoreDNS binds the tunnel address and the DNS-01 challenge is
+# reachable, which is what lets openhost acquire its TLS cert on first start.
+#
+# Required: -e relay_enroll=true
+#           -e enroll_token=<bearer token>   (admin-issued; sensitive)
+# Optional: -e subdomain=<label>             (empty -> relay assigns a random name)
+#           -e enroll_url=<url>              (default: production relay)
+#           -e wg_interface=wg0
+#           -e wg_table=51820
+
+# Fail fast with a clear message: a missing token would otherwise blow up inside
+# the no_log enroll task (censored), and passing domain/public_ip via -e would
+# silently override the values the relay returns (extra-vars outrank set_fact).
+- name: Validate relay-enrollment inputs
+  assert:
+    that:
+      - enroll_token is defined and (enroll_token | length > 0)
+      - domain is not defined
+      - public_ip is not defined
+    fail_msg: >-
+      relay_enroll mode needs -e enroll_token=<token>, and must NOT be given
+      -e domain / -e public_ip -- those come from the relay's /enroll response,
+      and extra-vars would silently override the fetched values.
+    quiet: yes
+
+- name: Install WireGuard
+  become: yes
+  become_user: root
+  apt:
+    name:
+      - wireguard
+      - wireguard-tools
+    state: present
+    update_cache: yes
+
+- name: Ensure /etc/wireguard exists
+  become: yes
+  become_user: root
+  file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Persist the node's private key so re-runs reuse it (the relay keeps the same
+# assignment for a resent public key) and we never rekey a working tunnel.
+- name: Check for an existing WireGuard private key
+  become: yes
+  become_user: root
+  stat:
+    path: "/etc/wireguard/{{ wg_interface | default('wg0') }}.key"
+  register: wg_key_stat
+
+- name: Generate a WireGuard private key
+  become: yes
+  become_user: root
+  shell: "umask 077 && wg genkey > /etc/wireguard/{{ wg_interface | default('wg0') }}.key"
+  when: not wg_key_stat.stat.exists
+
+- name: Read the WireGuard private key
+  become: yes
+  become_user: root
+  slurp:
+    src: "/etc/wireguard/{{ wg_interface | default('wg0') }}.key"
+  register: wg_private_key_raw
+  no_log: true
+
+- name: Derive the WireGuard public key
+  become: yes
+  become_user: root
+  shell: "wg pubkey < /etc/wireguard/{{ wg_interface | default('wg0') }}.key"
+  register: wg_public_key
+  changed_when: false
+
+- name: Enroll with the relay
+  become: yes
+  become_user: root
+  # Headers carry the bearer token, so suppress task logging by default.  Pass
+  # -e relay_enroll_debug=true to reveal the request/response when first-run
+  # debugging (e.g. an unreachable relay, whose error is otherwise censored).
+  no_log: "{{ not (relay_enroll_debug | default(false) | bool) }}"
+  uri:
+    url: "{{ enroll_url | default('https://proxy.openhost.imbue.com/enroll') }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ enroll_token }}"
+    body_format: json
+    body:
+      wg_public_key: "{{ wg_public_key.stdout | trim }}"
+      subdomain: "{{ subdomain | default('') }}"
+    # Accept the error codes too so a rejection/outage reaches the explicit
+    # fail task below with a clean message, instead of a censored uri failure.
+    status_code: [200, 400, 401, 403, 404, 409, 422, 429, 500, 502, 503]
+    return_content: yes
+  register: enroll_response
+
+- name: Fail if enrollment did not succeed
+  fail:
+    msg: >-
+      Relay enrollment failed (HTTP {{ enroll_response.status }}):
+      {{ (enroll_response.json | default({})).error
+         | default('status=' ~ ((enroll_response.json | default({})).status | default('unknown'))) }}
+  when: >-
+    enroll_response.status != 200
+    or (enroll_response.json | default({})).status | default('failed') != 'ok'
+
+- name: Record enrollment results
+  set_fact:
+    wg_address: "{{ enroll_response.json.address }}"
+    wg_node_ip: "{{ enroll_response.json.address.split('/')[0] }}"
+    wg_server_public_key: "{{ enroll_response.json.server_public_key }}"
+    wg_endpoint: "{{ enroll_response.json.endpoint }}"
+    wg_allowed_ips: "{{ enroll_response.json.allowed_ips }}"
+    wg_persistent_keepalive: "{{ enroll_response.json.persistent_keepalive }}"
+    # Consumed by config.toml.j2 (write_openhost_config.yml runs after this):
+    domain: "{{ enroll_response.json.domain }}"
+    public_ip: "{{ enroll_response.json.public_ip }}"
+    coredns_bind_ip: "{{ enroll_response.json.address.split('/')[0] }}"
+
+# Optional: honor a relay-supplied MTU if/when the /enroll API returns one, to
+# guard against PMTU black-holing of large inbound responses over the tunnel.
+- name: Record relay-supplied MTU
+  set_fact:
+    wg_mtu: "{{ enroll_response.json.mtu }}"
+  when: enroll_response.json.mtu is defined
+
+- name: Record the WireGuard private key
+  set_fact:
+    wg_private_key: "{{ wg_private_key_raw.content | b64decode | trim }}"
+  no_log: true
+
+- name: Render the WireGuard config
+  become: yes
+  become_user: root
+  no_log: true # contains the private key
+  template:
+    src: templates/wg.conf.j2
+    dest: "/etc/wireguard/{{ wg_interface | default('wg0') }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Enable and (re)start the WireGuard tunnel
+  become: yes
+  become_user: root
+  systemd:
+    name: "wg-quick@{{ wg_interface | default('wg0') }}"
+    enabled: yes
+    state: restarted
+    # wireguard-tools was just installed this run; reload so systemd sees the
+    # freshly-added wg-quick@.service template unit before we enable an instance.
+    daemon_reload: yes

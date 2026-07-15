@@ -1,0 +1,32 @@
+# WireGuard tunnel for openhost relay-enrollment mode.  Rendered by
+# ansible/tasks/relay_enroll.yml from the relay's /enroll response.
+#
+# Split-tunnel: `Table = off` plus policy routing (table {{ wg_table | default(51820) }})
+# so ONLY traffic sourced from the assigned tunnel address {{ wg_node_ip }} egresses
+# through the tunnel -- the node keeps its normal LAN default route and stays
+# locally reachable.  Inbound public traffic is DNATed to {{ wg_node_ip }} by the
+# relay (separate infrastructure), and the policy rule routes the replies back out
+# the tunnel.  The default route needs no next-hop: on a WireGuard interface the
+# peer is chosen by matching the packet's destination against AllowedIPs, not by
+# the route's gateway.  Mirrors the proven reference config (repo `temp`, "pi" side).
+[Interface]
+Address    = {{ wg_address }}
+PrivateKey = {{ wg_private_key }}
+Table      = off
+{% if wg_mtu is defined %}
+MTU        = {{ wg_mtu }}
+{% endif %}
+
+PostUp   = ip rule add from {{ wg_node_ip }} table {{ wg_table | default(51820) }}
+PostUp   = ip route add default dev %i table {{ wg_table | default(51820) }}
+PostUp   = sysctl -w net.ipv4.conf.all.rp_filter=2
+PostUp   = sysctl -w net.ipv4.conf.%i.rp_filter=2
+
+PostDown = ip rule del from {{ wg_node_ip }} table {{ wg_table | default(51820) }}
+PostDown = ip route del default dev %i table {{ wg_table | default(51820) }}
+
+[Peer]
+PublicKey           = {{ wg_server_public_key }}
+Endpoint            = {{ wg_endpoint }}
+AllowedIPs          = {{ wg_allowed_ips }}
+PersistentKeepalive = {{ wg_persistent_keepalive }}
