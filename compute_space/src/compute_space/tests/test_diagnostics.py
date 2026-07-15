@@ -1136,3 +1136,158 @@ def _seed_app_with_limits(db_path: str, name: str, *, memory_mb: int, cpu_cores:
     finally:
         db.close()
     return app_id
+
+
+# ─── additional unit coverage ────────────────────────────────────────────────
+
+
+def test_parse_stats_bytes_units_and_edges() -> None:
+    # Decimal (SI) vs binary (IEC) units.
+    assert diagnostics._parse_stats_bytes("1GB") == 1000**3
+    assert diagnostics._parse_stats_bytes("1GiB") == 1024**3
+    assert diagnostics._parse_stats_bytes("2TB") == 2 * 1000**4
+    assert diagnostics._parse_stats_bytes("0B") == 0
+    # Surrounding whitespace is tolerated.
+    assert diagnostics._parse_stats_bytes("  64MB  ") == 64 * 1000**2
+    # A bare number with no unit is treated as bytes (factor 1).
+    assert diagnostics._parse_stats_bytes("123") == 123
+    # Placeholder / junk tokens and non-strings degrade to None.
+    assert diagnostics._parse_stats_bytes("--") is None
+    assert diagnostics._parse_stats_bytes("garbage") is None
+    assert diagnostics._parse_stats_bytes(123) is None  # type: ignore[arg-type]
+
+
+def test_parse_stats_percent_edges() -> None:
+    assert diagnostics._parse_stats_percent("100.00%") == 100.0
+    assert diagnostics._parse_stats_percent("0%") == 0.0
+    # A number without the percent sign is still parsed.
+    assert diagnostics._parse_stats_percent("50") == 50.0
+    # Junk / non-string -> None.
+    assert diagnostics._parse_stats_percent("n/a") is None
+    assert diagnostics._parse_stats_percent(3.14) is None  # type: ignore[arg-type]
+
+
+def test_manifest_fields_parses_runtime_type() -> None:
+    version, runtime_type = diagnostics._manifest_fields(_MINIMAL_MANIFEST)
+    assert version is not None
+    assert runtime_type in ("serverfull", "serverless", None)
+
+
+def test_manifest_fields_empty_input() -> None:
+    assert diagnostics._manifest_fields(None) == (None, None)
+    assert diagnostics._manifest_fields("") == (None, None)
+
+
+def test_read_boot_time_returns_iso_or_none() -> None:
+    # On Linux CI this parses /proc/stat's btime into an ISO timestamp; the
+    # function must never raise and returns either an ISO string or None.
+    bt = diagnostics._read_boot_time()
+    assert bt is None or (isinstance(bt, str) and "T" in bt)
+
+
+def test_reachability_targets_dedupes_by_url(tmp_path: Path) -> None:
+    base = _make_test_config(tmp_path)
+    # Point the ACME directory at the same URL as a static target to force a
+    # collision, and confirm the assembled list has no duplicate URLs.
+    static_url = diagnostics._STATIC_REACHABILITY_TARGETS[0][1]
+    cfg = attr.evolve(
+        Config(**{f.name: getattr(base, f.name) for f in attr.fields(Config)}),
+        acme_directory_url=static_url,
+    )
+    targets = diagnostics._reachability_targets(cfg)
+    urls = [u for _, u in targets]
+    assert len(urls) == len(set(urls))
+
+
+def test_reachability_targets_include_configured_urls(tmp_path: Path) -> None:
+    base = _make_test_config(tmp_path)
+    cfg = attr.evolve(
+        Config(**{f.name: getattr(base, f.name) for f in attr.fields(Config)}),
+        my_openhost_redirect_domain="redirect.example.com",
+    )
+    labels = {label for label, _ in diagnostics._reachability_targets(cfg)}
+    assert "openhost_redirect" in labels
+    # cert_api is never probed regardless of config.
+    assert "cert_api" not in labels
+
+
+@pytest.mark.real_collectors
+def test_reachability_non_2xx_still_reachable(tmp_path: Path) -> None:
+    """Any HTTP response (even 4xx/5xx) means DNS+TCP+TLS worked, so the target
+    is reachable; only transport errors mark it unreachable."""
+    real = Config(**{f.name: getattr(_make_test_config(tmp_path), f.name) for f in attr.fields(Config)})
+
+    class _Client:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def get(self, url: str) -> Any:
+            return _FakeResp(503)
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _Client):
+        results = asyncio.run(diagnostics._collect_reachability(real))
+    assert results
+    assert all(r.reachable for r in results)
+    assert all(r.status_code == 503 for r in results)
+
+
+@pytest.mark.real_collectors
+def test_reachability_collection_never_raises(tmp_path: Path) -> None:
+    """A client that blows up on construction degrades to an empty list rather
+    than propagating (diagnostics must not fail because a probe misbehaves)."""
+    real = Config(**{f.name: getattr(_make_test_config(tmp_path), f.name) for f in attr.fields(Config)})
+
+    def _boom(**_: Any) -> Any:
+        raise RuntimeError("client init failed")
+
+    with patch("compute_space.core.diagnostics.httpx.AsyncClient", _boom):
+        results = asyncio.run(diagnostics._collect_reachability(real))
+    assert results == []
+
+
+def test_app_resources_memusage_without_slash(cfg: Any) -> None:
+    """A MemUsage string without ' / ' leaves the byte fields None but still
+    reports running with the manifest limits."""
+    stats = json.dumps([{"CPU": "1.0%", "MemUsage": "10MB", "MemPerc": "5%"}])
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=stats, stderr="")
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
+        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+    ):
+        r = diagnostics._collect_app_resources("cid", 0.5, 128)
+    assert r.running is True
+    assert r.cpu_percent == 1.0
+    assert r.memory_usage_bytes is None
+    assert r.memory_limit_bytes is None
+
+
+def test_app_resources_unexpected_stats_shape(cfg: Any) -> None:
+    """A non-list, non-dict stats payload degrades to an error, not a crash."""
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout='"a string"', stderr="")
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
+        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+    ):
+        r = diagnostics._collect_app_resources("cid", 0.5, 128)
+    assert r.running is False
+    assert r.error is not None
+
+
+def test_app_resources_non_json_stats(cfg: Any) -> None:
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="not json", stderr="")
+    with (
+        patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
+        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+    ):
+        r = diagnostics._collect_app_resources("cid", 0.5, 128)
+    assert r.running is False
+    assert "non-JSON" in (r.error or "")
