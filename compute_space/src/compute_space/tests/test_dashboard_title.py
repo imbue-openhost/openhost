@@ -27,6 +27,7 @@ from compute_space.db import provide_db
 from compute_space.db.connection import init_db
 from compute_space.web.app import _template_globals
 from compute_space.web.routes.pages.apps import dashboard
+from compute_space.web.routes.pages.settings import settings_page
 
 from ._litestar_helpers import auth_cookie
 from ._litestar_helpers import seed_user
@@ -51,7 +52,7 @@ def cfg(tmp_path: Path) -> Iterator[Any]:
 
 
 def _build_app(cfg: Any) -> Litestar:
-    """A minimal app with the real dashboard route + Jinja globals installed."""
+    """A minimal app with the real dashboard + settings routes and Jinja globals installed."""
     web_dir = Path(__file__).resolve().parents[1] / "web"
     template_config: TemplateConfig[JinjaTemplateEngine] = TemplateConfig(
         directory=web_dir / "templates",
@@ -64,7 +65,7 @@ def _build_app(cfg: Any) -> Litestar:
             engine.engine.globals.update(_template_globals(cfg, web_dir / "static"))
 
     app = Litestar(
-        route_handlers=[dashboard],
+        route_handlers=[dashboard, settings_page],
         template_config=template_config,
         dependencies={
             "config": Provide(provide_config, sync_to_thread=False),
@@ -88,8 +89,8 @@ def test_heading_uses_zone_name_when_no_username(cfg: Any) -> None:
     with TestClient(app=_build_app(cfg)) as client:
         resp = client.get("/dashboard", cookies=cookie)
     assert resp.status_code == 200
-    assert "alice-zone's Private Compute Space" in resp.text
-    assert "owner's Private Compute Space" not in resp.text
+    assert "alice-zone's personal compute space" in resp.text
+    assert "owner's personal compute space" not in resp.text
 
 
 def test_heading_uses_owner_username_when_set(cfg: Any) -> None:
@@ -100,13 +101,13 @@ def test_heading_uses_owner_username_when_set(cfg: Any) -> None:
     with TestClient(app=_build_app(cfg)) as client:
         resp = client.get("/dashboard", cookies=cookie)
     assert resp.status_code == 200
-    assert "alice's Private Compute Space" in resp.text
+    assert "alice's personal compute space" in resp.text
     # The zone subdomain must no longer drive the heading.
-    assert "alice-zone's Private Compute Space" not in resp.text
+    assert "alice-zone's personal compute space" not in resp.text
 
 
-def test_dashboard_renders_logout_button(cfg: Any) -> None:
-    """The shared layout nav exposes a Log out control that POSTs to /logout.
+def test_settings_renders_logout_button(cfg: Any) -> None:
+    """The settings page exposes a Log out control that POSTs to /logout.
 
     The session cookie is httponly, so logout must round-trip through the
     server; a top-level form POST (samesite=lax) is the correct mechanism.
@@ -115,11 +116,14 @@ def test_dashboard_renders_logout_button(cfg: Any) -> None:
     cookie = auth_cookie(cfg, username="owner")
 
     with TestClient(app=_build_app(cfg)) as client:
-        resp = client.get("/dashboard", cookies=cookie)
-    assert resp.status_code == 200
-    assert 'action="/logout"' in resp.text
-    assert 'method="post"' in resp.text
-    assert "Log out" in resp.text
+        settings_resp = client.get("/settings", cookies=cookie)
+        dashboard_resp = client.get("/dashboard", cookies=cookie)
+    assert settings_resp.status_code == 200
+    assert 'action="/logout"' in settings_resp.text
+    assert 'method="post"' in settings_resp.text
+    assert "Log out" in settings_resp.text
+    # The control lives only on the settings page, not in the shared nav.
+    assert "Log out" not in dashboard_resp.text
 
 
 def test_owner_name_global_reads_live(cfg: Any) -> None:

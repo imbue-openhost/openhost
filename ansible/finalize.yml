@@ -1,0 +1,32 @@
+---
+# Finalize a warm-pool host: the domain-dependent last mile only.
+#
+# Runs against a host that prebake.yml (or `setup.yml -e skip_service_start=true`)
+# already baked — user, packages, docker, code, pixi env, and the systemd unit
+# files are all in place. All this play does is render config.toml with the real
+# domain + cert creds, write the claim token, and start the service. That's a
+# few seconds instead of re-walking the whole apt/docker/pixi setup.
+#
+# Usage: ansible-playbook ansible/finalize.yml -i <IP>, -e domain=<domain>
+#
+# The trailing comma after the IP is required (tells ansible it's a host list).
+#
+# Extra-vars (same names setup.yml accepts, so vm-manager passes them unchanged):
+#   -e domain=host.example.com     (required)
+#   -e public_ip=1.2.3.4           (defaults to target IP)
+#   -e claim_token=<secret>        (gates /setup; random if omitted)
+#   -e cert_provider=cert_api      (+ cert_api_keycloak_issuer_url,
+#                                     cert_api_keycloak_client_id,
+#                                     cert_api_keycloak_client_secret,
+#                                     optional cert_api_base_url)
+#
+# Leave skip_service_start unset/false so the service actually starts.
+
+- name: Finalize OpenHost (domain-dependent last mile)
+  hosts: all
+  user: host
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - import_tasks: tasks/write_openhost_config.yml
+    - import_tasks: tasks/restart_openhost_service.yml

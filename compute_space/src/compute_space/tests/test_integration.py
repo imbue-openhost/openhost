@@ -184,23 +184,6 @@ class TestRouterCore:
         assert data["status"] == "ok"
         assert "security" not in data
 
-    def test_post_setup_security_audit(self, admin_session, config):
-        """Post-setup audit returns valid structure from /api/security-audit."""
-        base_url = _zone_url(config)
-        r = admin_session.get(f"{base_url}/api/security-audit")
-        assert r.status_code == 200
-        data = r.json()
-        assert isinstance(data["secure"], bool)
-        expected_checks = {
-            "ssh_password_disabled",
-            "tls_active",
-            "no_unexpected_ports",
-        }
-        assert set(data["checks"].keys()) == expected_checks
-        for name, check in data["checks"].items():
-            assert isinstance(check["ok"], bool), f"{name}: ok not bool"
-            assert isinstance(check["detail"], str), f"{name}: detail not str"
-
     def test_dashboard_requires_auth(self, admin_session, config):
         """Unauthenticated requests to /dashboard redirect to /login."""
         base_url = _zone_url(config)
@@ -227,10 +210,8 @@ class TestRouterCore:
         r = admin_session.get(f"{base_url}/dashboard")
         assert r.status_code == 200
         assert "Deployed Apps" in r.text
-        # Security audit, storage status, and SSH toggle live on the System page,
-        # not the dashboard.
+        # Storage status and SSH toggle live on the System page, not the dashboard.
         for system_only_element in (
-            'id="security-table"',
             'id="storage-table"',
             'id="ports-table"',
             'id="ssh-btn"',
@@ -251,25 +232,29 @@ class TestRouterCore:
         base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/system/")
         assert r.status_code == 200
-        assert 'id="security-table"' in r.text
         assert 'id="ports-table"' in r.text
         assert 'id="storage-table"' in r.text
         assert 'id="cs-logs"' in r.text
+        assert 'id="security-table"' not in r.text
 
     def test_listening_ports_endpoint(self, admin_session, config):
-        """GET /api/listening-ports returns a list of classified ports."""
+        """GET /api/listening-ports returns classified external-facing ports."""
         base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/api/listening-ports")
         assert r.status_code == 200
         data = r.json()
         assert "ports" in data
         assert isinstance(data["ports"], list)
-        # Each entry must have the expected shape.
+        # True on hosts without ``ss`` (e.g. macOS dev machines); the filter still applies.
+        assert isinstance(data["enumeration_failed"], bool)
+        # Each entry must have the expected shape, and loopback-only listeners are excluded.
         for entry in data["ports"]:
             assert isinstance(entry["port"], int)
             assert isinstance(entry["address"], str)
             assert entry["classification"] in {"secure", "app_range", "allocated", "unexpected"}
             assert isinstance(entry["label"], str)
+            host = entry["address"].rsplit(":", 1)[0].strip("[]")
+            assert host != "::1" and not host.startswith("127."), entry
 
     def test_setup_returns_403_if_already_set_up(self, admin_session, config):
         """GET /setup returns 403 when owner already exists."""
@@ -289,17 +274,15 @@ class TestRouterCore:
         assert r.status_code == 403
         assert "already been set up" in r.text
 
-    def test_add_app_page_hides_hidden_builtin_apps(self, admin_session, config):
-        """Apps with hidden=true in their manifest must not appear on the Deploy page."""
+    def test_add_app_page_shows_catalog_callout(self, admin_session, config):
+        """The Deploy page points at the app catalog instead of listing builtin apps."""
         base_url = _zone_url(config)
         r = admin_session.get(f"{base_url}/add_app")
         assert r.status_code == 200
-        # test_app has hidden = true — it must not show up
+        assert "Explore the App Catalog" in r.text
+        assert "Deploy from Git URL" in r.text
+        assert "Available Built-in Apps" not in r.text
         assert "test_app" not in r.text
-        # Non-hidden apps should still be listed (pick one that definitely exists)
-        assert "file_browser" in r.text or "oauth" in r.text, (
-            "Expected at least one non-hidden builtin app on the Deploy page"
-        )
 
     def test_add_app_no_url(self, admin_session, config):
         base_url = _zone_url(config)

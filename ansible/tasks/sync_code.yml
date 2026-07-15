@@ -1,14 +1,17 @@
 ---
-# Clone repo from GitHub and optionally checkout a specific commit.
-# Pass -e openhost_commit=<sha> to pin a specific version.
+# Clone repo from GitHub and checkout a specific ref (branch, tag, or commit).
+# Pass -e openhost_branch=<branch> to deploy a branch (e.g. samuel/arm-support).
+# Pass -e openhost_commit=<sha> to pin an exact commit (used when
+#   openhost_branch is not set).
 # Pass -e openhost_refspec=<ref> to also fetch a ref that the commit lives on
-# (e.g. refs/pull/N/merge), for commits not reachable from any branch.
+#   (e.g. refs/pull/N/merge), for commits not reachable from any branch.
+# Precedence: openhost_branch > openhost_commit > main.
 
 - name: Clone or update openhost repo
   ansible.builtin.git:
     repo: https://github.com/imbue-openhost/openhost.git
     dest: /home/host/openhost
-    version: "{{ openhost_commit | default('main') }}"
+    version: "{{ openhost_branch | default(openhost_commit | default('main'), true) }}"
     refspec: "{{ openhost_refspec | default(omit) }}"
     force: true
 

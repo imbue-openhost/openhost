@@ -9,7 +9,7 @@ from datetime import timedelta
 import attr
 import bcrypt
 
-SESSION_TTL_SECONDS = 7 * 24 * 60 * 60  # one week
+SESSION_TTL_SECONDS = 28 * 24 * 60 * 60  # four weeks
 SESSION_COOKIE_NAME = "session_token"
 
 # Lowercase alphanumeric + dots/underscores/hyphens, starting with an alphanumeric.
@@ -90,8 +90,11 @@ def validate_password(password: str, db: sqlite3.Connection) -> int | None:
 
 
 def create_session(user_id: int, db: sqlite3.Connection) -> str:
+    now = datetime.now(UTC)
+    # Sweep expired tokens
+    db.execute("DELETE FROM sessions WHERE datetime(expires_at) < datetime(?)", (now.isoformat(),))
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(seconds=SESSION_TTL_SECONDS)
+    expires_at = now + timedelta(seconds=SESSION_TTL_SECONDS)
     db.execute(
         "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
         (_hash(token), user_id, expires_at.isoformat()),

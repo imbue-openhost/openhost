@@ -1,7 +1,16 @@
+let pageHidden = false;
+window.addEventListener('pagehide', () => { pageHidden = true; });
+
 function showError(msg) {
-  const el = document.getElementById('error');
-  el.textContent = msg;
-  el.style.display = '';
+  // Deferred: navigating away aborts in-flight fetches, whose catch handlers
+  // would otherwise flash this banner during page teardown. Timers don't run
+  // once the page is gone, and pageHidden covers the bfcache edge.
+  setTimeout(() => {
+    if (pageHidden) return;
+    const el = document.getElementById('error');
+    el.textContent = msg;
+    el.style.display = '';
+  }, 100);
 }
 function clearError() { document.getElementById('error').style.display = 'none'; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
@@ -15,7 +24,8 @@ async function checkForUpdates() {
     const resp = await fetch('/api/settings/update');
     if (!resp.ok) {
       const err = await resp.json();
-      el.innerHTML = '<p class="error">Repo is in an invalid state for updating (no .git perhaps?): ' + esc(err.detail || '') + '</p>'
+      el.innerHTML = '<p class="error">Repo is in an invalid state for updating (no .git perhaps?)</p>'
+        + (err.detail ? '<div class="error-inline">' + esc(err.detail) + '</div>' : '')
         + '<button onclick="checkForUpdates()" class="btn" style="margin-top:0.5em;">Retry</button>';
       return;
     }
@@ -26,13 +36,15 @@ async function checkForUpdates() {
     if (data.state === 'UP_TO_DATE') {
       el.innerHTML = '<p style="color:#080;">Up to date.</p>' + checkAgainBtn;
     } else if (data.state === 'UPDATE_AVAILABLE') {
-      const notice = data.error ? '<p class="error">' + esc(data.error) + '</p>' : '';
+      const notice = data.error ? '<div class="error-inline">' + esc(data.error) + '</div>' : '';
       el.innerHTML = '<p>Updates available.</p>'
         + notice
-        + '<button onclick="applyUpdate()" class="btn btn-primary">Update &amp; restart</button> '
+        + '<button onclick="applyUpdate()" class="btn btn-primary" style="margin-top:0.5em;">Update &amp; restart</button> '
         + checkAgainBtn;
     } else if (data.state === 'ERROR') {
-      el.innerHTML = '<p class="error">' + esc(data.error || 'Unknown error') + '</p>' + checkAgainBtn;
+      el.innerHTML = '<p class="error">Update check failed.</p>'
+        + '<div class="error-inline">' + esc(data.error || 'Unknown error') + '</div>'
+        + checkAgainBtn;
     }
   } catch (e) {
     showError('Failed to check for updates: ' + e.message);
@@ -120,7 +132,11 @@ async function loadRemote() {
       btn.disabled = input.value.trim() === savedRemote;
     });
   } catch (e) {
-    input.placeholder = 'Failed to load remote';
+    input.placeholder = '';
+    const msg = document.getElementById('remote-msg');
+    msg.textContent = 'Failed to load current remote. Reload the page to retry.';
+    msg.className = 'error';
+    msg.style.display = '';
   }
 }
 
@@ -398,7 +414,7 @@ function renderArchiveBackend(state) {
   var el = document.getElementById('archive-backend-status');
   var rows = '';
   if (state.backend === 's3') {
-    rows += '<tr><th class="label-col">Backend</th>'
+    rows += '<tr><th>Backend</th>'
       + '<td><span class="status-running">S3 (JuiceFS)</span>'
       + (state.state_message ? ' <span class="error">' + escSettingsHtml(state.state_message) + '</span>' : '')
       + '</td></tr>';
@@ -429,7 +445,7 @@ function renderArchiveBackend(state) {
     }
     rows += '<tr><th>Latest meta dump</th><td>' + dumpLine + '</td></tr>';
   } else {
-    rows += '<tr><th class="label-col">Backend</th>'
+    rows += '<tr><th>Backend</th>'
       + '<td><span class="status-stopped">not configured</span></td></tr>';
   }
 
@@ -439,17 +455,12 @@ function renderArchiveBackend(state) {
       + 'Filename-to-S3-chunk mappings live in a SQLite metadata DB on this zone’s local disk; '
       + 'recovery after the local disk is wiped requires the latest meta dump in S3 plus a manual <code>juicefs load</code>.</p>';
   }
-  var disabledNote = '';
   var configureBtn = '';
   if (state.backend === 'disabled') {
-    disabledNote = '<p class="hint"><strong>No archive backend configured.</strong> '
-      + 'Apps that opt into the <code>app_archive</code> data tier (such as Immich) will refuse to install until S3 storage is configured below. Apps that don’t use the archive tier are unaffected. '
-      + '<strong>This is a one-time setup; reconfiguration is not supported.</strong></p>';
     configureBtn = '<div class="control-row"><button class="btn" id="archive-backend-configure-btn">Configure S3 backend…</button></div>';
   }
 
-  el.innerHTML = '<table id="archive-backend-table"><tbody>' + rows + '</tbody></table>'
-    + disabledNote
+  el.innerHTML = '<table id="archive-backend-table" class="form-table"><tbody>' + rows + '</tbody></table>'
     + experimentalNote
     + configureBtn
     + '<div id="archive-backend-form" hidden></div>';

@@ -9,13 +9,6 @@ from compute_space.core.tls.util import load_account_key
 GTS_PRODUCTION = "https://dv.acme-v02.api.pki.goog/directory"
 
 
-def check_if_cert_exists(cert_path: Path, key_path: Path) -> bool:
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        logger.info(f"Using existing TLS cert from {cert_path}")
-        return True
-    return False
-
-
 def write_cert_and_key(cert_path: Path, key_path: Path, cert_pem: bytes, key_pem: bytes) -> None:
     """Write the cert chain and private key to disk, locking the key to 0600.
 
