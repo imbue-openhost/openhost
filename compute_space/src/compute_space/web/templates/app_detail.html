@@ -143,7 +143,7 @@
   <button class="btn" onclick="appAction('/stop_app/{{ app.app_id }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', null, {label: 'Reloading'})">Reload App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
-  <a class="btn" href="/api/app_diagnostics/{{ app.app_id }}?download=1">Download Diagnostics</a>
+  <button class="btn" id="copy-diagnostics-btn" onclick="copyAppDiagnostics(this)">Copy Diagnostics</button>
   {% if edit_app %}
     {% if edit_app.mode == 'service' %}
       <form method="POST" action="{{ edit_app.action }}" target="_blank" style="display:contents;">
@@ -182,6 +182,42 @@ async function grantPermission(btn) {
     btn.textContent = 'Error';
     btn.disabled = false;
     alert('Failed to grant: ' + e.message);
+  }
+}
+
+// Fetch this app's diagnostics bundle and copy the JSON to the clipboard.
+// Uses the async Clipboard API where available, with a textarea fallback for
+// non-secure (plain-HTTP dev) contexts, mirroring the Diagnostics page.
+async function copyAppDiagnostics(btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Copying\u2026';
+  const restore = function(label) {
+    btn.textContent = label;
+    setTimeout(function() { btn.textContent = original; btn.disabled = false; }, 1500);
+  };
+  try {
+    const resp = await fetch('/api/app_diagnostics/{{ app.app_id }}');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const text = JSON.stringify(data, null, 2);
+    let copied = false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(text); copied = true; } catch (e) { copied = false; }
+    }
+    if (!copied) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+      document.body.removeChild(ta);
+    }
+    restore(copied ? 'Copied!' : 'Copy failed');
+  } catch (e) {
+    restore('Copy failed');
   }
 }
 </script>
