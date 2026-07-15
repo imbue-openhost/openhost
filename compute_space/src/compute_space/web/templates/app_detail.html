@@ -139,7 +139,16 @@
 <pre class="log-output" id="app-logs">{{ logs or "No log output available." }}</pre>
 
 <br>
-<div id="app-action-buttons" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+<style>
+  /* Keep the app action buttons on a single row in the standard content
+     column. They still wrap on genuinely narrow (mobile) viewports rather than
+     overflowing, but the slightly tighter padding + gap lets the full set fit
+     one line at the normal desktop width instead of spilling onto two. Scoped
+     to this row so the global .btn sizing elsewhere is unchanged. */
+  #app-action-buttons { gap: 0.4rem; }
+  #app-action-buttons .btn { padding: 0.4em 0.6em; }
+</style>
+<div id="app-action-buttons" style="display: flex; align-items: center; flex-wrap: wrap;">
   <button class="btn" onclick="appAction('/stop_app/{{ app.app_id }}', null, {label: 'Stopping'})">Stop App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', null, {label: 'Reloading'})">Reload App</button>
   <button class="btn" onclick="appAction('/reload_app/{{ app.app_id }}', {update: true}, {label: 'Updating &amp; reloading'})">Update &amp; Reload</button>
