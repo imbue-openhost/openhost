@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import signal
 import socket
 import sqlite3
@@ -20,6 +21,8 @@ from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
 from compute_space.core.logging import logger
 from compute_space.core.logging import setup_file_logging
+from compute_space.core.pinned_binary import get_pinned_binary
+from compute_space.core.pinned_binary import install_pinned_binary
 from compute_space.core.terminal import cleanup_all as cleanup_terminal_sessions
 from compute_space.core.tls.provision import provision_cert
 from compute_space.core.tls.renewal import CertStatus
@@ -86,6 +89,26 @@ def _ensure_tls_cert(config: Config) -> None:
         provision_cert(config)
 
 
+def _ensure_coredns_binary(config: Config) -> str:
+    """Return the CoreDNS binary to launch, self-healing a missing one.
+
+    Provisioning installs CoreDNS at /usr/local/bin/coredns (on the service
+    PATH).  Hosts upgraded in place can lose it -- it used to come from pixi,
+    which no longer ships it -- leaving ``coredns`` on no PATH directory and
+    crashing startup.  When that happens, download the pinned release (same
+    version as ansible/tasks/coredns.yml) into the data dir and launch it by
+    absolute path.  Binding :53 works without setcap thanks to the provisioned
+    net.ipv4.ip_unprivileged_port_start=25 sysctl.
+    """
+    found = shutil.which("coredns")
+    if found:
+        return found
+    dest = str(config.openhost_data_path / "coredns")
+    logger.warning(f"coredns not found on PATH; installing pinned release to {dest}")
+    install_pinned_binary(get_pinned_binary("coredns"), dest)
+    return dest
+
+
 def main() -> None:
     # Allow group members to write files/dirs we create (files 664, dirs 775).
     os.umask(0o002)
@@ -100,7 +123,11 @@ def main() -> None:
             raise RuntimeError("Public IP must be set in config to use CoreDNS")
         children.append(
             start_coredns(
-                config.zone_domain, config.public_ip, config.coredns_corefile_path, config.coredns_zonefile_path
+                config.zone_domain,
+                config.public_ip,
+                config.coredns_corefile_path,
+                config.coredns_zonefile_path,
+                coredns_bin=_ensure_coredns_binary(config),
             )
         )
 
