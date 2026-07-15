@@ -30,9 +30,7 @@ _PODMAN_TIMEOUT = 120
 
 
 def _podman(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["podman", *args], capture_output=True, text=True, timeout=_PODMAN_TIMEOUT, check=check
-    )
+    return subprocess.run(["podman", *args], capture_output=True, text=True, timeout=_PODMAN_TIMEOUT, check=check)
 
 
 def _free_port() -> int:
@@ -48,6 +46,19 @@ def _wait_running(container_id: str, timeout: float = 30.0) -> None:
             return
         time.sleep(0.5)
     raise AssertionError(f"container {container_id} did not reach running within {timeout}s")
+
+
+def _wait_http_ready(port: int, timeout: float = 30.0) -> None:
+    """Wait until the container's in-process http.server has actually bound the
+    port (a container reporting 'running' doesn't mean the server is serving
+    yet). Probes '/' until the health check reports the app up."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        h = asyncio.run(diagnostics._collect_app_health(port, "/"))
+        if h.checked and h.healthy:
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"http server on :{port} did not become ready within {timeout}s")
 
 
 @pytest.fixture
@@ -158,15 +169,8 @@ def test_app_resources_stopped_container_not_running(http_container: tuple[str, 
 def test_app_health_healthy_against_real_server(http_container: tuple[str, int]) -> None:
 
     _, port = http_container
-    # http.server may take a moment to bind after the container is "running".
-    deadline = time.monotonic() + 20
-    health = None
-    while time.monotonic() < deadline:
-        health = asyncio.run(diagnostics._collect_app_health(port, "/"))
-        if health.checked and health.healthy:
-            break
-        time.sleep(0.5)
-    assert health is not None
+    _wait_http_ready(port)
+    health = asyncio.run(diagnostics._collect_app_health(port, "/"))
     assert health.checked is True
     assert health.healthy is True
     assert health.status_code is not None and health.status_code < 500
@@ -188,6 +192,7 @@ def test_app_health_unhealthy_on_dead_port() -> None:
 def test_app_health_custom_path_normalized(http_container: tuple[str, int]) -> None:
 
     _, port = http_container
+    _wait_http_ready(port)
     # A missing-leading-slash path is normalized; a 404 is still "healthy"
     # (any status < 500 means the app is up and answering).
     health = asyncio.run(diagnostics._collect_app_health(port, "healthz"))
