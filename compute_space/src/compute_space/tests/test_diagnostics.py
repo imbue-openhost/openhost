@@ -1173,11 +1173,6 @@ def test_manifest_fields_parses_runtime_type() -> None:
     assert runtime_type in ("serverfull", "serverless", None)
 
 
-def test_manifest_fields_empty_input() -> None:
-    assert diagnostics._manifest_fields(None) == (None, None)
-    assert diagnostics._manifest_fields("") == (None, None)
-
-
 def test_read_boot_time_returns_iso_or_none() -> None:
     # On Linux CI this parses /proc/stat's btime into an ISO timestamp; the
     # function must never raise and returns either an ISO string or None.

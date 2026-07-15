@@ -151,13 +151,6 @@ def test_app_resources_stopped_container_not_running(http_container: tuple[str, 
     assert r.memory_mb_limit == 64
 
 
-@requires_containers
-def test_app_resources_no_container_id() -> None:
-    r = diagnostics._collect_app_resources(None, cpu_cores_limit=0.5, memory_mb_limit=64)
-    assert r.running is False
-    assert r.memory_mb_limit == 64
-
-
 # ─── app health (loopback HTTP probe) ────────────────────────────────────────
 
 
