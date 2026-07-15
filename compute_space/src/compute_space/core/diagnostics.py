@@ -37,6 +37,7 @@ import httpx
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
+from compute_space.core.containers import is_container_running
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import get_remote_url
@@ -521,6 +522,14 @@ def _collect_app_resources(
         return base
     if shutil.which("podman") is None:
         return attr.evolve(base, error="podman not found on PATH")
+    # Determine "running" authoritatively from the container's actual state
+    # rather than from whether ``podman stats`` returned data: on current podman
+    # ``stats --no-stream`` exits 0 and emits a zero-valued entry even for an
+    # *exited* container, which would otherwise be reported as running=True with
+    # 0% CPU / 0 B memory — misleading in a report whose job is to debug a down
+    # app (e.g. a container that crashed while the DB row still says "running").
+    if not is_container_running(container_id):
+        return base
     try:
         proc = subprocess.run(
             ["podman", "stats", "--no-stream", "--format", "json", container_id],

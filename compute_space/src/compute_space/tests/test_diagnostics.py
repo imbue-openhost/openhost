@@ -624,6 +624,7 @@ def test_collect_app_resources_running_parses_stats() -> None:
     fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=stats, stderr="")
     with (
         patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
         patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
     ):
         r = diagnostics._collect_app_resources("cid123", 0.5, 128)
@@ -634,20 +635,28 @@ def test_collect_app_resources_running_parses_stats() -> None:
     assert r.memory_percent == 50.0
 
 
-def test_collect_app_resources_not_running_when_nonzero() -> None:
-    fake = subprocess.CompletedProcess(args=[], returncode=125, stdout="", stderr="no such container")
+def test_collect_app_resources_not_running_when_container_stopped() -> None:
+    # An exited container is reported as not-running WITHOUT invoking stats:
+    # podman stats emits a zero-valued entry for a stopped container, so we
+    # trust the authoritative container-state check instead.
     with (
         patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
-        patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=False),
+        patch("compute_space.core.diagnostics.subprocess.run") as run_mock,
     ):
         r = diagnostics._collect_app_resources("cid123", 0.5, 128)
     assert r.running is False
     assert r.error is None
+    assert r.cpu_cores_limit == 0.5
+    assert r.memory_mb_limit == 128
+    # stats must not be probed once the container is known to be stopped.
+    run_mock.assert_not_called()
 
 
 def test_collect_app_resources_stats_timeout() -> None:
     with (
         patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
         patch(
             "compute_space.core.diagnostics.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="podman", timeout=10),
@@ -916,6 +925,7 @@ def test_stats_subprocess_uses_bounded_timeout() -> None:
 
     with (
         patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
         patch("compute_space.core.diagnostics.subprocess.run", _fake_run),
     ):
         diagnostics._collect_app_resources("cid", 0.5, 128)
@@ -1009,14 +1019,15 @@ def _stats_run(stdout: str) -> Any:
     fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
     return (
         patch("compute_space.core.diagnostics.shutil.which", return_value="/usr/bin/podman"),
+        patch("compute_space.core.diagnostics.is_container_running", return_value=True),
         patch("compute_space.core.diagnostics.subprocess.run", return_value=fake),
     )
 
 
 def test_stats_dict_shape_not_list() -> None:
     # Some podman versions emit a bare object rather than a list.
-    which_p, run_p = _stats_run(json.dumps({"CPU": "5.0%", "MemUsage": "10MB / 100MB", "MemPerc": "10%"}))
-    with which_p, run_p:
+    which_p, running_p, run_p = _stats_run(json.dumps({"CPU": "5.0%", "MemUsage": "10MB / 100MB", "MemPerc": "10%"}))
+    with which_p, running_p, run_p:
         r = diagnostics._collect_app_resources("cid", 1.0, 100)
     assert r.running is True
     assert r.cpu_percent == 5.0
@@ -1024,15 +1035,15 @@ def test_stats_dict_shape_not_list() -> None:
 
 
 def test_stats_empty_list_is_not_running() -> None:
-    which_p, run_p = _stats_run("[]")
-    with which_p, run_p:
+    which_p, running_p, run_p = _stats_run("[]")
+    with which_p, running_p, run_p:
         r = diagnostics._collect_app_resources("cid", 1.0, 100)
     assert r.running is False
 
 
 def test_stats_missing_memusage_leaves_bytes_none() -> None:
-    which_p, run_p = _stats_run(json.dumps([{"CPU": "7.5%"}]))
-    with which_p, run_p:
+    which_p, running_p, run_p = _stats_run(json.dumps([{"CPU": "7.5%"}]))
+    with which_p, running_p, run_p:
         r = diagnostics._collect_app_resources("cid", 1.0, 100)
     assert r.running is True
     assert r.cpu_percent == 7.5
@@ -1041,8 +1052,8 @@ def test_stats_missing_memusage_leaves_bytes_none() -> None:
 
 
 def test_stats_dashes_render_as_none() -> None:
-    which_p, run_p = _stats_run(json.dumps([{"CPU": "--", "MemUsage": "-- / --", "MemPerc": "--"}]))
-    with which_p, run_p:
+    which_p, running_p, run_p = _stats_run(json.dumps([{"CPU": "--", "MemUsage": "-- / --", "MemPerc": "--"}]))
+    with which_p, running_p, run_p:
         r = diagnostics._collect_app_resources("cid", 1.0, 100)
     assert r.running is True
     assert r.cpu_percent is None
