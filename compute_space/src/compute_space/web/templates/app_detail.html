@@ -155,7 +155,7 @@
     overflow-x: auto;
     padding-bottom: 0.25rem;
   }
-  #app-action-buttons .btn { padding: 0.4em 0.5em; flex: 0 0 auto; white-space: nowrap; }
+  #app-action-buttons .btn { padding: 0.4em 0.7em; flex: 0 0 auto; white-space: nowrap; }
   #app-action-buttons #app-action-msg { flex: 0 0 auto; }
 </style>
 <div id="app-action-buttons">
@@ -174,8 +174,8 @@
       <a href="{{ edit_app.href }}" class="btn" target="_blank" rel="noopener">Edit App</a>
     {% endif %}
   {% endif %}
-  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('/remove_app/{{ app.app_id }}', {keep_data: true}, {isRemove: true, label: 'Removing (keeping data)'})">Remove App (Keep Data)</button>
-  <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('/remove_app/{{ app.app_id }}', {}, {isRemove: true, label: 'Removing'})">Remove App &amp; Data</button>
+  <button class="btn" onclick="if(confirm('Remove {{ app.name }} but keep its databases and files? You can re-deploy later to the same app name to reuse the data.')) appAction('/remove_app/{{ app.app_id }}', {keep_data: true}, {isRemove: true, label: 'Removing (keeping data)'})">Remove (Keep Data)</button>
+  <button class="btn btn-danger" onclick="if(confirm('Remove {{ app.name }}? This deletes all app data permanently.')) appAction('/remove_app/{{ app.app_id }}', {}, {isRemove: true, label: 'Removing'})">Remove &amp; Data</button>
   <span id="app-action-msg" style="margin-left:0.5em;"></span>
 </div>
 
