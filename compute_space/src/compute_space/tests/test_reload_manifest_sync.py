@@ -32,6 +32,7 @@ def cfg(tmp_path_factory: pytest.TempPathFactory) -> Any:
     init_db(c.db_path)
     return c
 
+
 _MANIFEST = """\
 [app]
 name = "reload-app"
