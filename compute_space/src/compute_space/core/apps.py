@@ -86,6 +86,37 @@ def _serialize_links(links: list[AppLink]) -> str:
     return json.dumps([{"name": link.name, "path": link.path} for link in links])
 
 
+def _manifest_column_values(manifest: AppManifest) -> dict[str, object]:
+    """The ``apps`` columns that are derived from the manifest, mapped to their
+    serialized values.
+
+    Single source of truth shared by install (:func:`insert_and_deploy`) and
+    reload (:func:`reload_app_background`) so the two paths can't drift. Reload
+    previously only re-wrote a subset (public_paths/links/manifest_raw/name),
+    leaving resource limits and other manifest-derived columns stale in the DB
+    after an update even though the running container did pick up the new
+    values — which surfaced as "the new cpu isn't applied" on the dashboard.
+
+    Excludes columns that are NOT manifest-derived (app_id, local_port,
+    repo_path, repo_url, status, installed_by, container_id): those are set at
+    install / port-allocation time and must survive a reload unchanged.
+    """
+    return {
+        "manifest_name": manifest.name,
+        "version": manifest.version,
+        "description": manifest.description,
+        "runtime_type": manifest.runtime_type,
+        "health_check": manifest.health_check,
+        "container_port": manifest.container_port,
+        "memory_mb": manifest.memory_mb,
+        "cpu_cores": manifest.cpu_cores,
+        "gpu": int(manifest.gpu),
+        "public_paths": json.dumps(manifest.public_paths),
+        "links": _serialize_links(manifest.links),
+        "manifest_raw": manifest.raw_toml,
+    }
+
+
 def deserialize_links(raw: str | None) -> list[AppLink]:
     """Parse the JSON stored in ``apps.links`` back into ``AppLink`` objects.
 
@@ -364,33 +395,24 @@ def insert_and_deploy(
         owner_username=read_owner_username(db) or DEFAULT_OWNER_USERNAME,
     )
 
+    # Manifest-derived columns come from the shared helper so install and
+    # reload write exactly the same set; non-manifest columns (identity, repo
+    # location, allocated port, initial status, installer) are set here only.
+    manifest_columns = _manifest_column_values(manifest)
+    install_columns: dict[str, object] = {
+        "app_id": app_id,
+        "name": app_name,
+        "repo_path": repo_path,
+        "repo_url": repo_url,
+        "local_port": local_port,
+        "status": "building",
+        "installed_by": installed_by,
+        **manifest_columns,
+    }
+    _columns = list(install_columns)
     db.execute(
-        """INSERT INTO apps
-           (app_id, name, manifest_name, version, description, runtime_type, repo_path, repo_url,
-            health_check, local_port, container_port, memory_mb, cpu_cores,
-            gpu, public_paths, links, manifest_raw, status, installed_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            app_id,
-            app_name,
-            manifest.name,
-            manifest.version,
-            manifest.description,
-            manifest.runtime_type,
-            repo_path,
-            repo_url,
-            manifest.health_check,
-            local_port,
-            manifest.container_port,
-            manifest.memory_mb,
-            manifest.cpu_cores,
-            int(manifest.gpu),
-            json.dumps(manifest.public_paths),
-            _serialize_links(manifest.links),
-            manifest.raw_toml,
-            "building",
-            installed_by,
-        ),
+        f"INSERT INTO apps ({', '.join(_columns)}) VALUES ({', '.join('?' for _ in _columns)})",
+        tuple(install_columns[c] for c in _columns),
     )
 
     # Store resolved port mappings
@@ -888,15 +910,17 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
         if repo_path and os.path.isdir(repo_path):
             try:
                 manifest = parse_manifest(repo_path)
+                # Re-sync ALL manifest-derived columns (resource limits,
+                # health_check, container_port, version, etc.), not just a
+                # subset, so the DB reflects what the reloaded container is
+                # actually run with. Without this, a manifest change like a new
+                # cpu_cores took effect on the container but the DB (and thus the
+                # dashboard/diagnostics) kept showing the install-time value.
+                manifest_columns = _manifest_column_values(manifest)
+                _set_cols = list(manifest_columns)
                 db.execute(
-                    "UPDATE apps SET public_paths = ?, links = ?, manifest_raw = ?, manifest_name = ? WHERE app_id = ?",
-                    (
-                        json.dumps(manifest.public_paths),
-                        _serialize_links(manifest.links),
-                        manifest.raw_toml,
-                        manifest.name,
-                        app_id,
-                    ),
+                    f"UPDATE apps SET {', '.join(f'{c} = ?' for c in _set_cols)} WHERE app_id = ?",
+                    (*(manifest_columns[c] for c in _set_cols), app_id),
                 )
 
                 # Diff port mappings: preserve existing host_port for unchanged labels
