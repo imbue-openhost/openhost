@@ -627,10 +627,9 @@ async def _collect_app_health(local_port: int | None, health_check: str | None) 
 
 def _reachability_targets(config: Config) -> list[tuple[str, str]]:
     """Assemble the list of (label, url) reachability targets from static hosts
-    plus any config-driven URLs (cert broker, ACME directory, redirect domain)."""
+    plus any config-driven URLs (cert-api Keycloak issuer, ACME directory,
+    redirect domain). The cert-api base URL is deliberately not probed."""
     targets: list[tuple[str, str]] = list(_STATIC_REACHABILITY_TARGETS)
-    if config.cert_api_base_url:
-        targets.append(("cert_api", config.cert_api_base_url))
     if config.cert_api_keycloak_issuer_url:
         targets.append(("cert_api_keycloak", config.cert_api_keycloak_issuer_url))
     if config.acme_directory_url:

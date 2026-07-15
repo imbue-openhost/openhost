@@ -490,6 +490,191 @@ class TestSelfHost:
 
         asyncio.run(_ws_echo())
 
+    # -- 12e-12t. Diagnostics ----------------------------------------------
+    # Exercised while ``test-app`` is deployed (test_04) and before it is
+    # removed (test_14), so per-app diagnostics has a real, running app.
+
+    def test_12e_platform_diagnostics_top_level(self, session, router_url):
+        """GET /api/diagnostics returns a full bundle with all top-level keys."""
+        r = session.get(f"{router_url}/api/diagnostics", timeout=60)
+        assert r.status_code == 200, f"{r.status_code}: {r.text[:400]}"
+        assert r.headers.get("content-type", "").startswith("application/json")
+        d = r.json()
+        expected = {
+            "schema_version",
+            "generated_at",
+            "zone_domain",
+            "openhost",
+            "system",
+            "container_runtime",
+            "dependencies",
+            "storage",
+            "resource_pressure",
+            "reachability",
+            "apps",
+        }
+        assert expected <= set(d), f"missing keys: {expected - set(d)}"
+        assert d["schema_version"] == 2
+        assert d["zone_domain"] == DOMAIN
+
+    def test_12f_platform_openhost_git(self, session, router_url):
+        """The openhost section reports a real git checkout (sha + remote)."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        oh = d["openhost"]
+        for key in ("branch", "sha", "short_sha", "dirty", "remote_url"):
+            assert key in oh, f"openhost missing {key}"
+        assert oh["sha"], "openhost sha should be populated on a git deploy"
+        assert isinstance(oh["dirty"], bool)
+
+    def test_12g_platform_system_and_runtime(self, session, router_url):
+        """System info + container runtime are populated with real values."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        sysinfo = d["system"]
+        assert sysinfo["system"] == "Linux"
+        assert sysinfo["python_version"]
+        assert isinstance(sysinfo["cpu_count"], int) and sysinfo["cpu_count"] >= 1
+        rt = d["container_runtime"]
+        assert rt["available"] is True, f"podman should be available: {rt}"
+        assert rt["version"], "podman version should be populated"
+        # OpenHost runs rootless podman.
+        assert rt["rootless"] is True
+
+    def test_12h_platform_storage_and_deps(self, session, router_url):
+        """Storage disk metrics and key dependency versions are present."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        disk = d["storage"]["disk"]
+        assert disk["total_bytes"] > 0
+        assert disk["free_bytes"] >= 0
+        deps = d["dependencies"]
+        assert isinstance(deps, dict) and deps, "dependencies should be a non-empty map"
+        assert "litestar" in deps
+
+    def test_12i_platform_resource_pressure(self, session, router_url):
+        """Resource-pressure memory metrics are present and self-consistent."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        rp = d["resource_pressure"]
+        assert rp["memory_total_bytes"] and rp["memory_total_bytes"] > 0
+        assert rp["memory_available_bytes"] is not None
+        # used% is a percentage in [0, 100] when both memory numbers are present.
+        if rp["memory_used_percent"] is not None:
+            assert 0.0 <= rp["memory_used_percent"] <= 100.0
+        assert isinstance(rp["cpu_count"], int) and rp["cpu_count"] >= 1
+
+    def test_12j_platform_reachability_shape(self, session, router_url):
+        """Reachability is a list of probes with the expected fields, and the
+        static github probe is present and reachable from the instance."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        reach = d["reachability"]
+        assert isinstance(reach, list) and reach
+        labels = {p["label"] for p in reach}
+        assert "github" in labels
+        for p in reach:
+            assert {"label", "url", "reachable", "status_code", "latency_ms", "error"} <= set(p)
+        gh = next(p for p in reach if p["label"] == "github")
+        assert gh["reachable"] is True, f"github should be reachable: {gh}"
+
+    def test_12k_reachability_excludes_cert_api(self, session, router_url):
+        """The cert-api base URL reachability probe was removed."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        labels = {p["label"] for p in d["reachability"]}
+        assert "cert_api" not in labels
+
+    def test_12l_platform_apps_summary(self, session, router_url):
+        """Every installed app appears in the summary with a stable shape;
+        the running test-app reports healthy with live resource usage."""
+        d = session.get(f"{router_url}/api/diagnostics", timeout=60).json()
+        apps = d["apps"]
+        assert isinstance(apps, list) and apps
+        names = {a["name"] for a in apps}
+        assert "test-app" in names
+        for a in apps:
+            assert {"app_id", "name", "status", "version", "health", "resources", "git"} <= set(a)
+            assert {"running", "cpu_cores_limit", "memory_mb_limit"} <= set(a["resources"])
+            assert {"checked", "healthy", "status_code", "checked_path"} <= set(a["health"])
+        test_app = next(a for a in apps if a["name"] == "test-app")
+        assert test_app["status"] == "running"
+        assert test_app["resources"]["running"] is True
+        assert test_app["health"]["healthy"] is True
+
+    def test_12m_platform_download_header(self, session, router_url):
+        """?download=1 sets a timestamped attachment filename."""
+        r = session.get(f"{router_url}/api/diagnostics?download=1", timeout=60)
+        assert r.status_code == 200
+        cd = r.headers.get("content-disposition", "")
+        assert "attachment" in cd and DOMAIN in cd and cd.endswith('.json"')
+        # Still valid JSON.
+        assert r.json()["schema_version"] == 2
+
+    def test_12n_per_app_diagnostics(self, session, router_url):
+        """GET /api/app_diagnostics/<id> returns a self-contained per-app bundle."""
+        app_id = app_id_for(session, router_url, "test-app")
+        r = session.get(f"{router_url}/api/app_diagnostics/{app_id}", timeout=60)
+        assert r.status_code == 200, f"{r.status_code}: {r.text[:400]}"
+        d = r.json()
+        expected = {
+            "schema_version",
+            "app_id",
+            "name",
+            "status",
+            "version",
+            "git",
+            "health",
+            "resources",
+            "container_runtime",
+            "system",
+            "resource_pressure",
+            "zone_domain",
+        }
+        assert expected <= set(d), f"missing keys: {expected - set(d)}"
+        assert d["schema_version"] == 2
+        assert d["name"] == "test-app"
+        assert d["app_id"] == app_id
+
+    def test_12o_per_app_download_header(self, session, router_url):
+        """Per-app ?download=1 sets a timestamped attachment filename."""
+        app_id = app_id_for(session, router_url, "test-app")
+        r = session.get(f"{router_url}/api/app_diagnostics/{app_id}?download=1", timeout=60)
+        assert r.status_code == 200
+        cd = r.headers.get("content-disposition", "")
+        assert "attachment" in cd and "test-app" in cd
+
+    def test_12p_diagnostics_auth_required(self, router_url):
+        """Both diagnostics endpoints require owner auth (no cookies/token)."""
+        for path in ("/api/diagnostics", "/api/app_diagnostics/AAAAAAAAAAAA"):
+            r = requests.get(f"{router_url}{path}", allow_redirects=False, timeout=10)
+            assert r.status_code in (302, 401), f"{path} not gated: {r.status_code}"
+
+    def test_12q_diagnostics_bad_token_rejected(self, router_url):
+        """A bogus Bearer token cannot read diagnostics."""
+        r = requests.get(
+            f"{router_url}/api/diagnostics",
+            headers={"Authorization": "Bearer bogus-token-value"},
+            allow_redirects=False,
+            timeout=10,
+        )
+        assert r.status_code in (302, 401)
+
+    def test_12r_diagnostics_method_not_allowed(self, session, router_url):
+        """The GET-only diagnostics endpoint rejects other methods."""
+        for method in ("POST", "PUT", "DELETE"):
+            r = session.request(method, f"{router_url}/api/diagnostics", timeout=10)
+            assert r.status_code == 405, f"{method} -> {r.status_code}"
+
+    def test_12s_per_app_diagnostics_errors(self, session, router_url):
+        """Invalid-format app_id -> 400; valid-format-but-missing -> 404."""
+        r = session.get(f"{router_url}/api/app_diagnostics/not-a-valid-id!!", timeout=10)
+        assert r.status_code == 400
+        # 12 base58 chars: valid format, no such app.
+        r = session.get(f"{router_url}/api/app_diagnostics/ABCDEFGH1234", timeout=10)
+        assert r.status_code == 404
+
+    def test_12t_diagnostics_page_renders(self, session, router_url):
+        """The Diagnostics dashboard page loads and links the JSON endpoint."""
+        r = session.get(f"{router_url}/diagnostics/", timeout=30)
+        assert r.status_code == 200
+        assert "Diagnostics" in r.text
+        assert "/api/diagnostics" in r.text
+
     # -- 13. TLS certificate -----------------------------------------------
 
     def test_13_tls_cert(self, domain):

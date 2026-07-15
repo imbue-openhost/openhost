@@ -748,8 +748,10 @@ def test_reachability_targets_includes_config_urls(tmp_path: Path) -> None:
     targets = diagnostics._reachability_targets(real)
     labels = {label for label, _ in targets}
     assert "github" in labels
-    # cert_api_base_url has a default, so cert_api should be present.
-    assert "cert_api" in labels
+    # The cert_api base URL is intentionally NOT probed: it was noisy (it points
+    # at cert-issuance infra that isn't reachable from every instance) and its
+    # reachability isn't a useful health signal here.
+    assert "cert_api" not in labels
     # No duplicate URLs.
     urls = [url for _, url in targets]
     assert len(urls) == len(set(urls))
