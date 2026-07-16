@@ -52,6 +52,7 @@
   vars:
     ansible_python_interpreter: /usr/bin/python3
   tasks:
+    - import_tasks: tasks/reclaim_pixi.yml
     - import_tasks: tasks/sync_code.yml
     - import_tasks: tasks/pixi.yml
     - import_tasks: tasks/coredns.yml

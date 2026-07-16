@@ -8,5 +8,6 @@
   hosts: all
   user: host
   tasks:
+    - import_tasks: tasks/reclaim_pixi.yml
     - import_tasks: tasks/sync_code.yml
     - import_tasks: tasks/restart_openhost_service.yml

@@ -78,6 +78,13 @@ copying secrets back off the instance. specifically, on a re-run:
 - **`config.toml`** is left untouched if it exists, so the cert creds, domain,
   and other settings baked in at first setup are preserved.
 - the **claim token** is left untouched if it exists.
+- **root-owned pixi/repo trees are reclaimed up front.** if a bad self-update
+  left root-owned files in `/home/host/openhost` or `/home/host/.pixi` (which
+  bricks the service — the host-user `pixi run` fails with EACCES), the run
+  chowns them back to `host` *before* the `git`/`pixi install` steps that would
+  otherwise choke on them. so a plain re-run recovers a bricked instance with no
+  manual `chown`. this is what an existing user runs to fix the update button
+  after upgrading from a pre-failsafe (pre-2026-07-08) checkout.
 
 on a **first** deploy the host has no cert credential yet, so the run honors the
 `cert_provider` flag: cert_api bakes the keycloak secret into `config.toml`,
