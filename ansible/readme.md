@@ -49,6 +49,7 @@ pass with `-e key=value`.
 | `acme_directory_url` | LE production | override, e.g. staging or a local pebble |
 | `skip_apt_upgrade` | `false` | skip `apt upgrade` in the packages step |
 | `skip_service_start` | `false` | don't start the service at the end |
+| `overwrite_existing` | `false` | overwrite existing config/secrets instead of preserving them (see [re-deploying](#re-deploying-an-existing-instance)) |
 
 version precedence: `openhost_branch` > `openhost_commit` > default `main`.
 
@@ -61,6 +62,32 @@ version precedence: `openhost_branch` > `openhost_commit` > default `main`.
 | `cert_api_keycloak_issuer_url` | keycloak issuer (required with `cert_api`) |
 | `cert_api_keycloak_client_id` | keycloak client id (required with `cert_api`) |
 | `cert_api_keycloak_client_secret` | keycloak client secret (required with `cert_api`) |
+
+## re-deploying an existing instance
+
+re-running `setup.yml` (or `finalize.yml`) against a host that's already
+configured is safe: anything already present on the host is left alone. so you
+can re-ansible after a breaking change without re-supplying every `-e` var or
+copying secrets back off the instance. specifically, on a re-run:
+
+- the **cert credential** is left alone if the host already has one — either a
+  google ACME account key (`secrets/certbot_private_key.json`, gitignored so the
+  code sync's `git clean` leaves it in place) or a cert_api keycloak secret baked
+  into `config.toml`. so you don't need any cert secret on your control machine
+  to redeploy an already-configured instance.
+- **`config.toml`** is left untouched if it exists, so the cert creds, domain,
+  and other settings baked in at first setup are preserved.
+- the **claim token** is left untouched if it exists.
+
+on a **first** deploy the host has no cert credential yet, so the run honors the
+`cert_provider` flag: cert_api bakes the keycloak secret into `config.toml`,
+otherwise the google ACME key is pushed from your control machine. a genuinely
+missing ACME key fails the run there — as it should, since it's actually needed.
+
+pass `-e overwrite_existing=true` to override all of the above and overwrite
+with freshly rendered values — you'll need to re-supply the relevant vars (cert
+creds, etc.) and have the ACME key locally when you do. use this when a breaking
+change requires the `config.toml` template itself to be re-rendered.
 
 ## after setup
 
