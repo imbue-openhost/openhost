@@ -725,17 +725,26 @@ async def _reload_app_impl(
                 db.commit()
                 lf.write(f"Pinned upstream to {pinned}\n")
 
-    # Gate: if the manifest that's about to be deployed declares permissions the
+    # Gate: when an update pulls a new manifest that declares permissions the
     # app doesn't already hold, refuse the reload until the owner approves them
     # (the install flow requires the same explicit approval). Runs before the
     # running container is touched, so a refused update leaves the app untouched.
-    perm_gate = await asyncio.to_thread(_gate_new_permissions, app_id, app_row["repo_path"], approve_new_permissions)
-    if perm_gate is not None:
-        with open(log_file, "a") as lf:
-            lf.write("Update requires approval of new service permissions; not reloading.\n")
-        if continue_oauth:
-            return Redirect(path=f"/app_detail/{app_name}")
-        return Response(content=perm_gate, status_code=200, media_type=MediaType.JSON)
+    #
+    # Only applies when code is actually being pulled (update / oauth re-entry).
+    # A plain reload deploys the manifest already on disk — the one the app is
+    # currently running — so it can't introduce new permissions, and gating it
+    # would wrongly re-prompt for permissions the owner deliberately declined at
+    # install and chose to keep running without.
+    if update or continue_oauth:
+        perm_gate = await asyncio.to_thread(
+            _gate_new_permissions, app_id, app_row["repo_path"], approve_new_permissions
+        )
+        if perm_gate is not None:
+            with open(log_file, "a") as lf:
+                lf.write("Update requires approval of new service permissions; not reloading.\n")
+            if continue_oauth:
+                return Redirect(path=f"/app_detail/{app_name}")
+            return Response(content=perm_gate, status_code=200, media_type=MediaType.JSON)
 
     await asyncio.to_thread(stop_app_process, app_row)
     db.execute(
