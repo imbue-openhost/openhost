@@ -97,6 +97,7 @@ def start_coredns(
     corefile_path: Path,
     zonefile_path: Path,
     container_gateway_ip: str | None = CONTAINER_GATEWAY_IP,
+    coredns_bin: str = "coredns",
 ) -> subprocess.Popen[bytes]:
     """Write CoreDNS config + zone file, start CoreDNS, return the process.
 
@@ -154,7 +155,7 @@ def start_coredns(
 
     logger.info(f"Starting CoreDNS for {zone_domain}")
     proc = subprocess.Popen(
-        ["coredns", "-conf", corefile_path],
+        [coredns_bin, "-conf", corefile_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
