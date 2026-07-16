@@ -111,6 +111,11 @@ def test_manifest_column_values_maps_all_manifest_fields(tmp_path: Path) -> None
     assert cols["health_check"] == "/hz"
     assert cols["container_port"] == 5000
     assert cols["manifest_name"] == "reload-app"
+    # runtime_type and gpu are manifest-derived too and must be re-synced on
+    # reload (they were part of the stale-column bug); pin their presence so a
+    # future refactor can't quietly drop them from the shared write set.
+    assert cols["runtime_type"] == "serverfull"
+    assert cols["gpu"] == 0
     # Non-manifest columns must NOT be present (they must survive reload).
     for forbidden in ("app_id", "local_port", "repo_path", "repo_url", "status", "installed_by", "container_id"):
         assert forbidden not in cols
@@ -165,6 +170,29 @@ def test_reload_syncs_all_manifest_columns(cfg: Any, tmp_path: Path) -> None:
     assert row["manifest_name"] == "reload-app"
     assert "/api/" in row["public_paths"]
     assert "cpu_cores = 4.0" in row["manifest_raw"]
+
+
+def test_reload_resyncs_runtime_type_and_gpu(cfg: Any, tmp_path: Path) -> None:
+    """runtime_type and gpu are manifest-derived and must be rewritten on
+    reload. Seed a row whose stored values differ from the manifest and assert
+    reload restores the manifest-derived values (not the stale ones)."""
+    repo = tmp_path / "repo"
+    _write_manifest(repo, cpu_cores=2.0)  # manifest: runtime_type=serverfull, gpu=false
+    app_id = _seed_app(cfg, str(repo), cpu_cores=0.1, memory_mb=64)
+    # Make the stored row drift from the manifest.
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute("UPDATE apps SET runtime_type = 'stale-type', gpu = 1 WHERE app_id = ?", (app_id,))
+        db.commit()
+    finally:
+        db.close()
+
+    with mock.patch.object(apps_mod, "start_app_process"):
+        reload_app_background(app_id, str(repo), cfg)
+
+    row = _row(cfg, app_id)
+    assert row["runtime_type"] == "serverfull"
+    assert row["gpu"] == 0
 
 
 def test_reload_preserves_non_manifest_columns(cfg: Any, tmp_path: Path) -> None:
