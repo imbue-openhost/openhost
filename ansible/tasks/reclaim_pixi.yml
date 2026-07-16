@@ -1,0 +1,35 @@
+---
+# Reclaim ownership of the host's OpenHost trees for the host user, BEFORE any
+# host-user git or pixi step runs.
+#
+# A root-run update walk (system migrations, git checkout/clean, and in older
+# versions a root-run `pixi install`) can leave root-owned files in
+# /home/host/openhost (repo + its .pixi env) and /home/host/.pixi (pixi binary +
+# caches). After that, sync_code's `git` and pixi.yml's `pixi install` — both run
+# as the unprivileged host user — fail with EACCES ("Permission denied (os error
+# 13)"), and the play aborts long before install_openhost_units.yml installs the
+# reclaim failsafe. So the unit's ExecStartPre reclaim never gets a chance to run:
+# re-ansible alone couldn't recover a bricked instance without a manual chown.
+#
+# Running the reclaim script here, up front, closes that gap — a plain re-run of
+# ansible recovers a bricked instance with no manual steps. The script is
+# installed too, so this also works on hosts provisioned before the failsafe
+# existed (pre-2026-07-08), where /usr/local/bin/openhost-reclaim-pixi is absent.
+# Idempotent: the script skips missing paths, so it is a no-op on a first deploy
+# (where /home/host/openhost and /home/host/.pixi don't exist yet).
+
+- name: Install pixi-ownership reclaim script
+  become: yes
+  become_user: root
+  copy:
+    src: files/openhost-reclaim-pixi
+    dest: /usr/local/bin/openhost-reclaim-pixi
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Reclaim ownership of the OpenHost trees for the host user
+  become: yes
+  become_user: root
+  command: /usr/local/bin/openhost-reclaim-pixi
+  changed_when: false
