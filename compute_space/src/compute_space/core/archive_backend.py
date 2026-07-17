@@ -138,9 +138,7 @@ def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary
     """Build the :class:`StorageSummary` for an app's manifest + current backend."""
     data = _data_section(manifest_raw)
     requires = bool(data.get("app_archive"))
-    uses = bool(
-        data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data")
-    )
+    uses = bool(data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data"))
     backend = read_state(db).backend
     durable = backend == "s3"
     warnings: list[str] = []
@@ -735,9 +733,7 @@ def _migrate_local_archive_into_mount(config: Config) -> None:
         out = (result.stdout or "").strip()
         if result.returncode != 0 or "MIGRATE_OK" not in out:
             detail = out or (result.stderr or "").strip() or f"exit {result.returncode}"
-            raise RuntimeError(
-                f"local->S3 archive migration failed: {detail} (local archive data left intact)"
-            )
+            raise RuntimeError(f"local->S3 archive migration failed: {detail} (local archive data left intact)")
         return
 
     # No podman (e.g. unit tests, or a non-rootless deployment): run the
@@ -747,12 +743,7 @@ def _migrate_local_archive_into_mount(config: Config) -> None:
 
 def _podman_available() -> bool:
     try:
-        return (
-            subprocess.run(
-                ["podman", "--version"], capture_output=True, timeout=10
-            ).returncode
-            == 0
-        )
+        return subprocess.run(["podman", "--version"], capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -823,13 +814,9 @@ def configure_backend(
     """
     state = read_state(db)
     if state.backend == "s3":
-        raise BackendConfigureError(
-            "archive backend is already configured to S3; reconfiguration is not supported"
-        )
+        raise BackendConfigureError("archive backend is already configured to S3; reconfiguration is not supported")
     if state.backend not in ("local", "disabled"):
-        raise BackendConfigureError(
-            f"cannot configure S3 from backend={state.backend!r}"
-        )
+        raise BackendConfigureError(f"cannot configure S3 from backend={state.backend!r}")
 
     migrating_from_local = state.backend == "local"
     volume = juicefs_volume_name or s3_prefix or "openhost"
@@ -926,7 +913,6 @@ def _remove_local_archive_tree(config: Config) -> None:
             os.makedirs(path, exist_ok=True)
     except Exception:  # noqa: BLE001
         logger.exception(
-            "migrated local archive to S3 but failed to remove the local "
-            "source at %s; safe to delete manually",
+            "migrated local archive to S3 but failed to remove the local source at %s; safe to delete manually",
             path,
         )

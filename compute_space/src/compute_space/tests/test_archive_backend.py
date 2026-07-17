@@ -490,9 +490,14 @@ def test_configure_backend_migrates_local_to_s3(cfg, db, tmp_path):
         mock.patch.object(archive_backend, "_podman_available", return_value=False),
     ):
         configure_backend(
-            cfg, db,
-            s3_bucket="b", s3_region="us-east-1", s3_endpoint=None, s3_prefix=None,
-            s3_access_key_id="ak", s3_secret_access_key="sk",
+            cfg,
+            db,
+            s3_bucket="b",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
         )
 
     state = read_state(db)
@@ -506,7 +511,7 @@ def test_configure_backend_migrates_local_to_s3(cfg, db, tmp_path):
     # root dir may remain, but no app data should be left behind).
     local_root = archive_backend.local_archive_dir(cfg)
     leftover = []
-    for dirpath, _dirs, files in os.walk(local_root):
+    for _dirpath, _dirs, files in os.walk(local_root):
         leftover.extend(files)
     assert leftover == []
 
@@ -527,15 +532,21 @@ def test_configure_backend_migration_failopen_keeps_local(cfg, db):
         mock.patch.object(archive_backend, "mount", side_effect=fake_mount),
         mock.patch.object(archive_backend, "umount"),
         mock.patch.object(
-            archive_backend, "_migrate_local_archive_into_mount",
+            archive_backend,
+            "_migrate_local_archive_into_mount",
             side_effect=RuntimeError("copy exploded"),
         ),
     ):
         with pytest.raises(BackendConfigureError):
             configure_backend(
-                cfg, db,
-                s3_bucket="b", s3_region="us-east-1", s3_endpoint=None, s3_prefix=None,
-                s3_access_key_id="ak", s3_secret_access_key="sk",
+                cfg,
+                db,
+                s3_bucket="b",
+                s3_region="us-east-1",
+                s3_endpoint=None,
+                s3_prefix=None,
+                s3_access_key_id="ak",
+                s3_secret_access_key="sk",
             )
 
     state = read_state(db)
@@ -567,9 +578,7 @@ def test_migrate_verify_detects_short_copy(cfg):
         mock.patch("shutil.copy2"),
     ):
         with pytest.raises(RuntimeError, match="verification failed"):
-            archive_backend._copy_and_verify_in_process(
-                archive_backend.local_archive_dir(cfg), mount_dir
-            )
+            archive_backend._copy_and_verify_in_process(archive_backend.local_archive_dir(cfg), mount_dir)
     # Source intact regardless.
     src = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files", "big.bin")
     assert os.path.getsize(src) == 1000

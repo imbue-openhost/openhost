@@ -168,11 +168,7 @@ async def get_archive_backend(db: sqlite3.Connection, config: Config) -> Backend
                 latest_at=summary.latest_at,
                 latest_key=summary.latest_key,
             )
-    local_apps = (
-        archive_backend.local_archive_apps_with_data(config)
-        if state.backend == "local"
-        else []
-    )
+    local_apps = archive_backend.local_archive_apps_with_data(config) if state.backend == "local" else []
     return _state_to_response(state, archive_dir, meta_db_path, meta_dumps, local_apps)
 
 
@@ -211,10 +207,7 @@ async def configure_archive_backend(
     if state.backend == "s3":
         return Response(
             content=ErrorResponse(
-                error=(
-                    "archive backend is already configured to S3; "
-                    "reconfiguration is not supported"
-                )
+                error=("archive backend is already configured to S3; reconfiguration is not supported")
             ),
             status_code=409,
         )

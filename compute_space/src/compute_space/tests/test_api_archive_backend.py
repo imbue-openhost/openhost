@@ -508,14 +508,18 @@ def test_configure_requires_confirm_when_local_has_data(
 
     # With confirm -> proceeds (configure_backend is mocked to flip state).
     with mock.patch.object(archive_backend, "configure_backend") as mock_configure:
+
         def side_effect(_config: Any, db: sqlite3.Connection, **kwargs: Any) -> None:
             db.execute("UPDATE archive_backend SET backend='s3', s3_bucket=? WHERE id=1", (kwargs["s3_bucket"],))
             db.commit()
+
         mock_configure.side_effect = side_effect
         resp = client.post(
             "/api/storage/archive_backend/configure",
             json={
-                "s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s",
+                "s3_bucket": "b",
+                "s3_access_key_id": "a",
+                "s3_secret_access_key": "s",
                 "confirm_migrate_local": True,
             },
             cookies=cookies,
@@ -524,9 +528,7 @@ def test_configure_requires_confirm_when_local_has_data(
     assert resp.json()["backend"] == "s3"
 
 
-def test_get_surfaces_local_archive_apps(
-    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
-) -> None:
+def test_get_surfaces_local_archive_apps(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     """On backend='local', the GET state lists apps with local archive data
     so the dashboard can show whose data an S3 upgrade would migrate."""
     app_dir = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files")

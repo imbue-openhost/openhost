@@ -778,9 +778,7 @@ async def remove_app(
     return Response(content=OkResponse(ok=True), status_code=202, media_type=MediaType.JSON)
 
 
-def _rename_app_storage_dirs(
-    config: Config, old_name: str, new_name: str, archive_dir: str
-) -> str | None:
+def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str, archive_dir: str) -> str | None:
     """Rename per-app subdirs across the three storage tiers, with rollback on partial failure.
 
     ``archive_dir`` is the EFFECTIVE archive parent for the current backend
