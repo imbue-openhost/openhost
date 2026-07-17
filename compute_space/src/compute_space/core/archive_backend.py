@@ -891,13 +891,42 @@ def configure_backend(
     # safe to reclaim the local source.  A failure here is non-fatal: the
     # data is already durably in S3; the stale local dir just wastes disk.
     if migrating_from_local:
-        import shutil  # noqa: PLC0415
+        _remove_local_archive_tree(config)
 
-        try:
-            shutil.rmtree(local_archive_dir(config), ignore_errors=False)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "migrated local archive to S3 but failed to remove the local "
-                "source at %s; safe to delete manually",
-                local_archive_dir(config),
+
+def _remove_local_archive_tree(config: Config) -> None:
+    """Delete the local archive directory after a successful migration.
+
+    Like the copy, the files are owned by the container-mapped www-data
+    subuid, so a plain ``shutil.rmtree`` as the host user can't remove
+    them — use ``podman unshare rm -rf`` (namespace-root).  Falls back to
+    in-process rmtree when podman is unavailable.  Non-fatal: the data is
+    already durably in S3; a stale local dir just wastes disk.
+    """
+    path = local_archive_dir(config)
+    if not os.path.isdir(path):
+        return
+    try:
+        if _podman_available():
+            result = subprocess.run(
+                ["podman", "unshare", "rm", "-rf", path],
+                capture_output=True,
+                text=True,
+                timeout=10 * 60,
             )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or "").strip() or f"exit {result.returncode}")
+            # ``rm -rf <path>`` removes path itself; recreate the empty root
+            # so future reads of local_archive_dir don't hit a missing dir.
+            os.makedirs(path, exist_ok=True)
+        else:
+            import shutil  # noqa: PLC0415
+
+            shutil.rmtree(path, ignore_errors=False)
+            os.makedirs(path, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "migrated local archive to S3 but failed to remove the local "
+            "source at %s; safe to delete manually",
+            path,
+        )

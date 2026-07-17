@@ -502,8 +502,13 @@ def test_configure_backend_migrates_local_to_s3(cfg, db, tmp_path):
         assert f.read() == b"important-bytes"
     with open(os.path.join(mount_dir, "nextcloud", "files", "sub", "deep.bin"), "rb") as f:
         assert f.read() == b"\x00\x01\x02\x03"
-    # Local source removed after a successful migration.
-    assert not os.path.isdir(archive_backend.local_archive_dir(cfg))
+    # Local source content removed after a successful migration (the empty
+    # root dir may remain, but no app data should be left behind).
+    local_root = archive_backend.local_archive_dir(cfg)
+    leftover = []
+    for dirpath, _dirs, files in os.walk(local_root):
+        leftover.extend(files)
+    assert leftover == []
 
 
 def test_configure_backend_migration_failopen_keeps_local(cfg, db):
