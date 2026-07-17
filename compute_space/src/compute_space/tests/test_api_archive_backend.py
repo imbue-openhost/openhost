@@ -46,13 +46,12 @@ def cookies(cfg: Any) -> dict[str, str]:
 # --- GET state ------------------------------------------------------------
 
 
-def test_get_returns_seeded_disabled_state(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+def test_get_returns_seeded_local_state(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     resp = client.get("/api/storage/archive_backend", cookies=cookies)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["backend"] == "disabled"
+    assert body["backend"] == "local"
     assert body["s3_bucket"] is None
-    assert body["archive_dir"] is None
     assert body["meta_dumps"] is None
     assert "s3_secret_access_key" not in body
 
@@ -369,12 +368,15 @@ def apps_client(cfg: Any) -> Iterator[TestClient[Litestar]]:
         yield c
 
 
-def test_add_app_refuses_archive_app_when_backend_disabled(
+def test_add_app_allows_archive_app_on_default_local_backend(
     apps_client: TestClient[Litestar], cookies: dict[str, str], tmp_path: Path
 ) -> None:
-    """An app with ``app_archive = true`` cannot be installed while the
-    backend is 'disabled'.  400 (operator-actionable: configure S3) rather
-    than 503 (transient retry)."""
+    """An app with ``app_archive = true`` installs on a fresh zone: the
+    default 'local' backend makes the archive tier always available, so the
+    archive gate must NOT block with the old "configure S3" 400.  The
+    archive tier is healthy once its local dir exists (the add_app gate
+    calls ensure_local_archive_dir), so the request proceeds past the gate
+    (any later failure is unrelated to the archive check)."""
     fake_clone_dir = str(tmp_path / "clone")
     os.makedirs(fake_clone_dir)
     with (
@@ -390,9 +392,13 @@ def test_add_app_refuses_archive_app_when_backend_disabled(
             },
             cookies=cookies,
         )
-    assert resp.status_code == 400
-    body = resp.json()
-    assert "S3" in body["error"] or "system page" in body["error"].lower()
+    # The archive gate no longer produces a 400/"configure S3" error.
+    if resp.status_code == 400:
+        body = resp.json()
+        assert "S3" not in body.get("error", "")
+        assert "archive" not in body.get("error", "").lower()
+    # And it is not blocked as a transient archive-unhealthy 503 either.
+    assert resp.status_code != 503
 
 
 def test_add_app_allows_access_all_archive_when_backend_disabled(
@@ -477,3 +483,42 @@ def test_reload_app_allows_access_all_archive_when_archive_unhealthy(
     ):
         resp = apps_client.post(f"/reload_app/{seer_id}", cookies=cookies)
     assert resp.status_code != 503 or "archive" not in resp.text.lower()
+
+
+def test_configure_requires_confirm_when_local_has_data(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    """Upgrading local->S3 while apps have local archive data requires an
+    explicit confirm_migrate_local flag; without it -> 409 listing the apps."""
+    # Seed a file into the local archive dir for an app.
+    local_root = archive_backend.local_archive_dir(cfg)
+    app_dir = os.path.join(local_root, "nextcloud", "files")
+    os.makedirs(app_dir, exist_ok=True)
+    with open(os.path.join(app_dir, "x.txt"), "wb") as f:
+        f.write(b"data")
+
+    # Without confirm -> 409.
+    resp = client.post(
+        "/api/storage/archive_backend/configure",
+        json={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
+        cookies=cookies,
+    )
+    assert resp.status_code == 409, resp.text
+    assert "nextcloud" in resp.json()["error"]
+
+    # With confirm -> proceeds (configure_backend is mocked to flip state).
+    with mock.patch.object(archive_backend, "configure_backend") as mock_configure:
+        def side_effect(_config: Any, db: sqlite3.Connection, **kwargs: Any) -> None:
+            db.execute("UPDATE archive_backend SET backend='s3', s3_bucket=? WHERE id=1", (kwargs["s3_bucket"],))
+            db.commit()
+        mock_configure.side_effect = side_effect
+        resp = client.post(
+            "/api/storage/archive_backend/configure",
+            json={
+                "s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s",
+                "confirm_migrate_local": True,
+            },
+            cookies=cookies,
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["backend"] == "s3"

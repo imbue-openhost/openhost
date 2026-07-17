@@ -17,6 +17,7 @@ import httpx
 import compute_space.core.storage as storage
 from compute_space.config import Config
 from compute_space.config import get_config
+from compute_space.core import archive_backend
 from compute_space.core.app_id import is_valid_app_name
 from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
@@ -388,7 +389,7 @@ def insert_and_deploy(
         manifest=manifest,
         data_dir=config.persistent_data_dir,
         temp_data_dir=config.temporary_data_dir,
-        archive_dir=config.app_archive_dir,
+        archive_dir=archive_backend.effective_archive_dir(config, db),
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
         zone_domain=config.zone_domain,
         port=config.port,
@@ -518,7 +519,7 @@ def deploy_app_background(
             env_vars,
             config.persistent_data_dir,
             config.temporary_data_dir,
-            config.app_archive_dir,
+            archive_backend.effective_archive_dir(config, db),
             port_mappings=port_mappings,
         )
         db.execute(
@@ -642,7 +643,7 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         manifest=manifest,
         data_dir=config.persistent_data_dir,
         temp_data_dir=config.temporary_data_dir,
-        archive_dir=config.app_archive_dir,
+        archive_dir=archive_backend.effective_archive_dir(config, db),
         my_openhost_redirect_domain=config.my_openhost_redirect_domain,
         zone_domain=config.zone_domain,
         port=config.port,
@@ -682,7 +683,7 @@ def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> No
         env_vars,
         config.persistent_data_dir,
         config.temporary_data_dir,
-        config.app_archive_dir,
+        archive_backend.effective_archive_dir(config, db),
         port_mappings=port_mappings,
     )
     db.execute(
@@ -987,7 +988,7 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
                     app_name,
                     config.persistent_data_dir,
                     config.temporary_data_dir,
-                    config.app_archive_dir,
+                    archive_backend.effective_archive_dir(config, db),
                 )
         except Exception:
             logger.exception("Failed to deprovision data for %s", app_name)

@@ -150,8 +150,22 @@ class Config:
     def app_archive_dir(self) -> str:
         # JuiceFS FUSE mount; lives under data_root_dir (NOT persistent_data_dir)
         # so restic backups don't double-store bytes that already live in S3.
-        # Empty/non-existent until archive_backend.configure_backend has run.
+        # Empty/non-existent until the S3 archive backend is configured.
+        # For the 'local' backend the archive lives at ``local_archive_dir``
+        # instead (a real directory, never at this mountpoint — see below).
         return os.path.join(self.data_root_dir, "app_archive")
+
+    @property
+    def local_archive_dir(self) -> str:
+        # Local-disk backing for the archive tier (backend='local', the
+        # default).  MUST be a different path from ``app_archive_dir`` (the
+        # JuiceFS mountpoint): a real directory sitting at the mountpoint
+        # would be silently shadowed if/when JuiceFS is later mounted there,
+        # losing whatever apps wrote in the meantime.  Kept under
+        # ``persistent_data_dir`` so it (a) survives container rebuilds and
+        # (b) IS captured by restic backups — local archive data has no
+        # other durable copy, unlike the S3-backed tier.
+        return os.path.join(self.persistent_data_dir, "app_archive_local")
 
     @property
     def apps_dir(self) -> str:
@@ -211,8 +225,12 @@ class Config:
         assert os.path.exists(self.data_root_dir)
         os.makedirs(self.persistent_data_dir, exist_ok=True)
         os.makedirs(self.temporary_data_dir, exist_ok=True)
-        # Skip app_archive_dir: a stray local dir at that path would shadow
-        # the JuiceFS mount once attach_on_startup brings it up.
+        # Skip app_archive_dir: a stray local dir at the JuiceFS mountpoint
+        # would shadow the S3 mount once attach_on_startup brings it up.
+        # The 'local' backend's archive lives at ``local_archive_dir`` (a
+        # different path) and is created by
+        # ``archive_backend.attach_on_startup`` / ``ensure_local_archive_dir``
+        # once the DB (which holds the backend state) is readable — not here.
         os.makedirs(self.apps_dir, exist_ok=True)
         os.makedirs(self.openhost_data_path, exist_ok=True)
         os.makedirs(self.keys_dir, exist_ok=True)

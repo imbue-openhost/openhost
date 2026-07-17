@@ -444,7 +444,19 @@ function renderArchiveBackend(state) {
         + '</code></span>';
     }
     rows += '<tr><th>Latest meta dump</th><td>' + dumpLine + '</td></tr>';
+  } else if (state.backend === 'local') {
+    rows += '<tr><th>Backend</th>'
+      + '<td><span class="status-running">Local disk</span>'
+      + (state.state_message ? ' <span class="error">' + escSettingsHtml(state.state_message) + '</span>' : '')
+      + '</td></tr>';
+    if (state.archive_dir) {
+      rows += '<tr><th>Host path</th><td><code>' + escSettingsHtml(state.archive_dir) + '</code></td></tr>';
+    }
+    rows += '<tr><th>Durability</th><td><span class="error">Local disk only.</span> '
+      + 'Archive data is kept on this instance and included in backups, but is NOT on '
+      + 'durable object storage. Configure S3 below for elastic, durable storage.</td></tr>';
   } else {
+    // Legacy pre-v12 'disabled' state (no archive tier).
     rows += '<tr><th>Backend</th>'
       + '<td><span class="status-stopped">not configured</span></td></tr>';
   }
@@ -455,23 +467,34 @@ function renderArchiveBackend(state) {
       + 'Filename-to-S3-chunk mappings live in a SQLite metadata DB on this zone’s local disk; '
       + 'recovery after the local disk is wiped requires the latest meta dump in S3 plus a manual <code>juicefs load</code>.</p>';
   }
+  // S3 can be configured from either the default 'local' backend (data is
+  // migrated into the bucket) or a legacy 'disabled' zone.
   var configureBtn = '';
-  if (state.backend === 'disabled') {
-    configureBtn = '<div class="control-row"><button class="btn" id="archive-backend-configure-btn">Configure S3 backend…</button></div>';
+  if (state.backend === 'local' || state.backend === 'disabled') {
+    var label = state.backend === 'local' ? 'Upgrade to S3 backend…' : 'Configure S3 backend…';
+    configureBtn = '<div class="control-row"><button class="btn" id="archive-backend-configure-btn">' + label + '</button></div>';
   }
 
   el.innerHTML = '<table id="archive-backend-table" class="form-table"><tbody>' + rows + '</tbody></table>'
     + experimentalNote
     + configureBtn
     + '<div id="archive-backend-form" hidden></div>';
-  if (state.backend === 'disabled') {
-    document.getElementById('archive-backend-configure-btn').onclick = function() { showConfigureForm(); };
+  if (state.backend === 'local' || state.backend === 'disabled') {
+    document.getElementById('archive-backend-configure-btn').onclick = function() { showConfigureForm(state); };
   }
 }
 
-function showConfigureForm() {
+function showConfigureForm(state) {
+  state = state || {};
   var formEl = document.getElementById('archive-backend-form');
+  var migrateNote = '';
+  if (state.backend === 'local') {
+    migrateNote = '<p class="error"><strong>This migrates your existing LOCAL archive data into S3.</strong> '
+      + 'The data is copied into the bucket and verified before the switch; if anything fails the switch is aborted and your local data is left intact (fail-open). '
+      + 'After a successful migration the local copy is removed and the switch to S3 is <strong>one-way</strong>.</p>';
+  }
   formEl.innerHTML = '<p><strong>Configure S3 archive storage.</strong> JuiceFS will format the bucket and mount it locally; this is a one-time operation.</p>'
+    + migrateNote
     + '<p class="error"><strong>Experimental.</strong> Filename-to-S3-chunk mappings live in a SQLite metadata DB on this zone’s local disk, not in the bucket. If the local disk is wiped, the bucket bytes can be recovered only from JuiceFS\'s periodic meta dumps in S3 (replayed via <code>juicefs load</code>).</p>'
     + '<p class="hint">JuiceFS will automatically dump the metadata DB to <code>&lt;bucket&gt;/&lt;prefix&gt;/meta/dump-*.json.gz</code> once an hour. These dumps are the recovery anchor for reattaching a freshly-installed zone to an existing bucket.</p>'
     + '<table class="form-table"><tbody>'
@@ -506,6 +529,9 @@ function _archiveBackendBody() {
     s3_prefix: document.getElementById('ab-prefix').value,
     s3_access_key_id: document.getElementById('ab-access-key').value,
     s3_secret_access_key: document.getElementById('ab-secret-key').value,
+    // Ticking the confirmation checkbox (checked in submitConfigure)
+    // acknowledges the one-way local->S3 migration too.
+    confirm_migrate_local: true,
   };
 }
 

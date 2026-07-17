@@ -56,6 +56,131 @@ def juicefs_mount_dir(config: Config) -> str:
     return config.app_archive_dir
 
 
+def local_archive_dir(config: Config) -> str:
+    """The host-side local-disk backing for the archive tier (backend='local').
+
+    A plain directory (NOT a mount), deliberately at a different path from
+    the JuiceFS mountpoint so it can never be shadowed by a future S3 mount.
+    """
+    return config.local_archive_dir
+
+
+def effective_archive_dir(config: Config, db: sqlite3.Connection) -> str:
+    """The host path that should be bind-mounted into app containers as the
+    archive tier, chosen by the current backend:
+
+    * ``'s3'``   -> the JuiceFS mountpoint (``app_archive_dir``)
+    * ``'local'``-> the local-disk directory (``local_archive_dir``)
+    * ``'disabled'`` (legacy, pre-v12) -> the JuiceFS mountpoint, which is
+      absent, so archive-using apps see "not available" exactly as before.
+
+    Callers pass the result where they previously passed
+    ``config.app_archive_dir`` so app provisioning / container mounts land
+    on the right backing without any other code needing to know the backend.
+    """
+    state = read_state(db)
+    if state.backend == "local":
+        return local_archive_dir(config)
+    return juicefs_mount_dir(config)
+
+
+def ensure_local_archive_dir(config: Config) -> str:
+    """Create the local archive directory if missing; return its path.
+
+    Safe to call repeatedly.  Used at boot (attach_on_startup) and before
+    provisioning archive-using apps in local mode.
+    """
+    path = local_archive_dir(config)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def local_archive_has_data(config: Config) -> bool:
+    """True iff any app has written content into the local archive dir.
+
+    Used to decide whether an operator upgrading local -> S3 is about to
+    migrate real data.  A directory that exists but is empty (no per-app
+    subdirectories with content) counts as "no data".
+    """
+    root = local_archive_dir(config)
+    if not os.path.isdir(root):
+        return False
+    for app_name in os.listdir(root):
+        app_dir = os.path.join(root, app_name)
+        if not os.path.isdir(app_dir):
+            continue
+        # Any entry inside a per-app archive dir counts as data.
+        for _ in os.scandir(app_dir):
+            return True
+    return False
+
+
+def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> dict[str, Any]:
+    """Summarise the storage tiers an app will use, for the install screen.
+
+    Mirrors the way permissions are surfaced before install: the operator
+    sees, up front, which storage tiers the app touches and — crucially —
+    whether its archive data will land on durable S3 or on non-durable
+    LOCAL disk (so they can decide to configure S3 first if they care).
+
+    Returns a JSON-friendly dict:
+        {
+          "app_data": bool,          # local, backed-up permanent data
+          "app_temp_data": bool,     # local scratch, not backed up
+          "uses_archive": bool,      # app_archive OR access_all_archive/all_data
+          "requires_archive": bool,  # hard app_archive requirement
+          "archive_backend": "local"|"s3"|"disabled",
+          "archive_is_durable": bool,# True only when backend == "s3"
+          "warnings": [str, ...],
+        }
+    """
+    data = _data_section(manifest_raw)
+    requires = bool(data.get("app_archive"))
+    uses = bool(
+        data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data")
+    )
+    backend = read_state(db).backend
+    durable = backend == "s3"
+    warnings: list[str] = []
+    if uses and backend == "local":
+        warnings.append(
+            "This app stores bulk data on the ARCHIVE tier, which is currently "
+            "backed by LOCAL disk on this instance. Local archive data is kept on "
+            "the instance and included in backups, but it is NOT on durable object "
+            "storage. Configure an S3 archive backend on the Settings page for "
+            "durable, elastic storage; existing local data is migrated into S3 when "
+            "you do."
+        )
+    return {
+        "app_data": bool(data.get("app_data", True)) or bool(data.get("sqlite")) or bool(data.get("access_all_app_data")),
+        "app_temp_data": bool(data.get("app_temp_data")) or bool(data.get("access_all_app_data")),
+        "uses_archive": uses,
+        "requires_archive": requires,
+        "archive_backend": backend,
+        "archive_is_durable": durable,
+        "warnings": warnings,
+    }
+
+
+def local_archive_apps_with_data(config: Config) -> list[str]:
+    """Return the app names that have content in the local archive dir.
+
+    Powers the operator-facing "these apps' archive data will be migrated"
+    summary shown before a local -> S3 upgrade.
+    """
+    root = local_archive_dir(config)
+    if not os.path.isdir(root):
+        return []
+    apps: list[str] = []
+    for app_name in sorted(os.listdir(root)):
+        app_dir = os.path.join(root, app_name)
+        if not os.path.isdir(app_dir):
+            continue
+        if any(True for _ in os.scandir(app_dir)):
+            apps.append(app_name)
+    return apps
+
+
 def juicefs_meta_db_path(config: Config) -> str:
     return _juicefs_meta_db(config)
 
@@ -297,7 +422,7 @@ def umount(config: Config) -> None:
 class BackendState:
     """Operator-visible archive backend state."""
 
-    backend: str  # "disabled" | "s3"
+    backend: str  # "local" (default) | "s3" | "disabled" (legacy pre-v12)
     s3_bucket: str | None
     s3_region: str | None
     s3_endpoint: str | None
@@ -317,8 +442,10 @@ def read_state(db: sqlite3.Connection) -> BackendState:
     ).fetchone()
     if row is None:
         # Defensive fallback for a partial DB; migrations seed this row.
+        # The default archive backend is 'local' (always-available archive
+        # on local disk); operators upgrade to 's3' explicitly.
         return BackendState(
-            backend="disabled",
+            backend="local",
             s3_bucket=None,
             s3_region=None,
             s3_endpoint=None,
@@ -373,17 +500,20 @@ def manifest_uses_archive(manifest_raw: str) -> bool:
 
 
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
-    """True iff the archive backend is either unconfigured or live on the host.
+    """True iff the archive tier is usable on the host for the current backend.
 
-    When ``backend == "disabled"`` (S3 never configured) there is no archive
-    data to protect, so the check passes.  When ``backend == "s3"`` the
-    JuiceFS mount must be live — otherwise operations that would silently
-    orphan or skip S3-side data are blocked.
+    * ``'disabled'`` (legacy) — no archive data to protect, passes.
+    * ``'local'`` — healthy iff the local archive directory exists (it is
+      created at boot / before provisioning, so this is normally true).
+    * ``'s3'`` — the JuiceFS mount must be live; otherwise operations that
+      would silently orphan or skip S3-side data are blocked.
     """
     state = read_state(db)
-    if state.backend != "s3":
-        return True
-    return is_mounted(juicefs_mount_dir(config))
+    if state.backend == "s3":
+        return is_mounted(juicefs_mount_dir(config))
+    if state.backend == "local":
+        return os.path.isdir(local_archive_dir(config))
+    return True
 
 
 def _set_state_message(db: sqlite3.Connection, message: str | None) -> None:
@@ -403,6 +533,16 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
     ensuring the service is enabled + started.
     """
     state = read_state(db)
+    if state.backend == "local":
+        # Local backend needs no mount — just make sure the directory the
+        # containers bind-mount actually exists on this boot.
+        try:
+            ensure_local_archive_dir(config)
+            _set_state_message(db, None)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to create local archive dir on startup")
+            _set_state_message(db, f"Failed to create local archive dir: {exc}")
+        return
     if state.backend != "s3":
         return
     try:
@@ -511,6 +651,67 @@ class BackendConfigureError(Exception):
     """Raised by ``configure_backend`` when configuration fails."""
 
 
+def _migrate_local_archive_into_mount(config: Config) -> None:
+    """Copy every byte of the local archive dir into the (freshly mounted)
+    JuiceFS mount, then verify the copy before the caller commits the switch.
+
+    FAIL-OPEN CONTRACT: this must either fully succeed or raise.  It never
+    deletes the local source — the caller deletes it only AFTER the DB row
+    has flipped to 's3'.  So if anything here (or the subsequent commit)
+    fails, the local data is still intact at ``local_archive_dir`` and the
+    backend row is still ``'local'``, i.e. the operator's data remains
+    available on local storage.
+
+    Verification: after copying, every regular file present in the source
+    must exist in the destination with an identical size.  A mismatch (short
+    copy, JuiceFS write error, etc.) raises so the migration aborts.
+    """
+    import shutil  # noqa: PLC0415 -- only needed on the migration path
+
+    src_root = local_archive_dir(config)
+    dst_root = juicefs_mount_dir(config)
+    if not os.path.isdir(src_root):
+        return  # nothing to migrate
+
+    # Copy per top-level entry so a partial failure is easy to reason about.
+    for entry in sorted(os.listdir(src_root)):
+        src = os.path.join(src_root, entry)
+        dst = os.path.join(dst_root, entry)
+        if os.path.isdir(src):
+            # dirs_exist_ok so a retry after a partial run doesn't explode;
+            # copy2 preserves mtimes so Nextcloud-style scanners don't see
+            # everything as "just modified".
+            shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy2)
+        else:
+            os.makedirs(dst_root, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    # Verify: walk the source and confirm each file exists in the dest with
+    # the same size.  (We compare size rather than full content hashes to
+    # keep large archives fast; JuiceFS reports accurate sizes once written.)
+    missing: list[str] = []
+    size_mismatch: list[str] = []
+    for dirpath, _dirs, files in os.walk(src_root):
+        rel = os.path.relpath(dirpath, src_root)
+        for fname in files:
+            src_file = os.path.join(dirpath, fname)
+            dst_file = os.path.join(dst_root, rel, fname) if rel != "." else os.path.join(dst_root, fname)
+            if not os.path.isfile(dst_file):
+                missing.append(os.path.join(rel, fname))
+                continue
+            try:
+                if os.path.getsize(src_file) != os.path.getsize(dst_file):
+                    size_mismatch.append(os.path.join(rel, fname))
+            except OSError as exc:
+                size_mismatch.append(f"{os.path.join(rel, fname)} ({exc})")
+    if missing or size_mismatch:
+        raise RuntimeError(
+            "local->S3 archive migration verification failed; "
+            f"missing={missing[:10]} size_mismatch={size_mismatch[:10]} "
+            "(local archive data left intact)"
+        )
+
+
 def configure_backend(
     config: Config,
     db: sqlite3.Connection,
@@ -523,20 +724,33 @@ def configure_backend(
     s3_secret_access_key: str,
     juicefs_volume_name: str | None = None,
 ) -> None:
-    """Configure the archive backend to S3, in one shot.  Refuses to run unless
-    the current backend is ``'disabled'`` — there is no in-product migration
-    path back; an operator who picked S3 is committed.
+    """Configure the archive backend to S3, in one shot.
 
-    Steps: install juicefs, format the volume, mount it, then atomically
-    UPDATE the archive_backend row.  No app-stop, no data-copy, no rollback
-    — there is no source to migrate from.
+    Allowed starting states: ``'local'`` (the default — the archive data
+    currently lives on local disk and is MIGRATED into S3) or ``'disabled'``
+    (legacy pre-v12 zone with no archive data — nothing to migrate).  Once
+    the backend is ``'s3'`` it cannot be reconfigured.
+
+    Steps: install juicefs, format the volume, mount it, migrate any local
+    archive data into the mount + verify, atomically flip the DB row to
+    's3', then delete the now-copied local source.
+
+    FAIL-OPEN: if any step before the DB flip fails, the local archive data
+    is left untouched and the backend stays ``'local'``, so the operator's
+    files remain available.  The local source is deleted only after the
+    switch to 's3' has been committed AND the copy verified.
     """
     state = read_state(db)
-    if state.backend != "disabled":
+    if state.backend == "s3":
         raise BackendConfigureError(
-            f"archive backend is already configured (backend={state.backend!r}); reconfiguration is not supported"
+            "archive backend is already configured to S3; reconfiguration is not supported"
+        )
+    if state.backend not in ("local", "disabled"):
+        raise BackendConfigureError(
+            f"cannot configure S3 from backend={state.backend!r}"
         )
 
+    migrating_from_local = state.backend == "local"
     volume = juicefs_volume_name or s3_prefix or "openhost"
 
     try:
@@ -552,11 +766,18 @@ def configure_backend(
             juicefs_volume_name=volume,
         )
         mount(config, s3_access_key_id, s3_secret_access_key)
+
+        # Migrate local data into the fresh mount BEFORE flipping the row.
+        # If this raises, the except-block below leaves the backend at
+        # 'local' with the source intact (fail-open).
+        if migrating_from_local:
+            _migrate_local_archive_into_mount(config)
+
         # Persist the new state.  If this fails after a successful
-        # mount we leave a "live mount + disabled DB row" inconsistency,
-        # but a subsequent configure_backend call retries idempotently
-        # (format + mount are no-ops on an already-formatted bucket and
-        # an already-live mount).
+        # mount we leave a "live mount + local/disabled DB row"
+        # inconsistency, but a subsequent configure_backend call retries
+        # idempotently (format + mount are no-ops on an already-formatted
+        # bucket and an already-live mount; the copy is dirs_exist_ok).
         db.execute(
             "UPDATE archive_backend SET "
             "backend='s3', s3_bucket=?, s3_region=?, s3_endpoint=?, s3_prefix=?, "
@@ -576,4 +797,26 @@ def configure_backend(
         )
         db.commit()
     except Exception as exc:
+        # Best-effort: tear the mount back down so a retry starts clean and
+        # the local backend keeps working.  Never touch the local source.
+        if migrating_from_local:
+            try:
+                umount(config)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to unmount juicefs after aborted migration")
         raise BackendConfigureError(f"Failed to configure S3 archive backend: {exc}") from exc
+
+    # DB is now committed to 's3' and the copy is verified.  Only now is it
+    # safe to reclaim the local source.  A failure here is non-fatal: the
+    # data is already durably in S3; the stale local dir just wastes disk.
+    if migrating_from_local:
+        import shutil  # noqa: PLC0415
+
+        try:
+            shutil.rmtree(local_archive_dir(config), ignore_errors=False)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "migrated local archive to S3 but failed to remove the local "
+                "source at %s; safe to delete manually",
+                local_archive_dir(config),
+            )

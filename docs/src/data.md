@@ -9,8 +9,8 @@
 - each app has three storage areas with different durability + size + latency tradeoffs:
     - **permanent data (`app_data`)** — local disk, small, fast, backed up, legible to users.  Standard file types, exportable, importable.  This is where SQLite databases and other embedded-DB stores live (LMDB, RocksDB, BoltDB) — the latency profile is right and the strict POSIX consistency keeps WAL fsyncs safe.
         - examples: sqlite files. markdown notes. JSON config. small assets.
-    - **archive data (`app_archive`)** — S3-backed (via JuiceFS) once the operator configures a bucket from the dashboard.  Disabled by default on fresh zones; apps that require it (`app_archive = true`) won't install until S3 is configured.  Large, elastic, durability tied to the operator's S3 provider.  Higher latency than `app_data` on uncached reads.  Intended for bulk content the app would otherwise outgrow local disk for.
-        - examples: source jpegs / RAWs in a photo library, original video files, attachment uploads, large model weights.
+    - **archive data (`app_archive`)** — bulk storage for content the app would otherwise outgrow local disk for.  ALWAYS available: by default it is backed by **local disk** on the instance (`backend = 'local'`), so apps that request it install immediately on any zone.  The operator can later upgrade the zone to **S3** (via JuiceFS) from the dashboard for durable, elastic object storage; existing local archive data is migrated into the bucket at that point.  Higher latency than `app_data` on uncached reads once on S3.  Intended for bulk content: source jpegs / RAWs in a photo library, original video files, attachment uploads, large model weights.
+        - Durability: on the `local` backend the archive lives under `persistent_data_dir` and IS included in backups, but has no off-instance copy.  On the `s3` backend durability is tied to the operator's S3 provider (and the archive is deliberately excluded from restic backups because the bytes already live in the bucket).
     - **temporary data (`app_temp_data`)** — local disk scratch, not backed up, recreatable on demand.
         - examples: low-res thumbnails generated from source photos, transcoding work files, in-flight upload chunks.
 - there’s also VM-level / router data (eg the sqlite database used by the router). apps see this in-container as `/data/vm_data/` (only with the `access_vm_data` permission); on the host the router db lives at `persistent_data/openhost/router.db`.
@@ -32,7 +32,14 @@
 
 `app_data` is local NVMe.  Microsecond random reads, fsync that means something, strict POSIX.  This is where SQLite WAL files have to live: a WAL needs shared-memory mappings the kernel propagates between processes on the same host, and it needs `fsync()` to actually durably commit.  A network FS that gives close-to-open consistency or that buffers writes in a daemon process would corrupt SQLite databases silently.
 
-`app_archive` is S3-backed via JuiceFS (operator opt-in via the dashboard, one-shot configuration; disabled until configured).  It has tens-to-hundreds-of-ms first-touch reads, eventual durability, and no shared-memory mmap.  Apps that put the wrong data here — SQLite, anything using `fcntl` advisory locks for correctness — would hit data loss or corruption, so app authors should pair `app_archive` with `app_data` (or `sqlite`) to keep working state on local disk.  Apps with `app_archive = true` are blocked from install/reload until the operator configures the S3 backend; if you want a local-disk archive, run minio (or equivalent) yourself and point the operator UI at it.
+`app_archive` has two backings the operator chooses between per zone:
+
+* **`local`** (the default) — a plain directory on the instance's local disk (under `persistent_data_dir`, so it survives rebuilds and is backed up).  Always available; no configuration needed.
+* **`s3`** — S3-backed via JuiceFS (operator opt-in via the dashboard).  Tens-to-hundreds-of-ms first-touch reads, elastic capacity, durability tied to the S3 provider, and no shared-memory mmap.
+
+Either way, apps that put the wrong data on the archive — SQLite, anything using `fcntl` advisory locks for correctness — would hit data loss or corruption, so app authors should pair `app_archive` with `app_data` (or `sqlite`) to keep working state on local disk.  Because the archive tier is always available, apps with `app_archive = true` install on any zone; on a `local`-backed zone the operator is shown a notice at install time that the app's bulk data will live on non-durable local disk until they configure S3.
+
+Upgrading `local` → `s3` is a one-shot, one-way operation: the platform formats + mounts the bucket, **migrates the local archive data into it (copied and size-verified before the switch; fail-open — if anything fails the local data is left intact and the backend stays `local`)**, flips the backend to `s3`, then removes the migrated local copy.  Once a zone is on `s3` it cannot be reconfigured.
 
 ### API
 
@@ -43,7 +50,7 @@
 
 - permanent data (`app_data`) lives on the host's local disk under `persistent_data_dir/app_data/<app>`
 - temp data (`app_temp_data`) lives on a separate subdirectory under `temporary_data_dir`, so that backups can target only the persistent data
-- archive data (`app_archive`) is disabled by default; once the operator configures the S3 backend from the dashboard, archive bytes route through a JuiceFS mount of the operator-supplied bucket.  The in-container path apps see is always `/data/app_archive/<app>/`.  Configuration is one-shot per zone — once configured, the choice is permanent.
+- archive data (`app_archive`) defaults to the `local` backend: a directory at `persistent_data_dir/app_archive_local/<app>` on the host.  (It lives at a DIFFERENT host path from the S3 mountpoint, `data_root_dir/app_archive`, so a local directory can never silently shadow a later JuiceFS mount.)  Once the operator upgrades the zone to S3, archive bytes route through a JuiceFS mount of the operator-supplied bucket at `data_root_dir/app_archive/`.  The in-container path apps see is always `/data/app_archive/<app>/`, regardless of backing.  The `local` → `s3` upgrade migrates existing local data into the bucket; going to S3 is one-way and permanent.
 - the JuiceFS metadata database is small and lives on the host's local disk under `persistent_data_dir/openhost/juicefs/state/meta.db`; the standard backup picks up that directory.  A planned but not-yet-implemented daily `juicefs dump` will write a JSON snapshot alongside the SQLite metadata file so a freshly-installed zone restoring from backup has everything it needs to reattach to the existing S3 bucket via `juicefs format` + `juicefs load`.  Until that's wired up, recovery is "back up the SQLite metadata file directly" — see the JuiceFS upstream docs.
 
 ### permissions

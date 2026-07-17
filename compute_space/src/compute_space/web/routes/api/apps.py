@@ -87,6 +87,10 @@ class CloneInfoResponse:
     clone_dir: str
     app_name: str
     validation_error: str | None = None
+    # Storage tiers the app will use + any operator-facing notices (e.g.
+    # "archive data will land on non-durable local disk").  Surfaced on the
+    # install screen alongside permissions.  See archive_backend.storage_summary.
+    storage: dict[str, Any] = attr.Factory(dict)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -270,12 +274,14 @@ async def clone_and_get_app_info(
     info = attr.asdict(manifest)
     info.pop("raw_toml", None)
     assert clone_dir is not None
+    storage = archive_backend.storage_summary(manifest.raw_toml, db)
     return Response(
         content=CloneInfoResponse(
             manifest=info,
             clone_dir=clone_dir,
             app_name=manifest.name,
             validation_error=validation_error,
+            storage=storage,
         ),
         status_code=200,
         media_type=MediaType.JSON,
@@ -335,23 +341,16 @@ async def api_add_app(
         shutil.rmtree(clone_dir, ignore_errors=True)
         return Response(content=ErrorResponse(error=validation_error), status_code=400)
 
-    # 400 when the operator hasn't configured S3 (action: visit the System
-    # page); 503 when configured-but-unhealthy (action: retry transient).
+    # The archive tier is ALWAYS available: on a fresh/unupgraded zone it is
+    # backed by local disk (backend='local'), and the operator can later
+    # upgrade to S3.  So app_archive no longer blocks installation for lack
+    # of S3.  We only refuse when the backend is 's3' but its JuiceFS mount
+    # is transiently unhealthy (retryable 503).  For 'local' we make sure
+    # the backing directory exists so provisioning can write into it.
     if manifest.app_archive:
         backend_state = archive_backend.read_state(db)
-        if backend_state.backend != "s3":
-            shutil.rmtree(clone_dir, ignore_errors=True)
-            return Response(
-                content=ErrorResponse(
-                    error=(
-                        "This app uses the app_archive data tier, but "
-                        "S3 archive storage has not been configured on "
-                        "this zone.  Visit the System page to configure an "
-                        "S3 backend before deploying this app."
-                    )
-                ),
-                status_code=400,
-            )
+        if backend_state.backend == "local":
+            archive_backend.ensure_local_archive_dir(config)
         if not archive_backend.is_archive_dir_healthy(config, db):
             shutil.rmtree(clone_dir, ignore_errors=True)
             return Response(
@@ -546,6 +545,11 @@ async def _reload_app_impl(
         return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
     app_name = app_row["name"]
 
+    # On the local backend, make sure the backing dir exists before we
+    # health-check it (it lives under persistent_data and normally does,
+    # but a hand-wiped dir shouldn't wedge reloads).
+    if archive_backend.read_state(db).backend == "local":
+        archive_backend.ensure_local_archive_dir(config)
     if not archive_backend.is_archive_dir_healthy(config, db):
         if archive_backend.manifest_requires_archive(app_row["manifest_raw"] or ""):
             return Response(

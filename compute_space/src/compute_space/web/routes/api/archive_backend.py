@@ -120,13 +120,25 @@ class ConfigureArchiveRequest:
     s3_endpoint: str = ""
     s3_prefix: str = ""
     juicefs_volume_name: str = ""
+    # When the current backend is 'local' and apps have written archive
+    # data, the operator must explicitly acknowledge the local->S3
+    # migration.  The migration copies + verifies the data into S3 and is
+    # fail-open (local data is kept if anything goes wrong), but the switch
+    # to S3 is one-way and the local copy is removed afterwards, so we
+    # require an explicit opt-in rather than doing it silently.
+    confirm_migrate_local: bool = False
 
 
 @get("/api/storage/archive_backend", guards=[require_owner_auth])
 async def get_archive_backend(db: sqlite3.Connection, config: Config) -> BackendStateResponse:
     """Return current archive-backend state (secret redacted) plus archive_dir, meta_db_path, meta_dumps."""
     state = archive_backend.read_state(db)
-    archive_dir = archive_backend.juicefs_mount_dir(config) if state.backend == "s3" else None
+    if state.backend == "s3":
+        archive_dir = archive_backend.juicefs_mount_dir(config)
+    elif state.backend == "local":
+        archive_dir = archive_backend.local_archive_dir(config)
+    else:
+        archive_dir = None
     meta_db_path = archive_backend.juicefs_meta_db_path(config)
 
     meta_dumps: MetaDumpsSummary | None = None
@@ -178,18 +190,40 @@ async def configure_archive_backend(
     db: sqlite3.Connection,
     config: Config,
 ) -> Response[BackendStateResponse] | Response[ErrorResponse]:
-    """One-shot configuration: ``backend='disabled'`` -> ``'s3'``.  No re-runs."""
+    """One-shot upgrade to S3.  Allowed from ``'local'`` (the default —
+    migrates local archive data into the bucket) or the legacy ``'disabled'``
+    state.  Refused once ``backend='s3'``."""
     state = archive_backend.read_state(db)
-    if state.backend != "disabled":
+    if state.backend == "s3":
         return Response(
             content=ErrorResponse(
                 error=(
-                    f"archive backend is already configured (backend={state.backend!r}); "
+                    "archive backend is already configured to S3; "
                     "reconfiguration is not supported"
                 )
             ),
             status_code=409,
         )
+
+    # Guard the destructive-ish local->S3 migration behind an explicit
+    # acknowledgement when there is actually local data to migrate.  The
+    # dashboard surfaces which apps have data and the fail-open/one-way
+    # semantics; the API refuses to proceed until the operator confirms.
+    if state.backend == "local" and archive_backend.local_archive_has_data(config):
+        if not data.confirm_migrate_local:
+            apps = archive_backend.local_archive_apps_with_data(config)
+            return Response(
+                content=ErrorResponse(
+                    error=(
+                        "The archive tier currently uses LOCAL disk and these "
+                        f"apps have data on it: {', '.join(apps)}.  Configuring "
+                        "S3 will migrate that data into the bucket and then "
+                        "remove the local copy.  This switch is one-way.  "
+                        "Re-submit with confirm_migrate_local=true to proceed."
+                    )
+                ),
+                status_code=409,
+            )
 
     try:
         prefix = _normalise_s3_prefix(data.s3_prefix or None)
