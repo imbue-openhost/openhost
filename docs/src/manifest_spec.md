@@ -73,6 +73,17 @@ User-facing links the app advertises for paths on its own URL that aren't the ba
 | `access_all_archive` | boolean | no | false | Mount all apps' archive parent directory. Permissive: silently skipped when JuiceFS is not configured. For backup tools. |
 | `access_all_data` | boolean | no | false | Convenience shorthand for `access_all_app_data = true` + `access_all_archive = true`. |
 
+### `[federation]` — optional
+
+Declares that the app implements a federation protocol, identified by the URL of its spec document. When the owner opens a federation invite, the zone's `/redirect/federation/connect` page finds installed apps whose `url` matches the invite's `spec` parameter and offers a click-through into each app's own connect page (at `connect_path`, with the invite's full query string passed along).
+
+The app's connect page must be side-effect free on GET: it may validate and display the invite, but any mutation (actually creating the connection) must happen only via an authenticated POST after the owner confirms.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `url` | string | yes | — | URL of the federation spec the app implements (e.g. a spec document in the app's repo) |
+| `connect_path` | string | no | `/federation/connect` | Path on the app's URL serving its connect/confirm page. Must start with `/`. |
+
 
 ## Data Directory Structure
 

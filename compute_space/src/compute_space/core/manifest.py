@@ -178,6 +178,10 @@ class AppManifest:
     # Convenience shorthand: equivalent to access_all_app_data + access_all_archive.
     access_all_data: bool = False
 
+    # [federation]
+    federation_url: str | None = None
+    federation_connect_path: str = "/federation/connect"
+
     # [services.v2]
     provides_services_v2: list[ServiceProvides] = attr.Factory(list)
 
@@ -371,6 +375,22 @@ def _parse_services_v2_consumes(data: dict[str, Any]) -> list[ServiceConsumes]:
     return perms
 
 
+def _parse_federation(data: dict[str, Any]) -> tuple[str | None, str]:
+    """Parse the optional [federation] section: (url, connect_path)."""
+    if "federation" not in data:
+        return None, "/federation/connect"
+    federation = data["federation"]
+    if not isinstance(federation, dict):
+        raise ValueError("[federation] must be a table")
+    url = federation.get("url")
+    if not url or not isinstance(url, str):
+        raise ValueError("[federation] requires a non-empty string 'url'")
+    connect_path = federation.get("connect_path", "/federation/connect")
+    if not isinstance(connect_path, str) or not connect_path.startswith("/"):
+        raise ValueError("[federation].connect_path must be a string starting with '/'")
+    return url, connect_path
+
+
 def parse_manifest_from_string(raw_text: str) -> AppManifest:
     """Parse an openhost.toml manifest from its string content."""
     data = tomllib.loads(raw_text)
@@ -409,6 +429,8 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
             app_name,
         )
 
+    federation_url, federation_connect_path = _parse_federation(data)
+
     _compat_all_data = data_section.get("access_all_data", False)
     return AppManifest(
         name=app_name,
@@ -439,6 +461,8 @@ def parse_manifest_from_string(raw_text: str) -> AppManifest:
         access_all_data=_compat_all_data,
         access_all_app_data=data_section.get("access_all_app_data", False) or _compat_all_data,
         access_all_archive=data_section.get("access_all_archive", False) or _compat_all_data,
+        federation_url=federation_url,
+        federation_connect_path=federation_connect_path,
         provides_services_v2=_parse_services_v2(data),
         consumes_services_v2=_parse_services_v2_consumes(data),
         raw_toml=raw_text,
