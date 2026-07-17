@@ -614,3 +614,33 @@ def test_storage_summary_non_archive_app_no_warn(cfg, db):
     s = archive_backend.storage_summary(_PLAIN_MANIFEST, db)
     assert s.uses_archive is False
     assert s.warnings == []
+
+
+def test_migrate_preserves_ownership(cfg, monkeypatch):
+    """The in-process migration copy must reproduce source uid/gid on the
+    destination, so migrated files stay writable by their owning app
+    container.  We can't really chown as an unprivileged test user, so we
+    capture the os.chown calls and assert the dest paths are chowned to the
+    source's uid/gid."""
+    _write_local_archive_file(cfg, "file-browser", "e2e-test-file.txt", b"hello")
+    src_root = archive_backend.local_archive_dir(cfg)
+    dst_root = os.path.join(cfg.data_root_dir, "app_archive")
+    os.makedirs(dst_root, exist_ok=True)
+
+    src_file = os.path.join(src_root, "file-browser", "e2e-test-file.txt")
+    src_st = os.lstat(src_file)
+
+    chowned: dict[str, tuple[int, int]] = {}
+    real_chown = os.chown
+
+    def fake_chown(path, uid, gid, *a, **k):
+        chowned[os.path.realpath(path)] = (uid, gid)
+        # don't actually chown (unprivileged); record only.
+
+    monkeypatch.setattr(os, "chown", fake_chown)
+    archive_backend._copy_and_verify_in_process(src_root, dst_root)
+    monkeypatch.setattr(os, "chown", real_chown)
+
+    dst_file = os.path.realpath(os.path.join(dst_root, "file-browser", "e2e-test-file.txt"))
+    assert dst_file in chowned, f"dest file was not chowned: {list(chowned)}"
+    assert chowned[dst_file] == (src_st.st_uid, src_st.st_gid)

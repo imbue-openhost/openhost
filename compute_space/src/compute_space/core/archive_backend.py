@@ -654,18 +654,33 @@ class BackendConfigureError(Exception):
 # Python payload run INSIDE ``podman unshare`` to copy the local archive
 # into the JuiceFS mount and verify it.  It must run in the container's
 # user namespace because the archive files are owned by the mapped
-# ``www-data`` subuid (the app writes them through an ``:idmap`` bind
-# mount); the plain ``host`` user that runs compute_space cannot read
-# them, but ``podman unshare`` maps that user to namespace-root which
-# can.  The payload copies src->dst (dirs_exist_ok, preserving mtimes),
-# then verifies every source file exists in the dest with an identical
-# size, printing ``MIGRATE_OK`` on success or ``MIGRATE_FAIL:<detail>``
-# and exiting non-zero otherwise.  It NEVER deletes the source.
+# app subuids (apps write them through an ``:idmap`` bind mount); the
+# plain ``host`` user that runs compute_space cannot read them, but
+# ``podman unshare`` maps that user to namespace-root which can.
+#
+# CRITICAL — ownership preservation: the copy MUST reproduce each
+# source file's uid/gid on the destination.  Otherwise every migrated
+# file ends up owned by namespace-root (0:0) and the app containers —
+# which run as their own mapped uids — can no longer WRITE their own
+# archive data after the switch to S3 (verified: file-browser PUT ->
+# 500).  ``shutil.copy2`` preserves mode+mtime but NOT ownership, so we
+# explicitly ``os.chown`` every destination entry to match its source
+# (dirs included, via a post-walk).  The payload copies src->dst,
+# restores ownership, then verifies every source file exists in the
+# dest with an identical size, printing ``MIGRATE_OK`` on success or
+# ``MIGRATE_FAIL:<detail>`` and exiting non-zero otherwise.  It NEVER
+# deletes the source.
 _MIGRATE_PAYLOAD = r"""
 import os, shutil, sys
 src_root, dst_root = sys.argv[1], sys.argv[2]
 if not os.path.isdir(src_root):
     print("MIGRATE_OK"); sys.exit(0)
+def _chown_like(src_path, dst_path):
+    st = os.lstat(src_path)
+    try:
+        os.chown(dst_path, st.st_uid, st.st_gid, follow_symlinks=False)
+    except OSError:
+        pass
 try:
     for entry in sorted(os.listdir(src_root)):
         src = os.path.join(src_root, entry)
@@ -675,6 +690,15 @@ try:
         else:
             os.makedirs(dst_root, exist_ok=True)
             shutil.copy2(src, dst)
+    # Reproduce ownership across the whole destination tree, matching
+    # each entry to its source counterpart (root, dirs, and files).
+    _chown_like(src_root, dst_root)
+    for dirpath, dirs, files in os.walk(src_root):
+        rel = os.path.relpath(dirpath, src_root)
+        for name in dirs + files:
+            srcp = os.path.join(dirpath, name)
+            dstp = os.path.join(dst_root, name) if rel == "." else os.path.join(dst_root, rel, name)
+            _chown_like(srcp, dstp)
 except Exception as exc:
     print("MIGRATE_FAIL:copy error: %r" % (exc,)); sys.exit(1)
 missing, mismatch = [], []
@@ -750,8 +774,20 @@ def _podman_available() -> bool:
 
 def _copy_and_verify_in_process(src_root: str, dst_root: str) -> None:
     """Pure-Python mirror of ``_MIGRATE_PAYLOAD`` for environments without
-    podman.  Raises on any copy or verification failure; never deletes src."""
+    podman.  Raises on any copy or verification failure; never deletes src.
+
+    Preserves ownership (uid/gid) like the payload does, so migrated files
+    stay writable by their owning app container.  chown may fail when the
+    caller isn't privileged (e.g. plain unit tests) — tolerated there since
+    ownership isn't meaningful in that context."""
     import shutil  # noqa: PLC0415
+
+    def _chown_like(src_path: str, dst_path: str) -> None:
+        st = os.lstat(src_path)
+        try:
+            os.chown(dst_path, st.st_uid, st.st_gid, follow_symlinks=False)
+        except OSError:
+            pass
 
     for entry in sorted(os.listdir(src_root)):
         src = os.path.join(src_root, entry)
@@ -761,6 +797,13 @@ def _copy_and_verify_in_process(src_root: str, dst_root: str) -> None:
         else:
             os.makedirs(dst_root, exist_ok=True)
             shutil.copy2(src, dst)
+    _chown_like(src_root, dst_root)
+    for dirpath, dirs, files in os.walk(src_root):
+        rel = os.path.relpath(dirpath, src_root)
+        for name in dirs + files:
+            srcp = os.path.join(dirpath, name)
+            dstp = os.path.join(dst_root, name) if rel == "." else os.path.join(dst_root, rel, name)
+            _chown_like(srcp, dstp)
     missing: list[str] = []
     mismatch: list[str] = []
     for dirpath, _dirs, files in os.walk(src_root):
