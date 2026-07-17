@@ -653,9 +653,59 @@ class BackendConfigureError(Exception):
     """Raised by ``configure_backend`` when configuration fails."""
 
 
+# Python payload run INSIDE ``podman unshare`` to copy the local archive
+# into the JuiceFS mount and verify it.  It must run in the container's
+# user namespace because the archive files are owned by the mapped
+# ``www-data`` subuid (the app writes them through an ``:idmap`` bind
+# mount); the plain ``host`` user that runs compute_space cannot read
+# them, but ``podman unshare`` maps that user to namespace-root which
+# can.  The payload copies src->dst (dirs_exist_ok, preserving mtimes),
+# then verifies every source file exists in the dest with an identical
+# size, printing ``MIGRATE_OK`` on success or ``MIGRATE_FAIL:<detail>``
+# and exiting non-zero otherwise.  It NEVER deletes the source.
+_MIGRATE_PAYLOAD = r"""
+import os, shutil, sys
+src_root, dst_root = sys.argv[1], sys.argv[2]
+if not os.path.isdir(src_root):
+    print("MIGRATE_OK"); sys.exit(0)
+try:
+    for entry in sorted(os.listdir(src_root)):
+        src = os.path.join(src_root, entry)
+        dst = os.path.join(dst_root, entry)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy2)
+        else:
+            os.makedirs(dst_root, exist_ok=True)
+            shutil.copy2(src, dst)
+except Exception as exc:
+    print("MIGRATE_FAIL:copy error: %r" % (exc,)); sys.exit(1)
+missing, mismatch = [], []
+for dirpath, _dirs, files in os.walk(src_root):
+    rel = os.path.relpath(dirpath, src_root)
+    for fname in files:
+        sf = os.path.join(dirpath, fname)
+        df = os.path.join(dst_root, fname) if rel == "." else os.path.join(dst_root, rel, fname)
+        if not os.path.isfile(df):
+            missing.append(os.path.join(rel, fname)); continue
+        try:
+            if os.path.getsize(sf) != os.path.getsize(df):
+                mismatch.append(os.path.join(rel, fname))
+        except OSError as exc:
+            mismatch.append("%s (%s)" % (os.path.join(rel, fname), exc))
+if missing or mismatch:
+    print("MIGRATE_FAIL:verify failed; missing=%s mismatch=%s" % (missing[:10], mismatch[:10]))
+    sys.exit(1)
+print("MIGRATE_OK")
+"""
+
+
 def _migrate_local_archive_into_mount(config: Config) -> None:
     """Copy every byte of the local archive dir into the (freshly mounted)
     JuiceFS mount, then verify the copy before the caller commits the switch.
+
+    Runs the copy + verify inside ``podman unshare`` because the archive
+    files are owned by the container-mapped ``www-data`` subuid and are not
+    readable by the plain ``host`` user this process runs as.
 
     FAIL-OPEN CONTRACT: this must either fully succeed or raise.  It never
     deletes the local source — the caller deletes it only AFTER the DB row
@@ -666,50 +716,79 @@ def _migrate_local_archive_into_mount(config: Config) -> None:
 
     Verification: after copying, every regular file present in the source
     must exist in the destination with an identical size.  A mismatch (short
-    copy, JuiceFS write error, etc.) raises so the migration aborts.
+    copy, JuiceFS write error, etc.) makes the payload exit non-zero so the
+    migration aborts.
     """
-    import shutil  # noqa: PLC0415 -- only needed on the migration path
-
     src_root = local_archive_dir(config)
     dst_root = juicefs_mount_dir(config)
     if not os.path.isdir(src_root):
         return  # nothing to migrate
 
-    # Copy per top-level entry so a partial failure is easy to reason about.
+    if _podman_available():
+        # ``podman unshare`` enters the rootless user namespace so we can
+        # read the mapped-uid files.  Generous but bounded timeout: large
+        # archives on slow S3 links take a while, but a wedged copy must
+        # not hang the configure request forever.
+        cmd = ["podman", "unshare", "python3", "-c", _MIGRATE_PAYLOAD, src_root, dst_root]
+        logger.info("migrating local archive %s -> %s (via podman unshare)", src_root, dst_root)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 60 * 60)
+        out = (result.stdout or "").strip()
+        if result.returncode != 0 or "MIGRATE_OK" not in out:
+            detail = out or (result.stderr or "").strip() or f"exit {result.returncode}"
+            raise RuntimeError(
+                f"local->S3 archive migration failed: {detail} (local archive data left intact)"
+            )
+        return
+
+    # No podman (e.g. unit tests, or a non-rootless deployment): run the
+    # same copy+verify in-process.  Ownership isn't an obstacle here.
+    _copy_and_verify_in_process(src_root, dst_root)
+
+
+def _podman_available() -> bool:
+    try:
+        return (
+            subprocess.run(
+                ["podman", "--version"], capture_output=True, timeout=10
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _copy_and_verify_in_process(src_root: str, dst_root: str) -> None:
+    """Pure-Python mirror of ``_MIGRATE_PAYLOAD`` for environments without
+    podman.  Raises on any copy or verification failure; never deletes src."""
+    import shutil  # noqa: PLC0415
+
     for entry in sorted(os.listdir(src_root)):
         src = os.path.join(src_root, entry)
         dst = os.path.join(dst_root, entry)
         if os.path.isdir(src):
-            # dirs_exist_ok so a retry after a partial run doesn't explode;
-            # copy2 preserves mtimes so Nextcloud-style scanners don't see
-            # everything as "just modified".
             shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy2)
         else:
             os.makedirs(dst_root, exist_ok=True)
             shutil.copy2(src, dst)
-
-    # Verify: walk the source and confirm each file exists in the dest with
-    # the same size.  (We compare size rather than full content hashes to
-    # keep large archives fast; JuiceFS reports accurate sizes once written.)
     missing: list[str] = []
-    size_mismatch: list[str] = []
+    mismatch: list[str] = []
     for dirpath, _dirs, files in os.walk(src_root):
         rel = os.path.relpath(dirpath, src_root)
         for fname in files:
-            src_file = os.path.join(dirpath, fname)
-            dst_file = os.path.join(dst_root, rel, fname) if rel != "." else os.path.join(dst_root, fname)
-            if not os.path.isfile(dst_file):
+            sf = os.path.join(dirpath, fname)
+            df = os.path.join(dst_root, fname) if rel == "." else os.path.join(dst_root, rel, fname)
+            if not os.path.isfile(df):
                 missing.append(os.path.join(rel, fname))
                 continue
             try:
-                if os.path.getsize(src_file) != os.path.getsize(dst_file):
-                    size_mismatch.append(os.path.join(rel, fname))
+                if os.path.getsize(sf) != os.path.getsize(df):
+                    mismatch.append(os.path.join(rel, fname))
             except OSError as exc:
-                size_mismatch.append(f"{os.path.join(rel, fname)} ({exc})")
-    if missing or size_mismatch:
+                mismatch.append(f"{os.path.join(rel, fname)} ({exc})")
+    if missing or mismatch:
         raise RuntimeError(
             "local->S3 archive migration verification failed; "
-            f"missing={missing[:10]} size_mismatch={size_mismatch[:10]} "
+            f"missing={missing[:10]} mismatch={mismatch[:10]} "
             "(local archive data left intact)"
         )
 

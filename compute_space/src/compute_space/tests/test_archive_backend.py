@@ -487,6 +487,7 @@ def test_configure_backend_migrates_local_to_s3(cfg, db, tmp_path):
         mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
         mock.patch.object(archive_backend, "format_volume"),
         mock.patch.object(archive_backend, "mount", side_effect=fake_mount),
+        mock.patch.object(archive_backend, "_podman_available", return_value=False),
     ):
         configure_backend(
             cfg, db,
@@ -561,7 +562,9 @@ def test_migrate_verify_detects_short_copy(cfg):
         mock.patch("shutil.copy2"),
     ):
         with pytest.raises(RuntimeError, match="verification failed"):
-            archive_backend._migrate_local_archive_into_mount(cfg)
+            archive_backend._copy_and_verify_in_process(
+                archive_backend.local_archive_dir(cfg), mount_dir
+            )
     # Source intact regardless.
     src = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files", "big.bin")
     assert os.path.getsize(src) == 1000
