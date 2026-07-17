@@ -115,25 +115,27 @@ def local_archive_has_data(config: Config) -> bool:
     return False
 
 
-def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> dict[str, Any]:
-    """Summarise the storage tiers an app will use, for the install screen.
+@attr.s(auto_attribs=True, frozen=True)
+class StorageSummary:
+    """The storage tiers an app will use, for the install screen.
 
     Mirrors the way permissions are surfaced before install: the operator
     sees, up front, which storage tiers the app touches and — crucially —
     whether its archive data will land on durable S3 or on non-durable
     LOCAL disk (so they can decide to configure S3 first if they care).
-
-    Returns a JSON-friendly dict:
-        {
-          "app_data": bool,          # local, backed-up permanent data
-          "app_temp_data": bool,     # local scratch, not backed up
-          "uses_archive": bool,      # app_archive OR access_all_archive/all_data
-          "requires_archive": bool,  # hard app_archive requirement
-          "archive_backend": "local"|"s3"|"disabled",
-          "archive_is_durable": bool,# True only when backend == "s3"
-          "warnings": [str, ...],
-        }
     """
+
+    app_data: bool  # local, backed-up permanent data
+    app_temp_data: bool  # local scratch, not backed up
+    uses_archive: bool  # app_archive OR access_all_archive / access_all_data
+    requires_archive: bool  # hard app_archive requirement
+    archive_backend: str  # "local" | "s3" | "disabled"
+    archive_is_durable: bool  # True only when backend == "s3"
+    warnings: list[str]
+
+
+def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary:
+    """Build the :class:`StorageSummary` for an app's manifest + current backend."""
     data = _data_section(manifest_raw)
     requires = bool(data.get("app_archive"))
     uses = bool(
@@ -151,15 +153,15 @@ def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> dict[str, Any]
             "durable, elastic storage; existing local data is migrated into S3 when "
             "you do."
         )
-    return {
-        "app_data": bool(data.get("app_data", True)) or bool(data.get("sqlite")) or bool(data.get("access_all_app_data")),
-        "app_temp_data": bool(data.get("app_temp_data")) or bool(data.get("access_all_app_data")),
-        "uses_archive": uses,
-        "requires_archive": requires,
-        "archive_backend": backend,
-        "archive_is_durable": durable,
-        "warnings": warnings,
-    }
+    return StorageSummary(
+        app_data=bool(data.get("app_data", True)) or bool(data.get("sqlite")) or bool(data.get("access_all_app_data")),
+        app_temp_data=bool(data.get("app_temp_data")) or bool(data.get("access_all_app_data")),
+        uses_archive=uses,
+        requires_archive=requires,
+        archive_backend=backend,
+        archive_is_durable=durable,
+        warnings=warnings,
+    )
 
 
 def local_archive_apps_with_data(config: Config) -> list[str]:

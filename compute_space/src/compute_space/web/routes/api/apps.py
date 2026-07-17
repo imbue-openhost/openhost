@@ -90,7 +90,7 @@ class CloneInfoResponse:
     # Storage tiers the app will use + any operator-facing notices (e.g.
     # "archive data will land on non-durable local disk").  Surfaced on the
     # install screen alongside permissions.  See archive_backend.storage_summary.
-    storage: dict[str, Any] = attr.Factory(dict)
+    storage: archive_backend.StorageSummary | None = None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -778,8 +778,15 @@ async def remove_app(
     return Response(content=OkResponse(ok=True), status_code=202, media_type=MediaType.JSON)
 
 
-def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> str | None:
+def _rename_app_storage_dirs(
+    config: Config, old_name: str, new_name: str, archive_dir: str
+) -> str | None:
     """Rename per-app subdirs across the three storage tiers, with rollback on partial failure.
+
+    ``archive_dir`` is the EFFECTIVE archive parent for the current backend
+    (local dir for backend='local', JuiceFS mountpoint for 's3', absent for
+    legacy 'disabled') — pass ``archive_backend.effective_archive_dir``.
+    Getting this wrong orphans an app's archive data under its old name.
 
     Returns ``None`` on success or an error message on failure. Sync helper
     so the blocking renames (which can be slow on JuiceFS) stay off the
@@ -792,11 +799,12 @@ def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str) -> st
     for parent in rename_parents:
         if not os.path.isdir(parent):
             return f"Storage parent {parent!r} is not a directory; refusing to rename so per-app data isn't orphaned."
-    # The archive parent only exists when the operator has configured S3 +
-    # JuiceFS is mounted; skip it cleanly otherwise (apps with app_archive=true
-    # are blocked from install on disabled zones, so this is harmless).
-    if os.path.isdir(config.app_archive_dir):
-        rename_parents.append(config.app_archive_dir)
+    # The archive parent exists whenever the archive tier is active for this
+    # zone: always for backend='local' (created at boot/provision) and for
+    # 's3' once JuiceFS is mounted.  Skip it cleanly only on a legacy
+    # 'disabled' zone where the mountpoint never gets created.
+    if os.path.isdir(archive_dir):
+        rename_parents.append(archive_dir)
     renamed: list[tuple[str, str]] = []
     try:
         for parent in rename_parents:
@@ -893,6 +901,7 @@ async def rename_app(
         config,
         old_name,
         new_name,
+        archive_backend.effective_archive_dir(config, db),
     )
     if rename_error is not None:
         rollback_db_error: str | None = None

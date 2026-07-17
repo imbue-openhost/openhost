@@ -576,24 +576,24 @@ _PLAIN_MANIFEST = 'name="x"\n[data]\napp_data=true\n'
 
 def test_storage_summary_local_backend_warns(cfg, db):
     s = archive_backend.storage_summary(_ARCHIVE_MANIFEST, db)
-    assert s["uses_archive"] is True
-    assert s["requires_archive"] is True
-    assert s["archive_backend"] == "local"
-    assert s["archive_is_durable"] is False
-    assert len(s["warnings"]) == 1
-    assert "LOCAL" in s["warnings"][0]
+    assert s.uses_archive is True
+    assert s.requires_archive is True
+    assert s.archive_backend == "local"
+    assert s.archive_is_durable is False
+    assert len(s.warnings) == 1
+    assert "LOCAL" in s.warnings[0]
 
 
 def test_storage_summary_s3_backend_no_warn(cfg, db):
     db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
     db.commit()
     s = archive_backend.storage_summary(_ARCHIVE_MANIFEST, db)
-    assert s["archive_backend"] == "s3"
-    assert s["archive_is_durable"] is True
-    assert s["warnings"] == []
+    assert s.archive_backend == "s3"
+    assert s.archive_is_durable is True
+    assert s.warnings == []
 
 
 def test_storage_summary_non_archive_app_no_warn(cfg, db):
     s = archive_backend.storage_summary(_PLAIN_MANIFEST, db)
-    assert s["uses_archive"] is False
-    assert s["warnings"] == []
+    assert s.uses_archive is False
+    assert s.warnings == []
