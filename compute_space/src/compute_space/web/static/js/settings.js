@@ -455,6 +455,12 @@ function renderArchiveBackend(state) {
     rows += '<tr><th>Durability</th><td><span class="error">Local disk only.</span> '
       + 'Archive data is kept on this instance and included in backups, but is NOT on '
       + 'durable object storage. Configure S3 below for elastic, durable storage.</td></tr>';
+    var apps = state.local_archive_apps || [];
+    if (apps.length) {
+      rows += '<tr><th>Apps with local archive data</th><td>'
+        + apps.map(function(a){ return '<code>' + escSettingsHtml(a) + '</code>'; }).join(', ')
+        + '<div class="hint">Configuring S3 will migrate these apps\u2019 archive data into the bucket.</div></td></tr>';
+    }
   } else {
     // Legacy pre-v12 'disabled' state (no archive tier).
     rows += '<tr><th>Backend</th>'
@@ -488,10 +494,15 @@ function showConfigureForm(state) {
   state = state || {};
   var formEl = document.getElementById('archive-backend-form');
   var migrateNote = '';
+  var localApps = (state.local_archive_apps || []);
   if (state.backend === 'local') {
+    var appsLine = localApps.length
+      ? ' Apps whose archive data will be migrated: ' + localApps.map(function(a){ return '<code>' + escSettingsHtml(a) + '</code>'; }).join(', ') + '.'
+      : ' There is no local archive data yet, so nothing will be migrated.';
     migrateNote = '<p class="error"><strong>This migrates your existing LOCAL archive data into S3.</strong> '
       + 'The data is copied into the bucket and verified before the switch; if anything fails the switch is aborted and your local data is left intact (fail-open). '
-      + 'After a successful migration the local copy is removed and the switch to S3 is <strong>one-way</strong>.</p>';
+      + 'After a successful migration the local copy is removed and the switch to S3 is <strong>one-way</strong>.'
+      + appsLine + '</p>';
   }
   formEl.innerHTML = '<p><strong>Configure S3 archive storage.</strong> JuiceFS will format the bucket and mount it locally; this is a one-time operation.</p>'
     + migrateNote
@@ -505,7 +516,11 @@ function showConfigureForm(state) {
     + '<tr><th><label for="ab-access-key">Access key ID</label></th><td><input id="ab-access-key" type="text"></td></tr>'
     + '<tr><th><label for="ab-secret-key">Secret access key</label></th><td><input id="ab-secret-key" type="password"></td></tr>'
     + '</tbody></table>'
-    + '<p><label><input type="checkbox" id="ab-confirm"> I understand the S3 archive backend is experimental and that reconfiguration is not supported.</label></p>'
+    + '<p><label><input type="checkbox" id="ab-confirm"> I understand the S3 archive backend is experimental, that reconfiguration is not supported, and'
+    + (state.backend === 'local'
+        ? ' that my existing local archive data will be migrated into S3 and the local copy removed.'
+        : ' that this configures S3 for the archive tier.')
+    + '</label></p>'
     + '<div class="control-row">'
     + '<button class="btn" id="ab-test-btn">Test connection</button>'
     + '<button class="btn btn-primary" id="ab-submit-btn">Configure</button>'

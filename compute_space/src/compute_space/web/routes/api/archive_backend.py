@@ -45,6 +45,10 @@ class BackendStateResponse:
     archive_dir: str | None
     meta_db_path: str
     meta_dumps: MetaDumpsSummary | None
+    # On backend='local': the apps that currently have data in the local
+    # archive dir.  Surfaced so the dashboard can tell the operator exactly
+    # whose data an S3 upgrade will migrate.  Empty/omitted for other backends.
+    local_archive_apps: list[str] = attr.Factory(list)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -64,7 +68,11 @@ class ErrorResponse:
 
 
 def _state_to_response(
-    state: BackendState, archive_dir: str | None, meta_db_path: str, meta_dumps: MetaDumpsSummary | None
+    state: BackendState,
+    archive_dir: str | None,
+    meta_db_path: str,
+    meta_dumps: MetaDumpsSummary | None,
+    local_archive_apps: list[str] | None = None,
 ) -> BackendStateResponse:
     return BackendStateResponse(
         backend=state.backend,
@@ -79,6 +87,7 @@ def _state_to_response(
         archive_dir=archive_dir,
         meta_db_path=meta_db_path,
         meta_dumps=meta_dumps,
+        local_archive_apps=local_archive_apps or [],
     )
 
 
@@ -159,7 +168,12 @@ async def get_archive_backend(db: sqlite3.Connection, config: Config) -> Backend
                 latest_at=summary.latest_at,
                 latest_key=summary.latest_key,
             )
-    return _state_to_response(state, archive_dir, meta_db_path, meta_dumps)
+    local_apps = (
+        archive_backend.local_archive_apps_with_data(config)
+        if state.backend == "local"
+        else []
+    )
+    return _state_to_response(state, archive_dir, meta_db_path, meta_dumps, local_apps)
 
 
 @post("/api/storage/archive_backend/test_connection", status_code=200, guards=[require_owner_auth])
@@ -205,10 +219,11 @@ async def configure_archive_backend(
             status_code=409,
         )
 
-    # Guard the destructive-ish local->S3 migration behind an explicit
-    # acknowledgement when there is actually local data to migrate.  The
-    # dashboard surfaces which apps have data and the fail-open/one-way
-    # semantics; the API refuses to proceed until the operator confirms.
+    # Guard the local->S3 migration behind an explicit acknowledgement when
+    # there is actually local data to migrate.  The dashboard shows which
+    # apps have data (from local_archive_apps in the GET state) and the
+    # fail-open/one-way semantics before ticking the confirm box; the API
+    # refuses to proceed (409, listing the apps) until the operator confirms.
     if state.backend == "local" and archive_backend.local_archive_has_data(config):
         if not data.confirm_migrate_local:
             apps = archive_backend.local_archive_apps_with_data(config)

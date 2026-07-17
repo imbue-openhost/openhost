@@ -522,3 +522,20 @@ def test_configure_requires_confirm_when_local_has_data(
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["backend"] == "s3"
+
+
+def test_get_surfaces_local_archive_apps(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    """On backend='local', the GET state lists apps with local archive data
+    so the dashboard can show whose data an S3 upgrade would migrate."""
+    app_dir = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files")
+    os.makedirs(app_dir, exist_ok=True)
+    with open(os.path.join(app_dir, "f.txt"), "wb") as f:
+        f.write(b"x")
+    resp = client.get("/api/storage/archive_backend", cookies=cookies)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["backend"] == "local"
+    assert body["local_archive_apps"] == ["nextcloud"]
+    assert body["archive_dir"] == archive_backend.local_archive_dir(cfg)
