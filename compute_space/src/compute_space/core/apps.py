@@ -630,6 +630,38 @@ def _sync_port_mappings(
             )
 
 
+def restart_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
+    """Stop+start every RUNNING app that uses the archive tier.
+
+    Called after a local->S3 archive migration: an app's archive bind mount
+    is chosen (from ``effective_archive_dir``) at CONTAINER START, so an app
+    that was started while the backend was 'local' still has its container
+    mounted at the old local path.  After the switch to S3 (which also
+    removes the local dir) those apps must be recycled so their containers
+    re-mount the JuiceFS source; otherwise their archive writes fail.
+
+    Returns the list of app names that were restarted.  Best-effort per app:
+    a failure to recycle one app is logged and doesn't block the others.
+    """
+    rows = db.execute("SELECT app_id, name, status, manifest_raw FROM apps").fetchall()
+    restarted: list[str] = []
+    for row in rows:
+        if row["status"] != "running":
+            continue
+        if not archive_backend.manifest_uses_archive(row["manifest_raw"] or ""):
+            continue
+        app_id = row["app_id"]
+        name = row["name"]
+        try:
+            logger.info("recycling archive-using app %s after archive migration", name)
+            stop_app_process(row)
+            start_app_process(app_id, db, config)
+            restarted.append(name)
+        except Exception:
+            logger.exception("failed to recycle app %s after archive migration", name)
+    return restarted
+
+
 def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> None:
     """Start the process for an app. Updates DB with status and container id."""
     app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()

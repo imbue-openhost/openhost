@@ -250,7 +250,9 @@ async def configure_archive_backend(
 
     def _run() -> None:
         worker_db = sqlite3.connect(db_path)
+        worker_db.row_factory = sqlite3.Row
         try:
+            was_local = archive_backend.read_state(worker_db).backend == "local"
             archive_backend.configure_backend(
                 config,
                 worker_db,
@@ -262,6 +264,16 @@ async def configure_archive_backend(
                 s3_secret_access_key=data.s3_secret_access_key,
                 juicefs_volume_name=volume_name,
             )
+            # After a local->S3 migration the archive dir moved from the
+            # local path to the JuiceFS mount, and the old local dir was
+            # removed.  Running archive-using apps still have their
+            # containers bind-mounted at the OLD path, so recycle them to
+            # re-mount the JuiceFS source (otherwise their archive writes
+            # 500).  Imported lazily to avoid a core<-web import cycle.
+            if was_local:
+                from compute_space.core.apps import restart_archive_apps  # noqa: PLC0415
+
+                restart_archive_apps(worker_db, config)
         finally:
             worker_db.close()
 

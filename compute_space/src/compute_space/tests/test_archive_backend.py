@@ -12,6 +12,7 @@ from unittest import mock
 
 import pytest
 
+from compute_space.core import apps as apps_mod
 from compute_space.core import archive_backend
 from compute_space.core.archive_backend import BackendConfigureError
 from compute_space.core.archive_backend import configure_backend
@@ -644,3 +645,36 @@ def test_migrate_preserves_ownership(cfg, monkeypatch):
     dst_file = os.path.realpath(os.path.join(dst_root, "file-browser", "e2e-test-file.txt"))
     assert dst_file in chowned, f"dest file was not chowned: {list(chowned)}"
     assert chowned[dst_file] == (src_st.st_uid, src_st.st_gid)
+
+
+def test_restart_archive_apps_only_recycles_running_archive_apps(cfg, db):
+    """After a migration, restart_archive_apps must recycle exactly the
+    RUNNING apps whose manifest uses the archive tier — not stopped apps,
+    not non-archive apps."""
+    db.row_factory = sqlite3.Row  # restart_archive_apps reads rows by column name
+
+    def _seed(app_id, name, status, manifest_raw, port):
+        db.execute(
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
+            "VALUES (?, ?, '1.0', ?, ?, ?, ?)",
+            (app_id, name, f"/tmp/{name}", port, status, manifest_raw),
+        )
+        db.commit()
+
+    arch = 'name="a"\n[data]\napp_archive=true\n'
+    plain = 'name="b"\n[data]\napp_data=true\n'
+    _seed("id_arch_run", "arch-run", "running", arch, 20401)
+    _seed("id_arch_stop", "arch-stop", "stopped", arch, 20402)
+    _seed("id_plain_run", "plain-run", "running", plain, 20403)
+
+    with (
+        mock.patch.object(apps_mod, "stop_app_process") as stop,
+        mock.patch.object(apps_mod, "start_app_process") as start,
+    ):
+        restarted = apps_mod.restart_archive_apps(db, cfg)
+
+    assert restarted == ["arch-run"]
+    assert stop.call_count == 1
+    assert start.call_count == 1
+    # started the right app_id
+    assert start.call_args.args[0] == "id_arch_run"
