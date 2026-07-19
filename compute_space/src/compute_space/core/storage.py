@@ -16,12 +16,87 @@ import sqlite3
 import threading
 import time
 
+import attr
+
 from compute_space.config import Config
 from compute_space.core.containers import container_image_storage_bytes
 from compute_space.core.containers import stop_app_process
 from compute_space.core.logging import logger
 
 _MIB = 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Runtime-configurable settings (persisted in the storage_settings table)
+#
+# The storage guard used to be configured only via the ``storage_min_free_mb``
+# router config key (env/TOML), read once at startup — no UI, restart required
+# to change. It is now runtime-configurable from the System page: the enabled
+# flag and the MB threshold live in a single-row ``storage_settings`` table and
+# are read fresh on every guard check, so changes take effect without a
+# restart.
+# ---------------------------------------------------------------------------
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class StorageSettings:
+    enabled: bool
+    min_free_mb: int
+
+
+def read_storage_settings(db: sqlite3.Connection) -> StorageSettings:
+    """Read the guard settings from the single-row storage_settings table.
+
+    Falls back to (disabled, 0) if the row is somehow missing (migrations
+    seed it, so this is only defensive).
+    """
+    row = db.execute("SELECT enabled, min_free_mb FROM storage_settings WHERE id = 1").fetchone()
+    if row is None:
+        return StorageSettings(enabled=False, min_free_mb=0)
+    return StorageSettings(enabled=bool(row[0]), min_free_mb=int(row[1]))
+
+
+def write_storage_settings(db: sqlite3.Connection, *, enabled: bool, min_free_mb: int) -> StorageSettings:
+    """Persist the guard settings. ``min_free_mb`` must be >= 0."""
+    if min_free_mb < 0:
+        raise ValueError("min_free_mb must be >= 0")
+    db.execute(
+        "UPDATE storage_settings SET enabled = ?, min_free_mb = ? WHERE id = 1",
+        (1 if enabled else 0, int(min_free_mb)),
+    )
+    db.commit()
+    return StorageSettings(enabled=enabled, min_free_mb=int(min_free_mb))
+
+
+def seed_storage_settings_from_config(config: Config) -> None:
+    """One-time seed: if the guard has never been configured (min_free_mb = 0
+    and disabled) but the legacy ``storage_min_free_mb`` config value is set
+    (> 0), adopt it so operators who relied on the config keep their behavior.
+
+    Idempotent: only fires when the persisted row is still at its fresh
+    default. A later edit from the UI (even back to 0/disabled) is a real
+    choice and is never overwritten, because once seeded min_free_mb is
+    non-zero, or enabled has been toggled at least once. We treat "row exactly
+    equals the fresh default AND config has a positive legacy value" as the
+    only seed trigger.
+    """
+    legacy_mb = int(config.storage_min_free_mb)
+    if legacy_mb <= 0:
+        return
+    db = sqlite3.connect(config.db_path)
+    try:
+        current = read_storage_settings(db)
+        # Only seed a pristine row (fresh default). If an owner has already
+        # touched the setting (enabled it, or set any threshold), respect that.
+        if current.enabled or current.min_free_mb != 0:
+            return
+        write_storage_settings(db, enabled=True, min_free_mb=legacy_mb)
+        logger.info(
+            "Seeded storage guard from legacy config storage_min_free_mb=%d (enabled)",
+            legacy_mb,
+        )
+    finally:
+        db.close()
 
 # ---------------------------------------------------------------------------
 # Guard state
@@ -104,11 +179,22 @@ def _dir_size_bytes(path: str) -> int:
 
 
 def storage_min_free_bytes(config: Config) -> int | None:
-    """Return the configured minimum free space in bytes, or None if not set."""
-    limit = int(config.storage_min_free_mb)
-    if limit <= 0:
+    """Return the effective minimum free space in bytes, or None if the guard
+    is disabled / unset.
+
+    Reads the runtime settings from the storage_settings table. The guard is
+    active only when ``enabled`` is true AND ``min_free_mb`` is > 0. Opening a
+    short-lived connection here keeps every existing caller's ``(config)``
+    signature unchanged while making the threshold live-configurable.
+    """
+    db = sqlite3.connect(config.db_path)
+    try:
+        settings = read_storage_settings(db)
+    finally:
+        db.close()
+    if not settings.enabled or settings.min_free_mb <= 0:
         return None
-    return limit * _MIB
+    return settings.min_free_mb * _MIB
 
 
 def disk_free_bytes(config: Config) -> int:
@@ -188,6 +274,12 @@ def storage_status(config: Config) -> dict[str, object]:
 
     disk = shutil.disk_usage(config.data_root_dir)
 
+    db = sqlite3.connect(config.db_path)
+    try:
+        settings = read_storage_settings(db)
+    finally:
+        db.close()
+
     min_free = storage_min_free_bytes(config)
 
     # The app_data total is derived from the per-app walk rather than walked
@@ -207,6 +299,9 @@ def storage_status(config: Config) -> dict[str, object]:
         "storage_min_free_bytes": min_free,
         "storage_low": storage_low(config),
         "guard_paused": is_guard_paused(),
+        # Runtime-configurable guard settings (for the System page controls).
+        "guard_enabled": settings.enabled,
+        "guard_min_free_mb": settings.min_free_mb,
     }
 
 
@@ -276,10 +371,12 @@ def _storage_guard_loop(config: Config) -> None:
 def start_storage_guard(config: Config) -> None:
     """Start the storage guard daemon thread (once per db_path).
 
-    Only starts if a minimum free space threshold is configured.
+    The thread always starts now: the guard is runtime-configurable from the
+    System page, so the loop must be running to react when an owner enables it
+    later. Each iteration re-reads the persisted settings and is a cheap no-op
+    while the guard is disabled or its threshold is unset (see
+    ``enforce_storage_guard`` / ``_check_min_free``).
     """
-    if storage_min_free_bytes(config) is None:
-        return
     db_key = os.path.abspath(config.db_path)
     if db_key in _guard_db_paths:
         return

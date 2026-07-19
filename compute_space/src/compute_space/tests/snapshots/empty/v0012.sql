@@ -79,7 +79,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
-INSERT INTO "schema_version" VALUES(1,11);
+INSERT INTO "schema_version" VALUES(1,12);
 CREATE TABLE "service_defaults" (
                 service_url TEXT PRIMARY KEY,
                 app_id TEXT NOT NULL,
@@ -98,6 +98,12 @@ CREATE TABLE sessions (
     user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL
 );
+CREATE TABLE storage_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    min_free_mb INTEGER NOT NULL DEFAULT 0 CHECK (min_free_mb >= 0)
+);
+INSERT INTO "storage_settings" VALUES(1,0,0);
 CREATE TABLE users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,

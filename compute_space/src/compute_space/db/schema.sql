@@ -137,3 +137,16 @@ CREATE TABLE IF NOT EXISTS archive_backend (
 );
 
 INSERT OR IGNORE INTO archive_backend (id) VALUES (1);
+
+-- Storage guard settings.  Single-row table.  Fresh zones come up with the
+-- guard disabled (enabled=0, min_free_mb=0); an owner enables it and sets a
+-- minimum-free-MB threshold from the System page at runtime (no restart).
+-- When enabled and free disk drops below the threshold, running apps are
+-- stopped until space is freed.
+CREATE TABLE IF NOT EXISTS storage_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    min_free_mb INTEGER NOT NULL DEFAULT 0 CHECK (min_free_mb >= 0)
+);
+
+INSERT OR IGNORE INTO storage_settings (id, enabled, min_free_mb) VALUES (1, 0, 0);

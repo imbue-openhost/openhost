@@ -27,6 +27,7 @@ from compute_space.core.auth.identity import load_identity_keys
 from compute_space.core.logging import logger
 from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
+from compute_space.core.storage import seed_storage_settings_from_config
 from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import get_db
@@ -116,6 +117,7 @@ def _full_app_bootstrap(config: Config) -> None:
         db.close()
     check_app_status(config)
     load_identity_keys(config.persistent_data_dir)
+    seed_storage_settings_from_config(config)
     start_storage_guard(config)
     retry_pending_default_apps(config)
 

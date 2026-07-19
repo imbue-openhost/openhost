@@ -91,6 +91,73 @@ function toggleStorageGuard(pause) {
   }).then(function() { updateStorageStatus(); });
 }
 
+// Enable/disable the storage guard and set its minimum-free-MB threshold.
+// Reads the values from the controls rendered by renderStorageGuardSettings.
+function saveStorageSettings() {
+  var enabled = document.getElementById('guard-enabled').checked;
+  var mbInput = document.getElementById('guard-min-free-mb');
+  var mb = parseInt(mbInput.value, 10);
+  var msgEl = document.getElementById('guard-settings-msg');
+  msgEl.textContent = '';
+  msgEl.className = 'hint';
+  if (isNaN(mb) || mb < 0) {
+    msgEl.textContent = 'Enter a minimum free space of 0 MB or more.';
+    msgEl.className = 'error';
+    return;
+  }
+  if (enabled && mb <= 0) {
+    msgEl.textContent = 'Set a minimum free space greater than 0 MB to enable the guard.';
+    msgEl.className = 'error';
+    return;
+  }
+  var btn = document.getElementById('guard-save-btn');
+  btn.disabled = true;
+  fetch(config.storageSettingsUrl, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: enabled, min_free_mb: mb}),
+  }).then(function(r) {
+    return r.json().then(function(body) { return {ok: r.ok, body: body}; });
+  }).then(function(res) {
+    btn.disabled = false;
+    if (!res.ok) {
+      msgEl.textContent = (res.body && res.body.error) || 'Could not save settings.';
+      msgEl.className = 'error';
+      return;
+    }
+    msgEl.textContent = 'Saved.';
+    msgEl.className = 'hint';
+    updateStorageStatus();
+  }).catch(function() {
+    btn.disabled = false;
+    msgEl.textContent = 'Could not save settings.';
+    msgEl.className = 'error';
+  });
+}
+
+// Render the guard configuration controls (enable checkbox + MB threshold +
+// save). Shown always, so an owner can turn the guard on even when it is
+// currently off. Reflects the persisted settings from storage-status.
+function renderStorageGuardSettings(data) {
+  var el = document.getElementById('storage-guard-settings');
+  if (!el) return;
+  var enabled = !!data.guard_enabled;
+  var mb = (data.guard_min_free_mb != null) ? data.guard_min_free_mb : 0;
+  el.innerHTML =
+    '<div class="control-row" style="align-items:center;gap:.6rem;flex-wrap:wrap">'
+    + '<label style="display:flex;align-items:center;gap:.4rem">'
+    + '<input type="checkbox" id="guard-enabled"' + (enabled ? ' checked' : '') + '>'
+    + 'Enable storage guard</label>'
+    + '<label style="display:flex;align-items:center;gap:.4rem">Minimum free (MB): '
+    + '<input type="number" id="guard-min-free-mb" min="0" step="1" value="' + escAttr(String(mb))
+    + '" style="width:8em"></label>'
+    + '<button class="btn" id="guard-save-btn" onclick="saveStorageSettings()">Save</button>'
+    + '<span id="guard-settings-msg" class="hint"></span>'
+    + '</div>'
+    + '<div class="hint">When enabled, running apps are stopped if free disk drops below this threshold.</div>';
+}
+
 function escAttr(s) {
   return escHtml(s).replace(/"/g, '&quot;');
 }
@@ -211,6 +278,8 @@ function renderStorageStatus(data) {
   } else {
     guardRow.innerHTML = '';
   }
+
+  renderStorageGuardSettings(data);
 }
 
 // ─── Logs ───

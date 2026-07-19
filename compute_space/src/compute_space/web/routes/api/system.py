@@ -31,6 +31,7 @@ from compute_space.core.logging import get_log_path
 from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
+from compute_space.core.storage import write_storage_settings
 from compute_space.core.updates import is_shutdown_pending
 from compute_space.web.auth.auth import require_owner_auth
 
@@ -102,6 +103,21 @@ class ToggleStorageGuardRequest:
 @attr.s(auto_attribs=True, frozen=True)
 class StorageGuardResponse:
     guard_paused: bool
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SetStorageSettingsRequest:
+    """Body for ``POST /api/storage-settings``. Enable/disable the storage
+    guard and set its minimum-free-MB threshold."""
+
+    enabled: bool
+    min_free_mb: int
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class StorageSettingsResponse:
+    guard_enabled: bool
+    guard_min_free_mb: int
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -250,6 +266,44 @@ def toggle_storage_guard(data: ToggleStorageGuardRequest) -> StorageGuardRespons
     return StorageGuardResponse(guard_paused=is_guard_paused())
 
 
+# sync_to_thread: opens a short-lived SQLite connection to persist settings.
+@post("/api/storage-settings", status_code=200, guards=[require_owner_auth], sync_to_thread=True)
+def set_storage_settings(
+    data: SetStorageSettingsRequest, config: Config
+) -> Response[StorageSettingsResponse] | Response[ErrorResponse]:
+    """Enable/disable the storage guard and set its minimum-free-MB threshold.
+
+    Takes effect without a restart: the guard loop re-reads these settings on
+    its next check. Enabling the guard with a non-positive threshold is
+    rejected (there would be nothing to enforce); to turn the guard off, send
+    ``enabled=false``.
+    """
+    if data.min_free_mb < 0:
+        return Response(content=ErrorResponse(error="Minimum free space must be zero or greater."), status_code=400)
+    if data.enabled and data.min_free_mb <= 0:
+        return Response(
+            content=ErrorResponse(error="Set a minimum free space greater than 0 MB to enable the storage guard."),
+            status_code=400,
+        )
+    db = sqlite3.connect(config.db_path)
+    try:
+        settings = write_storage_settings(db, enabled=data.enabled, min_free_mb=data.min_free_mb)
+    finally:
+        db.close()
+    # Resuming enforcement on a fresh enable: clear any lingering pause so the
+    # newly-enabled guard is actually active (pause is an in-memory override
+    # used during cleanup; a deliberate enable should start enforcing).
+    if settings.enabled:
+        set_guard_paused(False)
+    return Response(
+        content=StorageSettingsResponse(
+            guard_enabled=settings.enabled, guard_min_free_mb=settings.min_free_mb
+        ),
+        status_code=200,
+        media_type=MediaType.JSON,
+    )
+
+
 # ─── SSH Toggle ────────────────────────────────────────────────────────────
 
 
@@ -363,6 +417,7 @@ system_routes = Router(
         listening_ports,
         api_storage_status,
         toggle_storage_guard,
+        set_storage_settings,
         ssh_status,
         toggle_ssh,
         drop_docker_cache,
