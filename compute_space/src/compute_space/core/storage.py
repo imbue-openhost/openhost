@@ -35,7 +35,18 @@ _MIB = 1024 * 1024
 # flag and the MB threshold live in a single-row ``storage_settings`` table and
 # are read fresh on every guard check, so changes take effect without a
 # restart.
+#
+# The guard ships ENABLED by default with a modest headroom threshold so that a
+# runaway disk does not silently take an instance fully down before the owner
+# ever hears of the guard. Owners can raise, lower, or disable it from the
+# System page. These defaults are the fresh-DB seed values (see the v0012
+# migration / schema.sql) and the fallback used when seeding from a legacy
+# config that only sets the value implicitly.
 # ---------------------------------------------------------------------------
+
+# Default minimum free space (MB) the guard enforces when enabled. Kept in sync
+# with the seed row in the v0012 migration and schema.sql.
+DEFAULT_GUARD_MIN_FREE_MB = 1500
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -69,16 +80,16 @@ def write_storage_settings(db: sqlite3.Connection, *, enabled: bool, min_free_mb
 
 
 def seed_storage_settings_from_config(config: Config) -> None:
-    """One-time seed: if the guard has never been configured (min_free_mb = 0
-    and disabled) but the legacy ``storage_min_free_mb`` config value is set
-    (> 0), adopt it so operators who relied on the config keep their behavior.
+    """Adopt a legacy ``storage_min_free_mb`` config value when it asks for more
+    headroom than the persisted threshold.
 
-    Idempotent: only fires when the persisted row is still at its fresh
-    default. A later edit from the UI (even back to 0/disabled) is a real
-    choice and is never overwritten, because once seeded min_free_mb is
-    non-zero, or enabled has been toggled at least once. We treat "row exactly
-    equals the fresh default AND config has a positive legacy value" as the
-    only seed trigger.
+    The guard now ships enabled with ``DEFAULT_GUARD_MIN_FREE_MB`` (seeded by
+    the migration / schema.sql), so operators no longer need the config key. But
+    an operator who explicitly set a *larger* ``storage_min_free_mb`` in their
+    router config clearly wants at least that much headroom, so we raise the
+    stored threshold to match (and ensure the guard is enabled). We never lower
+    the threshold or disable the guard from the config, so an owner's UI choice
+    to reduce/disable it is preserved on the next boot.
     """
     legacy_mb = int(config.storage_min_free_mb)
     if legacy_mb <= 0:
@@ -86,13 +97,13 @@ def seed_storage_settings_from_config(config: Config) -> None:
     db = sqlite3.connect(config.db_path)
     try:
         current = read_storage_settings(db)
-        # Only seed a pristine row (fresh default). If an owner has already
-        # touched the setting (enabled it, or set any threshold), respect that.
-        if current.enabled or current.min_free_mb != 0:
+        # Only raise the threshold (and enable). Never override an owner's choice
+        # to lower or disable the guard below the legacy config value.
+        if current.min_free_mb >= legacy_mb:
             return
         write_storage_settings(db, enabled=True, min_free_mb=legacy_mb)
         logger.info(
-            "Seeded storage guard from legacy config storage_min_free_mb=%d (enabled)",
+            "Raised storage guard threshold to legacy config storage_min_free_mb=%d (enabled)",
             legacy_mb,
         )
     finally:

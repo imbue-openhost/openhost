@@ -376,10 +376,11 @@ def test_storage_min_free_bytes_requires_enabled(tmp_path):
     assert storage.storage_min_free_bytes(config) is None
 
 
-def test_seed_storage_settings_from_config_adopts_legacy(tmp_path):
-    # A pristine row + a positive legacy config value => seed enabled.
-    config = _make_test_config(tmp_path, storage_min_free_mb=500)
-    _init_storage_settings(config.db_path)  # pristine (disabled, 0)
+def test_seed_storage_settings_raises_threshold_from_legacy(tmp_path):
+    # A legacy config value larger than the stored threshold raises it (and
+    # ensures the guard is enabled). Simulate the default-seeded 1500 row.
+    config = _make_test_config(tmp_path, storage_min_free_mb=5000)
+    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
 
     storage.seed_storage_settings_from_config(config)
 
@@ -389,12 +390,12 @@ def test_seed_storage_settings_from_config_adopts_legacy(tmp_path):
     finally:
         db.close()
     assert s.enabled is True
-    assert s.min_free_mb == 500
+    assert s.min_free_mb == 5000
 
 
 def test_seed_storage_settings_noop_without_legacy(tmp_path):
     config = _make_test_config(tmp_path)  # no legacy value (0)
-    _init_storage_settings(config.db_path)
+    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
 
     storage.seed_storage_settings_from_config(config)
 
@@ -403,15 +404,16 @@ def test_seed_storage_settings_noop_without_legacy(tmp_path):
         s = storage.read_storage_settings(db)
     finally:
         db.close()
-    assert s.enabled is False
-    assert s.min_free_mb == 0
+    # Default row untouched.
+    assert s.enabled is True
+    assert s.min_free_mb == 1500
 
 
-def test_seed_storage_settings_respects_existing_choice(tmp_path):
-    # If the owner already configured the guard, a legacy config value must not
-    # overwrite their choice.
+def test_seed_storage_settings_never_lowers_or_disables(tmp_path):
+    # A legacy config value smaller than the stored threshold must not lower it,
+    # and an owner's choice to disable/reduce the guard is preserved.
     config = _make_test_config(tmp_path, storage_min_free_mb=500)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=2000)
+    _init_storage_settings(config.db_path, enabled=False, min_free_mb=2000)
 
     storage.seed_storage_settings_from_config(config)
 
@@ -421,3 +423,4 @@ def test_seed_storage_settings_respects_existing_choice(tmp_path):
     finally:
         db.close()
     assert s.min_free_mb == 2000  # unchanged
+    assert s.enabled is False  # owner's disable preserved

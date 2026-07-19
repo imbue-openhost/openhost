@@ -111,10 +111,10 @@ CREATE TABLE sessions (
 );
 CREATE TABLE storage_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-    min_free_mb INTEGER NOT NULL DEFAULT 0 CHECK (min_free_mb >= 0)
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    min_free_mb INTEGER NOT NULL DEFAULT 1500 CHECK (min_free_mb >= 0)
 );
-INSERT INTO "storage_settings" VALUES(1,0,0);
+INSERT INTO "storage_settings" VALUES(1,1,1500);
 CREATE TABLE users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,

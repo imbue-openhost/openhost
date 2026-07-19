@@ -53,19 +53,20 @@ def _read(cfg: Any) -> storage.StorageSettings:
 # --- defaults -------------------------------------------------------------
 
 
-def test_fresh_db_seeds_disabled_guard(cfg: Any) -> None:
+def test_fresh_db_seeds_guard_enabled_at_default(cfg: Any) -> None:
+    # The guard ships enabled with the 1500 MB default on a fresh DB.
     s = _read(cfg)
-    assert s.enabled is False
-    assert s.min_free_mb == 0
+    assert s.enabled is True
+    assert s.min_free_mb == 1500
 
 
 def test_status_reports_guard_settings(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     resp = client.get("/api/storage-status", cookies=cookies)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["guard_enabled"] is False
-    assert body["guard_min_free_mb"] == 0
-    assert body["storage_min_free_bytes"] is None
+    assert body["guard_enabled"] is True
+    assert body["guard_min_free_mb"] == 1500
+    assert body["storage_min_free_bytes"] == 1500 * 1024 * 1024
 
 
 # --- enabling / disabling -------------------------------------------------
@@ -113,17 +114,25 @@ def test_disable_guard(cfg: Any, client: TestClient[Litestar], cookies: dict[str
 def test_enable_with_zero_threshold_rejected(
     cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
 ) -> None:
+    # Set a known state first so we can assert the rejected request is a no-op.
+    client.post("/api/storage-settings", json={"enabled": False, "min_free_mb": 900}, cookies=cookies)
     resp = client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 0}, cookies=cookies)
     assert resp.status_code == 400
     assert "greater than 0" in resp.json()["error"]
-    # Unchanged.
-    assert _read(cfg).enabled is False
+    # Unchanged from the known state.
+    s = _read(cfg)
+    assert s.enabled is False
+    assert s.min_free_mb == 900
 
 
 def test_negative_threshold_rejected(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 900}, cookies=cookies)
     resp = client.post("/api/storage-settings", json={"enabled": False, "min_free_mb": -5}, cookies=cookies)
     assert resp.status_code == 400
-    assert _read(cfg).min_free_mb == 0
+    # Unchanged from the known state.
+    s = _read(cfg)
+    assert s.min_free_mb == 900
+    assert s.enabled is True
 
 
 def test_disable_with_zero_threshold_allowed(
