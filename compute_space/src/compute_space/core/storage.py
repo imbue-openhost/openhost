@@ -48,8 +48,8 @@ _MIB = 1024 * 1024
 
 # Default minimum free space (MB) the guard enforces when enabled. This is the
 # canonical value; the fresh-DB seed rows in the v0012 migration and schema.sql
-# use the same number, and ``test_storage`` asserts they stay in sync with this
-# constant so the three cannot drift.
+# use the same number, and ``test_api_storage_settings.test_seed_default_matches_constant``
+# asserts the seeded DB value stays in sync with this constant so they cannot drift.
 DEFAULT_GUARD_MIN_FREE_MB = 1500
 
 
@@ -200,12 +200,20 @@ def _dir_size_bytes(path: str) -> int:
     return total
 
 
+def _min_free_bytes_from_settings(settings: StorageSettings) -> int | None:
+    """Effective minimum free space in bytes for the given settings, or None if
+    the guard is inactive. The guard is active only when ``enabled`` is true AND
+    ``min_free_mb`` is > 0."""
+    if not settings.enabled or settings.min_free_mb <= 0:
+        return None
+    return settings.min_free_mb * _MIB
+
+
 def storage_min_free_bytes(config: Config) -> int | None:
     """Return the effective minimum free space in bytes, or None if the guard
     is disabled / unset.
 
-    Reads the runtime settings from the storage_settings table. The guard is
-    active only when ``enabled`` is true AND ``min_free_mb`` is > 0. Opening a
+    Reads the runtime settings from the storage_settings table. Opening a
     short-lived connection here keeps every existing caller's ``(config)``
     signature unchanged while making the threshold live-configurable.
     """
@@ -214,9 +222,7 @@ def storage_min_free_bytes(config: Config) -> int | None:
         settings = read_storage_settings(db)
     finally:
         db.close()
-    if not settings.enabled or settings.min_free_mb <= 0:
-        return None
-    return settings.min_free_mb * _MIB
+    return _min_free_bytes_from_settings(settings)
 
 
 def disk_free_bytes(config: Config) -> int:
@@ -296,13 +302,18 @@ def storage_status(config: Config) -> dict[str, object]:
 
     disk = shutil.disk_usage(config.data_root_dir)
 
+    # Read the guard settings once and derive every settings-dependent field
+    # from that single snapshot, so the reported values are mutually consistent
+    # (a concurrent settings write can't split this response) and the System
+    # page endpoint issues one DB read instead of three.
     db = sqlite3.connect(config.db_path)
     try:
         settings = read_storage_settings(db)
     finally:
         db.close()
 
-    min_free = storage_min_free_bytes(config)
+    min_free = _min_free_bytes_from_settings(settings)
+    storage_is_low = min_free is not None and disk.free < min_free
 
     # The app_data total is derived from the per-app walk rather than walked
     # again — these trees are large enough that a second pass is noticeable.
@@ -319,7 +330,7 @@ def storage_status(config: Config) -> dict[str, object]:
         "build_cache_bytes": container_image_storage_bytes(),
         "per_app": per_app,
         "storage_min_free_bytes": min_free,
-        "storage_low": storage_low(config),
+        "storage_low": storage_is_low,
         "guard_paused": is_guard_paused(),
         # Runtime-configurable guard settings (for the System page controls).
         "guard_enabled": settings.enabled,
