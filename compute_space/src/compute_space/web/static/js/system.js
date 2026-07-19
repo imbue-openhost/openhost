@@ -155,7 +155,10 @@ function renderStorageGuardSettings(data) {
     + '<button class="btn" id="guard-save-btn" onclick="saveStorageSettings()">Save</button>'
     + '<span id="guard-settings-msg" class="hint"></span>'
     + '</div>'
-    + '<div class="hint">When enabled, running apps are stopped if free disk drops below this threshold.</div>';
+    + '<div class="hint">When free disk falls below this threshold, the guard stops your running apps '
+    + 'to prevent further writes. It does not stop the OpenHost dashboard, and it does not free any space '
+    + 'itself (it will not delete app data, logs, or build cache) &mdash; you still reclaim space manually, '
+    + 'then the apps can be started again.</div>';
 }
 
 function escAttr(s) {
@@ -271,10 +274,10 @@ function renderStorageStatus(data) {
   var guardRow = document.getElementById('storage-guard-row');
   if (hasMinFree && guardPaused) {
     guardRow.innerHTML = '<div class="control-row"><button class="btn" onclick="toggleStorageGuard(false)">Resume Guard</button>'
-      + '<span class="hint">Apps will not be stopped while paused.</span></div>';
+      + '<span class="hint">Paused: apps will not be stopped even if free disk is below the threshold.</span></div>';
   } else if (hasMinFree && isLow) {
     guardRow.innerHTML = '<div class="control-row"><button class="btn" onclick="toggleStorageGuard(true)">Pause Guard</button>'
-      + '<span class="hint">Pause to start an app for cleanup.</span></div>';
+      + '<span class="hint">Pause temporarily so you can start an app (e.g. a file browser) to free space.</span></div>';
   } else {
     guardRow.innerHTML = '';
   }

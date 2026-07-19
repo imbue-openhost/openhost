@@ -321,8 +321,11 @@ def _stop_app_process_safe(row: sqlite3.Row) -> None:
 def enforce_storage_guard(config: Config) -> None:
     """Enforce minimum free disk space.
 
-    If free space is below the threshold and the guard is not paused,
-    stops all running apps.
+    If free space is below the threshold and the guard is not paused, stops
+    every app that is currently ``running`` or ``starting`` (to prevent further
+    writes). It does not touch the OpenHost router itself, apps that are already
+    stopped/errored/building, and it does not reclaim any disk space — freeing
+    space is left to the operator, after which apps can be started again.
     """
     result = _check_min_free(config)
     if result is None:
