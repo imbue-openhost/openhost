@@ -1,10 +1,16 @@
-"""Storage usage helpers and optional storage guard.
+"""Storage usage helpers and the storage guard.
 
 Reports disk usage totals and per-app breakdowns for the System page.
-When ``storage_min_free_mb`` is configured (> 0), the storage guard runs as a
-daemon thread that periodically checks disk free space and stops apps when free
-space drops below the threshold.  It can be paused from the System page so a
-user can start one app (e.g. a file browser) to clean up data before re-enabling
+
+The storage guard runs as a daemon thread that periodically checks disk free
+space and stops apps when free space drops below a threshold. Its enabled flag
+and threshold are configured at runtime from the System page and persisted in
+the ``storage_settings`` table; changes take effect without a restart. The guard
+ships enabled by default at ``DEFAULT_GUARD_MIN_FREE_MB``. The legacy
+``storage_min_free_mb`` config key is only a boot-time seed that can raise the
+threshold (see ``seed_storage_settings_from_config``); it can no longer disable
+the guard or be the sole opt-in. The guard can be paused from the System page so
+a user can start one app (e.g. a file browser) to clean up data before resuming
 enforcement.
 """
 

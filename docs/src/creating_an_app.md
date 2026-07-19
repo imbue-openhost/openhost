@@ -141,7 +141,7 @@ Apps receive a persistent data directory by default. You can opt out or request 
 - **`access_all_data = true`** — convenience shorthand for `access_all_app_data = true` + `access_all_archive = true`.
 
 
-The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free persistent storage. When free space drops below this threshold, running apps are stopped until space is freed. The storage guard can be temporarily paused from the System page to allow starting a file-browser app for cleanup.
+The storage guard requires a minimum amount of free persistent storage: when free space drops below its threshold, running apps are stopped until space is freed. It ships enabled by default (1500 MB) and is configured at runtime from the System page (enable/disable and the MB threshold), taking effect without a restart. The guard can be temporarily paused from the System page to allow starting a file-browser app for cleanup. A `storage_min_free_mb` value in the OpenHost config is treated only as a boot-time seed that can raise the threshold; it cannot disable the guard.
 
 See the [manifest spec](manifest_spec.md) for the full reference.
 

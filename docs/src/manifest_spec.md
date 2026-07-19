@@ -85,7 +85,7 @@ Apps have three storage areas, each with different durability + size + latency t
 
 The archive tier is disabled by default. The operator configures it one-shot from the dashboard, supplying S3 credentials and a per-zone prefix; archive bytes then route through a JuiceFS mount of the operator-supplied bucket. Apps see `/data/app_archive/<app>/` as a normal POSIX directory and don't need to know JuiceFS is involved.
 
-The host operator can optionally set `storage_min_free_mb` in the OpenHost config to require a minimum amount of free disk space. When free space drops below this threshold, the storage guard stops running apps until space is freed.
+The storage guard requires a minimum amount of free disk space: when free space drops below its threshold, it stops running apps until space is freed. It ships enabled by default (1500 MB) and is configured at runtime from the System page (enable/disable and the MB threshold), taking effect without a restart. A `storage_min_free_mb` value in the OpenHost config is treated only as a boot-time seed that can raise the threshold; it cannot disable the guard.
 
 All data dirs live under `/data/` in the container. All apps see the same path structure regardless of permissions — only the dirs they have access to are mounted. With `access_all_app_data`, the parent dirs `/data/app_data/` and `/data/app_temp_data/` are mounted so the app can see all apps' data. With `access_all_archive`, the `/data/app_archive/` parent is mounted.
 
