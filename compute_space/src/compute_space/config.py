@@ -69,7 +69,11 @@ class Config:
     data_root_dir: str
     apps_dir_override: str | None
 
-    # Minimum free disk space in MB (0 = no enforcement)
+    # Legacy boot-time seed for the storage guard's minimum-free-MB threshold.
+    # The guard is configured at runtime from the System page (persisted in the
+    # storage_settings table) and is enabled by default; this value only RAISES
+    # the persisted threshold on boot when larger, and never enables/disables the
+    # guard. 0 means "do not raise the seeded threshold" (not "no enforcement").
     storage_min_free_mb: int
 
     ## Ports
@@ -258,7 +262,11 @@ class DefaultConfig(Config):
     data_root_dir: str = "/opt/openhost"
     apps_dir_override: str | None = None  # if None, defaults to data_root_dir/apps
 
-    # Minimum free disk space in MB (0 = no enforcement)
+    # Legacy boot-time seed for the storage guard's minimum-free-MB threshold.
+    # The guard is configured at runtime from the System page (persisted in the
+    # storage_settings table) and is enabled by default; this value only RAISES
+    # the persisted threshold on boot when larger, and never enables/disables the
+    # guard. 0 means "do not raise the seeded threshold" (not "no enforcement").
     storage_min_free_mb: int = 0
 
     # Fail-safe default: require a claim token at /setup. Callers that want

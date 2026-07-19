@@ -376,23 +376,6 @@ def test_storage_min_free_bytes_requires_enabled(tmp_path):
     assert storage.storage_min_free_bytes(config) is None
 
 
-def test_seed_storage_settings_raises_threshold_from_legacy(tmp_path):
-    # A legacy config value larger than the stored threshold raises it (and
-    # ensures the guard is enabled). Simulate the default-seeded 1500 row.
-    config = _make_test_config(tmp_path, storage_min_free_mb=5000)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
-
-    storage.seed_storage_settings_from_config(config)
-
-    db = sqlite3.connect(config.db_path)
-    try:
-        s = storage.read_storage_settings(db)
-    finally:
-        db.close()
-    assert s.enabled is True
-    assert s.min_free_mb == 5000
-
-
 def test_seed_storage_settings_noop_without_legacy(tmp_path):
     config = _make_test_config(tmp_path)  # no legacy value (0)
     _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
@@ -424,3 +407,37 @@ def test_seed_storage_settings_never_lowers_or_disables(tmp_path):
         db.close()
     assert s.min_free_mb == 2000  # unchanged
     assert s.enabled is False  # owner's disable preserved
+
+
+def test_seed_storage_settings_never_reenables_disabled_guard(tmp_path):
+    # Regression: a legacy config value LARGER than the stored threshold raises
+    # the threshold but must NOT re-enable a guard the owner disabled from the UI.
+    config = _make_test_config(tmp_path, storage_min_free_mb=5000)
+    _init_storage_settings(config.db_path, enabled=False, min_free_mb=1500)
+
+    storage.seed_storage_settings_from_config(config)
+
+    db = sqlite3.connect(config.db_path)
+    try:
+        s = storage.read_storage_settings(db)
+    finally:
+        db.close()
+    assert s.min_free_mb == 5000  # threshold raised
+    assert s.enabled is False  # but the owner's disable is preserved
+
+
+def test_seed_storage_settings_raises_threshold_when_enabled(tmp_path):
+    # When the guard is enabled, a larger legacy value raises the threshold and
+    # it stays enabled.
+    config = _make_test_config(tmp_path, storage_min_free_mb=5000)
+    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
+
+    storage.seed_storage_settings_from_config(config)
+
+    db = sqlite3.connect(config.db_path)
+    try:
+        s = storage.read_storage_settings(db)
+    finally:
+        db.close()
+    assert s.min_free_mb == 5000
+    assert s.enabled is True

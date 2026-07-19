@@ -6,12 +6,13 @@ The storage guard runs as a daemon thread that periodically checks disk free
 space and stops apps when free space drops below a threshold. Its enabled flag
 and threshold are configured at runtime from the System page and persisted in
 the ``storage_settings`` table; changes take effect without a restart. The guard
-ships enabled by default at ``DEFAULT_GUARD_MIN_FREE_MB``. The legacy
-``storage_min_free_mb`` config key is only a boot-time seed that can raise the
-threshold (see ``seed_storage_settings_from_config``); it can no longer disable
-the guard or be the sole opt-in. The guard can be paused from the System page so
-a user can start one app (e.g. a file browser) to clean up data before resuming
-enforcement.
+is enabled by default at ``DEFAULT_GUARD_MIN_FREE_MB`` MB, seeded into the table
+by the v0012 migration / schema.sql. The legacy ``storage_min_free_mb`` config
+key is only a boot-time seed that can raise the threshold (see
+``seed_storage_settings_from_config``); it never disables the guard or overrides
+the owner's enable/disable choice. The guard can be paused from the System page
+so a user can start one app (e.g. a file browser) to clean up data before
+resuming enforcement.
 """
 
 from __future__ import annotations
@@ -35,23 +36,20 @@ _MIB = 1024 * 1024
 # ---------------------------------------------------------------------------
 # Runtime-configurable settings (persisted in the storage_settings table)
 #
-# The storage guard used to be configured only via the ``storage_min_free_mb``
-# router config key (env/TOML), read once at startup — no UI, restart required
-# to change. It is now runtime-configurable from the System page: the enabled
-# flag and the MB threshold live in a single-row ``storage_settings`` table and
-# are read fresh on every guard check, so changes take effect without a
-# restart.
+# The enabled flag and the MB threshold live in a single-row ``storage_settings``
+# table and are read fresh on every guard check, so changes made from the System
+# page take effect without a restart.
 #
-# The guard ships ENABLED by default with a modest headroom threshold so that a
+# The guard is enabled by default with a modest headroom threshold so that a
 # runaway disk does not silently take an instance fully down before the owner
-# ever hears of the guard. Owners can raise, lower, or disable it from the
-# System page. These defaults are the fresh-DB seed values (see the v0012
-# migration / schema.sql) and the fallback used when seeding from a legacy
-# config that only sets the value implicitly.
+# ever hears of the guard. Owners can raise, lower, or disable it from the System
+# page.
 # ---------------------------------------------------------------------------
 
-# Default minimum free space (MB) the guard enforces when enabled. Kept in sync
-# with the seed row in the v0012 migration and schema.sql.
+# Default minimum free space (MB) the guard enforces when enabled. This is the
+# canonical value; the fresh-DB seed rows in the v0012 migration and schema.sql
+# use the same number, and ``test_storage`` asserts they stay in sync with this
+# constant so the three cannot drift.
 DEFAULT_GUARD_MIN_FREE_MB = 1500
 
 
@@ -86,16 +84,20 @@ def write_storage_settings(db: sqlite3.Connection, *, enabled: bool, min_free_mb
 
 
 def seed_storage_settings_from_config(config: Config) -> None:
-    """Adopt a legacy ``storage_min_free_mb`` config value when it asks for more
-    headroom than the persisted threshold.
+    """Raise the persisted threshold to a larger legacy ``storage_min_free_mb``
+    config value, without ever overriding the owner's enable/disable choice.
 
-    The guard now ships enabled with ``DEFAULT_GUARD_MIN_FREE_MB`` (seeded by
-    the migration / schema.sql), so operators no longer need the config key. But
-    an operator who explicitly set a *larger* ``storage_min_free_mb`` in their
+    The guard ships enabled with ``DEFAULT_GUARD_MIN_FREE_MB`` (seeded by the
+    migration / schema.sql), so operators no longer need the config key. But an
+    operator who explicitly set a *larger* ``storage_min_free_mb`` in their
     router config clearly wants at least that much headroom, so we raise the
-    stored threshold to match (and ensure the guard is enabled). We never lower
-    the threshold or disable the guard from the config, so an owner's UI choice
-    to reduce/disable it is preserved on the next boot.
+    stored threshold to match while leaving the enabled flag untouched.
+
+    An owner's System-page choice always wins: if the owner disabled the guard,
+    it stays disabled (we never re-enable it here); if the owner lowered the
+    threshold below the legacy value, we still raise it (the config expresses a
+    minimum headroom the operator requires) but do not re-enable a disabled
+    guard. We never lower the threshold and never disable from the config.
     """
     legacy_mb = int(config.storage_min_free_mb)
     if legacy_mb <= 0:
@@ -103,14 +105,17 @@ def seed_storage_settings_from_config(config: Config) -> None:
     db = sqlite3.connect(config.db_path)
     try:
         current = read_storage_settings(db)
-        # Only raise the threshold (and enable). Never override an owner's choice
-        # to lower or disable the guard below the legacy config value.
+        # Never lower the threshold from the config.
         if current.min_free_mb >= legacy_mb:
             return
-        write_storage_settings(db, enabled=True, min_free_mb=legacy_mb)
+        # Preserve the owner's enable/disable choice: only raise the threshold,
+        # keeping ``enabled`` exactly as the owner left it. In particular a guard
+        # the owner disabled from the UI must stay disabled.
+        write_storage_settings(db, enabled=current.enabled, min_free_mb=legacy_mb)
         logger.info(
-            "Raised storage guard threshold to legacy config storage_min_free_mb=%d (enabled)",
+            "Raised storage guard threshold to legacy config storage_min_free_mb=%d (enabled=%s)",
             legacy_mb,
+            current.enabled,
         )
     finally:
         db.close()
@@ -388,11 +393,10 @@ def _storage_guard_loop(config: Config) -> None:
 def start_storage_guard(config: Config) -> None:
     """Start the storage guard daemon thread (once per db_path).
 
-    The thread always starts now: the guard is runtime-configurable from the
-    System page, so the loop must be running to react when an owner enables it
-    later. Each iteration re-reads the persisted settings and is a cheap no-op
-    while the guard is disabled or its threshold is unset (see
-    ``enforce_storage_guard`` / ``_check_min_free``).
+    The thread always starts, so the loop is running to react when an owner
+    enables the guard from the System page. Each iteration re-reads the
+    persisted settings and is a cheap no-op while the guard is disabled or its
+    threshold is unset (see ``enforce_storage_guard`` / ``_check_min_free``).
     """
     db_key = os.path.abspath(config.db_path)
     if db_key in _guard_db_paths:

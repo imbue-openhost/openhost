@@ -60,6 +60,13 @@ def test_fresh_db_seeds_guard_enabled_at_default(cfg: Any) -> None:
     assert s.min_free_mb == 1500
 
 
+def test_seed_default_matches_constant(cfg: Any) -> None:
+    # The DB seed (from the v0012 migration / schema.sql) must match the
+    # canonical DEFAULT_GUARD_MIN_FREE_MB constant, so the SQL literal and the
+    # Python constant cannot silently drift.
+    assert _read(cfg).min_free_mb == storage.DEFAULT_GUARD_MIN_FREE_MB
+
+
 def test_status_reports_guard_settings(client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     resp = client.get("/api/storage-status", cookies=cookies)
     assert resp.status_code == 200
