@@ -118,9 +118,7 @@ def test_disable_guard(cfg: Any, client: TestClient[Litestar], cookies: dict[str
 # --- validation -----------------------------------------------------------
 
 
-def test_enable_with_zero_threshold_rejected(
-    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
-) -> None:
+def test_enable_with_zero_threshold_rejected(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     # Set a known state first so we can assert the rejected request is a no-op.
     client.post("/api/storage-settings", json={"enabled": False, "min_free_mb": 900}, cookies=cookies)
     resp = client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 0}, cookies=cookies)
@@ -142,9 +140,7 @@ def test_negative_threshold_rejected(cfg: Any, client: TestClient[Litestar], coo
     assert s.enabled is True
 
 
-def test_disable_with_zero_threshold_allowed(
-    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
-) -> None:
+def test_disable_with_zero_threshold_allowed(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     # Turning the guard off with a 0 threshold is the normal "off" state.
     resp = client.post("/api/storage-settings", json={"enabled": False, "min_free_mb": 0}, cookies=cookies)
     assert resp.status_code == 200

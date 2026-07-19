@@ -296,9 +296,7 @@ def set_storage_settings(
     if settings.enabled:
         set_guard_paused(False)
     return Response(
-        content=StorageSettingsResponse(
-            guard_enabled=settings.enabled, guard_min_free_mb=settings.min_free_mb
-        ),
+        content=StorageSettingsResponse(guard_enabled=settings.enabled, guard_min_free_mb=settings.min_free_mb),
         status_code=200,
         media_type=MediaType.JSON,
     )
