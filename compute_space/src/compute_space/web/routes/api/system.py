@@ -29,6 +29,7 @@ from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
 from compute_space.core.logging import get_log_path
 from compute_space.core.storage import is_guard_paused
+from compute_space.core.storage import read_storage_settings
 from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.storage import write_storage_settings
@@ -287,13 +288,17 @@ def set_storage_settings(
         )
     db = sqlite3.connect(config.db_path)
     try:
+        was_enabled = read_storage_settings(db).enabled
         settings = write_storage_settings(db, enabled=data.enabled, min_free_mb=data.min_free_mb)
     finally:
         db.close()
-    # Resuming enforcement on a fresh enable: clear any lingering pause so the
-    # newly-enabled guard is actually active (pause is an in-memory override
-    # used during cleanup; a deliberate enable should start enforcing).
-    if settings.enabled:
+    # Clear any lingering pause only on a fresh enable (disabled -> enabled), so
+    # a deliberately re-enabled guard starts enforcing. Pause is an in-memory
+    # override the owner sets to keep the guard from stopping a cleanup app
+    # while freeing space; re-saving an already-enabled guard (e.g. just
+    # changing the threshold) must NOT silently resume enforcement and clobber
+    # that pause.
+    if settings.enabled and not was_enabled:
         set_guard_paused(False)
     return Response(
         content=StorageSettingsResponse(guard_enabled=settings.enabled, guard_min_free_mb=settings.min_free_mb),

@@ -147,6 +147,57 @@ def test_disable_with_zero_threshold_allowed(cfg: Any, client: TestClient[Litest
     assert resp.json()["guard_enabled"] is False
 
 
+# --- pause interaction ----------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_pause() -> Iterator[None]:
+    """The guard pause is process-global in-memory state; reset it around each
+    test so pause assertions don't leak between tests."""
+    storage.set_guard_paused(False)
+    try:
+        yield
+    finally:
+        storage.set_guard_paused(False)
+
+
+def test_fresh_enable_clears_pause(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    # Start disabled, with the guard paused.
+    client.post("/api/storage-settings", json={"enabled": False, "min_free_mb": 1000}, cookies=cookies)
+    storage.set_guard_paused(True)
+    # Enabling the guard (disabled -> enabled) resumes enforcement.
+    resp = client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 1000}, cookies=cookies)
+    assert resp.status_code == 200
+    assert storage.is_guard_paused() is False
+
+
+def test_resave_of_enabled_guard_preserves_pause(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
+) -> None:
+    """Re-saving an already-enabled guard (e.g. changing only the threshold)
+    must NOT clear an owner-set pause — otherwise adjusting settings while a
+    cleanup app runs would let the guard stop that app."""
+    client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 1000}, cookies=cookies)
+    # Owner pauses the guard to run a cleanup app while disk is low.
+    storage.set_guard_paused(True)
+    # Owner then adjusts the threshold; the guard stays enabled.
+    resp = client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 2000}, cookies=cookies)
+    assert resp.status_code == 200
+    assert resp.json()["guard_min_free_mb"] == 2000
+    # The pause must survive.
+    assert storage.is_guard_paused() is True
+
+
+def test_disable_does_not_touch_pause(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    client.post("/api/storage-settings", json={"enabled": True, "min_free_mb": 1000}, cookies=cookies)
+    storage.set_guard_paused(True)
+    resp = client.post("/api/storage-settings", json={"enabled": False, "min_free_mb": 1000}, cookies=cookies)
+    assert resp.status_code == 200
+    # Disabling doesn't clear the pause flag (it's irrelevant while disabled,
+    # but we must not silently mutate it).
+    assert storage.is_guard_paused() is True
+
+
 # --- auth -----------------------------------------------------------------
 
 
