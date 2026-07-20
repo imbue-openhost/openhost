@@ -57,6 +57,27 @@ class Config:
     #   per-instance client secret (the only sensitive value — treat like the ACME account key)
     cert_api_keycloak_client_secret: str | None
 
+    ## Email
+    # When True, the instance publishes email DNS records (SPF/DKIM/DMARC/MX) into
+    # its CoreDNS zone and can relay outbound mail through the email proxy.  All
+    # the email_* fields below must be set when this is True (validated in
+    # __attrs_post_init__).  Provisioning injects these per instance, mirroring
+    # the cert_api Keycloak fields.
+    email_enabled: bool
+    # openhost-email-proxy base URL, e.g. "https://openhost-email-proxy.fly.dev".
+    email_proxy_base_url: str | None
+    # Keycloak client-credentials for the email proxy.  Reuses the same per-instance
+    # confidential client as cert_api when present, but kept as distinct fields so
+    # email can be enabled independently.  Issuer is the openhost-customers realm.
+    email_keycloak_issuer_url: str | None
+    email_keycloak_client_id: str | None
+    email_keycloak_client_secret: str | None
+    # The SES-managed inbound MX host for the region, e.g.
+    # "inbound-smtp.us-west-2.amazonaws.com".
+    email_inbound_mx_host: str | None
+    # Optional DMARC aggregate-report address published in the _dmarc record.
+    email_dmarc_rua: str | None
+
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
     public_ip: str | None
@@ -113,6 +134,18 @@ class Config:
             ):
                 if not getattr(self, name):
                     raise ValueError(f"{name} must be set in config to use the cert_api provider")
+        if self.email_enabled:
+            # Enabling email requires the proxy URL, the per-instance Keycloak
+            # client-credentials, and the inbound MX host; none have a usable default.
+            for name in (
+                "email_proxy_base_url",
+                "email_keycloak_issuer_url",
+                "email_keycloak_client_id",
+                "email_keycloak_client_secret",
+                "email_inbound_mx_host",
+            ):
+                if not getattr(self, name):
+                    raise ValueError(f"{name} must be set in config when email_enabled is True")
 
     @property
     def zone_domain_no_port(self) -> str:
@@ -249,6 +282,15 @@ class DefaultConfig(Config):
     cert_api_keycloak_issuer_url: str | None = None
     cert_api_keycloak_client_id: str | None = None
     cert_api_keycloak_client_secret: str | None = None
+
+    # Email — disabled by default. All fields injected by provisioning when enabled.
+    email_enabled: bool = False
+    email_proxy_base_url: str | None = None
+    email_keycloak_issuer_url: str | None = None
+    email_keycloak_client_id: str | None = None
+    email_keycloak_client_secret: str | None = None
+    email_inbound_mx_host: str | None = None
+    email_dmarc_rua: str | None = None
 
     start_caddy: bool = True
 

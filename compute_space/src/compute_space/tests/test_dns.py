@@ -95,7 +95,7 @@ def test_append_txt_records_writes_absolute_fqdn_names_verbatim(tmp_path: Path) 
     assert "app.example.com.app.example.com" not in content
 
 
-def test_clear_txt_removes_records(tmp_path: Path) -> None:
+def test_clear_txt_removes_acme_records(tmp_path: Path) -> None:
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile)
     append_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge.app.example.com.", record_value="v")])
@@ -103,6 +103,60 @@ def test_clear_txt_removes_records(tmp_path: Path) -> None:
     clear_txt(zonefile)
 
     assert "IN TXT" not in zonefile.read_text()
+
+
+def test_clear_txt_preserves_email_txt_records(tmp_path: Path) -> None:
+    # clear_txt runs on every cert renewal; it must remove ACME challenges but
+    # NOT the persistent SPF/DMARC TXT records, or mail would break on renewal.
+    from compute_space.core.dns import DkimCname
+    from compute_space.core.dns import apply_email_records
+
+    zonefile = tmp_path / "zonefile"
+    _write_zonefile(zonefile)
+    apply_email_records(
+        zonefile,
+        "app.example.com",
+        mail_from_host="inbound-smtp.us-west-2.amazonaws.com",
+        dkim_cnames=[DkimCname(name="tok1._domainkey.app.example.com", target="tok1.dkim.amazonses.com")],
+        dmarc_rua="dmarc@app.example.com",
+    )
+    append_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge", record_value="challenge")])
+
+    clear_txt(zonefile)
+
+    content = zonefile.read_text()
+    # ACME challenge gone...
+    assert "challenge" not in content
+    # ...but SPF, DMARC, MX, DKIM survive.
+    assert "v=spf1 include:amazonses.com" in content
+    assert "v=DMARC1" in content
+    assert "IN MX" in content
+    assert "tok1._domainkey.app.example.com.   IN CNAME  tok1.dkim.amazonses.com." in content
+
+
+def test_apply_email_records_bumps_serial_and_is_appendable(tmp_path: Path) -> None:
+    from compute_space.core.dns import DkimCname
+    from compute_space.core.dns import apply_email_records
+
+    zonefile = tmp_path / "zonefile"
+    _write_zonefile(zonefile, serial=100)
+    apply_email_records(
+        zonefile,
+        "app.example.com",
+        mail_from_host="inbound-smtp.us-west-2.amazonaws.com",
+        dkim_cnames=[
+            DkimCname(name="a._domainkey.app.example.com", target="a.dkim.amazonses.com"),
+            DkimCname(name="b._domainkey.app.example.com", target="b.dkim.amazonses.com"),
+        ],
+    )
+    content = zonefile.read_text()
+    assert "101   ; serial" in content
+    assert '@   IN TXT  "v=spf1 include:amazonses.com ~all"' in content
+    assert "@   IN MX   10 inbound-smtp.us-west-2.amazonaws.com." in content
+    assert "a._domainkey.app.example.com.   IN CNAME  a.dkim.amazonses.com." in content
+    assert "b._domainkey.app.example.com.   IN CNAME  b.dkim.amazonses.com." in content
+    # Default DMARC has no rua when none provided.
+    assert '_dmarc   IN TXT  "v=DMARC1; p=quarantine"' in content
 
 
 class _FakeProc:

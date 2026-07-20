@@ -19,6 +19,7 @@ from compute_space.core.auth.keys import load_keys
 from compute_space.core.caddy import CaddyProcess
 from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
+from compute_space.core.email.provision import provision_email_records
 from compute_space.core.logging import logger
 from compute_space.core.logging import setup_file_logging
 from compute_space.core.pinned_binary import get_pinned_binary
@@ -133,6 +134,13 @@ def main() -> None:
 
     if config.tls_enabled:
         _ensure_tls_cert(config)
+
+    # Publish email DNS records (SPF/DKIM/DMARC/MX) into the CoreDNS zone, after
+    # TLS acquisition so the initial DNS-01 challenge writes/clears don't race the
+    # email records.  No-op unless email is enabled.  Requires CoreDNS (the zone
+    # file it writes into is served by CoreDNS).
+    if config.email_enabled and config.coredns_enabled:
+        provision_email_records(config)
 
     # Caddy reverse proxy. mainly for TLS termination, but also some other features
     caddy: CaddyProcess | None = None

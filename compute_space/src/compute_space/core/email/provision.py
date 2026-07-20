@@ -1,0 +1,68 @@
+"""Provision the instance's email DNS records at startup.
+
+When email is enabled, this:
+  1. authenticates to the email proxy with the instance's Keycloak client,
+  2. asks the proxy to create/ensure the SES domain identity and return the
+     DKIM CNAME records SES requires,
+  3. writes those DKIM records plus SPF/DMARC/MX into the CoreDNS zone.
+
+Runs after start_coredns on each boot (the zone file is regenerated from
+template there, so the email records must be re-applied every time). Best-effort:
+a proxy or SES hiccup logs and returns rather than blocking router startup —
+mail is not load-bearing for the instance coming up.
+"""
+
+from __future__ import annotations
+
+from compute_space.config import Config
+from compute_space.core.dns import DkimCname
+from compute_space.core.dns import apply_email_records
+from compute_space.core.email.proxy_client import EmailProxyClient
+from compute_space.core.email.proxy_client import EmailProxyError
+from compute_space.core.logging import logger
+from compute_space.core.tls.keycloak import KeycloakClientCredentials
+from compute_space.core.tls.keycloak import KeycloakTokenProvider
+
+
+def provision_email_records(config: Config) -> None:
+    """Create the SES identity and publish email DNS records for this zone.
+
+    No-op when email is disabled. Validated config guarantees the email_* fields
+    are populated when email_enabled is True (Config.__attrs_post_init__).
+    """
+    if not config.email_enabled:
+        return
+    assert config.email_proxy_base_url is not None
+    assert config.email_keycloak_issuer_url is not None
+    assert config.email_keycloak_client_id is not None
+    assert config.email_keycloak_client_secret is not None
+    assert config.email_inbound_mx_host is not None
+
+    credentials = KeycloakClientCredentials(
+        issuer_url=config.email_keycloak_issuer_url,
+        client_id=config.email_keycloak_client_id,
+        client_secret=config.email_keycloak_client_secret,
+    )
+    try:
+        with KeycloakTokenProvider.create(credentials) as token_provider:
+            with EmailProxyClient.create(config.email_proxy_base_url, token_provider) as client:
+                result = client.ensure_identity()
+    except EmailProxyError as e:
+        logger.warning(f"Email provisioning skipped: could not reach email proxy: {e}")
+        return
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Email provisioning skipped: {e}")
+        return
+
+    dkim_cnames = [DkimCname(name=r.name, target=r.value) for r in result.dkim_records]
+    apply_email_records(
+        config.coredns_zonefile_path,
+        config.zone_domain_no_port,
+        mail_from_host=config.email_inbound_mx_host,
+        dkim_cnames=dkim_cnames,
+        dmarc_rua=config.email_dmarc_rua,
+    )
+    logger.info(
+        f"Published email DNS records for {config.zone_domain_no_port} "
+        f"({len(dkim_cnames)} DKIM CNAME(s); identity verified={result.verified})"
+    )
