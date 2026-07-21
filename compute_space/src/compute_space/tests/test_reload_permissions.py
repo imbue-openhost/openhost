@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -501,3 +502,98 @@ def test_reload_route_only_gates_the_newly_added_permission(
     assert ("github.com/x/a", (("key", "OLD"),)) in held
     assert ("github.com/x/b", (("key", "NEW"),)) in held
     m["thread"].assert_called_once()
+
+
+# ─── regression: a refused update must not leave the pulled code on disk ───────
+# Guards against the bug where the git pull advanced the working tree to the
+# new (unapproved) version, the gate refused, but the tree stayed on the new
+# version — so a later PLAIN reload (which is intentionally not gated, on the
+# assumption the on-disk manifest matches the running one) would silently deploy
+# the unapproved code + its new permissions.
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _init_two_commit_repo(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    """Create an 'origin' repo with v1 (no consumes) then v2 (adds a consume),
+    and a clone checked out at v1. Returns (clone, origin, v1_sha)."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    subprocess.run(["git", "-C", str(origin), "init", "-q", "-b", "main"], check=True)
+    subprocess.run(["git", "-C", str(origin), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(origin), "config", "user.name", "t"], check=True)
+    (origin / "openhost.toml").write_text(_CONSUMES.format(consumes=""))
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-qm", "v1 no consumes")
+    v1 = _git(origin, "rev-parse", "HEAD")
+    # v2 adds a new consume
+    (origin / "openhost.toml").write_text(
+        _CONSUMES.format(consumes=_consume_block("github.com/x/secrets", "secrets", '{ key = "API_KEY" }'))
+    )
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-qm", "v2 adds consume")
+
+    v2 = _git(origin, "rev-parse", "HEAD")
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(clone), "config", "user.name", "t"], check=True)
+    # The app is "running" v1: detach the working tree at v1. The (mocked) update
+    # pull will fast-forward it to v2, which the gate must then roll back.
+    _git(clone, "checkout", "-q", v1)
+    return clone, origin, v1, v2
+
+
+def _seed_running_app_at(cfg: Any, repo: Path, origin: Path) -> str:
+    app_id = new_app_id()
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            "INSERT INTO apps (app_id, name, version, repo_path, repo_url, local_port, status) "
+            "VALUES (?, 'perm-app', '1.0', ?, ?, 20955, 'running')",
+            (app_id, str(repo), str(origin)),  # repo_url = origin so git_pull fetches v2
+        )
+        db.commit()
+    finally:
+        db.close()
+    return app_id
+
+
+def test_refused_update_rolls_back_working_tree(
+    cfg: Any, client: TestClient[Litestar], cookies: dict[str, str], tmp_path: Path
+) -> None:
+    clone, _origin, v1, v2 = _init_two_commit_repo(tmp_path)
+    app_id = _seed_running_app_at(cfg, clone, _origin)
+
+    # Simulate the update pull advancing the working tree to v2 (which declares a
+    # new, unapproved permission). Our gate must then refuse AND roll the tree
+    # back to v1, so a later plain reload can't deploy the unapproved version.
+    def _fake_pull(*_a: Any, **_k: Any) -> tuple[bool, None]:
+        _git(clone, "reset", "--hard", v2)
+        return True, None
+
+    with (
+        patch("compute_space.web.routes.api.apps.git_pull", side_effect=_fake_pull),
+        patch("compute_space.web.routes.api.apps._pin_refless_to_landed_branch", return_value=None),
+        patch("compute_space.web.routes.api.apps.stop_app_process") as stop,
+        patch("compute_space.web.routes.api.apps.Thread") as thread,
+    ):
+        # sanity: the pulled v2 really does declare a new consume
+        resp = client.post(f"/reload_app/{app_id}", json={"update": True}, cookies=cookies)
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False, "update declaring a new permission must be refused"
+    stop.assert_not_called()
+    thread.assert_not_called()
+    assert get_all_permissions_v2(consumer_app_id=app_id) == []
+    # The working tree must be rolled back to v1 — NOT left on the pulled v2 — so
+    # a subsequent plain (ungated) reload can't deploy the unapproved version.
+    assert _git(clone, "rev-parse", "HEAD") == v1
+    assert "consumes" not in (clone / "openhost.toml").read_text()

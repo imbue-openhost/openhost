@@ -52,6 +52,7 @@ from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
 from compute_space.core.git_ops import is_github_repo_url
 from compute_space.core.git_ops import parse_repo_url
+from compute_space.core.git_ops import reset_hard
 from compute_space.core.logging import logger
 from compute_space.core.manifest import parse_manifest
 from compute_space.core.oauth import OAuthAuthorizationRequired
@@ -646,6 +647,11 @@ async def _reload_app_impl(
         else:
             lf.write("continuing app reload after oauth\n")
 
+        # SHA the app is currently deployed at, captured before any pull so a
+        # refused update can roll the working tree back to it (keeping the
+        # on-disk repo in sync with the running version — see the gate below).
+        pre_pull_sha: str | None = None
+
         if update or continue_oauth:
             if not app_row["repo_path"] or not os.path.isdir(os.path.join(app_row["repo_path"], ".git")):
                 db.execute(
@@ -657,6 +663,11 @@ async def _reload_app_impl(
                 )
                 db.commit()
                 return Response(content=OkResponse(ok=True), status_code=200, media_type=MediaType.JSON)
+
+            try:
+                pre_pull_sha = await get_head_sha(Path(app_row["repo_path"]))
+            except Exception as e:  # noqa: BLE001 — best-effort; rollback just won't run
+                lf.write(f"Could not read pre-pull HEAD sha: {e}\n")
 
             repo_url = app_row["repo_url"] or ""
             pull_ok = False
@@ -740,6 +751,17 @@ async def _reload_app_impl(
             _gate_new_permissions, app_id, app_row["repo_path"], approve_new_permissions
         )
         if perm_gate is not None:
+            # Roll the working tree back to the version the app is running, so the
+            # pulled-but-refused code (which declares the unapproved permissions)
+            # does not linger on disk where a later plain reload — which is not
+            # gated, on the assumption the on-disk manifest matches the running
+            # one — would silently deploy it.
+            if pre_pull_sha:
+                try:
+                    await reset_hard(Path(app_row["repo_path"]), pre_pull_sha)
+                except Exception as e:  # noqa: BLE001
+                    with open(log_file, "a") as lf:
+                        lf.write(f"WARNING: failed to roll back refused update to {pre_pull_sha}: {e}\n")
             with open(log_file, "a") as lf:
                 lf.write("Update requires approval of new service permissions; not reloading.\n")
             if continue_oauth:
