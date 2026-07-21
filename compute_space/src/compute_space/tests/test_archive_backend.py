@@ -170,15 +170,16 @@ def test_endpoint_is_insecure_http():
     assert archive_backend._endpoint_is_insecure_http("") is False
 
 
-def test_reconfigure_volume_storage_keeps_secret_out_of_argv(cfg):
-    """``juicefs config`` re-point must pass the secret via env (SECRET_KEY),
-    referenced as ``env:SECRET_KEY`` on argv, so the raw secret never shows
-    up in the process command line."""
+def test_reconfigure_volume_storage_passes_literal_secret(cfg):
+    """``juicefs config`` re-point must pass the LITERAL secret to
+    ``--secret-key``.  The ``env:VAR`` indirection is NOT resolved by
+    ``config`` (verified on a live instance: it stored the literal
+    "env:SECRET_KEY" and every upload then failed with SignatureDoesNotMatch),
+    so we accept the brief argv exposure on this single-tenant host."""
     captured = {}
 
     def fake_run(cmd, env, capture_output, text, timeout):
         captured["cmd"] = cmd
-        captured["env"] = env
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
@@ -192,10 +193,10 @@ def test_reconfigure_volume_storage_keeps_secret_out_of_argv(cfg):
             )
     assert "config" in captured["cmd"]
     assert "--storage" in captured["cmd"] and "s3" in captured["cmd"]
-    assert captured["env"]["SECRET_KEY"] == "topsecret"
-    # The raw secret is never on argv; only the env: reference is.
-    assert not any(a == "topsecret" for a in captured["cmd"])
-    assert "env:SECRET_KEY" in captured["cmd"]
+    # The real secret is passed literally (env:SECRET_KEY would be stored raw).
+    ski = captured["cmd"].index("--secret-key") + 1
+    assert captured["cmd"][ski] == "topsecret"
+    assert "env:SECRET_KEY" not in captured["cmd"]
 
 
 # --- format: --no-agent + backends ------------------------------------------

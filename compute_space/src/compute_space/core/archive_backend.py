@@ -845,12 +845,16 @@ def _reconfigure_volume_storage(
     env = os.environ.copy()
     if s3_access_key_id is not None:
         cmd += ["--access-key", s3_access_key_id]
-        env["ACCESS_KEY"] = s3_access_key_id
     if s3_secret_access_key is not None:
-        # --secret-key on argv would leak into ps; JuiceFS also reads SECRET_KEY
-        # from the environment, so pass it there and use the env form.
-        env["SECRET_KEY"] = s3_secret_access_key
-        cmd += ["--secret-key", "env:SECRET_KEY"]
+        # The secret must be passed as a literal to ``juicefs config``: the
+        # ``env:VAR`` indirection that ``mount``/``sync`` accept is NOT
+        # resolved by ``config`` (it would store the literal string
+        # "env:SECRET_KEY" and every subsequent upload would fail with
+        # SignatureDoesNotMatch).  This puts the secret on argv briefly
+        # (visible in ``ps`` for the lifetime of this one-shot command); it's
+        # an acceptable trade on a single-tenant, root-only host, and the
+        # secret is already stored (encrypted) in the meta DB afterwards.
+        cmd += ["--secret-key", s3_secret_access_key]
     logger.info("juicefs config: re-point volume storage -> %s (%s)", storage, bucket)
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
