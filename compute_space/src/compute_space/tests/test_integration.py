@@ -21,6 +21,7 @@ import requests
 from loguru import logger
 
 from compute_space import OPENHOST_PROJECT_DIR
+from compute_space.config import Domain
 from compute_space.core.caddy import generate_caddyfile
 from compute_space.core.data import provision_data
 from compute_space.core.manifest import AppManifest
@@ -105,25 +106,26 @@ def test_pre_setup_health(tmp_path):
 
 
 def test_caddyfile_http_redirect():
-    """When TLS is enabled, port 80 redirects to HTTPS."""
+    """A TLS domain serves https and redirects its http site to https."""
+    cert = Path("/etc/ssl/cert.pem")
+    key = Path("/etc/ssl/key.pem")
     caddyfile = generate_caddyfile(
-        tls_enabled=True,
-        tls_cert_path=Path("/etc/ssl/cert.pem"),
-        tls_key_path=Path("/etc/ssl/key.pem"),
-        web_server_port=8080,
+        (Domain("host.example.com", tls=True),),
+        8080,
+        lambda name: (cert, key) if name == "host.example.com" else None,
     )
 
-    # Should have an :80 block with a permanent redirect to https
-    assert ":80 {" in caddyfile
-    assert "redir https://{host}{uri} permanent" in caddyfile
-
-    # Should also have an :443 block with TLS configured
-    assert ":443 {" in caddyfile
+    # https site for the domain + its wildcard, using the acquired file cert
+    assert "https://host.example.com, https://*.host.example.com {" in caddyfile
     assert "tls /etc/ssl/cert.pem /etc/ssl/key.pem" in caddyfile
 
-    # The :80 block should NOT reverse_proxy (it only redirects)
-    lines_in_80_block = caddyfile.split(":80 {")[1].split("}")[0]
-    assert "reverse_proxy" not in lines_in_80_block
+    # scoped http site that redirects to https (not a global :80 catch-all)
+    assert "http://host.example.com, http://*.host.example.com {" in caddyfile
+    assert "redir https://{host}{uri} permanent" in caddyfile
+
+    # the http (redirect) block should NOT reverse_proxy
+    redirect_block = caddyfile.split("http://host.example.com")[1].split("}")[0]
+    assert "reverse_proxy" not in redirect_block
 
 
 def _setup_owner(session, base_url, password="testpass123", username=None, timeout=30):

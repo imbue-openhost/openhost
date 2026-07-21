@@ -167,7 +167,13 @@ def _approve_grant_url(config: Config, consumer_app_id: str, service_url: str, g
     # ",", '"' — all of which break query-string parsing if interpolated raw.
     query = urlencode({"app": consumer_app_id, "service": service_url, "grant": json.dumps(grant, sort_keys=True)})
     approve_path = f"/approve-permissions-v2?{query}"
-    return f"https://{config.zone_domain}{approve_path}" if config.zone_domain else approve_path
+    # Cross-app approval is server-side (no browsing request in hand), so this stays on
+    # the canonical/primary domain; use its scheme rather than a hardcoded https so a
+    # plain-http primary (e.g. a `.local` instance) builds a correct URL.
+    if not config.zone_domain:
+        return approve_path
+    primary = config.primary_domain
+    return f"{primary.scheme}://{primary.name}{approve_path}"
 
 
 def _cors_headers(origin: str) -> dict[str, str]:

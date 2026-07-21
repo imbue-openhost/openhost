@@ -1,40 +1,94 @@
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import attr
 
+from compute_space.config import Config
+from compute_space.config import Domain
 from compute_space.core.logging import logger
 
+# Resolver: given a domain name, return its (cert_path, key_path) if a real cert file exists
+# on disk, else None (→ Caddy's internal self-signed CA).  Lets a domain that has an acquired
+# cert use it while one still being acquired falls back to `tls internal`.
+CertResolver = Callable[[str], tuple[Path, Path] | None]
 
-def generate_caddyfile(tls_enabled: bool, tls_cert_path: Path, tls_key_path: Path, web_server_port: int) -> str:
-    """Generate Caddyfile content based on config."""
-    if tls_enabled:
-        return (
-            "{\n"
-            "    auto_https off\n"
-            "    admin off\n"
-            "}\n"
-            ":443 {\n"
-            f"    tls {tls_cert_path} {tls_key_path}\n"
-            "    encode gzip zstd\n"
-            f"    reverse_proxy localhost:{web_server_port}\n"
-            "}\n"
-            ":80 {\n"
-            "    redir https://{host}{uri} permanent\n"
-            "}\n"
-        )
-    else:
-        return (
-            "{\n"
-            "    auto_https off\n"
-            "    admin off\n"
-            "}\n"
-            ":80 {\n"
-            "    encode gzip zstd\n"
-            f"    reverse_proxy localhost:{web_server_port}\n"
-            "}\n"
-        )
+# `{host}` / `{uri}` are Caddy request placeholders — kept out of the f-strings so
+# they survive verbatim into the generated Caddyfile.
+_REDIRECT_BLOCK = "    redir https://{host}{uri} permanent\n"
+
+
+def _tls_domain_blocks(name: str, tls_directive: str, web_server_port: int) -> str:
+    """https for `name` + `*.name` (proxied to the router), and an http site that
+    redirects to https.  Scoping the redirect to this domain's http site — rather
+    than a global `:80` catch-all — is what lets a sibling `.local` domain stay on
+    plain http instead of being bounced to https."""
+    return (
+        f"https://{name}, https://*.{name} {{\n"
+        f"    {tls_directive}\n"
+        "    encode gzip zstd\n"
+        f"    reverse_proxy localhost:{web_server_port}\n"
+        "}\n"
+        f"http://{name}, http://*.{name} {{\n"
+        f"{_REDIRECT_BLOCK}"
+        "}\n"
+    )
+
+
+def _http_domain_block(name: str, web_server_port: int) -> str:
+    """Plain http for `name` + `*.name`, proxied to the router with NO redirect —
+    used for mDNS `.local` domains that are served over http."""
+    return (
+        f"http://{name}, http://*.{name} {{\n    encode gzip zstd\n    reverse_proxy localhost:{web_server_port}\n}}\n"
+    )
+
+
+def config_cert_resolver(config: Config) -> CertResolver:
+    """A CertResolver backed by the config's on-disk cert layout: a domain uses its file
+    cert (the primary's legacy path, or a per-domain ``certs/<name>`` pair) when both files
+    exist, otherwise falls back to ``tls internal``."""
+
+    def resolve(name: str) -> tuple[Path, Path] | None:
+        cert_path = config.cert_path_for(name)
+        key_path = config.key_path_for(name)
+        if cert_path.exists() and key_path.exists():
+            return (cert_path, key_path)
+        return None
+
+    return resolve
+
+
+def generate_caddyfile(
+    domains: tuple[Domain, ...],
+    web_server_port: int,
+    cert_for: CertResolver | None = None,
+) -> str:
+    """Generate Caddyfile content for the full domain set — one site block per domain.
+
+    A TLS domain serves https (+ http→https redirect); it uses its acquired file cert when
+    ``cert_for`` resolves one, otherwise Caddy's internal self-signed CA (``tls internal``) —
+    which lets an extra domain come up for local testing, or serve immediately while its real
+    cert is still being acquired.  A non-TLS (mDNS ``.local``) domain serves plain http with no
+    redirect, so those requests are never forced to https.  All blocks reverse-proxy to the
+    router on loopback.
+    """
+    resolve = cert_for or (lambda _name: None)
+    has_tls = any(d.tls for d in domains)
+    # `disable_redirects` (not `off`) so Caddy's internal CA can still issue certs
+    # for `tls internal` domains; the per-domain http blocks above provide the
+    # http→https redirects we want, and only for the domains that want them.
+    auto_https = "disable_redirects" if has_tls else "off"
+    parts = [f"{{\n    auto_https {auto_https}\n    admin off\n}}\n"]
+    for d in domains:
+        name = d.name_no_port
+        if not d.tls:
+            parts.append(_http_domain_block(name, web_server_port))
+        elif paths := resolve(name):
+            parts.append(_tls_domain_blocks(name, f"tls {paths[0]} {paths[1]}", web_server_port))
+        else:
+            parts.append(_tls_domain_blocks(name, "tls internal", web_server_port))
+    return "".join(parts)
 
 
 def _spawn_caddy(caddyfile_path: Path) -> subprocess.Popen[bytes]:
@@ -80,9 +134,39 @@ class CaddyProcess:
 
 
 def start_caddy(
-    caddyfile_path: Path, tls_enabled: bool, tls_cert_path: Path, tls_key_path: Path, web_server_port: int
+    caddyfile_path: Path,
+    domains: tuple[Domain, ...],
+    web_server_port: int,
+    cert_for: CertResolver | None = None,
 ) -> CaddyProcess:
     """Generate Caddyfile and start Caddy."""
     caddyfile_path.parent.mkdir(parents=True, exist_ok=True)
-    caddyfile_path.write_text(generate_caddyfile(tls_enabled, tls_cert_path, tls_key_path, web_server_port))
+    caddyfile_path.write_text(generate_caddyfile(domains, web_server_port, cert_for))
     return CaddyProcess(proc=_spawn_caddy(caddyfile_path), caddyfile_path=caddyfile_path)
+
+
+# The live CaddyProcess, registered by start.py so request handlers (e.g. /api/domains) can
+# regenerate the Caddyfile and restart Caddy when the domain set changes.  Mirrors the
+# config._active_config pattern.  None when Caddy isn't running (dev / .local-only / tests).
+_active_caddy: CaddyProcess | None = None
+
+
+def set_active_caddy(caddy: CaddyProcess | None) -> None:
+    global _active_caddy
+    _active_caddy = caddy
+
+
+def get_active_caddy() -> CaddyProcess | None:
+    return _active_caddy
+
+
+def reload_caddy_for_domains(config: Config) -> bool:
+    """Regenerate the Caddyfile from the config's current domain set and restart Caddy so it
+    serves the new set.  No-op (returns False) when Caddy isn't running — the domain set still
+    changed in-memory/on-disk; there's just no front proxy to reload (dev / .local-only)."""
+    caddy = get_active_caddy()
+    if caddy is None:
+        return False
+    caddy.caddyfile_path.write_text(generate_caddyfile(config.all_domains, config.port, config_cert_resolver(config)))
+    caddy.restart()
+    return True

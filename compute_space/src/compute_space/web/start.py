@@ -17,6 +17,8 @@ from compute_space.config import load_config
 from compute_space.config import set_active_config
 from compute_space.core.auth.keys import load_keys
 from compute_space.core.caddy import CaddyProcess
+from compute_space.core.caddy import config_cert_resolver
+from compute_space.core.caddy import set_active_caddy
 from compute_space.core.caddy import start_caddy
 from compute_space.core.dns import start_coredns
 from compute_space.core.logging import logger
@@ -134,17 +136,27 @@ def main() -> None:
     if config.tls_enabled:
         _ensure_tls_cert(config)
 
-    # Caddy reverse proxy. mainly for TLS termination, but also some other features
+    # Caddy reverse proxy. mainly for TLS termination, but also some other features.
+    # The acquired file cert covers the primary domain (a wildcard for zone_domain);
+    # any additional TLS domains fall back to Caddy's internal CA (see generate_caddyfile).
+    needs_caddy_for_tls = any(d.tls for d in config.all_domains)
     caddy: CaddyProcess | None = None
     if config.start_caddy:
         caddy = start_caddy(
-            config.caddyfile_path, config.tls_enabled, config.tls_cert_path, config.tls_key_path, config.port
+            config.caddyfile_path,
+            config.all_domains,
+            config.port,
+            cert_for=config_cert_resolver(config),
         )
+        # Register so /api/domains can regenerate + restart Caddy when a domain is added/removed.
+        set_active_caddy(caddy)
         if config.tls_enabled and config.coredns_enabled and config.acquire_tls_cert_if_missing:
             start_renewal_thread(config, caddy.restart)
     else:
-        if config.tls_enabled:
-            raise RuntimeError("TLS is enabled but start_caddy is False. Caddy is required for TLS termination.")
+        if needs_caddy_for_tls:
+            raise RuntimeError(
+                "A TLS domain is configured but start_caddy is False. Caddy is required for TLS termination."
+            )
 
     def _all_children() -> list[subprocess.Popen[bytes]]:
         # Read caddy.proc at shutdown time: restart() may have replaced it.

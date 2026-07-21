@@ -23,6 +23,34 @@ def _lowercase(s: str) -> str:
 
 
 @attr.s(auto_attribs=True, frozen=True)
+class Domain:
+    """One hostname the instance answers on, with its scheme and discovery method.
+
+    An instance answers on a set of these (``Config.all_domains``).  Routing, scheme,
+    link-building, and cookies are resolved per request from whichever Domain the
+    request's Host matched — see ``Config.match_domain``.  ``domains[0]`` (equivalently
+    ``Config.primary_domain``) is the canonical domain used by background tasks and
+    outbound links that have no request in hand.
+    """
+
+    # the domain name, eg `host.example.com` or `myhost.local`; may optionally
+    # include a non-80/443 port, mirroring ``Config.zone_domain``.
+    name: str = attr.ib(converter=_lowercase)
+    # served over TLS (https)?  Public domains: True; mDNS `.local`: False (plain http).
+    tls: bool = False
+    # published via the built-in wildcard mDNS responder (`.local`) rather than public DNS?
+    mdns: bool = False
+
+    @property
+    def name_no_port(self) -> str:
+        return self.name.split(":")[0]
+
+    @property
+    def scheme(self) -> str:
+        return "https" if self.tls else "http"
+
+
+@attr.s(auto_attribs=True, frozen=True)
 class Config:
     ## Server
     # zone_domain is where the compute space is hosted, eg `host.example.com`
@@ -32,6 +60,13 @@ class Config:
     host: str
     # the local port to bind the compute space web server to.
     port: int
+
+    ## Domains
+    # The full set of domains this instance answers on, each with its own scheme
+    # (tls) and discovery method (mdns).  When empty, a single primary Domain is
+    # derived from ``zone_domain`` + ``tls_enabled`` (see ``all_domains``), so
+    # existing single-domain configs are unaffected.  ``domains[0]`` is the primary.
+    domains: tuple[Domain, ...]
 
     ## TLS
     tls_enabled: bool
@@ -118,11 +153,51 @@ class Config:
     def zone_domain_no_port(self) -> str:
         return self.zone_domain.split(":")[0]
 
+    @property
+    def all_domains(self) -> tuple[Domain, ...]:
+        """The full domain set, always non-empty.
+
+        Returns the explicitly configured ``domains`` if present; otherwise a
+        single primary Domain synthesized from the legacy ``zone_domain`` +
+        ``tls_enabled`` fields, so single-domain configs Just Work.
+        """
+        if self.domains:
+            return self.domains
+        return (Domain(name=self.zone_domain, tls=self.tls_enabled),)
+
+    @property
+    def primary_domain(self) -> Domain:
+        """The canonical domain, used by background tasks and outbound links that
+        have no request in hand.  Mirrors the legacy ``zone_domain``/``tls_enabled``."""
+        return self.all_domains[0]
+
+    def match_domain(self, host: str) -> Domain | None:
+        """Return the configured Domain that owns ``host`` — the domain itself (the
+        router) or one of its ``<app>.<domain>`` subdomains — or None if none match.
+
+        Longest domain name wins, so overlapping domains resolve to the most specific
+        (e.g. ``host.example.com`` beats a hypothetical ``example.com``).  ``host`` may
+        include a ``:port``; it is compared port-insensitively.
+        """
+        host_no_port = host.split(":")[0].lower()
+        best: Domain | None = None
+        for domain in self.all_domains:
+            name = domain.name_no_port
+            if host_no_port == name or host_no_port.endswith("." + name):
+                if best is None or len(name) > len(best.name_no_port):
+                    best = domain
+        return best
+
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
 
     def _to_toml_dict(self) -> dict[str, dict[str, Any]]:
-        return {"openhost": {k: v for k, v in attr.asdict(self).items() if v is not None}}
+        d = {k: v for k, v in attr.asdict(self).items() if v is not None}
+        # `domains` is derived from `zone_domain` when unset; don't persist an empty
+        # array, so single-domain configs serialize byte-identically to before.
+        if not d.get("domains"):
+            d.pop("domains", None)
+        return {"openhost": d}
 
     def to_toml_str(self) -> str:
         return tomli_w.dumps(self._to_toml_dict())
@@ -183,6 +258,30 @@ class Config:
         return self.openhost_data_path / "openhost-tls-key.pem"
 
     @property
+    def certs_dir(self) -> Path:
+        """Directory for per-domain TLS certs (domains beyond the primary)."""
+        return self.openhost_data_path / "certs"
+
+    def cert_path_for(self, domain_name: str) -> Path:
+        """Cert file for a domain.  The primary keeps the legacy path for backward
+        compatibility; additional domains get a per-domain file under ``certs/``."""
+        if domain_name == self.zone_domain_no_port:
+            return self.tls_cert_path
+        return self.certs_dir / f"{domain_name}.pem"
+
+    def key_path_for(self, domain_name: str) -> Path:
+        if domain_name == self.zone_domain_no_port:
+            return self.tls_key_path
+        return self.certs_dir / f"{domain_name}.key"
+
+    @property
+    def runtime_domains_path(self) -> Path:
+        """Router-owned JSON state for domains added at runtime (via /api/domains),
+        merged with the config-file domains at startup.  Kept out of config.toml so the
+        router never rewrites the provisioning-owned config file."""
+        return self.openhost_data_path / "runtime_domains.json"
+
+    @property
     def coredns_corefile_path(self) -> Path:
         return self.openhost_data_path / "Corefile"
 
@@ -226,6 +325,10 @@ class DefaultConfig(Config):
     # Server
     host: str = "127.0.0.1"
     port: int = 8080
+
+    # Domains: empty by default; a single primary Domain is derived from
+    # zone_domain + tls_enabled at read time (Config.all_domains).
+    domains: tuple[Domain, ...] = ()
 
     # coredns (only truly needed if tls_enabled)
     coredns_enabled: bool = False

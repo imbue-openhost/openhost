@@ -1011,25 +1011,33 @@ def remove_app_background(app_id: str, keep_data: bool, config: Config) -> None:
 
 def get_app_from_hostname(host: str) -> App | None:
     """Extract+validate app name from a Host header value (or litestar's request.url.netloc; ie example.com[:port])
-    by assuming that app_name is a subdir of zone_domain (as is convention).
+    by assuming that app_name is a subdir of one of the configured domains (as is convention).
+
+    The host is matched against every configured Domain (see Config.match_domain), so an app is
+    reachable under any domain the instance answers on (e.g. both `<app>.host.example.com` and
+    `<app>.myhost.local`).  Matching is case-insensitive.
 
     returns None if an app cannot be matched from the header.
 
-    if zone_dir==host.imbue.com:
+    if a configured domain is host.imbue.com:
         ha-tunnel.zplizzi.host.imbue.com -> "ha-tunnel"
         zplizzi.host.imbue.com -> None
         localhost:8080 -> None
     """
     config = get_config()
-    zone_domain_no_port = config.zone_domain_no_port
-    host_no_port = host.split(":", 1)[0]
-    if host_no_port == zone_domain_no_port:
+    matched = config.match_domain(host)
+    if matched is None:
         return None
-    if host_no_port.endswith("." + zone_domain_no_port):
-        app_name = host_no_port[: -(len(zone_domain_no_port) + 1)]
-        if "." not in app_name:
-            if app := find_app_by_name(app_name):
-                return app
+    zone_no_port = matched.name_no_port
+    host_no_port = host.split(":", 1)[0].lower()
+    if host_no_port == zone_no_port:
+        # the domain itself — the router, not an app
+        return None
+    # match_domain guarantees host_no_port ends with "." + zone_no_port here
+    app_name = host_no_port[: -(len(zone_no_port) + 1)]
+    if "." not in app_name:
+        if app := find_app_by_name(app_name):
+            return app
     return None
 
 
