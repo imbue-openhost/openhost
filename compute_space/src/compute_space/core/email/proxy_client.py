@@ -40,9 +40,7 @@ class EmailProxyClient:
     http_client: httpx.Client
 
     @classmethod
-    def create(
-        cls, base_url: str, token_provider: TokenProvider, timeout: float = 30.0
-    ) -> EmailProxyClient:
+    def create(cls, base_url: str, token_provider: TokenProvider, timeout: float = 30.0) -> EmailProxyClient:
         return cls(
             base_url=base_url.rstrip("/"),
             token_provider=token_provider,
@@ -69,9 +67,7 @@ class EmailProxyClient:
         subdomain) and return its DKIM records + verification status."""
         body = {"domain": domain} if domain else {}
         try:
-            resp = self.http_client.post(
-                f"{self.base_url}/v1/identity", json=body, headers=self._auth_headers()
-            )
+            resp = self.http_client.post(f"{self.base_url}/v1/identity", json=body, headers=self._auth_headers())
         except httpx.HTTPError as e:
             raise EmailProxyError(f"email proxy unreachable: {e}") from e
         return _parse_identity(resp)
@@ -79,9 +75,7 @@ class EmailProxyClient:
     def identity_status(self, domain: str | None = None) -> IdentityResult:
         params = {"domain": domain} if domain else {}
         try:
-            resp = self.http_client.get(
-                f"{self.base_url}/v1/identity", params=params, headers=self._auth_headers()
-            )
+            resp = self.http_client.get(f"{self.base_url}/v1/identity", params=params, headers=self._auth_headers())
         except httpx.HTTPError as e:
             raise EmailProxyError(f"email proxy unreachable: {e}") from e
         return _parse_identity(resp)
@@ -91,9 +85,7 @@ def _parse_identity(resp: httpx.Response) -> IdentityResult:
     if resp.status_code != 200:
         raise EmailProxyError(f"email proxy returned HTTP {resp.status_code}: {resp.text}")
     body = resp.json()
-    records = tuple(
-        DkimRecord(name=r["name"], value=r["value"]) for r in body.get("dkim_records", [])
-    )
+    records = tuple(DkimRecord(name=r["name"], value=r["value"]) for r in body.get("dkim_records", []))
     return IdentityResult(
         domain=body["domain"],
         verified=bool(body.get("verified")),

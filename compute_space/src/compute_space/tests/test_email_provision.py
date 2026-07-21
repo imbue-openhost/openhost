@@ -7,10 +7,13 @@ from pathlib import Path
 import httpx
 import pytest
 
+import compute_space.core.email.provision as prov
 from compute_space.config import DefaultConfig
 from compute_space.core.email.provision import provision_email_records
+from compute_space.core.email.proxy_client import DkimRecord
 from compute_space.core.email.proxy_client import EmailProxyClient
 from compute_space.core.email.proxy_client import EmailProxyError
+from compute_space.core.email.proxy_client import IdentityResult
 from compute_space.core.tls.keycloak import StaticTokenProvider
 
 
@@ -88,12 +91,9 @@ def test_provision_email_records_writes_zone(tmp_path: Path, monkeypatch: pytest
         email_inbound_mx_host="inbound-smtp.us-west-2.amazonaws.com",
     )
     # Point the config's zonefile path at our temp file.
-    monkeypatch.setattr(
-        type(cfg), "coredns_zonefile_path", property(lambda self: zonefile)
-    )
+    monkeypatch.setattr(type(cfg), "coredns_zonefile_path", property(lambda self: zonefile))
 
     # Stub the proxy client construction to return a fake identity.
-    import compute_space.core.email.provision as prov
 
     class _FakeClient:
         def __enter__(self):
@@ -103,8 +103,6 @@ def test_provision_email_records_writes_zone(tmp_path: Path, monkeypatch: pytest
             return None
 
         def ensure_identity(self, domain=None):
-            from compute_space.core.email.proxy_client import DkimRecord, IdentityResult
-
             return IdentityResult(
                 domain="alice.example.com",
                 verified=False,
@@ -153,8 +151,6 @@ def test_provision_email_records_survives_proxy_outage(tmp_path: Path, monkeypat
         email_inbound_mx_host="inbound-smtp.us-west-2.amazonaws.com",
     )
     monkeypatch.setattr(type(cfg), "coredns_zonefile_path", property(lambda self: zonefile))
-
-    import compute_space.core.email.provision as prov
 
     class _FakeTokenProvider:
         def __enter__(self):

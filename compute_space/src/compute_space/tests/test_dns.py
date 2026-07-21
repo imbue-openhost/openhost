@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 import compute_space.core.dns as dns_mod
+from compute_space.core.dns import DkimCname
 from compute_space.core.dns import TxtRecord
 from compute_space.core.dns import append_txt_records
+from compute_space.core.dns import apply_email_records
 from compute_space.core.dns import clear_txt
 
 
@@ -108,9 +110,6 @@ def test_clear_txt_removes_acme_records(tmp_path: Path) -> None:
 def test_clear_txt_preserves_email_txt_records(tmp_path: Path) -> None:
     # clear_txt runs on every cert renewal; it must remove ACME challenges but
     # NOT the persistent SPF/DMARC TXT records, or mail would break on renewal.
-    from compute_space.core.dns import DkimCname
-    from compute_space.core.dns import apply_email_records
-
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile)
     apply_email_records(
@@ -135,9 +134,6 @@ def test_clear_txt_preserves_email_txt_records(tmp_path: Path) -> None:
 
 
 def test_apply_email_records_bumps_serial_and_is_appendable(tmp_path: Path) -> None:
-    from compute_space.core.dns import DkimCname
-    from compute_space.core.dns import apply_email_records
-
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile, serial=100)
     apply_email_records(
