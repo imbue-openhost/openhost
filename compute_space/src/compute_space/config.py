@@ -64,7 +64,10 @@ class Config:
     # __attrs_post_init__).  Provisioning injects these per instance, mirroring
     # the cert_api Keycloak fields.
     email_enabled: bool
-    # openhost-email-proxy base URL, e.g. "https://openhost-email-proxy.fly.dev".
+    # Base URL of the email API (the imbue-hosted-spaces frontend, the
+    # authenticated public door), e.g. "https://openhost.imbue.com".  The instance
+    # calls the frontend's /api/email/* endpoints; the frontend authenticates this
+    # instance and proxies to the private email backend over 6PN.
     email_proxy_base_url: str | None
     # Keycloak client-credentials for the email proxy.  Reuses the same per-instance
     # confidential client as cert_api when present, but kept as distinct fields so

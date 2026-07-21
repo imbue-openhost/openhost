@@ -35,9 +35,27 @@ Two facts make email different from a normal app:
    all others.
 
 Both facts point to the same answer: outbound mail flows through a
-**central, OpenHost-operated SES proxy** that owns the sending
+**central, OpenHost-operated SES relay** that owns the sending
 reputation and enforces per-instance limits, rather than each instance
 talking to the world directly.
+
+The relay is split into two pieces, following the same pattern the
+platform uses for its other managed backends (DNS provisioning, vm-manager):
+
+- a **private backend** (`openhost-email-proxy`) that holds the AWS SES
+  credentials and does the SES work. It has **no public listener** — it
+  is reachable only over the operator network (Fly 6PN), so an instance
+  cannot call it directly.
+- the **imbue-hosted-spaces frontend** as the **authenticated public
+  door**. Instances call the frontend's `/api/email/*` endpoints with
+  their Keycloak token; the frontend verifies the token, derives the
+  instance's zone, and proxies to the private backend over 6PN, passing
+  the zone as a trusted `X-OpenHost-Zone` header. The backend enforces
+  From-domain scope and rate limits against that zone.
+
+This keeps the authentication boundary in one place (the frontend, which
+already fronts vm-manager the same way) and keeps the SES-credential-holding
+backend off the public internet entirely.
 
 ## The platform / app divide
 
@@ -47,82 +65,86 @@ multi-tenant-unsafe** is central or platform-level; anything
 
 | Piece | Where | Why |
 |-------|-------|-----|
-| SES proxy (relay, spam/abuse mitigation, SES identity + verification) | **Central** (imbue infra, e.g. fly.io) | Holds AWS creds; shared reputation must be centrally governed |
-| Per-instance credential (Keycloak) | **Central-issued, instance-held** | Authenticates the instance and anchors From-domain enforcement |
+| Email backend (SES relay, spam/abuse, SES identity + verification) | **Central, private** (Fly 6PN; holds AWS creds) | Shared reputation must be centrally governed; keep creds off the public internet |
+| Auth boundary (verify instance token, proxy to backend) | **Central** (imbue-hosted-spaces frontend) | One authenticated public door, mirroring how it fronts vm-manager |
+| Per-instance credential (Keycloak) | **Central-issued, instance-held** | Authenticates the instance and anchors From-enforcement |
 | DNS records (DKIM/SPF/DMARC/MX) | **Platform** (CoreDNS) | Only the platform can write the authoritative zone |
 | Provisioning (inject credential + mail config) | **Platform** | Part of instance finalize |
 | Mailbox server (SMTP/JMAP + storage) | **App** (default) | User-facing, swappable, iterate-often |
 | Webmail client | **App** (default) | Pure UX |
 
-The SES proxy is the crux: it is the trust boundary that makes
-multi-tenant email safe. The mailbox and webmail pieces are ordinary
-OpenHost apps shipped as defaults.
+The frontend + private backend together are the trust boundary that
+makes multi-tenant email safe. The mailbox and webmail pieces are
+ordinary OpenHost apps shipped as defaults.
 
 ## Architecture overview
 
 ```
-                          ┌─────────────────────────────────────┐
-                          │      OpenHost SES Proxy (central)     │
-                          │  · Keycloak-verifies each request     │
-   instance A ──submit──▶ │  · enforces From = own zone only      │ ──▶ AWS SES ─▶ recipient MX
-   instance B ──submit──▶ │  · per-instance rate / volume caps    │      (outbound)
-                          │  · spam / bounce / complaint handling │
-   instance A ◀─webhook── │  · abuse detection + auto-suspend     │ ◀── SES inbound (S3 + SNS)
-                          │  · creates + verifies SES identities  │
-                          └─────────────────────────────────────┘
-        │                                                          ▲
-        ▼                                                          │
-  CoreDNS on the instance writes DKIM / SPF / DMARC / MX ──────────┘
+                       ┌──────────────────────────┐        ┌──────────────────────────────┐
+   instance ──token──▶ │  imbue-hosted-spaces      │        │  email backend (PRIVATE, 6PN) │
+   (Keycloak,          │  frontend (public door)   │ ─6PN─▶ │  · From = zone only           │ ──▶ AWS SES ─▶ MX
+    calls /api/email)  │  · verifies instance token │        │  · per-instance rate caps     │     (outbound)
+                       │  · derives zone            │        │  · spam / bounce / complaint  │
+                       │  · sets X-OpenHost-Zone    │ ◀────  │  · SES identity + verify      │ ◀── SES inbound (S3+SNS)
+                       └──────────────────────────┘        └──────────────────────────────┘
+        │
+        ▼
+  CoreDNS on the instance writes DKIM / SPF / DMARC / MX
   (authoritative for the selfhost subzone; and for a BYO domain
    via optional NS delegation)
 
   On the instance: mailbox server (app) + webmail client (app)
 ```
 
-## The SES proxy (central)
+## The email relay (frontend + private backend)
 
-The proxy runs on OpenHost-operated infrastructure (e.g. fly.io),
-**separate from any instance**. It is the direct analog of the existing
-certificate broker (`cert-api`): a central service holding privileged
-upstream credentials that instances talk to over an authenticated
-channel, never touching those credentials themselves.
+The relay runs on OpenHost-operated infrastructure (Fly), **separate
+from any instance**, split into an authenticated frontend door and a
+private backend.
 
-Its responsibilities:
+**The private backend** holds the AWS SES credentials and does the SES
+work. It has no public listener (reachable only over Fly 6PN), so it is
+never exposed to the internet and cannot be called by an instance
+directly. Its responsibilities:
 
-- **Relay outbound mail to AWS SES.** Instances submit mail to the
-  proxy; the proxy relays it to SES SMTP submission (port 587, which
-  cloud hosts allow), which delivers to the recipient's MX.
+- **Relay outbound mail to AWS SES**, which delivers to the recipient's MX.
 - **Spam and abuse mitigation** for the whole fleet (see
   [Abuse controls](#abuse-controls)).
 - **Create and verify SES domain identities.** When a zone is
-  provisioned, the proxy calls SES to create the domain identity, gets
-  back the DKIM tokens, hands them to the instance's DNS layer to
-  publish, and polls SES until the domain is verified. SES will not send
-  on behalf of an unverified domain, so this loop is mandatory and is
-  the proxy's job — not the operator's.
+  provisioned, the backend calls SES to create the domain identity, gets
+  back the DKIM tokens, returns them so the instance can publish them in
+  CoreDNS, and SES verifies once they resolve. SES will not send on
+  behalf of an unverified domain, so this is mandatory — and automatic,
+  not an operator step.
 - **Handle inbound** via SES receiving (see [Receiving mail](#receiving-mail)).
 
 The instance never holds AWS credentials. It only holds a Keycloak
 credential that OpenHost can revoke at any time.
 
-### Request authentication (Keycloak, cert-api pattern)
+### Request authentication (frontend, Keycloak, cert-api pattern)
 
-Every request an instance makes to the proxy is authenticated with
-**Keycloak client credentials**, exactly mirroring the certificate
-broker: each instance is provisioned with its own confidential client in
-a shared realm, and the client credentials are injected at finalize time
-(see [Provisioning](#provisioning)).
+The **frontend** (imbue-hosted-spaces) is the authentication boundary —
+the same role it already plays in front of vm-manager. An instance calls
+the frontend's `/api/email/*` endpoints with a **Keycloak
+client-credentials** token: each instance is provisioned with its own
+confidential client in the `openhost-customers` realm (aud
+`openhost-email`, a `subdomain` claim = the instance's zone), injected at
+finalize time (see [Provisioning](#provisioning)), exactly mirroring the
+cert-api pattern.
 
-The instance's Keycloak identity encodes which zone it is, so the proxy
-learns the instance's true sending domain from the authenticated token
-— not from anything the instance asserts in the message. This is what
-anchors From-domain enforcement. Revoking a single instance is a matter
-of disabling its client; there is no shared secret to rotate.
+The frontend verifies the token locally against the realm's JWKS, reads
+the `subdomain` claim, and proxies to the private backend over 6PN with a
+trusted `X-OpenHost-Zone` header. The backend derives the sending domain
+from that header — not from anything the instance asserts in the message
+— which is what anchors From-domain enforcement. The header is
+trustworthy only because the backend is unreachable except from the
+frontend over the private network. Revoking a single instance is a matter
+of disabling its Keycloak client; there is no shared secret to rotate.
 
 ### Abuse controls
 
-Because the proxy is the only way out, it is where all multi-tenant
-safety lives:
+Because the backend is the only way out and the frontend is the only way
+in, that pair is where all multi-tenant safety lives:
 
 - **From-domain enforcement.** The proxy rejects any message whose
   envelope-from or header-from is not within the instance's own

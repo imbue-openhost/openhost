@@ -1,8 +1,11 @@
-"""HTTP client for the openhost-email-proxy.
+"""HTTP client for the email API.
 
-Mirrors the cert_api client shape: a small httpx wrapper that presents a
-Keycloak bearer (fetched via the shared KeycloakTokenProvider) and calls the
-proxy's identity endpoint. The instance uses this at startup to create its SES
+The instance calls the imbue-hosted-spaces frontend (the authenticated public
+door), NOT the private email backend directly — the backend is only reachable
+over Fly's 6PN network. The frontend validates this instance's Keycloak token,
+derives its zone, and proxies to the private backend. This client presents a
+Keycloak bearer (via the shared KeycloakTokenProvider) and calls the frontend's
+``/api/email/*`` endpoints; the instance uses it at startup to create its SES
 domain identity and learn the DKIM CNAME records to publish in CoreDNS.
 """
 
@@ -67,23 +70,27 @@ class EmailProxyClient:
         subdomain) and return its DKIM records + verification status."""
         body = {"domain": domain} if domain else {}
         try:
-            resp = self.http_client.post(f"{self.base_url}/v1/identity", json=body, headers=self._auth_headers())
+            resp = self.http_client.post(
+                f"{self.base_url}/api/email/identity", json=body, headers=self._auth_headers()
+            )
         except httpx.HTTPError as e:
-            raise EmailProxyError(f"email proxy unreachable: {e}") from e
+            raise EmailProxyError(f"email API unreachable: {e}") from e
         return _parse_identity(resp)
 
     def identity_status(self, domain: str | None = None) -> IdentityResult:
         params = {"domain": domain} if domain else {}
         try:
-            resp = self.http_client.get(f"{self.base_url}/v1/identity", params=params, headers=self._auth_headers())
+            resp = self.http_client.get(
+                f"{self.base_url}/api/email/identity", params=params, headers=self._auth_headers()
+            )
         except httpx.HTTPError as e:
-            raise EmailProxyError(f"email proxy unreachable: {e}") from e
+            raise EmailProxyError(f"email API unreachable: {e}") from e
         return _parse_identity(resp)
 
 
 def _parse_identity(resp: httpx.Response) -> IdentityResult:
     if resp.status_code != 200:
-        raise EmailProxyError(f"email proxy returned HTTP {resp.status_code}: {resp.text}")
+        raise EmailProxyError(f"email API returned HTTP {resp.status_code}: {resp.text}")
     body = resp.json()
     records = tuple(DkimRecord(name=r["name"], value=r["value"]) for r in body.get("dkim_records", []))
     return IdentityResult(

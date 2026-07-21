@@ -63,7 +63,7 @@ def test_proxy_client_parses_identity_and_sends_bearer():
     client = _client_with_handler(handler)
     result = client.ensure_identity()
     assert seen["auth"] == "Bearer test-token"
-    assert seen["path"] == "/v1/identity"
+    assert seen["path"] == "/api/email/identity"
     assert result.domain == "alice.example.com"
     assert len(result.dkim_records) == 2
     assert result.dkim_records[0].name == "a._domainkey.alice.example.com"
