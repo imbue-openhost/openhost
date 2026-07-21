@@ -69,11 +69,7 @@ class Config:
     data_root_dir: str
     apps_dir_override: str | None
 
-    # Legacy boot-time seed for the storage guard's minimum-free-MB threshold.
-    # The guard is configured at runtime from the System page (persisted in the
-    # storage_settings table) and is enabled by default; this value only RAISES
-    # the persisted threshold on boot when larger, and never enables/disables the
-    # guard. 0 means "do not raise the seeded threshold" (not "no enforcement").
+    # Minimum free disk space in MB the storage guard enforces (0 = no enforcement).
     storage_min_free_mb: int
 
     ## Ports
@@ -262,12 +258,12 @@ class DefaultConfig(Config):
     data_root_dir: str = "/opt/openhost"
     apps_dir_override: str | None = None  # if None, defaults to data_root_dir/apps
 
-    # Legacy boot-time seed for the storage guard's minimum-free-MB threshold.
-    # The guard is configured at runtime from the System page (persisted in the
-    # storage_settings table) and is enabled by default; this value only RAISES
-    # the persisted threshold on boot when larger, and never enables/disables the
-    # guard. 0 means "do not raise the seeded threshold" (not "no enforcement").
-    storage_min_free_mb: int = 0
+    # Minimum free disk space in MB the storage guard enforces (0 = no enforcement).
+    # Enabled by default with a modest headroom so a runaway disk can't silently
+    # take an instance fully down before the owner notices. Operators who want a
+    # different threshold (or to disable it) set this in the router config and
+    # reboot.
+    storage_min_free_mb: int = 500
 
     # Fail-safe default: require a claim token at /setup. Callers that want
     # the open-setup behavior (local-dev loopback) must set this False.

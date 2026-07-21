@@ -9,37 +9,14 @@ from typing import cast
 import pytest
 
 import compute_space.core.storage as storage
+from compute_space.config import DefaultConfig
 from compute_space.core.app_id import new_app_id
 from compute_space.tests.conftest import _make_test_config
 
 
-def _init_storage_settings(db_path: str, *, enabled: bool = False, min_free_mb: int = 0) -> None:
-    """Create the single-row storage_settings table used by the guard and seed
-    it. Mirrors the production schema/migration so the DB-backed guard settings
-    resolve during tests."""
-    db = sqlite3.connect(db_path)
-    try:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS storage_settings (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-                min_free_mb INTEGER NOT NULL DEFAULT 0 CHECK (min_free_mb >= 0)
-            )
-            """
-        )
-        db.execute(
-            "INSERT OR REPLACE INTO storage_settings (id, enabled, min_free_mb) VALUES (1, ?, ?)",
-            (1 if enabled else 0, int(min_free_mb)),
-        )
-        db.commit()
-    finally:
-        db.close()
-
-
 def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)
+    # Guard off here so storage_min_free_bytes is None (this test asserts that).
+    config = _make_test_config(tmp_path, storage_min_free_mb=0)
     usage = namedtuple("usage", ["total", "used", "free"])
 
     vm_data = os.path.join(config.persistent_data_dir, "vm_data")
@@ -77,8 +54,7 @@ def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
 
 
 def test_storage_status_with_min_free(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1000)
+    config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     usage = namedtuple("usage", ["total", "used", "free"])
 
     calls = []
@@ -95,8 +71,6 @@ def test_storage_status_with_min_free(tmp_path, monkeypatch):
     assert config.data_root_dir in calls, "storage_status should query data_root_dir"
     assert status["storage_min_free_bytes"] == 1000 * 1024 * 1024
     assert status["storage_low"] is False  # 6 GiB free > 1000 MiB required
-    assert status["guard_enabled"] is True
-    assert status["guard_min_free_mb"] == 1000
     # Podman unavailable → the category degrades to None rather than failing the endpoint.
     assert status["build_cache_bytes"] is None
 
@@ -105,7 +79,6 @@ def test_app_data_total_combines_per_app_and_loose_files(tmp_path, monkeypatch):
     """The app_data total is derived from the per-app walk plus loose root
     files — not a second full walk of the tree."""
     config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)
     app_data = os.path.join(config.persistent_data_dir, "app_data")
     os.makedirs(os.path.join(app_data, "immich"), exist_ok=True)
     with open(os.path.join(app_data, "immich", "photo.bin"), "wb") as f:
@@ -140,14 +113,12 @@ def test_disk_free_bytes_uses_data_root_dir(tmp_path, monkeypatch):
 
 def test_check_before_deploy_noop_without_min_free(tmp_path):
     config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)
-    # Should not raise when the guard is disabled
+    # Should not raise when no min-free is configured
     storage.check_before_deploy(config)
 
 
 def test_check_before_deploy_raises_when_low(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=10000)
+    config = _make_test_config(tmp_path, storage_min_free_mb=10000)
     usage = namedtuple("usage", ["total", "used", "free"])
 
     def fake_disk_usage(_path):
@@ -161,13 +132,11 @@ def test_check_before_deploy_raises_when_low(tmp_path, monkeypatch):
 
 def test_storage_low_false_without_threshold(tmp_path):
     config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)
     assert storage.storage_low(config) is False
 
 
 def test_storage_low_true_when_below_threshold(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=10000)
+    config = _make_test_config(tmp_path, storage_min_free_mb=10000)
     usage = namedtuple("usage", ["total", "used", "free"])
 
     def fake_disk_usage(_path):
@@ -235,15 +204,13 @@ def _init_apps_db(db_path: str) -> None:
 def test_enforce_guard_noop_without_threshold(tmp_path, monkeypatch):
     config = _make_test_config(tmp_path)
     _init_apps_db(config.db_path)
-    _init_storage_settings(config.db_path)
-    # Should not do anything when the guard is disabled
+    # Should not do anything when no threshold is configured
     storage.enforce_storage_guard(config)
 
 
 def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
+    config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     _init_apps_db(config.db_path)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1000)
 
     db = sqlite3.connect(config.db_path)
     db.execute(
@@ -272,9 +239,8 @@ def test_enforce_guard_stops_apps_when_low(tmp_path, monkeypatch):
 
 
 def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
+    config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     _init_apps_db(config.db_path)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1000)
 
     db = sqlite3.connect(config.db_path)
     db.execute(
@@ -301,11 +267,27 @@ def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
     assert row[0] == "running"
 
 
-def test_start_storage_guard_always_starts(tmp_path, monkeypatch):
-    # The guard is runtime-configurable, so the loop must always start (even
-    # when currently disabled) so it can react when an owner enables it later.
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)  # disabled
+def test_start_storage_guard_noop_without_threshold(tmp_path, monkeypatch):
+    config = _make_test_config(tmp_path, storage_min_free_mb=0)
+    storage._guard_db_paths.clear()
+
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            started.append(True)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(storage.threading, "Thread", FakeThread)
+
+    storage.start_storage_guard(config)
+    assert len(started) == 0
+
+
+def test_start_storage_guard_starts_with_threshold(tmp_path, monkeypatch):
+    config = _make_test_config(tmp_path, storage_min_free_mb=1000)
     storage._guard_db_paths.clear()
 
     started = []
@@ -320,124 +302,22 @@ def test_start_storage_guard_always_starts(tmp_path, monkeypatch):
     monkeypatch.setattr(storage.threading, "Thread", FakeThread)
 
     storage.start_storage_guard(config)
-    storage.start_storage_guard(config)  # idempotent per db_path
+    storage.start_storage_guard(config)  # idempotent
 
     assert len(started) == 1
 
 
-# ---------------------------------------------------------------------------
-# Runtime settings (storage_settings table) tests
-# ---------------------------------------------------------------------------
+def test_guard_enabled_by_default() -> None:
+    # The storage guard ships enabled with a modest threshold (per the decision on
+    # PR #236: keep it config-only but on by default). A fresh DefaultConfig must
+    # therefore carry a positive storage_min_free_mb so the guard actually runs.
+    cfg = DefaultConfig(zone_domain="x.example.com")
+    assert cfg.storage_min_free_mb > 0
+    # And the guard treats that as an active threshold.
+    assert storage.storage_min_free_bytes(cfg) == cfg.storage_min_free_mb * 1024 * 1024
 
 
-def test_read_write_storage_settings_roundtrip(tmp_path):
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)
-
-    db = sqlite3.connect(config.db_path)
-    try:
-        initial = storage.read_storage_settings(db)
-        assert initial.enabled is False
-        assert initial.min_free_mb == 0
-
-        written = storage.write_storage_settings(db, enabled=True, min_free_mb=2048)
-        assert written.enabled is True
-        assert written.min_free_mb == 2048
-
-        reread = storage.read_storage_settings(db)
-        assert reread.enabled is True
-        assert reread.min_free_mb == 2048
-    finally:
-        db.close()
-
-
-def test_write_storage_settings_rejects_negative(tmp_path):
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path)
-    db = sqlite3.connect(config.db_path)
-    try:
-        with pytest.raises(ValueError):
-            storage.write_storage_settings(db, enabled=False, min_free_mb=-1)
-    finally:
-        db.close()
-
-
-def test_storage_min_free_bytes_requires_enabled(tmp_path):
-    # A positive threshold with the guard disabled must resolve to "no guard".
-    config = _make_test_config(tmp_path)
-    _init_storage_settings(config.db_path, enabled=False, min_free_mb=1000)
-    assert storage.storage_min_free_bytes(config) is None
-
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1000)
-    assert storage.storage_min_free_bytes(config) == 1000 * 1024 * 1024
-
-    # Enabled but zero threshold is also "no guard" (nothing to enforce).
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=0)
-    assert storage.storage_min_free_bytes(config) is None
-
-
-def test_seed_storage_settings_noop_without_legacy(tmp_path):
-    config = _make_test_config(tmp_path)  # no legacy value (0)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
-
-    storage.seed_storage_settings_from_config(config)
-
-    db = sqlite3.connect(config.db_path)
-    try:
-        s = storage.read_storage_settings(db)
-    finally:
-        db.close()
-    # Default row untouched.
-    assert s.enabled is True
-    assert s.min_free_mb == 1500
-
-
-def test_seed_storage_settings_never_lowers_or_disables(tmp_path):
-    # A legacy config value smaller than the stored threshold must not lower it,
-    # and an owner's choice to disable/reduce the guard is preserved.
-    config = _make_test_config(tmp_path, storage_min_free_mb=500)
-    _init_storage_settings(config.db_path, enabled=False, min_free_mb=2000)
-
-    storage.seed_storage_settings_from_config(config)
-
-    db = sqlite3.connect(config.db_path)
-    try:
-        s = storage.read_storage_settings(db)
-    finally:
-        db.close()
-    assert s.min_free_mb == 2000  # unchanged
-    assert s.enabled is False  # owner's disable preserved
-
-
-def test_seed_storage_settings_never_reenables_disabled_guard(tmp_path):
-    # Regression: a legacy config value LARGER than the stored threshold raises
-    # the threshold but must NOT re-enable a guard the owner disabled from the UI.
-    config = _make_test_config(tmp_path, storage_min_free_mb=5000)
-    _init_storage_settings(config.db_path, enabled=False, min_free_mb=1500)
-
-    storage.seed_storage_settings_from_config(config)
-
-    db = sqlite3.connect(config.db_path)
-    try:
-        s = storage.read_storage_settings(db)
-    finally:
-        db.close()
-    assert s.min_free_mb == 5000  # threshold raised
-    assert s.enabled is False  # but the owner's disable is preserved
-
-
-def test_seed_storage_settings_raises_threshold_when_enabled(tmp_path):
-    # When the guard is enabled, a larger legacy value raises the threshold and
-    # it stays enabled.
-    config = _make_test_config(tmp_path, storage_min_free_mb=5000)
-    _init_storage_settings(config.db_path, enabled=True, min_free_mb=1500)
-
-    storage.seed_storage_settings_from_config(config)
-
-    db = sqlite3.connect(config.db_path)
-    try:
-        s = storage.read_storage_settings(db)
-    finally:
-        db.close()
-    assert s.min_free_mb == 5000
-    assert s.enabled is True
+def test_guard_disabled_when_config_zero(tmp_path: Any) -> None:
+    # Operators can still turn the guard off via the config (0 = no enforcement).
+    cfg = _make_test_config(tmp_path, storage_min_free_mb=0)
+    assert storage.storage_min_free_bytes(cfg) is None
