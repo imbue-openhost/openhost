@@ -183,6 +183,11 @@ def local_archive_apps_with_data(config: Config, db: sqlite3.Connection) -> list
     except OSError:
         return []
     for app_name in entries:
+        # Skip JuiceFS's own control entries at the mount root (.trash,
+        # .config, .stats, .accesslog) — they are not apps.  App names are
+        # never dot-prefixed, so excluding dotfiles is safe and future-proof.
+        if app_name.startswith("."):
+            continue
         app_dir = os.path.join(root, app_name)
         if not os.path.isdir(app_dir):
             continue

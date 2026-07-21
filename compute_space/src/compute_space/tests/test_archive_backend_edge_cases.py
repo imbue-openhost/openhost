@@ -223,6 +223,22 @@ def test_local_apps_ignores_regular_files_at_root(db, cfg):
         assert archive_backend.local_archive_apps_with_data(cfg, db) == []
 
 
+def test_local_apps_excludes_juicefs_dot_dirs(db, cfg):
+    """JuiceFS exposes control entries (.trash, .config, .stats, .accesslog)
+    at the mount root; they must never be listed as apps whose data migrates
+    (found on a live instance: .trash showed up after the first write)."""
+    mp = juicefs_mount_dir(cfg)
+    # .trash is a populated directory JuiceFS maintains
+    os.makedirs(os.path.join(mp, ".trash", "something"), exist_ok=True)
+    with open(os.path.join(mp, ".trash", "something", "f"), "wb") as f:
+        f.write(b"deleted-bytes")
+    os.makedirs(os.path.join(mp, "realapp"), exist_ok=True)
+    with open(os.path.join(mp, "realapp", "f"), "wb") as f:
+        f.write(b"x")
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        assert archive_backend.local_archive_apps_with_data(cfg, db) == ["realapp"]
+
+
 # ── 45-50: configure_backend guards & migration wiring ────────────────────
 
 
