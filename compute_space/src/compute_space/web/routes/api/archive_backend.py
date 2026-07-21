@@ -265,12 +265,13 @@ async def configure_archive_backend(
                 s3_secret_access_key=data.s3_secret_access_key,
                 juicefs_volume_name=volume_name,
             )
-            # After a local->S3 migration the archive dir moved from the
-            # local path to the JuiceFS mount, and the old local dir was
-            # removed.  Running archive-using apps still have their
-            # containers bind-mounted at the OLD path, so recycle them to
-            # re-mount the JuiceFS source (otherwise their archive writes
-            # 500).  Imported lazily to avoid a core<-web import cycle.
+            # The archive tier is always the same JuiceFS mountpoint, but the
+            # migration RESTARTED that FUSE mount (juicefs config re-pointed
+            # the volume at S3, then it was remounted).  Running archive-using
+            # apps hold stale open handles on the pre-restart mount, so recycle
+            # them to re-open the now-S3-backed archive (otherwise their
+            # archive writes fail).  Imported lazily to avoid a core<-web
+            # import cycle.
             if was_local:
                 from compute_space.core.apps import restart_archive_apps  # noqa: PLC0415
 
