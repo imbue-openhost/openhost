@@ -899,8 +899,9 @@ class TestSelfHost:
         (byte-identical) now that the volume is S3-backed — proving the
         juicefs sync + config migration preserved existing data."""
         fb_url = f"https://file-browser.{domain}"
-        # The app was recycled after migration (restart_archive_apps); give it
-        # a moment to come back and re-open the now-S3-backed archive.
+        # The app was recycled after migration (quiesced before the remount,
+        # restarted after); give it a moment to come back and re-open the
+        # now-S3-backed archive.
         r = poll_endpoint(
             session,
             f"{fb_url}/{self._PRE_MIGRATION_PATH}",

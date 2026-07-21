@@ -810,36 +810,47 @@ def test_storage_summary_non_archive_app_no_warn(cfg, db):
     assert s.warnings == []
 
 
-# --- restart_archive_apps --------------------------------------------------
+# --- stop_running_archive_apps / start_apps_by_id --------------------------
 
 
-def test_restart_archive_apps_only_recycles_running_archive_apps(cfg, db):
-    """After a migration, restart_archive_apps must recycle exactly the
-    RUNNING apps whose manifest uses the archive tier — not stopped apps,
-    not non-archive apps."""
+def _seed_app(db, app_id, name, status, manifest_raw, port):
+    db.execute(
+        "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
+        "VALUES (?, ?, '1.0', ?, ?, ?, ?)",
+        (app_id, name, f"/tmp/{name}", port, status, manifest_raw),
+    )
+    db.commit()
+
+
+def test_stop_running_archive_apps_only_stops_running_archive_apps(cfg, db):
+    """The migration quiesce must stop exactly the RUNNING apps whose manifest
+    uses the archive tier — not stopped apps, not non-archive apps — and return
+    their app_ids so the caller can restart them afterwards."""
     db.row_factory = sqlite3.Row
-
-    def _seed(app_id, name, status, manifest_raw, port):
-        db.execute(
-            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
-            "VALUES (?, ?, '1.0', ?, ?, ?, ?)",
-            (app_id, name, f"/tmp/{name}", port, status, manifest_raw),
-        )
-        db.commit()
-
     arch = 'name="a"\n[data]\napp_archive=true\n'
     plain = 'name="b"\n[data]\napp_data=true\n'
-    _seed("id_arch_run", "arch-run", "running", arch, 20401)
-    _seed("id_arch_stop", "arch-stop", "stopped", arch, 20402)
-    _seed("id_plain_run", "plain-run", "running", plain, 20403)
+    _seed_app(db, "id_arch_run", "arch-run", "running", arch, 20401)
+    _seed_app(db, "id_arch_stop", "arch-stop", "stopped", arch, 20402)
+    _seed_app(db, "id_plain_run", "plain-run", "running", plain, 20403)
 
-    with (
-        mock.patch.object(apps_mod, "stop_app_process") as stop,
-        mock.patch.object(apps_mod, "start_app_process") as start,
-    ):
-        restarted = apps_mod.restart_archive_apps(db, cfg)
+    with mock.patch.object(apps_mod, "stop_app_process") as stop:
+        stopped = apps_mod.stop_running_archive_apps(db, cfg)
 
-    assert restarted == ["arch-run"]
+    assert stopped == ["id_arch_run"]
     assert stop.call_count == 1
-    assert start.call_count == 1
-    assert start.call_args.args[0] == "id_arch_run"
+
+
+def test_start_apps_by_id_starts_each(cfg, db):
+    """start_apps_by_id restarts every id it's given (companion to the quiesce)."""
+    db.row_factory = sqlite3.Row
+    with mock.patch.object(apps_mod, "start_app_process") as start:
+        apps_mod.start_apps_by_id(["a", "b"], db, cfg)
+    assert [c.args[0] for c in start.call_args_list] == ["a", "b"]
+
+
+def test_start_apps_by_id_continues_on_failure(cfg, db):
+    """A failure starting one app must not block the others (best-effort)."""
+    db.row_factory = sqlite3.Row
+    with mock.patch.object(apps_mod, "start_app_process", side_effect=[RuntimeError("boom"), None]) as start:
+        apps_mod.start_apps_by_id(["a", "b"], db, cfg)
+    assert start.call_count == 2

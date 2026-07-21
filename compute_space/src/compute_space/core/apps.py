@@ -630,39 +630,6 @@ def _sync_port_mappings(
             )
 
 
-def restart_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
-    """Stop+start every RUNNING app that uses the archive tier.
-
-    Called after a local->S3 archive migration.  The archive tier is always
-    the same JuiceFS mountpoint, but the migration RESTARTS that FUSE mount
-    (``juicefs config`` re-points the volume at S3, then the mount is
-    recycled).  A container that bind-mounted the FUSE mountpoint while it
-    pointed at the local file store keeps its old open handles; recycling the
-    app makes its container re-open the freshly-remounted (now S3-backed)
-    archive so subsequent reads/writes go to S3.
-
-    Returns the list of app names that were restarted.  Best-effort per app:
-    a failure to recycle one app is logged and doesn't block the others.
-    """
-    rows = db.execute("SELECT app_id, name, status, manifest_raw FROM apps").fetchall()
-    restarted: list[str] = []
-    for row in rows:
-        if row["status"] != "running":
-            continue
-        if not archive_backend.manifest_uses_archive(row["manifest_raw"] or ""):
-            continue
-        app_id = row["app_id"]
-        name = row["name"]
-        try:
-            logger.info("recycling archive-using app %s after archive migration", name)
-            stop_app_process(row)
-            start_app_process(app_id, db, config)
-            restarted.append(name)
-        except Exception:
-            logger.exception("failed to recycle app %s after archive migration", name)
-    return restarted
-
-
 def stop_running_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
     """Stop every RUNNING app that uses the archive tier; return their app_ids.
 

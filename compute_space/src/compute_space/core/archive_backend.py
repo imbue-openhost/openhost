@@ -965,12 +965,14 @@ def configure_backend(
     volume storage to S3, then restart the mount against S3, flip the DB row
     to 's3', and reclaim the local object store.
 
-    ``quiesce_archive_apps`` (when provided) is called just before the mount
-    is restarted, to STOP every running archive-using app.  This is required:
-    ``systemctl stop openhost-juicefs`` cannot unmount the FUSE filesystem
-    while an app container holds it open (the unmount times out).  The caller
-    is responsible for RE-STARTING those apps afterwards (the web route calls
-    ``restart_archive_apps``), which re-opens the now-S3-backed archive.
+    ``quiesce_archive_apps`` (when provided) is called just before the sync,
+    to STOP every running archive-using app.  This is required: no app may
+    write into the local store once the sync starts (that write would be
+    lost), and ``systemctl stop openhost-juicefs`` cannot unmount the FUSE
+    filesystem while an app container holds it open (the unmount times out).
+    The caller is responsible for RE-STARTING those apps afterwards (the web
+    route records the quiesced app ids and calls ``start_apps_by_id`` in a
+    ``finally``), which re-opens the now-S3-backed archive.
 
     FAIL-OPEN: if any step before the DB flip fails, the volume is left
     pointing at the intact local store (best-effort remounted local) and
