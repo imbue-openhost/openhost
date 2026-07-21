@@ -27,6 +27,8 @@ import subprocess
 from datetime import UTC
 from datetime import datetime
 
+import attr
+
 from compute_space.core.logging import logger
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
@@ -509,6 +511,96 @@ def prune_dangling_images() -> str:
     if result.returncode != 0:
         raise RuntimeError(output or "podman image prune failed")
     return output
+
+
+# An OpenHost app image is always tagged ``openhost-{app_name}:latest`` (see
+# ``build_image``).  podman reports the tag fully qualified, e.g.
+# ``localhost/openhost-{app_name}:latest``.  This matches that form and pulls
+# out the app name.  App names are DNS-label-like (see core.app_id), so the
+# capture group is deliberately permissive and validated by the caller against
+# the apps DB rather than by a strict name regex here.
+_OPENHOST_IMAGE_TAG_RE = re.compile(r"^(?:localhost/)?openhost-(?P<app_name>.+):latest$")
+
+
+def parse_openhost_image_app_name(tag: str) -> str | None:
+    """Return the app name for an ``openhost-{name}:latest`` tag, else None.
+
+    Only OpenHost app images are matched; any other repo tag (base images an
+    app FROMs, unrelated tags) returns None so it is never a prune candidate.
+    """
+    match = _OPENHOST_IMAGE_TAG_RE.match(tag)
+    return match.group("app_name") if match else None
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class OpenHostImage:
+    """A tagged OpenHost app image as reported by ``podman images``."""
+
+    image_id: str
+    app_name: str
+    created_epoch: int  # unix seconds
+
+
+def list_openhost_images() -> list[OpenHostImage]:
+    """List tagged OpenHost app images (``openhost-{name}:latest``).
+
+    Parses ``podman images --format json``.  Only images whose tag matches the
+    OpenHost app scheme are returned; dangling (untagged) images and unrelated
+    repos are skipped.  Returns an empty list when podman is unavailable or its
+    output can't be parsed, so a transient error degrades to "prune nothing"
+    rather than raising.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "images", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning("podman images failed (exit %d): %s", result.returncode, result.stderr.strip())
+            return []
+        rows = json.loads(result.stdout) or []
+    except Exception as e:
+        logger.warning("Could not list podman images: %s", e)
+        return []
+
+    images: list[OpenHostImage] = []
+    for row in rows:
+        image_id = row.get("Id")
+        # podman may report "Created" as unix seconds (int) and/or "CreatedAt"
+        # as a string; prefer the numeric field.
+        created = row.get("Created")
+        if not isinstance(created, int):
+            continue
+        # A single image id can carry several tags (Names/RepoTags).  Match any
+        # that is an OpenHost app tag; one physical image mapping to two app
+        # names is not expected, but handle each tag independently.
+        names = row.get("Names") or row.get("RepoTags") or []
+        if not isinstance(names, list):
+            continue
+        for name in names:
+            if not isinstance(name, str):
+                continue
+            app_name = parse_openhost_image_app_name(name)
+            if app_name is not None and isinstance(image_id, str):
+                images.append(OpenHostImage(image_id=image_id, app_name=app_name, created_epoch=created))
+    return images
+
+
+def remove_image_by_id(image_id: str) -> bool:
+    """Force-remove an image by id.  Returns True on success, False otherwise.
+
+    Uses ``podman rmi --force`` by id (not tag) so it targets exactly the image
+    we decided to prune, even if the tag moved in the meantime.  ``--force``
+    covers the (unexpected) case of a lingering container reference; a failure
+    is logged and swallowed so one bad removal can't abort a sweep.
+    """
+    result = subprocess.run(["podman", "rmi", "--force", image_id], capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        logger.warning("Failed to remove image %s: %s", image_id, (result.stdout + result.stderr).strip())
+        return False
+    return True
 
 
 def is_container_running(container_id: str) -> bool:
