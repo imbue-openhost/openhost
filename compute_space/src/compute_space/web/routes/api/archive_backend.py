@@ -269,7 +269,11 @@ async def configure_archive_backend(
             quiesced: list[str] = []
 
             def _quiesce() -> None:
-                quiesced.extend(stop_running_archive_apps(worker_db, config))
+                # Pass ``quiesced`` as ``stopped_out`` so already-stopped apps
+                # are recorded even if the quiesce verification later raises
+                # (the return value would be lost on that raise); the finally
+                # block then restarts them.
+                stop_running_archive_apps(worker_db, config, stopped_out=quiesced)
 
             try:
                 archive_backend.configure_backend(

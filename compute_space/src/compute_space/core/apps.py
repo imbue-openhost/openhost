@@ -26,6 +26,7 @@ from compute_space.core.auth.permissions_v2 import Grant
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
+from compute_space.core.containers import is_container_running
 from compute_space.core.containers import remove_image
 from compute_space.core.containers import run_container
 from compute_space.core.containers import stop_app_process
@@ -630,24 +631,35 @@ def _sync_port_mappings(
             )
 
 
-def stop_running_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
+def stop_running_archive_apps(
+    db: sqlite3.Connection,
+    config: Config,
+    stopped_out: list[str] | None = None,
+) -> list[str]:
     """Stop every RUNNING app that uses the archive tier; return their app_ids.
 
     Used to quiesce the archive mount before a local->S3 migration restarts
     the JuiceFS FUSE mount: no app may write into the local store during the
     sync (that write would be lost when the volume re-points to S3), and
     ``systemctl stop openhost-juicefs`` cannot cleanly unmount while a
-    container still has the mount open.  The caller restarts the returned apps
-    once the mount is back (via ``start_apps_by_id``).  Best-effort per app.
+    container still has the mount open.  The caller restarts these apps once
+    the mount is back (via ``start_apps_by_id``).
 
-    ``stop_app_process`` swallows its own errors, so after stopping we RE-READ
-    each app's status and raise if any archive app is still marked running:
-    proceeding with the migration while a container may still be writing to the
-    archive risks silent data loss, so we abort (the caller's fail-open keeps
-    the local backend intact) rather than continue on a false "quiesced".
+    ``stop_app_process`` stops the container but does NOT update the DB status
+    and never raises, so we verify quiescence against the real container state
+    (``is_container_running``), NOT the ``apps.status`` column.  If any archive
+    container is still running after the stop attempt we raise: proceeding
+    while a container may still be writing to the archive risks silent data
+    loss, so we abort and let the caller fail-open (the local backend stays
+    intact).
+
+    ``stopped_out``, when provided, is appended to incrementally as each
+    container is stopped, so the caller can restart the already-stopped apps
+    even if this function later raises (the return value is lost on ``raise``).
     """
-    rows = db.execute("SELECT app_id, name, status, manifest_raw FROM apps").fetchall()
-    stopped: list[str] = []
+    recorded: list[str] = stopped_out if stopped_out is not None else []
+    rows = db.execute("SELECT app_id, name, container_id, status, manifest_raw FROM apps").fetchall()
+    still_running: list[str] = []
     for row in rows:
         if row["status"] != "running":
             continue
@@ -658,24 +670,19 @@ def stop_running_archive_apps(db: sqlite3.Connection, config: Config) -> list[st
             stop_app_process(row)
         except Exception:
             logger.exception("failed to stop app %s before archive migration", row["name"])
-        stopped.append(row["app_id"])
+        recorded.append(row["app_id"])
+        # Verify against the real container state (stop_app_process is
+        # best-effort and doesn't touch the DB).
+        container_id = row["container_id"]
+        if container_id and is_container_running(container_id):
+            still_running.append(row["name"])
 
-    # Verify the stops actually took (stop_app_process is best-effort and does
-    # not raise).  A still-running archive app could keep writing during the
-    # sync, so refuse to proceed if any remain up.
-    if stopped:
-        placeholders = ",".join("?" for _ in stopped)
-        still_running = db.execute(
-            f"SELECT name FROM apps WHERE app_id IN ({placeholders}) AND status = 'running'",
-            tuple(stopped),
-        ).fetchall()
-        if still_running:
-            names = ", ".join(r["name"] for r in still_running)
-            raise RuntimeError(
-                f"could not stop archive-using app(s) before migration: {names}; "
-                "aborting so the sync can't race a live writer (local backend left intact)"
-            )
-    return stopped
+    if still_running:
+        raise RuntimeError(
+            f"could not stop archive-using app(s) before migration: {', '.join(still_running)}; "
+            "aborting so the sync can't race a live writer (local backend left intact)"
+        )
+    return recorded
 
 
 def start_apps_by_id(app_ids: list[str], db: sqlite3.Connection, config: Config) -> None:

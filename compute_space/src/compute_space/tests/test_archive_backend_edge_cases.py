@@ -435,17 +435,17 @@ def test_stop_running_archive_apps_selects_running_archive_only(db, cfg):
         ("r4", "aaa-run", "running", "[data]\naccess_all_archive=true\n", 20513),
     ]:
         db.execute(
-            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
-            "VALUES (?, ?, '1', ?, ?, ?, ?)",
-            (aid, name, f"/tmp/{name}", port, status, toml),
+            "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw, container_id) "
+            "VALUES (?, ?, '1', ?, ?, ?, ?, ?)",
+            (aid, name, f"/tmp/{name}", port, status, toml, f"ctr-{aid}"),
         )
     db.commit()
 
-    def fake_stop(row):
-        db.execute("UPDATE apps SET status='stopped' WHERE app_id=?", (row["app_id"],))
-        db.commit()
-
-    with mock.patch.object(apps_mod, "stop_app_process", side_effect=fake_stop):
+    # Quiescence is verified against real container state; stopped -> gone.
+    with (
+        mock.patch.object(apps_mod, "stop_app_process"),
+        mock.patch.object(apps_mod, "is_container_running", return_value=False),
+    ):
         stopped = apps_mod.stop_running_archive_apps(db, cfg)
     # running archive apps: arch-run (app_archive) and aaa-run (access_all_archive)
     assert set(stopped) == {"r1", "r4"}

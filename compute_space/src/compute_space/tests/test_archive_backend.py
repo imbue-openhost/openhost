@@ -816,9 +816,9 @@ def test_storage_summary_non_archive_app_no_warn(cfg, db):
 
 def _seed_app(db, app_id, name, status, manifest_raw, port):
     db.execute(
-        "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw) "
-        "VALUES (?, ?, '1.0', ?, ?, ?, ?)",
-        (app_id, name, f"/tmp/{name}", port, status, manifest_raw),
+        "INSERT INTO apps (app_id, name, version, repo_path, local_port, status, manifest_raw, container_id) "
+        "VALUES (?, ?, '1.0', ?, ?, ?, ?, ?)",
+        (app_id, name, f"/tmp/{name}", port, status, manifest_raw, f"ctr-{app_id}"),
     )
     db.commit()
 
@@ -834,29 +834,36 @@ def test_stop_running_archive_apps_only_stops_running_archive_apps(cfg, db):
     _seed_app(db, "id_arch_stop", "arch-stop", "stopped", arch, 20402)
     _seed_app(db, "id_plain_run", "plain-run", "running", plain, 20403)
 
-    # A real stop flips the row to 'stopped'; simulate that so the post-stop
-    # verification passes.
-    def fake_stop(row):
-        db.execute("UPDATE apps SET status='stopped' WHERE app_id=?", (row["app_id"],))
-        db.commit()
-
-    with mock.patch.object(apps_mod, "stop_app_process", side_effect=fake_stop) as stop:
+    # Quiescence is verified against the real container state, not the DB
+    # status column (stop_app_process doesn't touch the DB).  The container is
+    # gone after a successful stop -> is_container_running False.
+    with (
+        mock.patch.object(apps_mod, "stop_app_process") as stop,
+        mock.patch.object(apps_mod, "is_container_running", return_value=False),
+    ):
         stopped = apps_mod.stop_running_archive_apps(db, cfg)
 
     assert stopped == ["id_arch_run"]
     assert stop.call_count == 1
 
 
-def test_stop_running_archive_apps_aborts_if_stop_fails(cfg, db):
-    """stop_app_process is best-effort and never raises; if an archive app is
-    still 'running' after the stop attempt, we must abort the migration rather
-    than risk the sync racing a live writer."""
+def test_stop_running_archive_apps_aborts_if_container_still_running(cfg, db):
+    """stop_app_process is best-effort and never raises; if a container is
+    still running after the stop attempt (verified via is_container_running),
+    we must abort the migration rather than risk the sync racing a live
+    writer.  The already-recorded ids are still available to the caller via
+    stopped_out."""
     db.row_factory = sqlite3.Row
     _seed_app(db, "stubborn", "stubborn", "running", 'name="a"\n[data]\napp_archive=true\n', 20409)
-    # stop_app_process does nothing (mimics a swallowed failure) -> still running.
-    with mock.patch.object(apps_mod, "stop_app_process"):
+    recorded: list[str] = []
+    with (
+        mock.patch.object(apps_mod, "stop_app_process"),
+        mock.patch.object(apps_mod, "is_container_running", return_value=True),
+    ):
         with pytest.raises(RuntimeError, match="could not stop archive-using app"):
-            apps_mod.stop_running_archive_apps(db, cfg)
+            apps_mod.stop_running_archive_apps(db, cfg, stopped_out=recorded)
+    # The id was recorded before the raise so the caller can restart it.
+    assert recorded == ["stubborn"]
 
 
 def test_start_apps_by_id_starts_each(cfg, db):
