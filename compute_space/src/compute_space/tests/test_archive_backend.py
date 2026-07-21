@@ -674,6 +674,36 @@ def test_configure_backend_from_local_syncs_and_repoints(cfg, db):
     assert calls == ["mount", "migrate", "umount", "mount", "remove"]
 
 
+def test_configure_backend_quiesces_apps_before_remount(cfg, db):
+    """The quiesce callback (which stops archive apps) must run AFTER the
+    sync/re-point but BEFORE the remount, so nothing holds the FUSE mount open
+    when systemctl stop tries to unmount."""
+    order = []
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "_ensure_local_volume_formatted"),
+        mock.patch.object(archive_backend, "mount", side_effect=lambda *a, **k: order.append("mount")),
+        mock.patch.object(archive_backend, "umount", side_effect=lambda *a, **k: order.append("umount")),
+        mock.patch.object(
+            archive_backend, "_migrate_local_to_s3", side_effect=lambda *a, **k: order.append("migrate")
+        ),
+        mock.patch.object(archive_backend, "_remove_local_object_store"),
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="b",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+            quiesce_archive_apps=lambda: order.append("quiesce"),
+        )
+    # migrate (sync+repoint) -> quiesce (stop apps) -> remount (umount+mount)
+    assert order == ["mount", "migrate", "quiesce", "umount", "mount"]
+
+
 def test_configure_backend_migration_failopen_restores_local(cfg, db):
     """Fail-open: if the migration step fails, the backend stays 'local' and
     the volume is re-pointed back to the (intact) local file store + remounted."""

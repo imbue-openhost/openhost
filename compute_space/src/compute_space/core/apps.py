@@ -663,6 +663,41 @@ def restart_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
     return restarted
 
 
+def stop_running_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
+    """Stop every RUNNING app that uses the archive tier; return their app_ids.
+
+    Used to quiesce the archive mount before a local->S3 migration restarts
+    the JuiceFS FUSE mount: ``systemctl stop openhost-juicefs`` cannot unmount
+    while a container still has the mount open, so the unmount would time out.
+    The caller restarts the returned apps once the mount is back (via
+    ``start_apps_by_id``).  Best-effort per app.
+    """
+    rows = db.execute("SELECT app_id, name, status, manifest_raw FROM apps").fetchall()
+    stopped: list[str] = []
+    for row in rows:
+        if row["status"] != "running":
+            continue
+        if not archive_backend.manifest_uses_archive(row["manifest_raw"] or ""):
+            continue
+        try:
+            logger.info("stopping archive-using app %s before archive migration remount", row["name"])
+            stop_app_process(row)
+            stopped.append(row["app_id"])
+        except Exception:
+            logger.exception("failed to stop app %s before archive migration remount", row["name"])
+    return stopped
+
+
+def start_apps_by_id(app_ids: list[str], db: sqlite3.Connection, config: Config) -> None:
+    """Start each app by id (best-effort).  Companion to
+    ``stop_running_archive_apps`` for the migration quiesce/resume dance."""
+    for app_id in app_ids:
+        try:
+            start_app_process(app_id, db, config)
+        except Exception:
+            logger.exception("failed to restart app %s after archive migration remount", app_id)
+
+
 def start_app_process(app_id: str, db: sqlite3.Connection, config: Config) -> None:
     """Start the process for an app. Updates DB with status and container id."""
     app_row = db.execute("SELECT * FROM apps WHERE app_id = ?", (app_id,)).fetchone()

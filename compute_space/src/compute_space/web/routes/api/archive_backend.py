@@ -254,28 +254,41 @@ async def configure_archive_backend(
         worker_db.row_factory = sqlite3.Row
         try:
             was_local = archive_backend.read_state(worker_db).backend == "local"
-            archive_backend.configure_backend(
-                config,
-                worker_db,
-                s3_bucket=data.s3_bucket,
-                s3_region=region,
-                s3_endpoint=endpoint,
-                s3_prefix=prefix,
-                s3_access_key_id=data.s3_access_key_id,
-                s3_secret_access_key=data.s3_secret_access_key,
-                juicefs_volume_name=volume_name,
-            )
-            # The archive tier is always the same JuiceFS mountpoint, but the
-            # migration RESTARTED that FUSE mount (juicefs config re-pointed
-            # the volume at S3, then it was remounted).  Running archive-using
-            # apps hold stale open handles on the pre-restart mount, so recycle
-            # them to re-open the now-S3-backed archive (otherwise their
-            # archive writes fail).  Imported lazily to avoid a core<-web
-            # import cycle.
-            if was_local:
-                from compute_space.core.apps import restart_archive_apps  # noqa: PLC0415
+            # Imported lazily to avoid a core<-web import cycle.
+            from compute_space.core.apps import start_apps_by_id  # noqa: PLC0415
+            from compute_space.core.apps import stop_running_archive_apps  # noqa: PLC0415
 
-                restart_archive_apps(worker_db, config)
+            # For a local->S3 migration the JuiceFS mount must be restarted
+            # (juicefs config re-points the volume to S3).  A running app
+            # container holding the mount open would make the unmount time out,
+            # so we STOP archive-using apps right before the remount and record
+            # which ones, then RESTART them afterwards so they re-open the
+            # now-S3-backed archive.  The quiesce callback runs inside
+            # configure_backend just before the remount.
+            quiesced: list[str] = []
+
+            def _quiesce() -> None:
+                quiesced.extend(stop_running_archive_apps(worker_db, config))
+
+            try:
+                archive_backend.configure_backend(
+                    config,
+                    worker_db,
+                    s3_bucket=data.s3_bucket,
+                    s3_region=region,
+                    s3_endpoint=endpoint,
+                    s3_prefix=prefix,
+                    s3_access_key_id=data.s3_access_key_id,
+                    s3_secret_access_key=data.s3_secret_access_key,
+                    juicefs_volume_name=volume_name,
+                    quiesce_archive_apps=_quiesce if was_local else None,
+                )
+            finally:
+                # Whether the migration succeeded (mount now S3-backed) or
+                # failed-open (mount restored to local), restart any apps we
+                # stopped so they re-open the archive.
+                if quiesced:
+                    start_apps_by_id(quiesced, worker_db, config)
         finally:
             worker_db.close()
 

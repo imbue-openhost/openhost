@@ -33,6 +33,7 @@ import sqlite3
 import subprocess
 import time
 import tomllib
+from collections.abc import Callable
 from typing import Any
 
 import attr
@@ -941,6 +942,7 @@ def configure_backend(
     s3_access_key_id: str,
     s3_secret_access_key: str,
     juicefs_volume_name: str | None = None,
+    quiesce_archive_apps: Callable[[], None] | None = None,
 ) -> None:
     """Upgrade the archive backend from local (file) to S3, in one shot.
 
@@ -950,10 +952,16 @@ def configure_backend(
     volume — formatted fresh against S3).  Once the backend is ``'s3'`` it
     cannot be reconfigured.
 
-    Steps for a local zone: ensure the local volume is mounted (so the
-    volume + object store exist), sync objects into the bucket and re-point
-    the volume storage to S3, restart the mount against S3, flip the DB row
-    to 's3', then reclaim the local object store.
+    Steps for a local zone: sync objects into the bucket and re-point the
+    volume storage to S3, then restart the mount against S3, flip the DB row
+    to 's3', and reclaim the local object store.
+
+    ``quiesce_archive_apps`` (when provided) is called just before the mount
+    is restarted, to STOP every running archive-using app.  This is required:
+    ``systemctl stop openhost-juicefs`` cannot unmount the FUSE filesystem
+    while an app container holds it open (the unmount times out).  The caller
+    is responsible for RE-STARTING those apps afterwards (the web route calls
+    ``restart_archive_apps``), which re-opens the now-S3-backed archive.
 
     FAIL-OPEN: if any step before the DB flip fails, the volume is left
     pointing at the intact local store (best-effort remounted local) and
@@ -996,6 +1004,11 @@ def configure_backend(
                 s3_access_key_id=s3_access_key_id,
                 s3_secret_access_key=s3_secret_access_key,
             )
+            # Stop archive-using apps so nothing holds the FUSE mount open,
+            # otherwise the unmount inside _remount times out.  The caller
+            # restarts them after we return.
+            if quiesce_archive_apps is not None:
+                quiesce_archive_apps()
             # Restart the mount so the FUSE process talks to S3 now.
             _remount(config, s3_access_key_id, s3_secret_access_key)
         else:
