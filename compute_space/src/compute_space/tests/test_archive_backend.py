@@ -700,8 +700,9 @@ def test_configure_backend_quiesces_apps_before_remount(cfg, db):
             s3_secret_access_key="sk",
             quiesce_archive_apps=lambda: order.append("quiesce"),
         )
-    # migrate (sync+repoint) -> quiesce (stop apps) -> remount (umount+mount)
-    assert order == ["mount", "migrate", "quiesce", "umount", "mount"]
+    # quiesce (stop apps for a consistent snapshot + free the mount) ->
+    # migrate (sync+repoint) -> remount (umount+mount)
+    assert order == ["mount", "quiesce", "migrate", "umount", "mount"]
 
 
 def test_configure_backend_migration_failopen_restores_local(cfg, db):

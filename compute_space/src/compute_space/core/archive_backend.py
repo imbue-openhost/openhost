@@ -468,7 +468,12 @@ def umount(config: Config) -> None:
 
     logger.info("Stopping %s systemd service", JUICEFS_SERVICE)
     try:
-        _systemctl("stop", JUICEFS_SERVICE, timeout=30)
+        # Give the stop generous headroom: JuiceFS's own umount flushes
+        # buffered data and its signal handler only force-exits after ~30s, so
+        # a 30s cap here races that and spuriously reports a stop failure even
+        # though the unmount is about to complete.  The unit's ExecStop uses
+        # ``juicefs umount -f`` (lazy) so a busy mount still detaches promptly.
+        _systemctl("stop", JUICEFS_SERVICE, timeout=120)
     except RuntimeError as exc:
         raise RuntimeError(
             f"Failed to stop {JUICEFS_SERVICE}; ensure all containers "
@@ -993,6 +998,15 @@ def configure_backend(
             # and consistent before we sync it.
             _ensure_local_volume_formatted(config, volume)
             mount(config)
+            # Stop archive-using apps FIRST, for two reasons:
+            #  1. Consistency: no app may write into the local store after we
+            #     start syncing, or that write would be lost (it wouldn't be in
+            #     S3 and we're about to re-point the volume there).
+            #  2. Unmount: a container holding the FUSE mount open makes the
+            #     later ``systemctl stop`` (unmount) time out.
+            # The caller restarts them after we return.
+            if quiesce_archive_apps is not None:
+                quiesce_archive_apps()
             # Copy objects into S3 and re-point the volume's storage.  On any
             # failure here the volume still reads from the local store.
             _migrate_local_to_s3(
@@ -1004,11 +1018,6 @@ def configure_backend(
                 s3_access_key_id=s3_access_key_id,
                 s3_secret_access_key=s3_secret_access_key,
             )
-            # Stop archive-using apps so nothing holds the FUSE mount open,
-            # otherwise the unmount inside _remount times out.  The caller
-            # restarts them after we return.
-            if quiesce_archive_apps is not None:
-                quiesce_archive_apps()
             # Restart the mount so the FUSE process talks to S3 now.
             _remount(config, s3_access_key_id, s3_secret_access_key)
         else:
