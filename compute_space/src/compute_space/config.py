@@ -72,6 +72,9 @@ class Config:
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int
 
+    # How often (seconds) to prune dangling container images (0 = disabled).
+    image_prune_interval_seconds: int
+
     ## Ports
     port_range_start: int
     port_range_end: int
@@ -260,6 +263,13 @@ class DefaultConfig(Config):
 
     # Minimum free disk space in MB (0 = no enforcement)
     storage_min_free_mb: int = 0
+
+    # How often (seconds) the periodic pruner removes dangling container images
+    # (0 = disabled).  Rebuilds re-tag ``openhost-{app}:latest`` and orphan the
+    # previous image, so untagged layers accumulate; pruning them on a schedule
+    # keeps them from filling the disk.  Only dangling images are removed, so
+    # stopped apps never need rebuilding.  Defaults to every 6 hours.
+    image_prune_interval_seconds: int = 6 * 60 * 60
 
     # Fail-safe default: require a claim token at /setup. Callers that want
     # the open-setup behavior (local-dev loopback) must set this False.

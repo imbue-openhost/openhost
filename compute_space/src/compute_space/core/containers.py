@@ -489,6 +489,28 @@ def drop_docker_build_cache() -> str:
     return output
 
 
+def prune_dangling_images() -> str:
+    """Remove only dangling (untagged) images via ``podman image prune``.
+
+    Unlike ``drop_docker_build_cache``, this omits ``--all``, so it removes
+    only the untagged image layers left behind when an app is rebuilt (each
+    rebuild re-tags ``openhost-{app}:latest``, orphaning the previous image).
+    Tagged images for stopped apps are kept, so nothing has to be rebuilt on
+    next start.  This makes it safe to run unconditionally on a schedule.
+
+    Returns podman's combined output.  Raises ``RuntimeError`` on failure so
+    the caller can log it; the periodic thread swallows that so a transient
+    podman error never kills the loop.
+    """
+    cmd = ["podman", "image", "prune", "--force"]
+    logger.info("Pruning dangling container images: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        raise RuntimeError(output or "podman image prune failed")
+    return output
+
+
 def is_container_running(container_id: str) -> bool:
     """Return True iff podman reports the container's ``State.Status`` as ``running``.
 
