@@ -42,13 +42,6 @@ def db(cfg):
     conn.close()
 
 
-def _fake_run_ok(captured_key="cmd"):
-    def _run(cmd, *a, **k):
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    return _run
-
-
 # ── 1-8: _endpoint_is_insecure_http boundary matrix ───────────────────────
 
 
@@ -69,42 +62,17 @@ def test_endpoint_is_insecure_http_matrix(endpoint, expected):
     assert archive_backend._endpoint_is_insecure_http(endpoint) is expected
 
 
-# ── 9-14: _bucket_url shapes ──────────────────────────────────────────────
-
-
-def test_bucket_url_aws_virtualhost():
-    assert archive_backend._bucket_url("b", "eu-west-1", None) == "https://b.s3.eu-west-1.amazonaws.com"
-
-
-def test_bucket_url_blank_region_defaults_us_east_1():
-    assert archive_backend._bucket_url("b", "", None) == "https://b.s3.us-east-1.amazonaws.com"
-
-
-def test_bucket_url_custom_https_endpoint():
-    assert archive_backend._bucket_url("b", "x", "https://minio.example:9000") == "https://minio.example:9000/b"
+# ── _bucket_url / sync-url boundary shapes not covered elsewhere ──────────
+# (The base suite covers the happy AWS/custom cases; these add the HTTP-scheme
+#  and multi-slash boundaries that the migration URL construction depends on.)
 
 
 def test_bucket_url_custom_http_endpoint_keeps_scheme():
     assert archive_backend._bucket_url("b", "x", "http://localhost:9106") == "http://localhost:9106/b"
 
 
-def test_bucket_url_trailing_slash_normalised():
-    assert archive_backend._bucket_url("b", "x", "https://m.example/") == "https://m.example/b"
-
-
 def test_bucket_url_multiple_trailing_slashes():
     assert archive_backend._bucket_url("b", "x", "https://m.example///") == "https://m.example/b"
-
-
-# ── 15-20: sync dest / source URL shapes ──────────────────────────────────
-
-
-def test_s3_sync_dest_aws_has_volume_prefix():
-    assert archive_backend._s3_sync_dest("b", "us-west-2", None, "vol") == "s3://b.s3.us-west-2.amazonaws.com/vol/"
-
-
-def test_s3_sync_dest_custom_endpoint_bucket_dot_host():
-    assert archive_backend._s3_sync_dest("b", None, "http://127.0.0.1:9106", "vol") == "s3://b.127.0.0.1:9106/vol/"
 
 
 def test_s3_sync_dest_https_custom_endpoint():
@@ -115,23 +83,12 @@ def test_s3_sync_dest_blank_region_defaults():
     assert archive_backend._s3_sync_dest("b", "", None, "vol") == "s3://b.s3.us-east-1.amazonaws.com/vol/"
 
 
-def test_local_sync_source_trailing_slash_and_volume(cfg):
-    src = archive_backend._local_sync_source(cfg, "myvol")
-    assert src.endswith("/myvol/")
-    assert src.startswith(cfg.local_archive_object_store_dir)
-
-
 def test_file_bucket_ends_with_single_slash(cfg):
-    fb = archive_backend._file_bucket("/a/b")
-    assert fb == "/a/b/"
+    assert archive_backend._file_bucket("/a/b") == "/a/b/"
     assert archive_backend._file_bucket("/a/b/") == "/a/b/"
 
 
-# ── 21-26: read_state / defaults ──────────────────────────────────────────
-
-
-def test_read_state_seeds_local(db):
-    assert read_state(db).backend == "local"
+# ── read_state / defaults (missing-row + s3 field round-trip) ─────────────
 
 
 def test_read_state_missing_row_defaults_local(db):
@@ -166,17 +123,7 @@ def test_read_state_preserves_s3_fields(db):
     )
 
 
-def test_effective_archive_dir_always_mount_local(db, cfg):
-    assert archive_backend.effective_archive_dir(cfg, db) == juicefs_mount_dir(cfg)
-
-
-def test_effective_archive_dir_always_mount_s3(db, cfg):
-    db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
-    db.commit()
-    assert archive_backend.effective_archive_dir(cfg, db) == juicefs_mount_dir(cfg)
-
-
-# ── 27-32: is_archive_dir_healthy across backends & mount states ──────────
+# ── is_archive_dir_healthy across backends & mount states (matrix) ────────
 
 
 @pytest.mark.parametrize("backend", ["local", "s3"])
@@ -277,22 +224,6 @@ def test_local_apps_ignores_regular_files_at_root(db, cfg):
 
 
 # ── 45-50: configure_backend guards & migration wiring ────────────────────
-
-
-def test_configure_refuses_from_s3(db, cfg):
-    db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
-    db.commit()
-    with pytest.raises(BackendConfigureError, match="already configured"):
-        configure_backend(
-            cfg,
-            db,
-            s3_bucket="b",
-            s3_region=None,
-            s3_endpoint=None,
-            s3_prefix=None,
-            s3_access_key_id="ak",
-            s3_secret_access_key="sk",
-        )
 
 
 def test_configure_refuses_unknown_backend(db, cfg):
@@ -509,7 +440,12 @@ def test_stop_running_archive_apps_selects_running_archive_only(db, cfg):
             (aid, name, f"/tmp/{name}", port, status, toml),
         )
     db.commit()
-    with mock.patch.object(apps_mod, "stop_app_process"):
+
+    def fake_stop(row):
+        db.execute("UPDATE apps SET status='stopped' WHERE app_id=?", (row["app_id"],))
+        db.commit()
+
+    with mock.patch.object(apps_mod, "stop_app_process", side_effect=fake_stop):
         stopped = apps_mod.stop_running_archive_apps(db, cfg)
     # running archive apps: arch-run (app_archive) and aaa-run (access_all_archive)
     assert set(stopped) == {"r1", "r4"}

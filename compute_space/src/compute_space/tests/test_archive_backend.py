@@ -675,10 +675,11 @@ def test_configure_backend_from_local_syncs_and_repoints(cfg, db):
     assert calls == ["mount", "migrate", "umount", "mount", "remove"]
 
 
-def test_configure_backend_quiesces_apps_before_remount(cfg, db):
-    """The quiesce callback (which stops archive apps) must run AFTER the
-    sync/re-point but BEFORE the remount, so nothing holds the FUSE mount open
-    when systemctl stop tries to unmount."""
+def test_configure_backend_quiesces_apps_before_sync(cfg, db):
+    """The quiesce callback (which stops archive apps) must run BEFORE the sync
+    (so no app can write into the local store once copying starts — that write
+    would be lost when the volume re-points to S3) and therefore also before
+    the remount (so nothing holds the FUSE mount open when it is unmounted)."""
     order = []
     with (
         mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
@@ -833,11 +834,29 @@ def test_stop_running_archive_apps_only_stops_running_archive_apps(cfg, db):
     _seed_app(db, "id_arch_stop", "arch-stop", "stopped", arch, 20402)
     _seed_app(db, "id_plain_run", "plain-run", "running", plain, 20403)
 
-    with mock.patch.object(apps_mod, "stop_app_process") as stop:
+    # A real stop flips the row to 'stopped'; simulate that so the post-stop
+    # verification passes.
+    def fake_stop(row):
+        db.execute("UPDATE apps SET status='stopped' WHERE app_id=?", (row["app_id"],))
+        db.commit()
+
+    with mock.patch.object(apps_mod, "stop_app_process", side_effect=fake_stop) as stop:
         stopped = apps_mod.stop_running_archive_apps(db, cfg)
 
     assert stopped == ["id_arch_run"]
     assert stop.call_count == 1
+
+
+def test_stop_running_archive_apps_aborts_if_stop_fails(cfg, db):
+    """stop_app_process is best-effort and never raises; if an archive app is
+    still 'running' after the stop attempt, we must abort the migration rather
+    than risk the sync racing a live writer."""
+    db.row_factory = sqlite3.Row
+    _seed_app(db, "stubborn", "stubborn", "running", 'name="a"\n[data]\napp_archive=true\n', 20409)
+    # stop_app_process does nothing (mimics a swallowed failure) -> still running.
+    with mock.patch.object(apps_mod, "stop_app_process"):
+        with pytest.raises(RuntimeError, match="could not stop archive-using app"):
+            apps_mod.stop_running_archive_apps(db, cfg)
 
 
 def test_start_apps_by_id_starts_each(cfg, db):

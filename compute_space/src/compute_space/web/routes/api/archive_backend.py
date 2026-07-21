@@ -260,11 +260,12 @@ async def configure_archive_backend(
 
             # For a local->S3 migration the JuiceFS mount must be restarted
             # (juicefs config re-points the volume to S3).  A running app
-            # container holding the mount open would make the unmount time out,
-            # so we STOP archive-using apps right before the remount and record
-            # which ones, then RESTART them afterwards so they re-open the
-            # now-S3-backed archive.  The quiesce callback runs inside
-            # configure_backend just before the remount.
+            # container holding the mount open would make the unmount time out
+            # and could keep writing during the sync, so we STOP archive-using
+            # apps just before the sync and record which ones, then RESTART
+            # them afterwards so they re-open the (now S3-backed) archive.  The
+            # quiesce callback runs inside configure_backend right before the
+            # sync.
             quiesced: list[str] = []
 
             def _quiesce() -> None:
@@ -284,10 +285,17 @@ async def configure_archive_backend(
                     quiesce_archive_apps=_quiesce if was_local else None,
                 )
             finally:
-                # Whether the migration succeeded (mount now S3-backed) or
-                # failed-open (mount restored to local), restart any apps we
-                # stopped so they re-open the archive.
-                if quiesced:
+                # Only restart the quiesced apps if the archive mount is
+                # actually LIVE (either the new S3 mount after success, or the
+                # restored local mount after fail-open).  If the mount is down
+                # — e.g. a total failure where even the fail-open remount
+                # couldn't bring it back — we must NOT restart them: their
+                # containers would bind-mount the bare (unmounted) mountpoint
+                # directory and any archive writes would be silently shadowed
+                # once JuiceFS remounts over it on the next boot.  Leaving them
+                # stopped is safe; attach_on_startup remounts and the operator
+                # restarts the apps (state_message tells them to).
+                if quiesced and archive_backend.is_mounted(archive_backend.juicefs_mount_dir(config)):
                     start_apps_by_id(quiesced, worker_db, config)
         finally:
             worker_db.close()

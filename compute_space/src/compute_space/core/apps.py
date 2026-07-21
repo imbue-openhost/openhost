@@ -634,10 +634,17 @@ def stop_running_archive_apps(db: sqlite3.Connection, config: Config) -> list[st
     """Stop every RUNNING app that uses the archive tier; return their app_ids.
 
     Used to quiesce the archive mount before a local->S3 migration restarts
-    the JuiceFS FUSE mount: ``systemctl stop openhost-juicefs`` cannot unmount
-    while a container still has the mount open, so the unmount would time out.
-    The caller restarts the returned apps once the mount is back (via
-    ``start_apps_by_id``).  Best-effort per app.
+    the JuiceFS FUSE mount: no app may write into the local store during the
+    sync (that write would be lost when the volume re-points to S3), and
+    ``systemctl stop openhost-juicefs`` cannot cleanly unmount while a
+    container still has the mount open.  The caller restarts the returned apps
+    once the mount is back (via ``start_apps_by_id``).  Best-effort per app.
+
+    ``stop_app_process`` swallows its own errors, so after stopping we RE-READ
+    each app's status and raise if any archive app is still marked running:
+    proceeding with the migration while a container may still be writing to the
+    archive risks silent data loss, so we abort (the caller's fail-open keeps
+    the local backend intact) rather than continue on a false "quiesced".
     """
     rows = db.execute("SELECT app_id, name, status, manifest_raw FROM apps").fetchall()
     stopped: list[str] = []
@@ -646,12 +653,28 @@ def stop_running_archive_apps(db: sqlite3.Connection, config: Config) -> list[st
             continue
         if not archive_backend.manifest_uses_archive(row["manifest_raw"] or ""):
             continue
+        logger.info("stopping archive-using app %s before archive migration", row["name"])
         try:
-            logger.info("stopping archive-using app %s before archive migration remount", row["name"])
             stop_app_process(row)
-            stopped.append(row["app_id"])
         except Exception:
-            logger.exception("failed to stop app %s before archive migration remount", row["name"])
+            logger.exception("failed to stop app %s before archive migration", row["name"])
+        stopped.append(row["app_id"])
+
+    # Verify the stops actually took (stop_app_process is best-effort and does
+    # not raise).  A still-running archive app could keep writing during the
+    # sync, so refuse to proceed if any remain up.
+    if stopped:
+        placeholders = ",".join("?" for _ in stopped)
+        still_running = db.execute(
+            f"SELECT name FROM apps WHERE app_id IN ({placeholders}) AND status = 'running'",
+            tuple(stopped),
+        ).fetchall()
+        if still_running:
+            names = ", ".join(r["name"] for r in still_running)
+            raise RuntimeError(
+                f"could not stop archive-using app(s) before migration: {names}; "
+                "aborting so the sync can't race a live writer (local backend left intact)"
+            )
     return stopped
 
 
