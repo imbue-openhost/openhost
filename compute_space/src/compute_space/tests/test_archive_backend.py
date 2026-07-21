@@ -29,7 +29,7 @@ def cfg(tmp_path: Path):
 
 @pytest.fixture
 def db(cfg):
-    """Initialised sqlite DB so the archive_backend table exists, seeded disabled."""
+    """Initialised sqlite DB so the archive_backend table exists, seeded local."""
     init_db(cfg.db_path)
     conn = sqlite3.connect(cfg.db_path)
     yield conn
@@ -41,8 +41,8 @@ def db(cfg):
 
 def test_seeded_state_is_local(db):
     """Fresh DB comes up at backend='local': the archive tier is always
-    available (local-disk backed); apps with app_archive=true install
-    immediately, and the operator can upgrade to S3 later."""
+    available (a local file-backed JuiceFS volume); apps with app_archive=true
+    install immediately, and the operator can upgrade to S3 later."""
     state = read_state(db)
     assert state.backend == "local"
     assert state.s3_bucket is None
@@ -81,10 +81,95 @@ def test_bucket_url_endpoint_strips_trailing_slash():
     )
 
 
-# --- format/mount: --no-agent -----------------------------------------------
+# --- sync URL construction -------------------------------------------------
 
 
-def test_format_volume_passes_no_agent_flag(cfg):
+def test_s3_sync_dest_aws():
+    """AWS sync DST is virtual-host style with the volume prefix appended so
+    object keys line up with the source's ``<volume>/`` prefix."""
+    assert (
+        archive_backend._s3_sync_dest("mybucket", "us-west-2", None, "openhost")
+        == "s3://mybucket.s3.us-west-2.amazonaws.com/openhost/"
+    )
+
+
+def test_s3_sync_dest_custom_endpoint_uses_bucket_dot_host():
+    """juicefs sync parses ``s3://BUCKET.ENDPOINT/PREFIX``; a custom endpoint
+    must be rendered as ``<bucket>.<endpoint-host>`` (NOT ``endpoint/bucket``),
+    otherwise juicefs treats the whole host as the endpoint and fails to auth."""
+    assert (
+        archive_backend._s3_sync_dest("mybucket", None, "http://127.0.0.1:9199", "openhost")
+        == "s3://mybucket.127.0.0.1:9199/openhost/"
+    )
+
+
+def test_local_sync_source_points_under_volume_prefix(cfg):
+    """The local SRC is ``<object-store>/<volume>/`` so keys map 1:1 to DST."""
+    src = archive_backend._local_sync_source(cfg, "openhost")
+    assert src.endswith("/openhost/")
+    assert src.startswith(cfg.local_archive_object_store_dir)
+
+
+def test_sync_objects_passes_aws_env_not_argv(cfg):
+    """Credentials must go via AWS_* env (juicefs sync ignores JuiceFS's own
+    ACCESS_KEY/SECRET_KEY for endpoints), and must NOT appear in argv (ps leak)."""
+    captured = {}
+
+    def fake_run(cmd, env, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
+        with mock.patch.object(subprocess, "run", side_effect=fake_run):
+            archive_backend._sync_objects(
+                cfg,
+                src="/store/openhost/",
+                dst="s3://b.s3.us-east-1.amazonaws.com/openhost/",
+                s3_access_key_id="AKIA-secret",
+                s3_secret_access_key="topsecret",
+            )
+    assert captured["env"]["AWS_ACCESS_KEY_ID"] == "AKIA-secret"
+    assert captured["env"]["AWS_SECRET_ACCESS_KEY"] == "topsecret"
+    assert "--check-all" in captured["cmd"]
+    # No secret in argv.
+    assert not any("topsecret" in str(a) for a in captured["cmd"])
+    assert "--no-agent" in captured["cmd"]
+    assert captured["cmd"].index("--no-agent") < captured["cmd"].index("sync")
+
+
+def test_reconfigure_volume_storage_keeps_secret_out_of_argv(cfg):
+    """``juicefs config`` re-point must pass the secret via env (SECRET_KEY),
+    referenced as ``env:SECRET_KEY`` on argv, so the raw secret never shows
+    up in the process command line."""
+    captured = {}
+
+    def fake_run(cmd, env, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
+        with mock.patch.object(subprocess, "run", side_effect=fake_run):
+            archive_backend._reconfigure_volume_storage(
+                cfg,
+                storage="s3",
+                bucket="https://b.s3.us-east-1.amazonaws.com",
+                s3_access_key_id="AKIA-x",
+                s3_secret_access_key="topsecret",
+            )
+    assert "config" in captured["cmd"]
+    assert "--storage" in captured["cmd"] and "s3" in captured["cmd"]
+    assert captured["env"]["SECRET_KEY"] == "topsecret"
+    # The raw secret is never on argv; only the env: reference is.
+    assert not any(a == "topsecret" for a in captured["cmd"])
+    assert "env:SECRET_KEY" in captured["cmd"]
+
+
+# --- format: --no-agent + backends ------------------------------------------
+
+
+def test_format_s3_volume_passes_no_agent_flag(cfg):
     """``--no-agent`` must precede the format subcommand so JuiceFS doesn't
     bind 6060+ for its pprof debug HTTP server (which our security audit
     flags as an unexpected listener)."""
@@ -96,7 +181,7 @@ def test_format_volume_passes_no_agent_flag(cfg):
 
     with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
         with mock.patch.object(subprocess, "run", side_effect=fake_run):
-            archive_backend.format_volume(
+            archive_backend.format_s3_volume(
                 cfg,
                 s3_bucket="b",
                 s3_region="us-east-1",
@@ -108,24 +193,51 @@ def test_format_volume_passes_no_agent_flag(cfg):
     cmd = captured["cmd"]
     assert "--no-agent" in cmd
     assert cmd.index("--no-agent") < cmd.index("format")
+    assert "s3" in cmd
 
 
-def test_format_volume_creates_state_dir_for_meta_db(cfg):
-    """JuiceFS's sqlite3 meta backend won't mkdir its parent; format_volume must.
-    Regression: a fresh zone with no legacy meta.db otherwise fails with
-    'unable to open database file: no such file or directory'."""
+def test_format_local_volume_uses_file_storage_and_creates_store(cfg):
+    """The local backend formats with ``--storage file`` and creates both the
+    meta state dir and the object-store dir."""
+    captured = {}
+    store_dir = archive_backend.local_object_store_dir(cfg)
+    state_dir = archive_backend.juicefs_state_dir(cfg)
+    assert not os.path.exists(store_dir)
+
+    def fake_run(cmd, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        captured["store_exists"] = os.path.isdir(store_dir)
+        captured["state_exists"] = os.path.isdir(state_dir)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True):
+        with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
+            with mock.patch.object(subprocess, "run", side_effect=fake_run):
+                archive_backend.format_local_volume(cfg, "openhost")
+    cmd = captured["cmd"]
+    assert "--storage" in cmd and "file" in cmd
+    assert "--no-agent" in cmd and cmd.index("--no-agent") < cmd.index("format")
+    # bucket is the object store dir, trailing slash.
+    bucket_idx = cmd.index("--bucket") + 1
+    assert cmd[bucket_idx].endswith("/")
+    assert cmd[bucket_idx].startswith(store_dir)
+    assert captured["store_exists"] is True
+    assert captured["state_exists"] is True
+
+
+def test_format_s3_volume_creates_state_dir_for_meta_db(cfg):
+    """JuiceFS's sqlite3 meta backend won't mkdir its parent; format must."""
     state_dir = archive_backend.juicefs_state_dir(cfg)
     assert not os.path.exists(state_dir)
     captured = {}
 
     def fake_run(cmd, env, capture_output, text, timeout):
-        captured["cmd"] = cmd
         captured["state_dir_exists"] = os.path.isdir(state_dir)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
         with mock.patch.object(subprocess, "run", side_effect=fake_run):
-            archive_backend.format_volume(
+            archive_backend.format_s3_volume(
                 cfg,
                 s3_bucket="b",
                 s3_region="us-east-1",
@@ -137,16 +249,18 @@ def test_format_volume_creates_state_dir_for_meta_db(cfg):
     assert captured["state_dir_exists"] is True
 
 
-def test_mount_writes_env_file_and_starts_service(cfg):
+# --- mount -----------------------------------------------------------------
+
+
+def test_mount_writes_env_file_with_s3_creds_and_starts_service(cfg):
     """mount() must write the env file with the correct binary, meta DSN,
-    mount dir, and S3 creds, then enable+start the systemd service."""
+    mount dir, and (for s3) S3 creds, then enable+start the systemd service."""
     systemctl_calls: list[tuple[str, ...]] = []
 
     def fake_systemctl(*args, timeout=30):
         systemctl_calls.append(args)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    # is_mounted: False initially, True after systemctl start.
     is_mounted_calls = [False, True]
     with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/usr/local/bin/juicefs"):
         with mock.patch.object(
@@ -155,20 +269,31 @@ def test_mount_writes_env_file_and_starts_service(cfg):
             with mock.patch.object(archive_backend, "_systemctl", side_effect=fake_systemctl):
                 archive_backend.mount(cfg, "ak", "sk")
 
-    # Verify env file was written with correct content.
     env_path = archive_backend._juicefs_env_file(cfg)
-    assert os.path.isfile(env_path)
     content = open(env_path).read()
     assert "JUICEFS_BINARY=/usr/local/bin/juicefs" in content
     assert "ACCESS_KEY=ak" in content
     assert "SECRET_KEY=sk" in content
     assert f"JUICEFS_MOUNT_DIR={cfg.app_archive_dir}" in content
-    # Mode must be 0600 (owner-only).
     assert oct(os.stat(env_path).st_mode & 0o777) == "0o600"
-
-    # Verify systemctl calls: daemon-reload, then enable --now.
     assert ("daemon-reload",) in systemctl_calls
     assert ("enable", "--now", archive_backend.JUICEFS_SERVICE) in systemctl_calls
+
+
+def test_mount_local_omits_s3_creds(cfg):
+    """On the local (file) backend, mount() writes NO S3 creds into the env
+    file — the file backend doesn't need them, and there are none to write."""
+    is_mounted_calls = [False, True]
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
+        with mock.patch.object(
+            archive_backend, "is_mounted", side_effect=lambda mp: is_mounted_calls.pop(0) if is_mounted_calls else True
+        ):
+            with mock.patch.object(archive_backend, "_systemctl"):
+                archive_backend.mount(cfg)  # no creds -> local
+    content = open(archive_backend._juicefs_env_file(cfg)).read()
+    assert "ACCESS_KEY=" not in content
+    assert "SECRET_KEY=" not in content
+    assert "JUICEFS_MOUNT_DIR=" in content
 
 
 def test_mount_idempotent_when_already_mounted(cfg):
@@ -183,9 +308,6 @@ def test_mount_idempotent_when_already_mounted(cfg):
 
 
 def test_juicefs_state_and_runtime_dirs_are_separate_and_under_data_path(cfg):
-    """Critical state (must back up) lives under juicefs/state/; the
-    regenerable binary lives under juicefs/runtime/bin/.  Both under
-    openhost_data_path."""
     state = archive_backend._juicefs_state_dir(cfg)
     runtime = archive_backend._juicefs_runtime_dir(cfg)
     base = str(cfg.openhost_data_path)
@@ -195,7 +317,6 @@ def test_juicefs_state_and_runtime_dirs_are_separate_and_under_data_path(cfg):
 
 
 def test_juicefs_meta_db_lives_in_state_dir(cfg):
-    """meta.db is the single must-back-up file; it MUST be under state/."""
     assert archive_backend._juicefs_meta_db(cfg).startswith(archive_backend._juicefs_state_dir(cfg))
     assert archive_backend._juicefs_meta_db(cfg).endswith("meta.db")
 
@@ -204,12 +325,17 @@ def test_juicefs_meta_db_path_is_public_alias(cfg):
     assert archive_backend.juicefs_meta_db_path(cfg) == archive_backend._juicefs_meta_db(cfg)
 
 
+def test_local_object_store_under_persistent_data(cfg):
+    """The local object store lives under persistent_data (so it is backed
+    up) and is a DIFFERENT path from the mountpoint under data_root."""
+    assert archive_backend.local_object_store_dir(cfg).startswith(cfg.persistent_data_dir)
+    assert archive_backend.local_object_store_dir(cfg) != juicefs_mount_dir(cfg)
+
+
 # --- list_meta_dumps -------------------------------------------------------
 
 
 def test_list_meta_dumps_summarises_dump_objects():
-    """Summary returns count + most-recent timestamp.  Filters to
-    dump-*.json.gz so unrelated objects under meta/ don't inflate count."""
     fake_now = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
     with mock.patch.object(
         archive_backend,
@@ -245,15 +371,11 @@ def test_list_meta_dumps_empty_bucket_returns_zero_count():
 
 
 def test_list_meta_dumps_returns_none_on_s3_failure():
-    """Any S3 failure surfaces as None so the dashboard renders 'unknown'
-    rather than mistaking it for 'no dumps yet'."""
     with mock.patch.object(archive_backend, "_s3_client", side_effect=RuntimeError("boom")):
         assert archive_backend.list_meta_dumps("b", "us-east-1", None, "ak", "sk", "p") is None
 
 
 def test_list_meta_dumps_lists_under_volume_name():
-    """Regression: JuiceFS writes dumps to ``<volume>/meta/``, so the listing
-    must use the volume name — not s3_prefix, which is null on most installs."""
     captured = {}
 
     def fake_list(*, Bucket, Prefix, MaxKeys):
@@ -270,7 +392,6 @@ def test_list_meta_dumps_lists_under_volume_name():
 
 
 def test_list_meta_dumps_handles_empty_volume_name():
-    """Defensive: a blank volume name lists at meta/ (no leading slash, no double /)."""
     captured = {}
 
     def fake_list(*, Bucket, Prefix, MaxKeys):
@@ -289,13 +410,14 @@ def test_list_meta_dumps_handles_empty_volume_name():
 # --- is_archive_dir_healthy -----------------------------------------------
 
 
-def test_is_archive_dir_healthy_local_true_when_dir_exists(cfg, db):
-    """On the local backend the health check passes once the local archive
-    directory exists (created at boot / before provisioning)."""
-    # Fresh DB defaults to 'local'.  The dir doesn't exist yet -> unhealthy.
-    assert not archive_backend.is_archive_dir_healthy(cfg, db)
-    archive_backend.ensure_local_archive_dir(cfg)
-    assert archive_backend.is_archive_dir_healthy(cfg, db)
+def test_is_archive_dir_healthy_local_uses_is_mounted(cfg, db):
+    """On the local backend the archive is a JuiceFS mount, so health is
+    determined by is_mounted(mountpoint) — NOT os.path.isdir."""
+    with mock.patch.object(archive_backend, "is_mounted", return_value=False):
+        assert not archive_backend.is_archive_dir_healthy(cfg, db)
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True) as m:
+        assert archive_backend.is_archive_dir_healthy(cfg, db)
+    assert m.call_args.args[0] == juicefs_mount_dir(cfg)
 
 
 def test_is_archive_dir_healthy_disabled_returns_true(cfg, db):
@@ -307,9 +429,6 @@ def test_is_archive_dir_healthy_disabled_returns_true(cfg, db):
 
 
 def test_is_archive_dir_healthy_s3_uses_is_mounted(cfg, db):
-    """s3 health is determined by is_mounted(juicefs_mount_dir), NOT by
-    os.path.isdir — an empty mount-point dir would silently let writes
-    fall through to local disk and be shadowed when the mount reattaches."""
     db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
     db.commit()
     with mock.patch.object(archive_backend, "is_mounted", return_value=True) as m:
@@ -321,8 +440,8 @@ def test_is_archive_dir_healthy_s3_uses_is_mounted(cfg, db):
 
 
 def test_attach_on_startup_disabled_is_no_op(cfg, db):
-    """Disabled backend means no juicefs work — boot must succeed without
-    touching the install/mount path."""
+    db.execute("UPDATE archive_backend SET backend='disabled' WHERE id=1")
+    db.commit()
     with mock.patch.object(archive_backend, "install_juicefs") as inst:
         with mock.patch.object(archive_backend, "mount") as mnt:
             archive_backend.attach_on_startup(cfg, db)
@@ -330,9 +449,50 @@ def test_attach_on_startup_disabled_is_no_op(cfg, db):
     mnt.assert_not_called()
 
 
+def test_attach_on_startup_local_formats_and_mounts(cfg, db):
+    """Fresh DB defaults to local: attach must format the local file volume
+    (first boot) and start the mount, clearing state_message."""
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "_local_volume_formatted", return_value=False),
+        mock.patch.object(archive_backend, "format_local_volume") as fmt,
+        mock.patch.object(archive_backend, "mount") as mnt,
+    ):
+        archive_backend.attach_on_startup(cfg, db)
+    fmt.assert_called_once()
+    mnt.assert_called_once()
+    assert read_state(db).state_message is None
+
+
+def test_attach_on_startup_local_skips_format_when_already_formatted(cfg, db):
+    """If the local volume was already formatted (meta.db present), attach
+    just mounts — it must not re-format."""
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "_local_volume_formatted", return_value=True),
+        mock.patch.object(archive_backend, "format_local_volume") as fmt,
+        mock.patch.object(archive_backend, "mount") as mnt,
+    ):
+        archive_backend.attach_on_startup(cfg, db)
+    fmt.assert_not_called()
+    mnt.assert_called_once()
+
+
+def test_attach_on_startup_local_records_error_on_failure(cfg, db):
+    """A failure bringing up the local mount is recorded in state_message and
+    doesn't crash boot."""
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "_local_volume_formatted", return_value=True),
+        mock.patch.object(archive_backend, "mount", side_effect=RuntimeError("mount boom")),
+    ):
+        archive_backend.attach_on_startup(cfg, db)
+    state = read_state(db)
+    assert state.state_message is not None
+    assert "boom" in state.state_message
+
+
 def test_attach_on_startup_s3_happy_path(cfg, db):
-    """S3 backend installs juicefs (if missing), mounts, and clears the
-    state_message."""
     db.execute(
         "UPDATE archive_backend SET backend='s3', s3_bucket='b', "
         "s3_access_key_id='ak', s3_secret_access_key='sk' WHERE id=1"
@@ -342,12 +502,10 @@ def test_attach_on_startup_s3_happy_path(cfg, db):
         with mock.patch.object(archive_backend, "mount") as mnt:
             archive_backend.attach_on_startup(cfg, db)
     mnt.assert_called_once()
-    state = read_state(db)
-    assert state.state_message is None
+    assert read_state(db).state_message is None
 
 
 def test_attach_on_startup_s3_missing_creds_records_error(cfg, db):
-    """If creds are NULL, attach must record a state_message + not crash boot."""
     db.execute("UPDATE archive_backend SET backend='s3', s3_bucket='b' WHERE id=1")
     db.commit()
     archive_backend.attach_on_startup(cfg, db)
@@ -356,12 +514,50 @@ def test_attach_on_startup_s3_missing_creds_records_error(cfg, db):
     assert "credentials" in state.state_message.lower()
 
 
-# --- configure_backend ----------------------------------------------------
+# --- effective_archive_dir -------------------------------------------------
+
+
+def test_effective_archive_dir_is_always_the_mount(cfg, db):
+    """The archive tier is always the JuiceFS mountpoint regardless of backend."""
+    assert archive_backend.effective_archive_dir(cfg, db) == juicefs_mount_dir(cfg)
+    db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
+    db.commit()
+    assert archive_backend.effective_archive_dir(cfg, db) == juicefs_mount_dir(cfg)
+    db.execute("UPDATE archive_backend SET backend='disabled' WHERE id=1")
+    db.commit()
+    assert archive_backend.effective_archive_dir(cfg, db) == juicefs_mount_dir(cfg)
+
+
+# --- local_archive_apps_with_data ------------------------------------------
+
+
+def test_local_archive_apps_with_data_reads_mount(cfg, db):
+    """Lists per-app subdirs of the (mounted) archive that contain data.
+    Empty per-app dirs don't count; a live mount is required."""
+    mount_dir = juicefs_mount_dir(cfg)
+    os.makedirs(os.path.join(mount_dir, "emptyapp"), exist_ok=True)
+    os.makedirs(os.path.join(mount_dir, "nextcloud", "files"), exist_ok=True)
+    with open(os.path.join(mount_dir, "nextcloud", "files", "a.txt"), "wb") as f:
+        f.write(b"hello")
+
+    # Not mounted -> nothing (defensive).
+    with mock.patch.object(archive_backend, "is_mounted", return_value=False):
+        assert archive_backend.local_archive_apps_with_data(cfg, db) == []
+    # Mounted -> only apps with content.
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        assert archive_backend.local_archive_apps_with_data(cfg, db) == ["nextcloud"]
+
+    # Wrong backend -> empty regardless.
+    db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
+    db.commit()
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        assert archive_backend.local_archive_apps_with_data(cfg, db) == []
+
+
+# --- configure_backend -----------------------------------------------------
 
 
 def test_configure_backend_refuses_when_already_configured(cfg, db):
-    """One-shot only: a subsequent configure call must refuse rather than
-    overwriting the existing S3 setup."""
     db.execute("UPDATE archive_backend SET backend='s3', s3_bucket='b' WHERE id=1")
     db.commit()
     with pytest.raises(BackendConfigureError, match="already configured"):
@@ -377,24 +573,30 @@ def test_configure_backend_refuses_when_already_configured(cfg, db):
         )
 
 
-def test_configure_backend_happy_path(cfg, db):
-    """Format + mount + DB UPDATE all run in order; the row ends up with
-    backend='s3' and the configured creds."""
-    with mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True):
-        with mock.patch.object(archive_backend, "format_volume") as fmt:
-            with mock.patch.object(archive_backend, "mount") as mnt:
-                configure_backend(
-                    cfg,
-                    db,
-                    s3_bucket="mybucket",
-                    s3_region="us-west-2",
-                    s3_endpoint=None,
-                    s3_prefix="andrew-3",
-                    s3_access_key_id="ak",
-                    s3_secret_access_key="sk",
-                )
+def test_configure_backend_from_disabled_formats_s3_fresh(cfg, db):
+    """A legacy 'disabled' zone has no volume/data, so configure formats S3
+    fresh (no sync/re-point) and flips to s3."""
+    db.execute("UPDATE archive_backend SET backend='disabled' WHERE id=1")
+    db.commit()
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "format_s3_volume") as fmt,
+        mock.patch.object(archive_backend, "mount") as mnt,
+        mock.patch.object(archive_backend, "_migrate_local_to_s3") as mig,
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="mybucket",
+            s3_region="us-west-2",
+            s3_endpoint=None,
+            s3_prefix="andrew-3",
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+        )
     fmt.assert_called_once()
     mnt.assert_called_once()
+    mig.assert_not_called()
     state = read_state(db)
     assert state.backend == "s3"
     assert state.s3_bucket == "mybucket"
@@ -403,92 +605,23 @@ def test_configure_backend_happy_path(cfg, db):
     assert state.configured_at is not None
 
 
-def test_configure_backend_format_failure_does_not_persist(cfg, db):
-    """If format/mount fail, the DB row stays at its pre-configure value so
-    the operator can retry without first having to undo a half-applied
-    state.  A fresh zone is on 'local', so it must remain 'local' (and its
-    local archive data — none here — would be untouched)."""
-    with mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True):
-        with mock.patch.object(archive_backend, "format_volume", side_effect=RuntimeError("boom")):
-            with pytest.raises(BackendConfigureError):
-                configure_backend(
-                    cfg,
-                    db,
-                    s3_bucket="b",
-                    s3_region=None,
-                    s3_endpoint=None,
-                    s3_prefix=None,
-                    s3_access_key_id="ak",
-                    s3_secret_access_key="sk",
-                )
-    state = read_state(db)
-    assert state.backend == "local"
-
-
-# --- local backend + local->S3 migration ----------------------------------
-
-
-def _write_local_archive_file(cfg, app: str, rel: str, content: bytes) -> str:
-    """Helper: write a file into the local archive dir for ``app``."""
-    root = archive_backend.local_archive_dir(cfg)
-    path = os.path.join(root, app, rel)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(content)
-    return path
-
-
-def test_effective_archive_dir_selects_by_backend(cfg, db):
-    # default local
-    assert archive_backend.effective_archive_dir(cfg, db) == archive_backend.local_archive_dir(cfg)
-    # s3
-    db.execute("UPDATE archive_backend SET backend='s3' WHERE id=1")
+def test_configure_backend_from_local_syncs_and_repoints(cfg, db):
+    """Migrating local->s3 syncs objects, re-points the volume, remounts, and
+    reclaims the local object store — keeping the pre-existing volume name."""
+    db.execute("UPDATE archive_backend SET juicefs_volume_name='openhost' WHERE id=1")
     db.commit()
-    assert archive_backend.effective_archive_dir(cfg, db) == archive_backend.juicefs_mount_dir(cfg)
-    # legacy disabled -> juicefs mount path (absent, so 'not available')
-    db.execute("UPDATE archive_backend SET backend='disabled' WHERE id=1")
-    db.commit()
-    assert archive_backend.effective_archive_dir(cfg, db) == archive_backend.juicefs_mount_dir(cfg)
-
-
-def test_local_archive_has_data_and_apps(cfg):
-    assert archive_backend.local_archive_has_data(cfg) is False
-    assert archive_backend.local_archive_apps_with_data(cfg) == []
-    # An empty per-app dir does not count as data.
-    os.makedirs(os.path.join(archive_backend.local_archive_dir(cfg), "emptyapp"), exist_ok=True)
-    assert archive_backend.local_archive_has_data(cfg) is False
-    # A file inside a per-app dir does.
-    _write_local_archive_file(cfg, "nextcloud", "files/a.txt", b"hello")
-    assert archive_backend.local_archive_has_data(cfg) is True
-    assert archive_backend.local_archive_apps_with_data(cfg) == ["nextcloud"]
-
-
-def test_attach_on_startup_local_creates_dir(cfg, db):
-    # Fresh DB defaults to local; the dir doesn't exist yet.
-    assert not os.path.isdir(archive_backend.local_archive_dir(cfg))
-    archive_backend.attach_on_startup(cfg, db)
-    assert os.path.isdir(archive_backend.local_archive_dir(cfg))
-
-
-def test_configure_backend_migrates_local_to_s3(cfg, db, tmp_path):
-    """Positive migration case: local archive data is copied into the mount,
-    the row flips to s3, and the local source is removed afterwards."""
-    # Seed local archive data.
-    _write_local_archive_file(cfg, "nextcloud", "files/doc.txt", b"important-bytes")
-    _write_local_archive_file(cfg, "nextcloud", "files/sub/deep.bin", b"\x00\x01\x02\x03")
-
-    # Fake the JuiceFS mount as a plain local dir the "mount" creates, and
-    # make format/mount no-ops that just create the mount dir.
-    mount_dir = archive_backend.juicefs_mount_dir(cfg)
-
-    def fake_mount(config, ak, sk):
-        os.makedirs(mount_dir, exist_ok=True)
-
+    calls = []
     with (
         mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
-        mock.patch.object(archive_backend, "format_volume"),
-        mock.patch.object(archive_backend, "mount", side_effect=fake_mount),
-        mock.patch.object(archive_backend, "_podman_available", return_value=False),
+        mock.patch.object(archive_backend, "_ensure_local_volume_formatted"),
+        mock.patch.object(archive_backend, "mount", side_effect=lambda *a, **k: calls.append("mount")),
+        mock.patch.object(archive_backend, "umount", side_effect=lambda *a, **k: calls.append("umount")),
+        mock.patch.object(
+            archive_backend, "_migrate_local_to_s3", side_effect=lambda *a, **k: calls.append("migrate")
+        ),
+        mock.patch.object(
+            archive_backend, "_remove_local_object_store", side_effect=lambda *a, **k: calls.append("remove")
+        ),
     ):
         configure_backend(
             cfg,
@@ -496,47 +629,35 @@ def test_configure_backend_migrates_local_to_s3(cfg, db, tmp_path):
             s3_bucket="b",
             s3_region="us-east-1",
             s3_endpoint=None,
-            s3_prefix=None,
+            # prefix differs from the existing volume; the existing volume name
+            # must win so the already-synced objects keep their prefix.
+            s3_prefix="ignored-prefix",
             s3_access_key_id="ak",
             s3_secret_access_key="sk",
         )
-
     state = read_state(db)
     assert state.backend == "s3"
-    # Data copied into the mount, byte-identical.
-    with open(os.path.join(mount_dir, "nextcloud", "files", "doc.txt"), "rb") as f:
-        assert f.read() == b"important-bytes"
-    with open(os.path.join(mount_dir, "nextcloud", "files", "sub", "deep.bin"), "rb") as f:
-        assert f.read() == b"\x00\x01\x02\x03"
-    # Local source content removed after a successful migration (the empty
-    # root dir may remain, but no app data should be left behind).
-    local_root = archive_backend.local_archive_dir(cfg)
-    leftover = []
-    for _dirpath, _dirs, files in os.walk(local_root):
-        leftover.extend(files)
-    assert leftover == []
+    assert state.juicefs_volume_name == "openhost"
+    # Order: mount local, migrate (sync+repoint), remount (umount+mount), remove.
+    assert calls == ["mount", "migrate", "umount", "mount", "remove"]
 
 
-def test_configure_backend_migration_failopen_keeps_local(cfg, db):
-    """Fail-open: if the migration/verify step fails, the backend stays
-    'local' and the local data is left fully intact."""
-    _write_local_archive_file(cfg, "nextcloud", "files/keepme.txt", b"do-not-lose-me")
-    mount_dir = archive_backend.juicefs_mount_dir(cfg)
+def test_configure_backend_migration_failopen_restores_local(cfg, db):
+    """Fail-open: if the migration step fails, the backend stays 'local' and
+    the volume is re-pointed back to the (intact) local file store + remounted."""
+    restored = {}
 
-    def fake_mount(config, ak, sk):
-        os.makedirs(mount_dir, exist_ok=True)
+    def fake_reconfig(config, *, storage, bucket, s3_access_key_id, s3_secret_access_key):
+        restored["storage"] = storage
 
-    # Force the copy to blow up mid-migration.
     with (
         mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
-        mock.patch.object(archive_backend, "format_volume"),
-        mock.patch.object(archive_backend, "mount", side_effect=fake_mount),
+        mock.patch.object(archive_backend, "_ensure_local_volume_formatted"),
+        mock.patch.object(archive_backend, "mount"),
         mock.patch.object(archive_backend, "umount"),
-        mock.patch.object(
-            archive_backend,
-            "_migrate_local_archive_into_mount",
-            side_effect=RuntimeError("copy exploded"),
-        ),
+        mock.patch.object(archive_backend, "_migrate_local_to_s3", side_effect=RuntimeError("sync exploded")),
+        mock.patch.object(archive_backend, "_reconfigure_volume_storage", side_effect=fake_reconfig),
+        mock.patch.object(archive_backend, "_remove_local_object_store") as rm,
     ):
         with pytest.raises(BackendConfigureError):
             configure_backend(
@@ -549,40 +670,48 @@ def test_configure_backend_migration_failopen_keeps_local(cfg, db):
                 s3_access_key_id="ak",
                 s3_secret_access_key="sk",
             )
-
     state = read_state(db)
     assert state.backend == "local"
-    # Local data still there, untouched.
-    p = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files", "keepme.txt")
-    assert os.path.isfile(p)
-    with open(p, "rb") as f:
-        assert f.read() == b"do-not-lose-me"
+    # We restored the file storage and never reclaimed the local objects.
+    assert restored.get("storage") == "file"
+    rm.assert_not_called()
 
 
-def test_migrate_verify_detects_short_copy(cfg):
-    """The verification step raises if a destination file is truncated,
-    so a silent short copy can't be mistaken for success.  We simulate the
-    short write by letting the copy run, then truncating the destination
-    before verification (patch copytree/copy2 to a no-op after we've
-    pre-seeded a truncated dest)."""
-    _write_local_archive_file(cfg, "nextcloud", "files/big.bin", b"x" * 1000)
-    mount_dir = archive_backend.juicefs_mount_dir(cfg)
-    # Pre-create the destination with a TRUNCATED copy of the file.
-    dst_file = os.path.join(mount_dir, "nextcloud", "files", "big.bin")
-    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-    with open(dst_file, "wb") as f:
-        f.write(b"x" * 10)  # short!
-
-    # Make the copy phase a no-op so our truncated dest survives into verify.
+def test_migrate_local_to_s3_sync_then_repoint(cfg):
+    """The migration helper syncs objects first, THEN re-points storage — so a
+    sync failure leaves the volume reading from the intact local store."""
+    order = []
     with (
-        mock.patch("shutil.copytree"),
-        mock.patch("shutil.copy2"),
+        mock.patch.object(archive_backend, "_sync_objects", side_effect=lambda *a, **k: order.append("sync")),
+        mock.patch.object(
+            archive_backend, "_reconfigure_volume_storage", side_effect=lambda *a, **k: order.append("repoint")
+        ),
     ):
-        with pytest.raises(RuntimeError, match="verification failed"):
-            archive_backend._copy_and_verify_in_process(archive_backend.local_archive_dir(cfg), mount_dir)
-    # Source intact regardless.
-    src = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files", "big.bin")
-    assert os.path.getsize(src) == 1000
+        archive_backend._migrate_local_to_s3(
+            cfg,
+            volume="openhost",
+            s3_bucket="b",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+        )
+    assert order == ["sync", "repoint"]
+
+
+def test_remove_local_object_store_recreates_empty_root(cfg):
+    """After migration the object store is deleted and an empty root left in
+    its place (so later reads of the path don't hit a missing dir)."""
+    store = archive_backend.local_object_store_dir(cfg)
+    os.makedirs(os.path.join(store, "openhost", "chunks"), exist_ok=True)
+    with open(os.path.join(store, "openhost", "chunks", "1_0_5"), "wb") as f:
+        f.write(b"objdata")
+    archive_backend._remove_local_object_store(cfg)
+    assert os.path.isdir(store)
+    leftover = []
+    for _dp, _d, files in os.walk(store):
+        leftover.extend(files)
+    assert leftover == []
 
 
 # --- storage_summary -------------------------------------------------------
@@ -617,41 +746,14 @@ def test_storage_summary_non_archive_app_no_warn(cfg, db):
     assert s.warnings == []
 
 
-def test_migrate_preserves_ownership(cfg, monkeypatch):
-    """The in-process migration copy must reproduce source uid/gid on the
-    destination, so migrated files stay writable by their owning app
-    container.  We can't really chown as an unprivileged test user, so we
-    capture the os.chown calls and assert the dest paths are chowned to the
-    source's uid/gid."""
-    _write_local_archive_file(cfg, "file-browser", "e2e-test-file.txt", b"hello")
-    src_root = archive_backend.local_archive_dir(cfg)
-    dst_root = os.path.join(cfg.data_root_dir, "app_archive")
-    os.makedirs(dst_root, exist_ok=True)
-
-    src_file = os.path.join(src_root, "file-browser", "e2e-test-file.txt")
-    src_st = os.lstat(src_file)
-
-    chowned: dict[str, tuple[int, int]] = {}
-    real_chown = os.chown
-
-    def fake_chown(path, uid, gid, *a, **k):
-        chowned[os.path.realpath(path)] = (uid, gid)
-        # don't actually chown (unprivileged); record only.
-
-    monkeypatch.setattr(os, "chown", fake_chown)
-    archive_backend._copy_and_verify_in_process(src_root, dst_root)
-    monkeypatch.setattr(os, "chown", real_chown)
-
-    dst_file = os.path.realpath(os.path.join(dst_root, "file-browser", "e2e-test-file.txt"))
-    assert dst_file in chowned, f"dest file was not chowned: {list(chowned)}"
-    assert chowned[dst_file] == (src_st.st_uid, src_st.st_gid)
+# --- restart_archive_apps --------------------------------------------------
 
 
 def test_restart_archive_apps_only_recycles_running_archive_apps(cfg, db):
     """After a migration, restart_archive_apps must recycle exactly the
     RUNNING apps whose manifest uses the archive tier — not stopped apps,
     not non-archive apps."""
-    db.row_factory = sqlite3.Row  # restart_archive_apps reads rows by column name
+    db.row_factory = sqlite3.Row
 
     def _seed(app_id, name, status, manifest_raw, port):
         db.execute(
@@ -676,5 +778,4 @@ def test_restart_archive_apps_only_recycles_running_archive_apps(cfg, db):
     assert restarted == ["arch-run"]
     assert stop.call_count == 1
     assert start.call_count == 1
-    # started the right app_id
     assert start.call_args.args[0] == "id_arch_run"

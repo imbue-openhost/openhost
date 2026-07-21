@@ -633,12 +633,13 @@ def _sync_port_mappings(
 def restart_archive_apps(db: sqlite3.Connection, config: Config) -> list[str]:
     """Stop+start every RUNNING app that uses the archive tier.
 
-    Called after a local->S3 archive migration: an app's archive bind mount
-    is chosen (from ``effective_archive_dir``) at CONTAINER START, so an app
-    that was started while the backend was 'local' still has its container
-    mounted at the old local path.  After the switch to S3 (which also
-    removes the local dir) those apps must be recycled so their containers
-    re-mount the JuiceFS source; otherwise their archive writes fail.
+    Called after a local->S3 archive migration.  The archive tier is always
+    the same JuiceFS mountpoint, but the migration RESTARTS that FUSE mount
+    (``juicefs config`` re-points the volume at S3, then the mount is
+    recycled).  A container that bind-mounted the FUSE mountpoint while it
+    pointed at the local file store keeps its old open handles; recycling the
+    app makes its container re-open the freshly-remounted (now S3-backed)
+    archive so subsequent reads/writes go to S3.
 
     Returns the list of app names that were restarted.  Best-effort per app:
     a failure to recycle one app is logged and doesn't block the others.

@@ -446,15 +446,15 @@ function renderArchiveBackend(state) {
     rows += '<tr><th>Latest meta dump</th><td>' + dumpLine + '</td></tr>';
   } else if (state.backend === 'local') {
     rows += '<tr><th>Backend</th>'
-      + '<td><span class="status-running">Local disk</span>'
+      + '<td><span class="status-running">Local disk (JuiceFS)</span>'
       + (state.state_message ? ' <span class="error">' + escSettingsHtml(state.state_message) + '</span>' : '')
       + '</td></tr>';
     if (state.archive_dir) {
       rows += '<tr><th>Host path</th><td><code>' + escSettingsHtml(state.archive_dir) + '</code></td></tr>';
     }
     rows += '<tr><th>Durability</th><td><span class="error">Local disk only.</span> '
-      + 'Archive data is kept on this instance and included in backups, but is NOT on '
-      + 'durable object storage. Configure S3 below for elastic, durable storage.</td></tr>';
+      + 'The archive is a JuiceFS volume whose objects live on this instance\u2019s local disk '
+      + '(included in backups) but NOT on durable object storage. Configure S3 below for elastic, durable storage.</td></tr>';
     var apps = state.local_archive_apps || [];
     if (apps.length) {
       rows += '<tr><th>Apps with local archive data</th><td>'
@@ -500,7 +500,7 @@ function showConfigureForm(state) {
       ? ' Apps whose archive data will be migrated: ' + localApps.map(function(a){ return '<code>' + escSettingsHtml(a) + '</code>'; }).join(', ') + '.'
       : ' There is no local archive data yet, so nothing will be migrated.';
     migrateNote = '<p class="error"><strong>This migrates your existing LOCAL archive data into S3.</strong> '
-      + 'The data is copied into the bucket and verified before the switch; if anything fails the switch is aborted and your local data is left intact (fail-open). '
+      + 'JuiceFS copies the archive objects into the bucket (verified with <code>--check-all</code>) and re-points the volume; if anything fails the switch is aborted and your local data is left intact (fail-open). '
       + 'After a successful migration the local copy is removed and the switch to S3 is <strong>one-way</strong>.'
       + appsLine + '</p>';
   }

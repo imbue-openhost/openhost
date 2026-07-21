@@ -341,16 +341,13 @@ async def api_add_app(
         shutil.rmtree(clone_dir, ignore_errors=True)
         return Response(content=ErrorResponse(error=validation_error), status_code=400)
 
-    # The archive tier is ALWAYS available: on a fresh/unupgraded zone it is
-    # backed by local disk (backend='local'), and the operator can later
-    # upgrade to S3.  So app_archive no longer blocks installation for lack
-    # of S3.  We only refuse when the backend is 's3' but its JuiceFS mount
-    # is transiently unhealthy (retryable 503).  For 'local' we make sure
-    # the backing directory exists so provisioning can write into it.
+    # The archive tier is ALWAYS available: it is a JuiceFS mount on every
+    # zone (a local file-backed volume by default, S3 after an operator
+    # upgrade), brought up at boot by attach_on_startup.  So app_archive no
+    # longer blocks installation for lack of S3.  We only refuse when that
+    # JuiceFS mount is transiently unhealthy (retryable 503), regardless of
+    # whether it's the local or S3 backend.
     if manifest.app_archive:
-        backend_state = archive_backend.read_state(db)
-        if backend_state.backend == "local":
-            archive_backend.ensure_local_archive_dir(config)
         if not archive_backend.is_archive_dir_healthy(config, db):
             shutil.rmtree(clone_dir, ignore_errors=True)
             return Response(
@@ -545,11 +542,8 @@ async def _reload_app_impl(
         return Response(content=ErrorResponse(error="App is being removed"), status_code=409)
     app_name = app_row["name"]
 
-    # On the local backend, make sure the backing dir exists before we
-    # health-check it (it lives under persistent_data and normally does,
-    # but a hand-wiped dir shouldn't wedge reloads).
-    if archive_backend.read_state(db).backend == "local":
-        archive_backend.ensure_local_archive_dir(config)
+    # The archive tier is a JuiceFS mount for both the local and S3 backends;
+    # refuse to reload an app that hard-requires it while that mount is down.
     if not archive_backend.is_archive_dir_healthy(config, db):
         if archive_backend.manifest_requires_archive(app_row["manifest_raw"] or ""):
             return Response(
@@ -781,10 +775,10 @@ async def remove_app(
 def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str, archive_dir: str) -> str | None:
     """Rename per-app subdirs across the three storage tiers, with rollback on partial failure.
 
-    ``archive_dir`` is the EFFECTIVE archive parent for the current backend
-    (local dir for backend='local', JuiceFS mountpoint for 's3', absent for
-    legacy 'disabled') — pass ``archive_backend.effective_archive_dir``.
-    Getting this wrong orphans an app's archive data under its old name.
+    ``archive_dir`` is the archive parent for the current backend — always
+    the JuiceFS mountpoint now (absent only on a legacy 'disabled' zone) —
+    pass ``archive_backend.effective_archive_dir``.  Getting this wrong
+    orphans an app's archive data under its old name.
 
     Returns ``None`` on success or an error message on failure. Sync helper
     so the blocking renames (which can be slow on JuiceFS) stay off the
@@ -797,9 +791,8 @@ def _rename_app_storage_dirs(config: Config, old_name: str, new_name: str, archi
     for parent in rename_parents:
         if not os.path.isdir(parent):
             return f"Storage parent {parent!r} is not a directory; refusing to rename so per-app data isn't orphaned."
-    # The archive parent exists whenever the archive tier is active for this
-    # zone: always for backend='local' (created at boot/provision) and for
-    # 's3' once JuiceFS is mounted.  Skip it cleanly only on a legacy
+    # The archive parent is the JuiceFS mountpoint, present whenever the mount
+    # is live (both local and S3 backends).  Skip it cleanly only on a legacy
     # 'disabled' zone where the mountpoint never gets created.
     if os.path.isdir(archive_dir):
         rename_parents.append(archive_dir)

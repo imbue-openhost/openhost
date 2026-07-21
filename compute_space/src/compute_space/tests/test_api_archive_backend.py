@@ -372,16 +372,17 @@ def test_add_app_allows_archive_app_on_default_local_backend(
     apps_client: TestClient[Litestar], cookies: dict[str, str], tmp_path: Path
 ) -> None:
     """An app with ``app_archive = true`` installs on a fresh zone: the
-    default 'local' backend makes the archive tier always available, so the
-    archive gate must NOT block with the old "configure S3" 400.  The
-    archive tier is healthy once its local dir exists (the add_app gate
-    calls ensure_local_archive_dir), so the request proceeds past the gate
-    (any later failure is unrelated to the archive check)."""
+    default 'local' backend makes the archive tier always available (a
+    live JuiceFS file-backed mount), so the archive gate must NOT block
+    with the old "configure S3" 400.  With the mount healthy the request
+    proceeds past the gate (any later failure is unrelated to the archive
+    check)."""
     fake_clone_dir = str(tmp_path / "clone")
     os.makedirs(fake_clone_dir)
     with (
         mock.patch.object(apps_routes, "parse_manifest", return_value=_archive_manifest("probe", app_archive=True)),
         mock.patch.object(apps_routes, "validate_manifest", return_value=None),
+        mock.patch.object(apps_routes.archive_backend, "is_archive_dir_healthy", return_value=True),
     ):
         resp = apps_client.post(
             "/api/add_app",
@@ -490,24 +491,27 @@ def test_configure_requires_confirm_when_local_has_data(
 ) -> None:
     """Upgrading local->S3 while apps have local archive data requires an
     explicit confirm_migrate_local flag; without it -> 409 listing the apps."""
-    # Seed a file into the local archive dir for an app.
-    local_root = archive_backend.local_archive_dir(cfg)
-    app_dir = os.path.join(local_root, "nextcloud", "files")
+    # Seed a file into the (mounted) local archive for an app.
+    app_dir = os.path.join(archive_backend.juicefs_mount_dir(cfg), "nextcloud", "files")
     os.makedirs(app_dir, exist_ok=True)
     with open(os.path.join(app_dir, "x.txt"), "wb") as f:
         f.write(b"data")
 
-    # Without confirm -> 409.
-    resp = client.post(
-        "/api/storage/archive_backend/configure",
-        json={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
-        cookies=cookies,
-    )
+    # Without confirm -> 409 (mount reported live so the data is visible).
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        resp = client.post(
+            "/api/storage/archive_backend/configure",
+            json={"s3_bucket": "b", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
+            cookies=cookies,
+        )
     assert resp.status_code == 409, resp.text
     assert "nextcloud" in resp.json()["error"]
 
     # With confirm -> proceeds (configure_backend is mocked to flip state).
-    with mock.patch.object(archive_backend, "configure_backend") as mock_configure:
+    with (
+        mock.patch.object(archive_backend, "is_mounted", return_value=True),
+        mock.patch.object(archive_backend, "configure_backend") as mock_configure,
+    ):
 
         def side_effect(_config: Any, db: sqlite3.Connection, **kwargs: Any) -> None:
             db.execute("UPDATE archive_backend SET backend='s3', s3_bucket=? WHERE id=1", (kwargs["s3_bucket"],))
@@ -531,13 +535,15 @@ def test_configure_requires_confirm_when_local_has_data(
 def test_get_surfaces_local_archive_apps(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
     """On backend='local', the GET state lists apps with local archive data
     so the dashboard can show whose data an S3 upgrade would migrate."""
-    app_dir = os.path.join(archive_backend.local_archive_dir(cfg), "nextcloud", "files")
+    app_dir = os.path.join(archive_backend.juicefs_mount_dir(cfg), "nextcloud", "files")
     os.makedirs(app_dir, exist_ok=True)
     with open(os.path.join(app_dir, "f.txt"), "wb") as f:
         f.write(b"x")
-    resp = client.get("/api/storage/archive_backend", cookies=cookies)
+    with mock.patch.object(archive_backend, "is_mounted", return_value=True):
+        resp = client.get("/api/storage/archive_backend", cookies=cookies)
     assert resp.status_code == 200
     body = resp.json()
     assert body["backend"] == "local"
     assert body["local_archive_apps"] == ["nextcloud"]
-    assert body["archive_dir"] == archive_backend.local_archive_dir(cfg)
+    # The archive tier is always the JuiceFS mountpoint, both backends.
+    assert body["archive_dir"] == archive_backend.juicefs_mount_dir(cfg)

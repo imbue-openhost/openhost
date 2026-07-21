@@ -306,13 +306,13 @@ def test_rename_non_archive_app_works_with_disabled_backend(cfg_factory: Any) ->
 
 def test_rename_moves_local_archive_data(cfg_factory: Any) -> None:
     """On the default 'local' archive backend, renaming an archive-using app
-    must move its local archive subdir (persistent_data/app_archive_local/
-    <old> -> <new>), not orphan it.  Regression guard for the local-backend
-    default: forgetting effective_archive_dir here would leave data behind."""
+    must move its archive subdir under the JuiceFS mountpoint (<old> ->
+    <new>), not orphan it.  The archive tier is always the JuiceFS mount, so
+    the effective archive parent is ``app_archive_dir`` for every backend."""
     cfg = cfg_factory(20260)
-    # Fresh DB defaults to backend='local'; confirm and use the effective dir.
+    # Fresh DB defaults to backend='local'; the archive parent is the mount.
     archive_parent = _archive_parent(cfg)
-    assert archive_parent == Path(cfg.local_archive_dir)
+    assert archive_parent == Path(cfg.app_archive_dir)
     app_id = _seed_app_row(cfg.db_path, "old-name")
     # Seed data across all three tiers, archive on the LOCAL backend path.
     for tier, parent in _tier_parents(cfg).items():

@@ -70,7 +70,7 @@ User-facing links the app advertises for paths on its own URL that aren't the ba
 | `sqlite` | string[] | no | [] | SQLite database names to provision (implicitly enables `app_data`) |
 | `access_vm_data` | boolean | no | false | Whether the app can access the VM's shared data directory (read-only) |
 | `access_all_app_data` | boolean | no | false | Mount all apps' permanent data and temp data parent directories (rw). Also grants rw access to vm_data. For admin tools like file browsers. |
-| `access_all_archive` | boolean | no | false | Mount all apps' archive parent directory. Permissive: silently skipped when JuiceFS is not configured. For backup tools. |
+| `access_all_archive` | boolean | no | false | Mount all apps' archive parent directory. Permissive: silently skipped if the archive mount is transiently unavailable. For backup tools. |
 | `access_all_data` | boolean | no | false | Convenience shorthand for `access_all_app_data = true` + `access_all_archive = true`. |
 
 

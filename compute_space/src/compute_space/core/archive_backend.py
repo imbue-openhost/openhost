@@ -1,9 +1,34 @@
 """Operator-controlled archive backend management.  See
-``docs/src/data.md`` for the operator-facing model."""
+``docs/src/data.md`` for the operator-facing model.
+
+Design: the archive tier is ALWAYS a JuiceFS volume mounted at
+``config.app_archive_dir``.  Only the JuiceFS *object storage* differs by
+backend:
+
+* ``'local'`` (the default) — JuiceFS ``--storage file``: objects live in a
+  directory on the instance's local disk (``local_object_store_dir``, under
+  ``persistent_data`` so it is backed up).  No S3, no extra daemon, no extra
+  listening port — JuiceFS's ``file`` storage is a first-class backend.
+* ``'s3'`` — JuiceFS ``--storage s3``: objects live in an operator-supplied
+  S3 (or S3-compatible) bucket.
+
+Because the tier is always the same JuiceFS mount, app containers always
+bind-mount ``config.app_archive_dir`` regardless of backend; nothing in the
+app lifecycle needs to know which object storage is in use.
+
+Migrating between backends is JuiceFS-native and provider-agnostic: copy the
+underlying objects with ``juicefs sync`` from the old object store to the new
+one, then re-point the *same* volume at the new store with ``juicefs config
+--storage/--bucket``.  The metadata database is untouched, so every file,
+directory, mode, and ownership is preserved exactly.  Today only
+``local`` -> ``s3`` is exposed in the UI, but the mechanism generalises to
+``s3`` -> ``s3`` (change provider) or ``s3`` -> ``local`` if we ever want it.
+"""
 
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -21,12 +46,18 @@ from compute_space.core.pinned_binary import install_pinned_binary
 
 # Name of the systemd unit that manages the JuiceFS FUSE mount.
 # Installed by ansible (disabled); enabled by compute_space when the
-# operator configures the archive backend.
+# archive backend is brought online (which now happens for BOTH the local
+# and s3 backends, since local is also a JuiceFS mount).
 JUICEFS_SERVICE = "openhost-juicefs"
 
 # JuiceFS binary: pinned version + per-arch download URLs/checksums live in
 # ``pinned_binary.py``.
 _JUICEFS = get_pinned_binary("juicefs")
+
+# Default JuiceFS volume name when the operator doesn't supply an s3_prefix.
+# The volume name doubles as the per-store object prefix (every chunk lands
+# under ``<store>/<volume>/...``), so two zones can share one bucket safely.
+DEFAULT_VOLUME_NAME = "openhost"
 
 
 def _juicefs_state_dir(config: Config) -> str:
@@ -52,67 +83,35 @@ def _juicefs_meta_db(config: Config) -> str:
 
 
 def juicefs_mount_dir(config: Config) -> str:
-    """The host-side JuiceFS FUSE mount; bind-mounted into containers."""
+    """The host-side JuiceFS FUSE mount; bind-mounted into containers.
+
+    This is the archive tier for EVERY backend — apps always see the same
+    mount; only the object storage behind JuiceFS changes.
+    """
     return config.app_archive_dir
 
 
-def local_archive_dir(config: Config) -> str:
-    """The host-side local-disk backing for the archive tier (backend='local').
+def local_object_store_dir(config: Config) -> str:
+    """Directory backing the JuiceFS ``file`` object store on the ``local``
+    backend.
 
-    A plain directory (NOT a mount), deliberately at a different path from
-    the JuiceFS mountpoint so it can never be shadowed by a future S3 mount.
+    This holds JuiceFS's raw chunk objects (NOT a POSIX view of app files),
+    so nothing should ever read it directly.  It lives under
+    ``persistent_data`` so it survives rebuilds and is captured by restic
+    backups — local archive data has no other durable copy.
     """
-    return config.local_archive_dir
+    return config.local_archive_object_store_dir
 
 
-def effective_archive_dir(config: Config, db: sqlite3.Connection) -> str:
-    """The host path that should be bind-mounted into app containers as the
-    archive tier, chosen by the current backend:
+def effective_archive_dir(config: Config, db: sqlite3.Connection) -> str:  # noqa: ARG001
+    """The host path bind-mounted into app containers as the archive tier.
 
-    * ``'s3'``   -> the JuiceFS mountpoint (``app_archive_dir``)
-    * ``'local'``-> the local-disk directory (``local_archive_dir``)
-    * ``'disabled'`` (legacy, pre-v12) -> the JuiceFS mountpoint, which is
-      absent, so archive-using apps see "not available" exactly as before.
-
-    Callers pass the result where they previously passed
-    ``config.app_archive_dir`` so app provisioning / container mounts land
-    on the right backing without any other code needing to know the backend.
+    Always the JuiceFS mountpoint now, regardless of backend — kept as a
+    function (rather than inlining ``juicefs_mount_dir``) so the many app
+    lifecycle call sites keep a single, intention-revealing seam and so the
+    signature is stable if a future backend ever needs a different path.
     """
-    state = read_state(db)
-    if state.backend == "local":
-        return local_archive_dir(config)
     return juicefs_mount_dir(config)
-
-
-def ensure_local_archive_dir(config: Config) -> str:
-    """Create the local archive directory if missing; return its path.
-
-    Safe to call repeatedly.  Used at boot (attach_on_startup) and before
-    provisioning archive-using apps in local mode.
-    """
-    path = local_archive_dir(config)
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def local_archive_has_data(config: Config) -> bool:
-    """True iff any app has written content into the local archive dir.
-
-    Used to decide whether an operator upgrading local -> S3 is about to
-    migrate real data.  A directory that exists but is empty (no per-app
-    subdirectories with content) counts as "no data".
-    """
-    root = local_archive_dir(config)
-    if not os.path.isdir(root):
-        return False
-    for app_name in os.listdir(root):
-        app_dir = os.path.join(root, app_name)
-        if not os.path.isdir(app_dir):
-            continue
-        # Any entry inside a per-app archive dir counts as data.
-        for _ in os.scandir(app_dir):
-            return True
-    return False
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -142,7 +141,7 @@ def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary
     backend = read_state(db).backend
     durable = backend == "s3"
     warnings: list[str] = []
-    if uses and backend == "local":
+    if uses and backend != "s3":
         warnings.append(
             "This app stores bulk data on the ARCHIVE tier, which is currently "
             "backed by LOCAL disk on this instance. Local archive data is kept on "
@@ -162,22 +161,35 @@ def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary
     )
 
 
-def local_archive_apps_with_data(config: Config) -> list[str]:
-    """Return the app names that have content in the local archive dir.
+def local_archive_apps_with_data(config: Config, db: sqlite3.Connection) -> list[str]:
+    """Return the app names that have content in the (local-backed) archive.
 
     Powers the operator-facing "these apps' archive data will be migrated"
-    summary shown before a local -> S3 upgrade.
+    summary shown before a local -> S3 upgrade.  Because the archive is a
+    live JuiceFS mount, we look at the per-app subdirectories of the
+    mountpoint itself (the POSIX view), not at the raw object store.
+
+    Returns ``[]`` when the backend is not ``local`` or the mount isn't up.
     """
-    root = local_archive_dir(config)
-    if not os.path.isdir(root):
+    if read_state(db).backend != "local":
+        return []
+    root = juicefs_mount_dir(config)
+    if not is_mounted(root) or not os.path.isdir(root):
         return []
     apps: list[str] = []
-    for app_name in sorted(os.listdir(root)):
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    for app_name in entries:
         app_dir = os.path.join(root, app_name)
         if not os.path.isdir(app_dir):
             continue
-        if any(True for _ in os.scandir(app_dir)):
-            apps.append(app_name)
+        try:
+            if any(True for _ in os.scandir(app_dir)):
+                apps.append(app_name)
+        except OSError:
+            continue
     return apps
 
 
@@ -207,17 +219,61 @@ def _bucket_url(
     s3_region: str,
     s3_endpoint: str | None,
 ) -> str:
-    """JuiceFS bucket URL.  Do NOT append a path component: JuiceFS's S3
-    backend parses the first path segment as the bucket name (pkg/object/s3.go),
-    so any extra path here would break the DNS lookup.  Per-zone isolation is
-    handled via the volume name prefix instead.
+    """JuiceFS bucket URL for the S3 backend.  Do NOT append a path
+    component: JuiceFS's S3 backend parses the first path segment as the
+    bucket name (pkg/object/s3.go), so any extra path here would break the
+    DNS lookup.  Per-zone isolation is handled via the volume name prefix
+    instead.
     """
     if s3_endpoint:
         return f"{s3_endpoint.rstrip('/')}/{s3_bucket}"
     return f"https://{s3_bucket}.s3.{s3_region or 'us-east-1'}.amazonaws.com"
 
 
-def format_volume(
+def format_local_volume(config: Config, juicefs_volume_name: str) -> None:
+    """Run ``juicefs format --storage file`` for the default local backend.
+
+    Idempotent: ``juicefs format`` on an existing volume is a no-op re:
+    data.  The object store directory is created if missing.  This is what
+    makes the archive tier available on a fresh zone with zero operator
+    configuration.
+    """
+    if not is_juicefs_installed(config):
+        install_juicefs(config)
+    # JuiceFS's sqlite3 meta backend opens the file but won't mkdir its parent.
+    os.makedirs(_juicefs_state_dir(config), exist_ok=True)
+    store_dir = local_object_store_dir(config)
+    os.makedirs(store_dir, exist_ok=True)
+    cmd = [
+        _juicefs_binary(config),
+        # --no-agent: skip JuiceFS's pprof HTTP agent (binds 6060..6099) so the
+        # security audit doesn't flag a transient unexpected listener.
+        "--no-agent",
+        "format",
+        "--storage",
+        "file",
+        # JuiceFS's file backend treats the bucket as a directory path; it
+        # must end with a slash.  Objects land under ``<store>/<volume>/``.
+        "--bucket",
+        _file_bucket(store_dir),
+        _format_meta_dsn(config),
+        juicefs_volume_name,
+    ]
+    logger.info("Running juicefs format (local file backend) at %s", store_dir)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"juicefs format (file) failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def _file_bucket(store_dir: str) -> str:
+    """JuiceFS ``file`` backend bucket path: an absolute dir ending in '/'."""
+    return store_dir.rstrip("/") + "/"
+
+
+def format_s3_volume(
     config: Config,
     s3_bucket: str,
     s3_region: str | None,
@@ -226,19 +282,16 @@ def format_volume(
     s3_secret_access_key: str,
     juicefs_volume_name: str,
 ) -> None:
-    """Run ``juicefs format`` against the S3 bucket.  Idempotent.
+    """Run ``juicefs format --storage s3`` against the S3 bucket.  Idempotent.
 
     ``juicefs_volume_name`` doubles as the per-zone object prefix (every
     chunk lands under ``<bucket>/<volume>/...``), so two zones can share
     one bucket safely.
     """
-    # JuiceFS's sqlite3 meta backend opens the file but won't mkdir its parent.
     os.makedirs(_juicefs_state_dir(config), exist_ok=True)
     bucket_url = _bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint)
     cmd = [
         _juicefs_binary(config),
-        # --no-agent: skip JuiceFS's pprof HTTP agent (binds 6060..6099) so the
-        # security audit doesn't flag a transient unexpected listener.
         "--no-agent",
         "format",
         "--storage",
@@ -263,23 +316,27 @@ def format_volume(
 def _juicefs_env_file(config: Config) -> str:
     """Path to the systemd EnvironmentFile for the JuiceFS service.
 
-    Contains JUICEFS_BINARY, JUICEFS_META_DSN, JUICEFS_MOUNT_DIR, and
-    the S3 credentials (ACCESS_KEY / SECRET_KEY).  Written by
-    ``_write_env_file`` at configure/attach time; read by the
-    ``openhost-juicefs.service`` systemd unit.
+    Contains JUICEFS_BINARY, JUICEFS_META_DSN, JUICEFS_MOUNT_DIR, and —
+    only on the s3 backend — the S3 credentials (ACCESS_KEY / SECRET_KEY).
+    Written by ``_write_env_file`` at configure/attach time; read by the
+    ``openhost-juicefs.service`` systemd unit.  The mount command itself is
+    backend-agnostic: JuiceFS reads the storage type + bucket from the meta
+    DB (set by ``format``/``config``); creds are only needed for S3.
     """
     return os.path.join(config.openhost_data_path, "juicefs", "juicefs.env")
 
 
 def _write_env_file(
     config: Config,
-    s3_access_key_id: str,
-    s3_secret_access_key: str,
+    s3_access_key_id: str | None,
+    s3_secret_access_key: str | None,
 ) -> None:
     """Write (or overwrite) the systemd EnvironmentFile for JuiceFS.
 
     The file is mode 0600 so only the ``host`` user can read the S3
-    credentials.  Parent directories are created if missing.
+    credentials.  Parent directories are created if missing.  On the local
+    (file) backend, ``s3_access_key_id``/``s3_secret_access_key`` are None
+    and no ACCESS_KEY/SECRET_KEY lines are written.
     """
     env_path = _juicefs_env_file(config)
     os.makedirs(os.path.dirname(env_path), exist_ok=True)
@@ -287,9 +344,9 @@ def _write_env_file(
         f"JUICEFS_BINARY={_juicefs_binary(config)}\n"
         f"JUICEFS_META_DSN={_format_meta_dsn(config)}\n"
         f"JUICEFS_MOUNT_DIR={juicefs_mount_dir(config)}\n"
-        f"ACCESS_KEY={s3_access_key_id}\n"
-        f"SECRET_KEY={s3_secret_access_key}\n"
     )
+    if s3_access_key_id is not None and s3_secret_access_key is not None:
+        content += f"ACCESS_KEY={s3_access_key_id}\nSECRET_KEY={s3_secret_access_key}\n"
     # Atomic-ish write: write to a temp file then rename so a crash
     # mid-write doesn't leave a truncated env file.
     tmp_path = env_path + ".tmp"
@@ -336,15 +393,19 @@ def is_mounted(mount_point: str) -> bool:
 
 def mount(
     config: Config,
-    s3_access_key_id: str,
-    s3_secret_access_key: str,
+    s3_access_key_id: str | None = None,
+    s3_secret_access_key: str | None = None,
 ) -> None:
     """Start the JuiceFS mount via systemd.  Idempotent.
 
-    Writes the EnvironmentFile (binary path, meta DSN, mount dir, S3
-    creds), then enables and starts the ``openhost-juicefs`` systemd
-    service.  systemd's ``Restart=always`` handles automatic recovery
-    if the FUSE process is OOM-killed or crashes.
+    Backend-agnostic: writes the EnvironmentFile (binary path, meta DSN,
+    mount dir, and — only for s3 — S3 creds), then enables and starts the
+    ``openhost-juicefs`` systemd service.  systemd's ``Restart=always``
+    handles automatic recovery if the FUSE process is OOM-killed or crashes.
+
+    The storage type + bucket come from the meta DB (set by ``format`` /
+    ``config``), so the same mount command works for both the local (file)
+    and s3 backends; only s3 needs credentials in the environment.
     """
     mount_point = juicefs_mount_dir(config)
     os.makedirs(mount_point, exist_ok=True)
@@ -361,8 +422,8 @@ def mount(
     _systemctl("enable", "--now", JUICEFS_SERVICE)
 
     # Wait for the mount to appear.  systemd starts the process
-    # asynchronously; the FUSE handshake + initial S3 connection
-    # can take 15-30s on high-latency links (e.g. Hetzner -> us-west-2).
+    # asynchronously; the FUSE handshake + initial object-store connection
+    # can take 15-30s on high-latency S3 links (e.g. Hetzner -> us-west-2).
     deadline = time.time() + 30
     while time.time() < deadline:
         if is_mounted(mount_point):
@@ -418,6 +479,20 @@ def umount(config: Config) -> None:
     logger.info("juicefs unmounted from %s (via systemd)", mount_point)
 
 
+def _remount(config: Config, s3_access_key_id: str | None, s3_secret_access_key: str | None) -> None:
+    """Stop + start the JuiceFS mount so it picks up a changed object store.
+
+    Used after ``juicefs config`` re-points the volume at a new backend:
+    the running FUSE process cached the old storage config, so it must be
+    restarted to talk to the new store.  Rewrites the env file (adding /
+    dropping S3 creds as appropriate) before restarting.
+    """
+    umount(config)
+    # ``umount`` disables the unit; ``mount`` re-enables + starts it with a
+    # fresh env file reflecting the new backend's credentials.
+    mount(config, s3_access_key_id, s3_secret_access_key)
+
+
 @attr.s(auto_attribs=True, frozen=True)
 class BackendState:
     """Operator-visible archive backend state."""
@@ -443,7 +518,8 @@ def read_state(db: sqlite3.Connection) -> BackendState:
     if row is None:
         # Defensive fallback for a partial DB; migrations seed this row.
         # The default archive backend is 'local' (always-available archive
-        # on local disk); operators upgrade to 's3' explicitly.
+        # on a local file-backed JuiceFS volume); operators upgrade to 's3'
+        # explicitly.
         return BackendState(
             backend="local",
             s3_bucket=None,
@@ -452,7 +528,7 @@ def read_state(db: sqlite3.Connection) -> BackendState:
             s3_prefix=None,
             s3_access_key_id=None,
             s3_secret_access_key=None,
-            juicefs_volume_name="openhost",
+            juicefs_volume_name=DEFAULT_VOLUME_NAME,
             configured_at=None,
             state_message=None,
         )
@@ -463,7 +539,7 @@ def read_state(db: sqlite3.Connection) -> BackendState:
         s3_endpoint=row[3],
         s3_access_key_id=row[4],
         s3_secret_access_key=row[5],
-        juicefs_volume_name=row[6] or "openhost",
+        juicefs_volume_name=row[6] or DEFAULT_VOLUME_NAME,
         configured_at=row[7],
         state_message=row[8],
         s3_prefix=row[9],
@@ -493,7 +569,7 @@ def manifest_uses_archive(manifest_raw: str) -> bool:
     ``app_archive`` is a hard requirement; ``access_all_archive`` and the
     convenience alias ``access_all_data`` are permissive but still cause
     the app to receive the archive bind-mount when the tier is live, so
-    destructive removal still needs the archive healthy to delete S3 bytes.
+    destructive removal still needs the archive healthy to delete its bytes.
     """
     data = _data_section(manifest_raw)
     return bool(data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data"))
@@ -502,17 +578,17 @@ def manifest_uses_archive(manifest_raw: str) -> bool:
 def is_archive_dir_healthy(config: Config, db: sqlite3.Connection) -> bool:
     """True iff the archive tier is usable on the host for the current backend.
 
-    * ``'disabled'`` (legacy) — no archive data to protect, passes.
-    * ``'local'`` — healthy iff the local archive directory exists (it is
-      created at boot / before provisioning, so this is normally true).
-    * ``'s3'`` — the JuiceFS mount must be live; otherwise operations that
-      would silently orphan or skip S3-side data are blocked.
+    The archive is a JuiceFS mount for both ``'local'`` and ``'s3'``, so in
+    both cases it is healthy iff the mount is live.  A transiently-down
+    mount (FUSE crash mid-restart, S3 unreachable at boot) blocks operations
+    that would otherwise silently orphan or skip archive data.
+
+    ``'disabled'`` is the legacy pre-v12 state (no archive data to protect);
+    it passes so legacy zones aren't blocked.
     """
     state = read_state(db)
-    if state.backend == "s3":
+    if state.backend in ("local", "s3"):
         return is_mounted(juicefs_mount_dir(config))
-    if state.backend == "local":
-        return os.path.isdir(local_archive_dir(config))
     return True
 
 
@@ -522,26 +598,31 @@ def _set_state_message(db: sqlite3.Connection, message: str | None) -> None:
 
 
 def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
-    """Bring the archive backend back online at boot.  Failures don't crash boot;
+    """Bring the archive backend online at boot.  Failures don't crash boot;
     they're surfaced via state_message so the dashboard stays reachable.
 
     With the systemd service (``openhost-juicefs.service``), the mount is
     normally started by systemd before this process even boots (the unit
     has ``Before=openhost.service``).  This function handles the case where
-    the service hasn't started yet (first boot after configuration, or if
-    the env file is stale/missing) by writing a fresh env file and
-    ensuring the service is enabled + started.
+    the service hasn't started yet (first boot after provisioning, or if the
+    env file is stale/missing) by (re)formatting the local volume when
+    needed, writing a fresh env file, and ensuring the service is started.
+
+    For the ``local`` backend it also performs first-boot initialisation:
+    if the volume has never been formatted, format it with the file backend
+    so the archive tier is available with zero operator configuration.
     """
     state = read_state(db)
     if state.backend == "local":
-        # Local backend needs no mount — just make sure the directory the
-        # containers bind-mount actually exists on this boot.
         try:
-            ensure_local_archive_dir(config)
+            if not is_juicefs_installed(config):
+                install_juicefs(config)
+            _ensure_local_volume_formatted(config, state.juicefs_volume_name)
+            mount(config)
             _set_state_message(db, None)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to create local archive dir on startup")
-            _set_state_message(db, f"Failed to create local archive dir: {exc}")
+            logger.exception("Failed to bring up local archive backend on startup")
+            _set_state_message(db, f"Failed to bring up local archive backend: {exc}")
         return
     if state.backend != "s3":
         return
@@ -558,6 +639,22 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
     except Exception as exc:
         logger.exception("Failed to attach archive backend on startup")
         _set_state_message(db, f"Failed to attach archive backend: {exc}")
+
+
+def _local_volume_formatted(config: Config) -> bool:
+    """True iff a JuiceFS volume already exists in the local meta DB.
+
+    We treat the presence of the meta.db file (created by ``juicefs format``)
+    as the signal: JuiceFS won't mount a volume that was never formatted.
+    """
+    return os.path.isfile(_juicefs_meta_db(config))
+
+
+def _ensure_local_volume_formatted(config: Config, juicefs_volume_name: str) -> None:
+    """Format the local file-backed volume if it hasn't been yet.  Idempotent."""
+    if _local_volume_formatted(config):
+        return
+    format_local_volume(config, juicefs_volume_name or DEFAULT_VOLUME_NAME)
 
 
 def _s3_client(
@@ -651,180 +748,168 @@ class BackendConfigureError(Exception):
     """Raised by ``configure_backend`` when configuration fails."""
 
 
-# Python payload run INSIDE ``podman unshare`` to copy the local archive
-# into the JuiceFS mount and verify it.  It must run in the container's
-# user namespace because the archive files are owned by the mapped
-# app subuids (apps write them through an ``:idmap`` bind mount); the
-# plain ``host`` user that runs compute_space cannot read them, but
-# ``podman unshare`` maps that user to namespace-root which can.
-#
-# CRITICAL — ownership preservation: the copy MUST reproduce each
-# source file's uid/gid on the destination.  Otherwise every migrated
-# file ends up owned by namespace-root (0:0) and the app containers —
-# which run as their own mapped uids — can no longer WRITE their own
-# archive data after the switch to S3 (verified: file-browser PUT ->
-# 500).  ``shutil.copy2`` preserves mode+mtime but NOT ownership, so we
-# explicitly ``os.chown`` every destination entry to match its source
-# (dirs included, via a post-walk).  The payload copies src->dst,
-# restores ownership, then verifies every source file exists in the
-# dest with an identical size, printing ``MIGRATE_OK`` on success or
-# ``MIGRATE_FAIL:<detail>`` and exiting non-zero otherwise.  It NEVER
-# deletes the source.
-_MIGRATE_PAYLOAD = r"""
-import os, shutil, sys
-src_root, dst_root = sys.argv[1], sys.argv[2]
-if not os.path.isdir(src_root):
-    print("MIGRATE_OK"); sys.exit(0)
-def _chown_like(src_path, dst_path):
-    st = os.lstat(src_path)
-    try:
-        os.chown(dst_path, st.st_uid, st.st_gid, follow_symlinks=False)
-    except OSError:
-        pass
-try:
-    for entry in sorted(os.listdir(src_root)):
-        src = os.path.join(src_root, entry)
-        dst = os.path.join(dst_root, entry)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy2)
-        else:
-            os.makedirs(dst_root, exist_ok=True)
-            shutil.copy2(src, dst)
-    # Reproduce ownership across the whole destination tree, matching
-    # each entry to its source counterpart (root, dirs, and files).
-    _chown_like(src_root, dst_root)
-    for dirpath, dirs, files in os.walk(src_root):
-        rel = os.path.relpath(dirpath, src_root)
-        for name in dirs + files:
-            srcp = os.path.join(dirpath, name)
-            dstp = os.path.join(dst_root, name) if rel == "." else os.path.join(dst_root, rel, name)
-            _chown_like(srcp, dstp)
-except Exception as exc:
-    print("MIGRATE_FAIL:copy error: %r" % (exc,)); sys.exit(1)
-missing, mismatch = [], []
-for dirpath, _dirs, files in os.walk(src_root):
-    rel = os.path.relpath(dirpath, src_root)
-    for fname in files:
-        sf = os.path.join(dirpath, fname)
-        df = os.path.join(dst_root, fname) if rel == "." else os.path.join(dst_root, rel, fname)
-        if not os.path.isfile(df):
-            missing.append(os.path.join(rel, fname)); continue
-        try:
-            if os.path.getsize(sf) != os.path.getsize(df):
-                mismatch.append(os.path.join(rel, fname))
-        except OSError as exc:
-            mismatch.append("%s (%s)" % (os.path.join(rel, fname), exc))
-if missing or mismatch:
-    print("MIGRATE_FAIL:verify failed; missing=%s mismatch=%s" % (missing[:10], mismatch[:10]))
-    sys.exit(1)
-print("MIGRATE_OK")
-"""
+def _sync_objects(
+    config: Config,
+    *,
+    src: str,
+    dst: str,
+    s3_access_key_id: str | None,
+    s3_secret_access_key: str | None,
+) -> None:
+    """Copy every underlying object from ``src`` to ``dst`` with ``juicefs sync``.
 
+    ``src``/``dst`` are JuiceFS object-store URLs (``/abs/path/`` for the file
+    backend, ``s3://<bucket>.<endpoint>/<prefix>/`` for S3), each already
+    including the volume-name prefix so object keys line up.
 
-def _migrate_local_archive_into_mount(config: Config) -> None:
-    """Copy every byte of the local archive dir into the (freshly mounted)
-    JuiceFS mount, then verify the copy before the caller commits the switch.
+    Credentials for the S3 side are passed via ``AWS_ACCESS_KEY_ID`` /
+    ``AWS_SECRET_ACCESS_KEY`` in the environment.  ``juicefs sync`` only reads
+    credentials from the URL (``AK:SK@bucket.endpoint``) or the standard AWS
+    SDK credential chain — NOT from JuiceFS's own ``ACCESS_KEY``/``SECRET_KEY``
+    vars — so we use the AWS_* env form to keep the secret out of ``ps``.
 
-    Runs the copy + verify inside ``podman unshare`` because the archive
-    files are owned by the container-mapped ``www-data`` subuid and are not
-    readable by the plain ``host`` user this process runs as.
-
-    FAIL-OPEN CONTRACT: this must either fully succeed or raise.  It never
-    deletes the local source — the caller deletes it only AFTER the DB row
-    has flipped to 's3'.  So if anything here (or the subsequent commit)
-    fails, the local data is still intact at ``local_archive_dir`` and the
-    backend row is still ``'local'``, i.e. the operator's data remains
-    available on local storage.
-
-    Verification: after copying, every regular file present in the source
-    must exist in the destination with an identical size.  A mismatch (short
-    copy, JuiceFS write error, etc.) makes the payload exit non-zero so the
-    migration aborts.
+    Raises on any sync failure.  Never deletes the source.
     """
-    src_root = local_archive_dir(config)
-    dst_root = juicefs_mount_dir(config)
-    if not os.path.isdir(src_root):
-        return  # nothing to migrate
-
-    if _podman_available():
-        # ``podman unshare`` enters the rootless user namespace so we can
-        # read the mapped-uid files.  Generous but bounded timeout: large
-        # archives on slow S3 links take a while, but a wedged copy must
-        # not hang the configure request forever.
-        cmd = ["podman", "unshare", "python3", "-c", _MIGRATE_PAYLOAD, src_root, dst_root]
-        logger.info("migrating local archive %s -> %s (via podman unshare)", src_root, dst_root)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 60 * 60)
-        out = (result.stdout or "").strip()
-        if result.returncode != 0 or "MIGRATE_OK" not in out:
-            detail = out or (result.stderr or "").strip() or f"exit {result.returncode}"
-            raise RuntimeError(f"local->S3 archive migration failed: {detail} (local archive data left intact)")
-        return
-
-    # No podman (e.g. unit tests, or a non-rootless deployment): run the
-    # same copy+verify in-process.  Ownership isn't an obstacle here.
-    _copy_and_verify_in_process(src_root, dst_root)
-
-
-def _podman_available() -> bool:
-    try:
-        return subprocess.run(["podman", "--version"], capture_output=True, timeout=10).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+    cmd = [
+        _juicefs_binary(config),
+        "--no-agent",
+        "sync",
+        # --check-all re-reads and compares every synced object so a short /
+        # corrupt copy is caught before we re-point the volume.
+        "--check-all",
+        src,
+        dst,
+    ]
+    env = os.environ.copy()
+    if s3_access_key_id is not None and s3_secret_access_key is not None:
+        env["AWS_ACCESS_KEY_ID"] = s3_access_key_id
+        env["AWS_SECRET_ACCESS_KEY"] = s3_secret_access_key
+    logger.info("juicefs sync %s -> %s", src, dst)
+    # Generous but bounded timeout: large archives on slow S3 links take a
+    # while, but a wedged sync must not hang the configure request forever.
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=6 * 60 * 60)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"juicefs sync failed: {detail}")
 
 
-def _copy_and_verify_in_process(src_root: str, dst_root: str) -> None:
-    """Pure-Python mirror of ``_MIGRATE_PAYLOAD`` for environments without
-    podman.  Raises on any copy or verification failure; never deletes src.
+def _reconfigure_volume_storage(
+    config: Config,
+    *,
+    storage: str,
+    bucket: str,
+    s3_access_key_id: str | None,
+    s3_secret_access_key: str | None,
+) -> None:
+    """Re-point the existing volume at a new object store with ``juicefs config``.
 
-    Preserves ownership (uid/gid) like the payload does, so migrated files
-    stay writable by their owning app container.  chown may fail when the
-    caller isn't privileged (e.g. plain unit tests) — tolerated there since
-    ownership isn't meaningful in that context."""
-    import shutil  # noqa: PLC0415
+    Only changes the DATA STORAGE fields; the metadata (every file, dir,
+    mode, uid/gid) is untouched, so the switch is transparent to apps once
+    the mount is restarted.
+    """
+    cmd = [
+        _juicefs_binary(config),
+        "--no-agent",
+        "config",
+        _format_meta_dsn(config),
+        "--storage",
+        storage,
+        "--bucket",
+        bucket,
+        "--yes",
+        "--force",
+    ]
+    env = os.environ.copy()
+    if s3_access_key_id is not None:
+        cmd += ["--access-key", s3_access_key_id]
+        env["ACCESS_KEY"] = s3_access_key_id
+    if s3_secret_access_key is not None:
+        # --secret-key on argv would leak into ps; JuiceFS also reads SECRET_KEY
+        # from the environment, so pass it there and use the env form.
+        env["SECRET_KEY"] = s3_secret_access_key
+        cmd += ["--secret-key", "env:SECRET_KEY"]
+    logger.info("juicefs config: re-point volume storage -> %s (%s)", storage, bucket)
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"juicefs config (re-point storage) failed: {detail}")
 
-    def _chown_like(src_path: str, dst_path: str) -> None:
-        st = os.lstat(src_path)
-        try:
-            os.chown(dst_path, st.st_uid, st.st_gid, follow_symlinks=False)
-        except OSError:
-            pass
 
-    for entry in sorted(os.listdir(src_root)):
-        src = os.path.join(src_root, entry)
-        dst = os.path.join(dst_root, entry)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy2)
-        else:
-            os.makedirs(dst_root, exist_ok=True)
-            shutil.copy2(src, dst)
-    _chown_like(src_root, dst_root)
-    for dirpath, dirs, files in os.walk(src_root):
-        rel = os.path.relpath(dirpath, src_root)
-        for name in dirs + files:
-            srcp = os.path.join(dirpath, name)
-            dstp = os.path.join(dst_root, name) if rel == "." else os.path.join(dst_root, rel, name)
-            _chown_like(srcp, dstp)
-    missing: list[str] = []
-    mismatch: list[str] = []
-    for dirpath, _dirs, files in os.walk(src_root):
-        rel = os.path.relpath(dirpath, src_root)
-        for fname in files:
-            sf = os.path.join(dirpath, fname)
-            df = os.path.join(dst_root, fname) if rel == "." else os.path.join(dst_root, rel, fname)
-            if not os.path.isfile(df):
-                missing.append(os.path.join(rel, fname))
-                continue
-            try:
-                if os.path.getsize(sf) != os.path.getsize(df):
-                    mismatch.append(os.path.join(rel, fname))
-            except OSError as exc:
-                mismatch.append(f"{os.path.join(rel, fname)} ({exc})")
-    if missing or mismatch:
-        raise RuntimeError(
-            "local->S3 archive migration verification failed; "
-            f"missing={missing[:10]} mismatch={mismatch[:10]} "
-            "(local archive data left intact)"
-        )
+def _local_sync_source(config: Config, volume: str) -> str:
+    """The ``juicefs sync`` SOURCE for the local file object store.
+
+    Points at ``<store>/<volume>/`` (trailing slash) so object keys under
+    the volume prefix map 1:1 onto the destination.
+    """
+    return os.path.join(_file_bucket(local_object_store_dir(config)), volume) + "/"
+
+
+def _s3_sync_dest(
+    s3_bucket: str,
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    volume: str,
+) -> str:
+    """The ``juicefs sync`` DESTINATION URL for the S3 object store.
+
+    ``juicefs sync`` parses S3 URLs as
+    ``s3://[AK:SK@]BUCKET.ENDPOINT[/PREFIX]`` — i.e. the bucket is the FIRST
+    dot-segment of the host, followed by the endpoint host.  We omit inline
+    creds (they'd leak into ``ps``) and supply them via AWS_* env instead.
+    The ``<volume>/`` prefix mirrors the source so keys line up.
+    """
+    if s3_endpoint:
+        # Custom endpoint (MinIO, R2, etc.): s3://<bucket>.<endpoint-host>/<volume>/
+        host = s3_endpoint.split("://", 1)[-1].rstrip("/")
+        return f"s3://{s3_bucket}.{host}/{volume}/"
+    region = s3_region or "us-east-1"
+    return f"s3://{s3_bucket}.s3.{region}.amazonaws.com/{volume}/"
+
+
+def _migrate_local_to_s3(
+    config: Config,
+    *,
+    volume: str,
+    s3_bucket: str,
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+) -> None:
+    """Migrate the local file-backed archive into S3, JuiceFS-native.
+
+    Steps (the volume + meta DB are never re-formatted, so all file
+    metadata is preserved):
+
+    1. ``juicefs sync`` copies every underlying object from the local file
+       store to the S3 bucket (both under the ``<volume>/`` prefix), with
+       ``--check-all`` verifying each object.
+    2. ``juicefs config --storage s3 --bucket ...`` re-points the same
+       volume at the S3 store.
+
+    FAIL-OPEN CONTRACT: this must either fully succeed or raise, and it
+    never deletes the local objects.  Because the re-point (step 2) is the
+    only thing that changes what the volume reads from, a failure in step 1
+    leaves the volume still pointing at the intact local store.  The caller
+    only flips the DB row and reclaims the local objects AFTER this returns
+    successfully AND the mount has been restarted against S3.
+    """
+    dst = _s3_sync_dest(s3_bucket, s3_region, s3_endpoint, volume)
+    src = _local_sync_source(config, volume)
+    _sync_objects(
+        config,
+        src=src,
+        dst=dst,
+        s3_access_key_id=s3_access_key_id,
+        s3_secret_access_key=s3_secret_access_key,
+    )
+    _reconfigure_volume_storage(
+        config,
+        storage="s3",
+        bucket=_bucket_url(s3_bucket, s3_region or "us-east-1", s3_endpoint),
+        s3_access_key_id=s3_access_key_id,
+        s3_secret_access_key=s3_secret_access_key,
+    )
 
 
 def configure_backend(
@@ -839,21 +924,24 @@ def configure_backend(
     s3_secret_access_key: str,
     juicefs_volume_name: str | None = None,
 ) -> None:
-    """Configure the archive backend to S3, in one shot.
+    """Upgrade the archive backend from local (file) to S3, in one shot.
 
-    Allowed starting states: ``'local'`` (the default — the archive data
-    currently lives on local disk and is MIGRATED into S3) or ``'disabled'``
-    (legacy pre-v12 zone with no archive data — nothing to migrate).  Once
-    the backend is ``'s3'`` it cannot be reconfigured.
+    Allowed starting states: ``'local'`` (the default — archive data lives
+    in the local file store and is MIGRATED into S3 via ``juicefs sync`` +
+    ``juicefs config``) or ``'disabled'`` (legacy pre-v12 zone with no
+    volume — formatted fresh against S3).  Once the backend is ``'s3'`` it
+    cannot be reconfigured.
 
-    Steps: install juicefs, format the volume, mount it, migrate any local
-    archive data into the mount + verify, atomically flip the DB row to
-    's3', then delete the now-copied local source.
+    Steps for a local zone: ensure the local volume is mounted (so the
+    volume + object store exist), sync objects into the bucket and re-point
+    the volume storage to S3, restart the mount against S3, flip the DB row
+    to 's3', then reclaim the local object store.
 
-    FAIL-OPEN: if any step before the DB flip fails, the local archive data
-    is left untouched and the backend stays ``'local'``, so the operator's
-    files remain available.  The local source is deleted only after the
-    switch to 's3' has been committed AND the copy verified.
+    FAIL-OPEN: if any step before the DB flip fails, the volume is left
+    pointing at the intact local store (best-effort remounted local) and
+    the backend stays ``'local'``, so the operator's files remain available.
+    The local objects are deleted only after the switch to 's3' has been
+    committed.
     """
     state = read_state(db)
     if state.backend == "s3":
@@ -862,33 +950,54 @@ def configure_backend(
         raise BackendConfigureError(f"cannot configure S3 from backend={state.backend!r}")
 
     migrating_from_local = state.backend == "local"
-    volume = juicefs_volume_name or s3_prefix or "openhost"
+    # The volume name is fixed once a volume exists; for a local zone we must
+    # keep using the volume that was already formatted (its objects live under
+    # that prefix).  Only a legacy 'disabled' zone gets a brand-new volume.
+    if migrating_from_local:
+        volume = state.juicefs_volume_name or DEFAULT_VOLUME_NAME
+    else:
+        volume = juicefs_volume_name or s3_prefix or DEFAULT_VOLUME_NAME
 
     try:
         if not is_juicefs_installed(config):
             install_juicefs(config)
-        format_volume(
-            config,
-            s3_bucket=s3_bucket,
-            s3_region=s3_region,
-            s3_endpoint=s3_endpoint,
-            s3_access_key_id=s3_access_key_id,
-            s3_secret_access_key=s3_secret_access_key,
-            juicefs_volume_name=volume,
-        )
-        mount(config, s3_access_key_id, s3_secret_access_key)
 
-        # Migrate local data into the fresh mount BEFORE flipping the row.
-        # If this raises, the except-block below leaves the backend at
-        # 'local' with the source intact (fail-open).
         if migrating_from_local:
-            _migrate_local_archive_into_mount(config)
+            # Make sure the local volume is up so its object store is complete
+            # and consistent before we sync it.
+            _ensure_local_volume_formatted(config, volume)
+            mount(config)
+            # Copy objects into S3 and re-point the volume's storage.  On any
+            # failure here the volume still reads from the local store.
+            _migrate_local_to_s3(
+                config,
+                volume=volume,
+                s3_bucket=s3_bucket,
+                s3_region=s3_region,
+                s3_endpoint=s3_endpoint,
+                s3_access_key_id=s3_access_key_id,
+                s3_secret_access_key=s3_secret_access_key,
+            )
+            # Restart the mount so the FUSE process talks to S3 now.
+            _remount(config, s3_access_key_id, s3_secret_access_key)
+        else:
+            # Legacy 'disabled' zone: no data, just format+mount S3 fresh.
+            format_s3_volume(
+                config,
+                s3_bucket=s3_bucket,
+                s3_region=s3_region,
+                s3_endpoint=s3_endpoint,
+                s3_access_key_id=s3_access_key_id,
+                s3_secret_access_key=s3_secret_access_key,
+                juicefs_volume_name=volume,
+            )
+            mount(config, s3_access_key_id, s3_secret_access_key)
 
-        # Persist the new state.  If this fails after a successful
-        # mount we leave a "live mount + local/disabled DB row"
+        # Persist the new state.  If this fails after a successful re-point +
+        # remount we leave a "live S3 mount + local/disabled DB row"
         # inconsistency, but a subsequent configure_backend call retries
-        # idempotently (format + mount are no-ops on an already-formatted
-        # bucket and an already-live mount; the copy is dirs_exist_ok).
+        # idempotently (sync is incremental; re-point is a no-op on an
+        # already-s3 volume).
         db.execute(
             "UPDATE archive_backend SET "
             "backend='s3', s3_bucket=?, s3_region=?, s3_endpoint=?, s3_prefix=?, "
@@ -908,54 +1017,54 @@ def configure_backend(
         )
         db.commit()
     except Exception as exc:
-        # Best-effort: tear the mount back down so a retry starts clean and
-        # the local backend keeps working.  Never touch the local source.
+        # Fail-open: for a local zone, get the volume back to reading from
+        # the intact local object store so the operator keeps working.  We
+        # only ever re-pointed storage; the local objects were never
+        # touched, so restore the storage config + remount local.
         if migrating_from_local:
+            try:
+                _reconfigure_volume_storage(
+                    config,
+                    storage="file",
+                    bucket=_file_bucket(local_object_store_dir(config)),
+                    s3_access_key_id=None,
+                    s3_secret_access_key=None,
+                )
+                _remount(config, None, None)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to restore local archive backend after aborted migration")
+        else:
             try:
                 umount(config)
             except Exception:  # noqa: BLE001
-                logger.exception("failed to unmount juicefs after aborted migration")
+                logger.exception("failed to unmount juicefs after aborted S3 format")
         raise BackendConfigureError(f"Failed to configure S3 archive backend: {exc}") from exc
 
-    # DB is now committed to 's3' and the copy is verified.  Only now is it
-    # safe to reclaim the local source.  A failure here is non-fatal: the
-    # data is already durably in S3; the stale local dir just wastes disk.
+    # DB is now committed to 's3' and the volume reads from S3.  Only now is
+    # it safe to reclaim the local object store.  A failure here is
+    # non-fatal: the data is already durably in S3; the stale local objects
+    # just waste disk.
     if migrating_from_local:
-        _remove_local_archive_tree(config)
+        _remove_local_object_store(config)
 
 
-def _remove_local_archive_tree(config: Config) -> None:
-    """Delete the local archive directory after a successful migration.
+def _remove_local_object_store(config: Config) -> None:
+    """Delete the local file object store after a successful migration to S3.
 
-    Like the copy, the files are owned by the container-mapped www-data
-    subuid, so a plain ``shutil.rmtree`` as the host user can't remove
-    them — use ``podman unshare rm -rf`` (namespace-root).  Falls back to
-    in-process rmtree when podman is unavailable.  Non-fatal: the data is
-    already durably in S3; a stale local dir just wastes disk.
+    The objects are plain files owned by the ``host`` user (JuiceFS's file
+    backend writes them as the mounting user, not a container-mapped subuid),
+    so a straightforward ``shutil.rmtree`` suffices — no ``podman unshare``
+    gymnastics needed, unlike the old per-app-file copy.  Non-fatal: the data
+    is already durably in S3; a stale local dir just wastes disk.
     """
-    path = local_archive_dir(config)
+    path = local_object_store_dir(config)
     if not os.path.isdir(path):
         return
     try:
-        if _podman_available():
-            result = subprocess.run(
-                ["podman", "unshare", "rm", "-rf", path],
-                capture_output=True,
-                text=True,
-                timeout=10 * 60,
-            )
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or "").strip() or f"exit {result.returncode}")
-            # ``rm -rf <path>`` removes path itself; recreate the empty root
-            # so future reads of local_archive_dir don't hit a missing dir.
-            os.makedirs(path, exist_ok=True)
-        else:
-            import shutil  # noqa: PLC0415
-
-            shutil.rmtree(path, ignore_errors=False)
-            os.makedirs(path, exist_ok=True)
+        shutil.rmtree(path, ignore_errors=False)
+        os.makedirs(path, exist_ok=True)
     except Exception:  # noqa: BLE001
         logger.exception(
-            "migrated local archive to S3 but failed to remove the local source at %s; safe to delete manually",
+            "migrated local archive to S3 but failed to remove the local object store at %s; safe to delete manually",
             path,
         )

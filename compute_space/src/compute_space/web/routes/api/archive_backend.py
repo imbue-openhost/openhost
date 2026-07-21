@@ -142,10 +142,10 @@ class ConfigureArchiveRequest:
 async def get_archive_backend(db: sqlite3.Connection, config: Config) -> BackendStateResponse:
     """Return current archive-backend state (secret redacted) plus archive_dir, meta_db_path, meta_dumps."""
     state = archive_backend.read_state(db)
-    if state.backend == "s3":
+    # The archive tier is always the JuiceFS mountpoint (local file backend or
+    # S3); only the legacy 'disabled' state has no mount.
+    if state.backend in ("s3", "local"):
         archive_dir = archive_backend.juicefs_mount_dir(config)
-    elif state.backend == "local":
-        archive_dir = archive_backend.local_archive_dir(config)
     else:
         archive_dir = None
     meta_db_path = archive_backend.juicefs_meta_db_path(config)
@@ -168,7 +168,7 @@ async def get_archive_backend(db: sqlite3.Connection, config: Config) -> Backend
                 latest_at=summary.latest_at,
                 latest_key=summary.latest_key,
             )
-    local_apps = archive_backend.local_archive_apps_with_data(config) if state.backend == "local" else []
+    local_apps = archive_backend.local_archive_apps_with_data(config, db) if state.backend == "local" else []
     return _state_to_response(state, archive_dir, meta_db_path, meta_dumps, local_apps)
 
 
@@ -217,9 +217,10 @@ async def configure_archive_backend(
     # apps have data (from local_archive_apps in the GET state) and the
     # fail-open/one-way semantics before ticking the confirm box; the API
     # refuses to proceed (409, listing the apps) until the operator confirms.
-    if state.backend == "local" and archive_backend.local_archive_has_data(config):
+    local_apps_with_data = archive_backend.local_archive_apps_with_data(config, db) if state.backend == "local" else []
+    if local_apps_with_data:
         if not data.confirm_migrate_local:
-            apps = archive_backend.local_archive_apps_with_data(config)
+            apps = local_apps_with_data
             return Response(
                 content=ErrorResponse(
                     error=(
