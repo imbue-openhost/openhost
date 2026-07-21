@@ -279,6 +279,7 @@ class DefaultConfig(Config):
             "oauth_provider",
             "https://github.com/imbue-openhost/openhost-catalog",
             "https://github.com/imbue-openhost/openhost-backup",
+            "https://github.com/imbue-openhost/openhost-community-chat",
         ]
     )
 

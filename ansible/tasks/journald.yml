@@ -1,0 +1,41 @@
+---
+# Cap journald's on-disk size so the system journal can't fill the host disk.
+# Runs with become: yes.
+#
+# OpenHost forwards the router process's stderr (plus forwarded Caddy and
+# CoreDNS output) to journald.  journald's defaults let the journal grow to
+# ~10% of the filesystem (capped at 4 GB), which on long-lived hosts combined
+# with accumulated container images could fill the disk.  A drop-in is used
+# rather than editing /etc/systemd/journald.conf so distro/operator settings
+# are never clobbered.
+#
+# Kept byte-identical with the openhost_system_agent v6 migration
+# (v0006_journald_size_cap.py), which applies the same cap to existing hosts.
+# A test enforces this.
+
+- name: Ensure journald drop-in directory exists
+  file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Cap journald on-disk size
+  copy:
+    content: |
+      # Managed by OpenHost; do not edit by hand.
+      [Journal]
+      SystemMaxUse=500M
+    dest: /etc/systemd/journald.conf.d/10-openhost.conf
+    mode: "0644"
+  register: _journald_dropin
+
+- name: Restart journald to apply size cap
+  systemd:
+    name: systemd-journald
+    state: restarted
+  when: _journald_dropin.changed
+
+- name: Vacuum journal down to the new size cap
+  command: journalctl --vacuum-size=500M
+  when: _journald_dropin.changed
+  changed_when: true

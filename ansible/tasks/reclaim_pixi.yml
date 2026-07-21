@@ -1,0 +1,23 @@
+---
+# Reclaim root-owned files in the OpenHost trees before any host-user git/pixi
+# step. A bad root-run self-update can leave them root-owned, after which
+# sync_code's `git` and pixi.yml's `pixi install` fail with EACCES and the play
+# aborts before install_openhost_units.yml installs the reclaim failsafe. Running
+# it here lets a plain re-ansible recover a bricked host. Installs the script too,
+# for hosts predating the failsafe; idempotent (skips missing paths).
+
+- name: Install pixi-ownership reclaim script
+  become: yes
+  become_user: root
+  copy:
+    src: files/openhost-reclaim-pixi
+    dest: /usr/local/bin/openhost-reclaim-pixi
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Reclaim ownership of the OpenHost trees for the host user
+  become: yes
+  become_user: root
+  command: /usr/local/bin/openhost-reclaim-pixi
+  changed_when: false

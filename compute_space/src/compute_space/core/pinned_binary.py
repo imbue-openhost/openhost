@@ -4,8 +4,12 @@ Some tools we depend on at runtime aren't packaged for every arch we run on, so
 we fetch a pinned vendor release and verify its sha256 before use.  The pins are
 declared as data in ``_MANIFEST`` below -- one entry per program, with the
 download URL + sha256 for each arch.  Adding a pinned tool or arch is a data-only
-change here.  Caller: ``archive_backend`` (JuiceFS).  Provisioning-time binaries
-(e.g. CoreDNS) are pinned in their own ansible task, not here."""
+change here.  Callers: ``archive_backend`` (JuiceFS) and ``web/start`` (CoreDNS).
+
+CoreDNS is normally installed by provisioning (``ansible/tasks/coredns.yml``);
+the pin here is a startup fallback so a host upgraded in place -- which loses the
+coredns pixi used to provide -- can re-fetch it.  Keep the CoreDNS version + per-
+arch sha256 here in sync with that ansible task."""
 
 from __future__ import annotations
 
@@ -59,6 +63,22 @@ _MANIFEST: dict[str, PinnedBinary] = {
             "arm64": ArchAsset(
                 url="https://github.com/juicedata/juicefs/releases/download/v1.3.1/juicefs-1.3.1-linux-arm64.tar.gz",
                 sha256="c29bff8f609366011cee03b9abcc76c11a06308b2c314364b8c340a2bfbc6c48",
+            ),
+        },
+    ),
+    # Keep in sync with ansible/tasks/coredns.yml (bump version + both sha256 together).
+    "coredns": PinnedBinary(
+        name="coredns",
+        version="1.14.4",
+        archive_member="coredns",  # file to extract from the tarball
+        assets={
+            "amd64": ArchAsset(
+                url="https://github.com/coredns/coredns/releases/download/v1.14.4/coredns_1.14.4_linux_amd64.tgz",
+                sha256="5b0e6a6a8b97bdcaec65baa70e83ca88ce03ab852355c656e3f7953405cfe36e",
+            ),
+            "arm64": ArchAsset(
+                url="https://github.com/coredns/coredns/releases/download/v1.14.4/coredns_1.14.4_linux_arm64.tgz",
+                sha256="b3491ed0fbe530a549640a4073d90037ffafa483f007936e1943c1ae0def7325",
             ),
         },
     ),

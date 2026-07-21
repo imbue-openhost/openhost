@@ -13,12 +13,24 @@
     owner: host
     group: host
 
+- name: Stat existing compute_space config
+  ansible.builtin.stat:
+    path: /home/host/.openhost/local_compute_space/config.toml
+  register: existing_config
+
+# Render config.toml from the operator-supplied vars. On a re-deploy against an
+# already-configured host we skip this and respect the config that's there, so
+# you don't have to re-pass every -e var — or re-copy secrets like the cert_api
+# client_secret — just to redeploy code. Pass -e overwrite_existing=true to
+# re-render (needed to pick up a breaking change to the template; re-supply the
+# vars when you do).
 - name: Write compute_space config
   template:
     src: templates/config.toml.j2
     dest: /home/host/.openhost/local_compute_space/config.toml
     owner: host
     group: host
+  when: (overwrite_existing | default(false) | bool) or not existing_config.stat.exists
   register: config_file
 
 # First-boot claim token. `claim_token_required = true` is baked into the
@@ -37,9 +49,20 @@
     group: host
     mode: "0755"
 
+# On a re-deploy we leave an existing claim token alone (skip unless forced), so
+# a claim URL already handed out keeps working and we don't churn the secret.
+# A claimed instance has no token file (setup_app deletes it after claim), so
+# this writes a fresh — inert — one there, same as before. Pass
+# -e overwrite_existing=true to rotate the token on a still-unclaimed instance.
+- name: Stat existing claim token
+  ansible.builtin.stat:
+    path: /home/host/.openhost/local_compute_space/persistent_data/openhost/claim_token
+  register: existing_claim_token
+
 - name: Resolve effective claim token
   set_fact:
     effective_claim_token: "{{ claim_token | default(lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+  when: (overwrite_existing | default(false) | bool) or not existing_claim_token.stat.exists
 
 - name: Write claim token
   copy:
@@ -48,7 +71,9 @@
     owner: host
     group: host
     mode: "0600"
+  when: (overwrite_existing | default(false) | bool) or not existing_claim_token.stat.exists
 
 - name: Show claim URL
   debug:
     msg: "Claim URL: {{ ('http://' + domain + ':8080') if (local_http_only | default(false) | bool) else ('https://' + domain) }}/setup?claim={{ effective_claim_token }}"
+  when: (overwrite_existing | default(false) | bool) or not existing_claim_token.stat.exists
