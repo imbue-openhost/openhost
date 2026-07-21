@@ -136,6 +136,38 @@ def test_sync_objects_passes_aws_env_not_argv(cfg):
     assert not any("topsecret" in str(a) for a in captured["cmd"])
     assert "--no-agent" in captured["cmd"]
     assert captured["cmd"].index("--no-agent") < captured["cmd"].index("sync")
+    # HTTPS (default) endpoint -> no --no-https.
+    assert "--no-https" not in captured["cmd"]
+
+
+def test_sync_objects_adds_no_https_for_insecure_endpoint(cfg):
+    """A plain-HTTP endpoint (e.g. same-host MinIO) needs --no-https or juicefs
+    sync forces HTTPS and fails the handshake."""
+    captured = {}
+
+    def fake_run(cmd, env, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
+        with mock.patch.object(subprocess, "run", side_effect=fake_run):
+            archive_backend._sync_objects(
+                cfg,
+                src="/store/openhost/",
+                dst="s3://b.localhost:9106/openhost/",
+                s3_access_key_id="ak",
+                s3_secret_access_key="sk",
+                insecure=True,
+            )
+    assert "--no-https" in captured["cmd"]
+
+
+def test_endpoint_is_insecure_http():
+    assert archive_backend._endpoint_is_insecure_http("http://localhost:9106") is True
+    assert archive_backend._endpoint_is_insecure_http("HTTP://minio.local") is True
+    assert archive_backend._endpoint_is_insecure_http("https://minio.example.com") is False
+    assert archive_backend._endpoint_is_insecure_http(None) is False
+    assert archive_backend._endpoint_is_insecure_http("") is False
 
 
 def test_reconfigure_volume_storage_keeps_secret_out_of_argv(cfg):

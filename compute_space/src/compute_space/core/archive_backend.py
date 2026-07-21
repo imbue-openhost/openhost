@@ -748,6 +748,19 @@ class BackendConfigureError(Exception):
     """Raised by ``configure_backend`` when configuration fails."""
 
 
+def _endpoint_is_insecure_http(s3_endpoint: str | None) -> bool:
+    """True iff a custom endpoint uses plain HTTP (e.g. a same-host MinIO).
+
+    ``juicefs sync`` defaults to HTTPS for S3 URLs and offers no way to encode
+    the scheme in the URL, so an HTTP endpoint needs the ``--no-https`` flag or
+    it fails with 'server gave HTTP response to HTTPS client'.  (``juicefs
+    config``/``mount`` don't need this — their bucket URL carries the scheme.)
+    """
+    if not s3_endpoint:
+        return False
+    return s3_endpoint.strip().lower().startswith("http://")
+
+
 def _sync_objects(
     config: Config,
     *,
@@ -755,6 +768,7 @@ def _sync_objects(
     dst: str,
     s3_access_key_id: str | None,
     s3_secret_access_key: str | None,
+    insecure: bool = False,
 ) -> None:
     """Copy every underlying object from ``src`` to ``dst`` with ``juicefs sync``.
 
@@ -777,9 +791,12 @@ def _sync_objects(
         # --check-all re-reads and compares every synced object so a short /
         # corrupt copy is caught before we re-point the volume.
         "--check-all",
-        src,
-        dst,
     ]
+    if insecure:
+        # Plain-HTTP endpoint (e.g. a same-host MinIO): juicefs sync would
+        # otherwise force HTTPS and fail the TLS handshake.
+        cmd.append("--no-https")
+    cmd += [src, dst]
     env = os.environ.copy()
     if s3_access_key_id is not None and s3_secret_access_key is not None:
         env["AWS_ACCESS_KEY_ID"] = s3_access_key_id
@@ -902,6 +919,7 @@ def _migrate_local_to_s3(
         dst=dst,
         s3_access_key_id=s3_access_key_id,
         s3_secret_access_key=s3_secret_access_key,
+        insecure=_endpoint_is_insecure_http(s3_endpoint),
     )
     _reconfigure_volume_storage(
         config,
@@ -1032,7 +1050,24 @@ def configure_backend(
                 )
                 _remount(config, None, None)
             except Exception:  # noqa: BLE001
-                logger.exception("failed to restore local archive backend after aborted migration")
+                # The local objects are still intact (never touched) and the
+                # volume is re-pointed at them, but we couldn't bring the mount
+                # back up right now (e.g. the old FUSE process was slow to
+                # release while an app held it open).  attach_on_startup will
+                # remount cleanly on the next boot / service restart; surface a
+                # state_message so the operator knows to restart if they don't
+                # want to wait.
+                logger.exception("failed to restore local archive mount after aborted migration")
+                try:
+                    _set_state_message(
+                        db,
+                        "Migration to S3 failed and the local archive mount could not be "
+                        "restarted automatically; your archive data is intact on local disk. "
+                        "Restart the instance (or the openhost service) to bring the archive "
+                        "back online, then retry.",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to record archive state_message after aborted migration")
         else:
             try:
                 umount(config)

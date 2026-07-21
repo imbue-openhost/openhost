@@ -806,6 +806,36 @@ class TestSelfHost:
         TestSelfHost._minio_bucket = bucket
         TestSelfHost._minio_endpoint = endpoint
 
+    # Content written to the LOCAL archive before S3 is configured; it must
+    # survive the local->S3 migration (juicefs sync + config) byte-for-byte.
+    _PRE_MIGRATION_PATH = "app_archive/file-browser/pre-migration.txt"
+    _PRE_MIGRATION_CONTENT = "written on the LOCAL backend before S3 migration\n" * 64
+
+    def test_13f2_seed_local_archive_before_migration(self, session, domain):
+        """Write a file into the (local file-backed) archive BEFORE configuring
+        S3, so test_13h2 can prove the migration preserved existing data."""
+        fb_url = f"https://file-browser.{domain}"
+        r = session.put(
+            f"{fb_url}/{self._PRE_MIGRATION_PATH}",
+            data=self._PRE_MIGRATION_CONTENT,
+            headers={"Content-Type": "text/plain"},
+            timeout=30,
+        )
+        assert r.status_code in (200, 201, 204), f"seed PUT failed: {r.status_code}: {r.text[:200]}"
+        # Read back on the local backend to be sure it landed.
+        r = session.get(f"{fb_url}/{self._PRE_MIGRATION_PATH}", timeout=10)
+        assert r.status_code == 200
+        assert r.text == self._PRE_MIGRATION_CONTENT
+
+    def test_13f3_state_lists_local_archive_app(self, session, router_url):
+        """Before migrating, the backend must report backend=local and list
+        file-browser among the apps whose data an S3 upgrade will migrate."""
+        r = session.get(f"{router_url}/api/storage/archive_backend", timeout=10)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["backend"] == "local", data
+        assert "file-browser" in (data.get("local_archive_apps") or []), data
+
     def test_13g_configure_archive_backend(self, session, router_url):
         """Configure the archive backend to use the local MinIO instance."""
         minio_user = getattr(TestSelfHost, "_minio_user", None)
@@ -841,9 +871,16 @@ class TestSelfHost:
                 "s3_endpoint": endpoint,
                 "s3_region": "us-east-1",
                 "s3_prefix": "e2e-test",
-                "juicefs_volume_name": "e2e-vol",
+                # NOTE: no juicefs_volume_name override — the local zone already
+                # has a formatted volume ('openhost'); its objects live under
+                # that prefix and the migration must keep using it.  Passing a
+                # different volume name here is intentionally ignored by the
+                # backend for a local->s3 upgrade.
+                # We seeded local archive data in 13f2, so we must acknowledge
+                # the migration or the API returns 409.
+                "confirm_migrate_local": True,
             },
-            timeout=120,
+            timeout=600,
         )
         assert r.status_code == 200, f"configure failed: {r.status_code}: {r.text[:500]}"
         data = r.json()
@@ -856,6 +893,22 @@ class TestSelfHost:
         data = r.json()
         assert data["backend"] == "s3"
         assert data["s3_bucket"] == "openhost-e2e-archive"
+
+    def test_13h2_pre_migration_data_survived(self, session, domain):
+        """The file written to the LOCAL archive in 13f2 must still be readable
+        (byte-identical) now that the volume is S3-backed — proving the
+        juicefs sync + config migration preserved existing data."""
+        fb_url = f"https://file-browser.{domain}"
+        # The app was recycled after migration (restart_archive_apps); give it
+        # a moment to come back and re-open the now-S3-backed archive.
+        r = poll_endpoint(
+            session,
+            f"{fb_url}/{self._PRE_MIGRATION_PATH}",
+            timeout=90,
+            interval=5,
+            fail_msg="pre-migration archive file not readable after local->S3 migration",
+        )
+        assert r.text == self._PRE_MIGRATION_CONTENT, "pre-migration archive content changed across migration"
 
     def test_13i_archive_file_roundtrip(self, session, domain):
         """Write, read, and delete a file in the archive via file-browser."""
