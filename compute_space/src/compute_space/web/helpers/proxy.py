@@ -9,6 +9,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from collections.abc import Set
+from contextlib import suppress
 from typing import Any
 from typing import cast
 
@@ -260,6 +261,10 @@ async def proxy_http_request(
         raise
 
 
+# Close codes reserved for reporting only (RFC 6455 §7.4.1) — never valid in a close frame we send.
+_UNSENDABLE_CLOSE_CODES = frozenset({1005, 1006, 1015})
+
+
 _WS_REQUEST_EXCLUDED_HEADERS = frozenset(
     {
         # per-hop headers (these get read as we receive the incoming request, and automatically set on the outgoing)
@@ -331,6 +336,11 @@ async def proxy_websocket_request(
                             "WebSocketReceiveEvent | WebSocketDisconnectEvent", await connection.receive()
                         )
                         if msg["type"] == "websocket.disconnect":
+                            # Mirror the client's close code to the backend; otherwise the
+                            # context-manager close reports a generic 1000.
+                            if msg["code"] not in _UNSENDABLE_CLOSE_CODES:
+                                with suppress(Exception):
+                                    await backend.close(code=msg["code"])
                             return
                         if msg["bytes"] is not None:
                             await backend.send(msg["bytes"])
@@ -357,6 +367,14 @@ async def proxy_websocket_request(
                 # Drain any stored exceptions so cancelled tasks don't trigger
                 # "Task exception was never retrieved" warnings at GC.
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+            # If the backend closed the connection, mirror its close code/reason to the client.
+            # Returning with the client socket still open would make the ASGI server close it
+            # with a generic 1011, hiding application-level close codes from clients.
+            if backend.close_code is not None:
+                code = 1011 if backend.close_code in _UNSENDABLE_CLOSE_CODES else backend.close_code
+                with suppress(Exception):  # the client may already be gone
+                    await connection.close(code=code, reason=backend.close_reason or "")
     except (OSError, TimeoutError, WebSocketException):
         logger.exception(f"WebSocket backend connection failed: {target_url}")
         await connection.close(code=1011)
