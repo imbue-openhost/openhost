@@ -54,6 +54,14 @@ mailbox server relays outbound mail through the central SES proxy as an
   instance; the proxy re-derives + constant-time compares, learning the
   authorized zone from that one check. Rotating `relay_secret` rotates
   every instance credential.
+- The relay credentials reach the mailbox app through a **scoped router
+  endpoint**, not the app environment. The mailbox app fetches
+  `GET /api/email/relay-config` at `OPENHOST_ROUTER_URL` using its
+  `OPENHOST_APP_TOKEN`; the router returns the SMTP host/port/user/password
+  (plus zone + custom domain) **only** to an app whose name is in
+  `email_mailbox_app_names`. This keeps the per-instance relay password out
+  of every other (untrusted) app's environment — only the mailbox app can
+  read it.
 
 This keeps the SES-credential-holding proxy off the public internet
 (reached over Fly 6PN), gives instances a real inbox+outbox instead of a

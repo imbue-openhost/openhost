@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 import typed_settings
+from litestar.exceptions import NotAuthorizedException
 
+import compute_space.web.routes.api.system as sys_mod
 from compute_space.config import DefaultConfig
 from compute_space.web.routes.api.system import custom_email_domain
 
@@ -159,9 +161,60 @@ def test_custom_email_domain_route_returns_record_when_set() -> None:
 
 
 def test_custom_email_domain_route_reports_unconfigured() -> None:
-
     cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com")  # no custom domain
     resp = custom_email_domain.fn(cfg)  # type: ignore[attr-defined]
     assert resp.configured is False
     assert resp.domain is None
     assert resp.display_line is None
+
+
+def test_mailbox_app_names_default() -> None:
+    cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com")
+    assert cfg.email_mailbox_app_names == ["stalwart-email-server"]
+
+
+class _FakeDB:
+    def __init__(self, app_name: str | None) -> None:
+        self._app_name = app_name
+
+    def execute(self, *_args: object) -> _FakeDB:
+        return self
+
+    def fetchone(self) -> dict[str, str] | None:
+        return {"name": self._app_name} if self._app_name is not None else None
+
+
+def test_relay_config_rejects_non_mailbox_app(monkeypatch) -> None:
+
+    monkeypatch.setattr(sys_mod, "verify_app_auth", lambda request: "app-123")
+    cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com").evolve(**_full_email_kwargs())
+    # A different app (not in email_mailbox_app_names) must be refused.
+    with pytest.raises(NotAuthorizedException):
+        sys_mod.email_relay_config.fn(object(), _FakeDB("some-other-app"), cfg)  # type: ignore[attr-defined]
+
+
+def test_relay_config_returns_creds_to_mailbox_app(monkeypatch) -> None:
+    monkeypatch.setattr(sys_mod, "verify_app_auth", lambda request: "app-mail")
+    cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com").evolve(
+        **_full_email_kwargs(),
+        email_smtp_relay_host="openhost-email-proxy.internal",
+        email_smtp_relay_port=587,
+        email_smtp_relay_user="alice.selfhost.imbue.com",
+        email_smtp_relay_password="hmac-pw",
+        email_custom_domain="mail.mydomain.com",
+    )
+    resp = sys_mod.email_relay_config.fn(object(), _FakeDB("stalwart-email-server"), cfg)  # type: ignore[attr-defined]
+    body = resp.content
+    assert body.configured is True
+    assert body.smtp_relay_host == "openhost-email-proxy.internal"
+    assert body.smtp_relay_password == "hmac-pw"
+    assert body.zone_domain == "alice.selfhost.imbue.com"
+    assert body.custom_domain == "mail.mydomain.com"
+
+
+def test_relay_config_reports_unconfigured_when_email_off(monkeypatch) -> None:
+    monkeypatch.setattr(sys_mod, "verify_app_auth", lambda request: "app-mail")
+    cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com")  # email disabled
+    resp = sys_mod.email_relay_config.fn(object(), _FakeDB("stalwart-email-server"), cfg)  # type: ignore[attr-defined]
+    assert resp.content.configured is False
+    assert resp.content.smtp_relay_password is None

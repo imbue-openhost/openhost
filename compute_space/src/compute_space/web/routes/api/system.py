@@ -6,14 +6,17 @@ import subprocess
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from typing import Any
 
 import attr
 from litestar import MediaType
+from litestar import Request
 from litestar import Response
 from litestar import Router
 from litestar import delete
 from litestar import get
 from litestar import post
+from litestar.exceptions import NotAuthorizedException
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
@@ -32,7 +35,9 @@ from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
+from compute_space.web.auth.auth import require_app_auth
 from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.auth.auth import verify_app_auth
 
 DEFAULT_TOKEN_EXPIRY_HOURS: float = 8.0
 
@@ -113,6 +118,24 @@ class SshStatusResponse:
 class DropCacheOk:
     ok: bool  # always True
     output: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class EmailRelayConfigResponse:
+    """SMTP smarthost relay config the mailbox app uses to send outbound mail.
+
+    Returned only to the mailbox app (scoped by app name); the relay password is a
+    per-instance secret and is deliberately NOT injected into every app's env.
+    ``configured`` is False when email/relay isn't set up on this instance.
+    """
+
+    configured: bool
+    smtp_relay_host: str | None
+    smtp_relay_port: int | None
+    smtp_relay_user: str | None
+    smtp_relay_password: str | None
+    zone_domain: str | None
+    custom_domain: str | None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -352,6 +375,49 @@ async def api_diagnostics(
     return Response(content=diagnostics, status_code=200, media_type=MediaType.JSON, headers=headers)
 
 
+@get("/api/email/relay-config", guards=[require_app_auth], sync_to_thread=False)
+def email_relay_config(
+    request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config
+) -> Response[EmailRelayConfigResponse]:
+    """Return the SMTP smarthost relay config for the mailbox app.
+
+    Scoped: the request must be authenticated as an app (OPENHOST_APP_TOKEN), and
+    that app must be one of ``config.email_mailbox_app_names``. This keeps the
+    per-instance relay password out of every other app's environment — only the
+    mailbox app can fetch it, and only over the loopback router URL.
+    """
+    app_id = verify_app_auth(request)
+    row = db.execute("SELECT name FROM apps WHERE app_id = ?", (app_id,)).fetchone()
+    app_name = row["name"] if row is not None else None
+    if app_name not in config.email_mailbox_app_names:
+        raise NotAuthorizedException(detail="app is not authorized to fetch email relay config")
+    if not config.email_enabled or not config.email_smtp_relay_host:
+        return Response(
+            content=EmailRelayConfigResponse(
+                configured=False,
+                smtp_relay_host=None,
+                smtp_relay_port=None,
+                smtp_relay_user=None,
+                smtp_relay_password=None,
+                zone_domain=None,
+                custom_domain=None,
+            ),
+            media_type=MediaType.JSON,
+        )
+    return Response(
+        content=EmailRelayConfigResponse(
+            configured=True,
+            smtp_relay_host=config.email_smtp_relay_host,
+            smtp_relay_port=config.email_smtp_relay_port,
+            smtp_relay_user=config.email_smtp_relay_user,
+            smtp_relay_password=config.email_smtp_relay_password,
+            zone_domain=config.zone_domain_no_port,
+            custom_domain=config.email_custom_domain_normalized,
+        ),
+        media_type=MediaType.JSON,
+    )
+
+
 @get("/api/email/custom-domain", guards=[require_owner_auth], sync_to_thread=False)
 def custom_email_domain(config: Config) -> CustomEmailDomainResponse:
     """Return the owner's custom mail domain and the single NS record to delegate it.
@@ -412,6 +478,7 @@ system_routes = Router(
         drop_docker_cache,
         api_version,
         api_diagnostics,
+        email_relay_config,
         custom_email_domain,
         restart_router,
     ],

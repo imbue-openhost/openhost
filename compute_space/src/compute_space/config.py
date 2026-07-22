@@ -126,11 +126,16 @@ class Config:
     # SMTP smarthost the mailbox app (Stalwart) relays outbound through — the
     # email proxy's submission listener.  user is the zone; password is the
     # per-instance HMAC credential (the only sensitive value).  Surfaced to the
-    # mailbox app so it can configure its outbound relay.
+    # mailbox app on request via /api/email/relay-config (NOT injected into every
+    # app's environment) so the relay password stays scoped to the mailbox app.
     email_smtp_relay_host: str | None
     email_smtp_relay_port: int | None
     email_smtp_relay_user: str | None
     email_smtp_relay_password: str | None
+    # App name(s) allowed to fetch the SMTP relay config from
+    # /api/email/relay-config.  Only the mailbox app needs the relay password, so
+    # the endpoint is scoped to these names (defaults to the built-in mailbox app).
+    email_mailbox_app_names: list[str]
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
@@ -407,6 +412,7 @@ class DefaultConfig(Config):
     email_smtp_relay_port: int | None = None
     email_smtp_relay_user: str | None = None
     email_smtp_relay_password: str | None = None
+    email_mailbox_app_names: list[str] = attr.Factory(lambda: ["stalwart-email-server"])
 
     start_caddy: bool = True
 
