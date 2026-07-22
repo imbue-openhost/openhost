@@ -27,7 +27,9 @@ directory, mode, and ownership is preserved exactly.  Today only
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -55,10 +57,41 @@ JUICEFS_SERVICE = "openhost-juicefs"
 # ``pinned_binary.py``.
 _JUICEFS = get_pinned_binary("juicefs")
 
-# Default JuiceFS volume name when the operator doesn't supply an s3_prefix.
-# The volume name doubles as the per-store object prefix (every chunk lands
-# under ``<store>/<volume>/...``), so two zones can share one bucket safely.
+# Legacy JuiceFS volume name.  The volume name doubles as the per-store object
+# prefix (every chunk lands under ``<store>/<volume>/...``).  Historically every
+# zone used this constant, which is UNSAFE when several zones migrate into one
+# shared S3 bucket: they all key objects under ``openhost/`` and clobber each
+# other's ``juicefs_uuid``/metadata/chunks.  Fresh zones now derive a unique
+# per-zone volume name (see ``default_volume_name_for_zone``); this constant is
+# kept only as the last-resort fallback and for reading legacy rows.
 DEFAULT_VOLUME_NAME = "openhost"
+
+# JuiceFS volume names must match cmd/format.go validName: [a-z0-9-], 3..63 chars,
+# not starting/ending with '-'.
+_VOLUME_NAME_MAX = 63
+
+
+def default_volume_name_for_zone(config: Config) -> str:
+    """A unique, JuiceFS-valid volume name for this zone.
+
+    Derived from the zone domain so that when a zone migrates its local archive
+    into a shared S3 bucket, its objects land under a per-zone prefix
+    (``<bucket>/<volume>/...``) that does not collide with any other zone's.
+    A short hash of the full zone domain is appended so two zones whose
+    sanitised names would otherwise coincide (e.g. very long domains truncated
+    to the same head) stay distinct.
+    """
+    zone = (config.zone_domain or "").split(":", 1)[0].lower()
+    # Map anything outside [a-z0-9-] to '-', collapse runs, trim edge dashes.
+    slug = re.sub(r"[^a-z0-9-]+", "-", zone).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    digest = hashlib.sha256(zone.encode()).hexdigest()[:8] if zone else "00000000"
+    # Reserve room for the "-<8-hex>" suffix and the "oh-" prefix.
+    head = slug[: _VOLUME_NAME_MAX - len(digest) - 4].strip("-")
+    name = f"oh-{head}-{digest}" if head else f"oh-{digest}"
+    # Final safety clamp to validName.
+    name = name[:_VOLUME_NAME_MAX].strip("-")
+    return name or DEFAULT_VOLUME_NAME
 
 
 def _juicefs_state_dir(config: Config) -> str:
@@ -608,6 +641,12 @@ def _set_state_message(db: sqlite3.Connection, message: str | None) -> None:
     db.commit()
 
 
+def _set_juicefs_volume_name(db: sqlite3.Connection, volume_name: str) -> None:
+    """Persist the JuiceFS volume name (set once, at first-boot local format)."""
+    db.execute("UPDATE archive_backend SET juicefs_volume_name = ? WHERE id = 1", (volume_name,))
+    db.commit()
+
+
 def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
     """Bring the archive backend online at boot.  Failures don't crash boot;
     they're surfaced via state_message so the dashboard stays reachable.
@@ -628,7 +667,18 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
         try:
             if not is_juicefs_installed(config):
                 install_juicefs(config)
-            _ensure_local_volume_formatted(config, state.juicefs_volume_name)
+            # On first boot, pick a UNIQUE per-zone volume name before formatting
+            # (rather than the shared legacy "openhost"), so that if this zone
+            # later migrates its local archive into a shared S3 bucket its
+            # objects live under a per-zone prefix and can't collide with another
+            # zone's.  Only do this if the volume hasn't been formatted yet AND
+            # the row still carries the legacy default; a volume that already
+            # exists keeps its name (its objects are already keyed under it).
+            volume_name = state.juicefs_volume_name
+            if not _local_volume_formatted(config) and volume_name == DEFAULT_VOLUME_NAME:
+                volume_name = default_volume_name_for_zone(config)
+                _set_juicefs_volume_name(db, volume_name)
+            _ensure_local_volume_formatted(config, volume_name)
             mount(config)
             _set_state_message(db, None)
         except Exception as exc:  # noqa: BLE001
@@ -994,11 +1044,20 @@ def configure_backend(
     migrating_from_local = state.backend == "local"
     # The volume name is fixed once a volume exists; for a local zone we must
     # keep using the volume that was already formatted (its objects live under
-    # that prefix).  Only a legacy 'disabled' zone gets a brand-new volume.
+    # that prefix), UNLESS the volume still carries the legacy shared default
+    # ``openhost`` — in that case an operator-supplied prefix/name is honored so
+    # the migrated objects are isolated in the shared bucket.  Fresh zones now
+    # format under a unique per-zone name (default_volume_name_for_zone), so
+    # this legacy branch only fires for zones formatted before that change.
+    # A legacy 'disabled' zone gets a brand-new volume.
     if migrating_from_local:
-        volume = state.juicefs_volume_name or DEFAULT_VOLUME_NAME
+        existing = state.juicefs_volume_name or DEFAULT_VOLUME_NAME
+        if existing == DEFAULT_VOLUME_NAME:
+            volume = juicefs_volume_name or s3_prefix or default_volume_name_for_zone(config)
+        else:
+            volume = existing
     else:
-        volume = juicefs_volume_name or s3_prefix or DEFAULT_VOLUME_NAME
+        volume = juicefs_volume_name or s3_prefix or default_volume_name_for_zone(config)
 
     try:
         if not is_juicefs_installed(config):
@@ -1059,7 +1118,10 @@ def configure_backend(
                 s3_bucket,
                 s3_region,
                 s3_endpoint,
-                s3_prefix,
+                # Store the ACTUAL object prefix (the volume name), so the
+                # reported state matches where objects really live rather than
+                # an operator-supplied prefix that a pre-existing volume ignored.
+                volume,
                 s3_access_key_id,
                 s3_secret_access_key,
                 volume,

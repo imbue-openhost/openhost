@@ -640,8 +640,10 @@ def test_configure_backend_from_disabled_formats_s3_fresh(cfg, db):
 
 def test_configure_backend_from_local_syncs_and_repoints(cfg, db):
     """Migrating local->s3 syncs objects, re-points the volume, remounts, and
-    reclaims the local object store — keeping the pre-existing volume name."""
-    db.execute("UPDATE archive_backend SET juicefs_volume_name='openhost' WHERE id=1")
+    reclaims the local object store."""
+    # Unique per-zone volume name (as a fresh zone would have) is PRESERVED — its
+    # objects already live under that prefix.
+    db.execute("UPDATE archive_backend SET juicefs_volume_name='oh-testzone-local-abcd1234' WHERE id=1")
     db.commit()
     calls = []
     with (
@@ -662,17 +664,82 @@ def test_configure_backend_from_local_syncs_and_repoints(cfg, db):
             s3_bucket="b",
             s3_region="us-east-1",
             s3_endpoint=None,
-            # prefix differs from the existing volume; the existing volume name
-            # must win so the already-synced objects keep their prefix.
             s3_prefix="ignored-prefix",
             s3_access_key_id="ak",
             s3_secret_access_key="sk",
         )
     state = read_state(db)
     assert state.backend == "s3"
-    assert state.juicefs_volume_name == "openhost"
+    # The existing unique volume name wins (its objects are already keyed under
+    # it); the operator prefix does not silently rename an existing volume.
+    assert state.juicefs_volume_name == "oh-testzone-local-abcd1234"
+    # s3_prefix in the row reflects the ACTUAL object prefix (the volume name),
+    # not the ignored operator input, so reported state matches reality.
+    assert state.s3_prefix == "oh-testzone-local-abcd1234"
     # Order: mount local, migrate (sync+repoint), remount (umount+mount), remove.
     assert calls == ["mount", "migrate", "umount", "mount", "remove"]
+
+
+def test_legacy_openhost_local_zone_honors_prefix_on_migration(cfg, db):
+    """A legacy zone still on the shared 'openhost' volume MUST NOT migrate into
+    a shared bucket under 'openhost' (that collides with other zones). When the
+    operator supplies an s3_prefix it is used as the volume name so the migrated
+    objects are isolated; the stored s3_prefix reflects that actual prefix."""
+    db.execute("UPDATE archive_backend SET juicefs_volume_name='openhost' WHERE id=1")
+    db.commit()
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "_ensure_local_volume_formatted"),
+        mock.patch.object(archive_backend, "mount"),
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "_migrate_local_to_s3"),
+        mock.patch.object(archive_backend, "_remove_local_object_store"),
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="b",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix="alice-zone",
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+        )
+    state = read_state(db)
+    assert state.backend == "s3"
+    assert state.juicefs_volume_name == "alice-zone"
+    assert state.s3_prefix == "alice-zone"
+
+
+def test_legacy_openhost_local_zone_without_prefix_gets_unique_name(cfg, db):
+    """A legacy 'openhost' zone migrating with NO explicit prefix falls back to a
+    unique per-zone volume name (never the shared 'openhost') so it can't collide
+    in a shared bucket."""
+    db.execute("UPDATE archive_backend SET juicefs_volume_name='openhost' WHERE id=1")
+    db.commit()
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "_ensure_local_volume_formatted"),
+        mock.patch.object(archive_backend, "mount"),
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "_migrate_local_to_s3"),
+        mock.patch.object(archive_backend, "_remove_local_object_store"),
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="b",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+        )
+    state = read_state(db)
+    assert state.backend == "s3"
+    assert state.juicefs_volume_name != "openhost"
+    assert state.juicefs_volume_name.startswith("oh-")
+    assert state.s3_prefix == state.juicefs_volume_name
 
 
 def test_configure_backend_quiesces_apps_before_sync(cfg, db):
