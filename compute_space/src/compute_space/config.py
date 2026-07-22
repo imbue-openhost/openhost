@@ -93,8 +93,16 @@ class Config:
     data_root_dir: str
     apps_dir_override: str | None
 
-    # Minimum free disk space in MB (0 = no enforcement)
+    # Minimum free disk space in MB the storage guard enforces (0 = no enforcement).
     storage_min_free_mb: int
+
+    # How often (seconds) to prune dangling container images (0 = disabled).
+    image_prune_interval_seconds: int
+
+    # Age (seconds) above which a tagged OpenHost app image with no matching app
+    # in the DB is treated as orphaned and pruned (0 = never prune orphaned
+    # tagged images).
+    image_orphan_max_age_seconds: int
 
     ## Ports
     port_range_start: int
@@ -303,8 +311,28 @@ class DefaultConfig(Config):
     data_root_dir: str = "/opt/openhost"
     apps_dir_override: str | None = None  # if None, defaults to data_root_dir/apps
 
-    # Minimum free disk space in MB (0 = no enforcement)
-    storage_min_free_mb: int = 0
+    # Minimum free disk space in MB the storage guard enforces (0 = no enforcement).
+    # Enabled by default with a modest headroom so a runaway disk can't silently
+    # take an instance fully down before the owner notices. Operators who want a
+    # different threshold (or to disable it) set this in the router config and
+    # reboot.
+    storage_min_free_mb: int = 500
+
+    # How often (seconds) the periodic pruner removes dangling container images
+    # (0 = disabled).  Rebuilds re-tag ``openhost-{app}:latest`` and orphan the
+    # previous image, so untagged layers accumulate; pruning them on a schedule
+    # keeps them from filling the disk.  Only dangling images are removed, so
+    # stopped apps never need rebuilding.  Defaults to every 6 hours.
+    image_prune_interval_seconds: int = 6 * 60 * 60
+
+    # Age (seconds) above which a tagged ``openhost-{name}:latest`` image whose
+    # app no longer exists in the DB (in any status) is pruned by the periodic
+    # sweep.  App removal already deletes the app's image, so this only reclaims
+    # tagged images orphaned by a removal that failed or predated that logic.
+    # The age guard ensures an image built for an app whose DB row is not yet
+    # committed (mid-deploy) is never reaped.  0 disables orphan pruning.
+    # Defaults to 7 days.
+    image_orphan_max_age_seconds: int = 7 * 24 * 60 * 60
 
     # Fail-safe default: require a claim token at /setup. Callers that want
     # the open-setup behavior (local-dev loopback) must set this False.

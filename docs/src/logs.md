@@ -20,7 +20,7 @@ The router writes to two sinks simultaneously via loguru:
 - Written at DEBUG level and above.
 - Captured by systemd from the router process's stderr and stored in journald's binary database at `/var/log/journal/`.
 - Also contains output from Caddy and CoreDNS, because both are child processes of the router — their stdout is read line-by-line and re-emitted through the router's logger.
-- Persists across restarts and accumulates until journald's system-level limits are hit (not configured by OpenHost; system defaults apply — typically 10% of disk or 4 GB, whichever is smaller).
+- Persists across restarts and accumulates until journald's on-disk size cap is hit. OpenHost caps the total journal at 500 MB via a drop-in at `/etc/systemd/journald.conf.d/10-openhost.conf` (`SystemMaxUse=500M`) so the journal alone can't fill the host disk; older entries are discarded once the cap is reached.
 - Access via `journalctl -u openhost` or `journalctl -u openhost -f` to follow.
 
 ---
@@ -65,4 +65,4 @@ journalctl -u openhost-juicefs
 - App container stdout/stderr (now written to `container.log` via k8s-file)
 - The contents of `compute_space.log` (the file sink is separate from journald)
 
-Journald stores logs in a binary indexed format across multiple files. Queries are indexed by unit, priority, and time — they are not a linear scan — but total journal size still affects seek time. No per-unit size cap is configured by OpenHost; use `SystemMaxUse`, `SystemMaxFiles`, or `MaxRetentionSec` in `/etc/systemd/journald.conf` if the journal grows too large.
+Journald stores logs in a binary indexed format across multiple files. Queries are indexed by unit, priority, and time — they are not a linear scan — but total journal size still affects seek time. OpenHost caps the total on-disk journal at 500 MB via `SystemMaxUse` in a drop-in at `/etc/systemd/journald.conf.d/10-openhost.conf`. Operators who need a different limit can add `SystemMaxFiles` or `MaxRetentionSec`, or override `SystemMaxUse`, in a higher-numbered drop-in (e.g. `/etc/systemd/journald.conf.d/20-local.conf`).

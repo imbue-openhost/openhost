@@ -22,6 +22,7 @@ from compute_space.core.app_id import new_app_id
 from compute_space.core.auth.auth import DEFAULT_OWNER_USERNAME
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.permissions_v2 import Grant
+from compute_space.core.auth.permissions_v2 import PermissionRecord
 from compute_space.core.auth.permissions_v2 import grant_permission_v2
 from compute_space.core.containers import BUILD_CACHE_CORRUPT_MARKER
 from compute_space.core.containers import build_image
@@ -338,6 +339,44 @@ def all_manifest_permissions_v2(manifest: AppManifest) -> list[PermissionGrant]:
         for grant_payload in perm.grants:
             grants.append(PermissionGrant(service_url=perm.service, grant=grant_payload))
     return grants
+
+
+def _permission_key(service_url: str, grant_payload: Grant) -> tuple[str, str]:
+    """Normalized identity for a (service, grant) pair.
+
+    Uses the same ``json.dumps(..., sort_keys=True)`` serialization that
+    :func:`grant_permission_v2` stores, so a declared grant and a stored grant
+    compare equal regardless of dict key order.
+    """
+    return (service_url, json.dumps(grant_payload, sort_keys=True))
+
+
+def manifest_ungranted_permissions_v2(
+    manifest: AppManifest,
+    granted: list[PermissionRecord],
+) -> list[PermissionGrant]:
+    """The permissions a manifest declares that are NOT already granted.
+
+    Single source of truth for the "which manifest permissions still need owner
+    approval" diff, shared by the app-detail page (post-install display) and the
+    update/reload gate (so an app update can't silently pick up newly declared
+    permissions). ``granted`` is the app's current ``permissions_v2`` rows
+    (e.g. from :func:`get_all_permissions_v2`).
+
+    Duplicate manifest declarations collapse to a single entry, and each new
+    permission is returned only once even if declared multiple times.
+    """
+    granted_keys = {_permission_key(rec.service_url, rec.grant) for rec in granted}
+    ungranted: list[PermissionGrant] = []
+    seen: set[tuple[str, str]] = set(granted_keys)
+    for perm in manifest.consumes_services_v2:
+        for grant_payload in perm.grants:
+            key = _permission_key(perm.service, grant_payload)
+            if key in seen:
+                continue
+            seen.add(key)
+            ungranted.append(PermissionGrant(service_url=perm.service, grant=grant_payload))
+    return ungranted
 
 
 def insert_and_deploy(
@@ -932,10 +971,11 @@ def reload_app_background(app_id: str, repo_path: str, config: Config) -> None:
                 db.commit()
             except ValueError:
                 logger.warning("Failed to re-read manifest for %s during reload", app_id)
-            # New permissions declared in the updated manifest are NOT
-            # auto-granted on reload.  They show up as "ungranted" on the
-            # app detail page where the owner can approve them, or the
-            # in-app grant_url flow handles them at runtime.
+            # Permissions are not touched here. New permissions declared in an
+            # updated manifest are gated before this background reload even
+            # starts: _reload_app_impl refuses to rebuild until the owner has
+            # explicitly approved them (mirroring the install-time approval),
+            # so by the time we get here the required grants already exist.
 
         start_app_process(app_id, db, config)
     except Exception as e:
