@@ -80,6 +80,14 @@ class Config:
     email_inbound_mx_host: str | None
     # Optional DMARC aggregate-report address published in the _dmarc record.
     email_dmarc_rua: str | None
+    # SMTP smarthost the mailbox app (Stalwart) relays outbound through — the
+    # email proxy's submission listener.  user is the zone; password is the
+    # per-instance HMAC credential (the only sensitive value).  Surfaced to the
+    # mailbox app so it can configure its outbound relay.
+    email_smtp_relay_host: str | None
+    email_smtp_relay_port: int | None
+    email_smtp_relay_user: str | None
+    email_smtp_relay_password: str | None
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
@@ -302,6 +310,10 @@ class DefaultConfig(Config):
     email_keycloak_client_secret: str | None = None
     email_inbound_mx_host: str | None = None
     email_dmarc_rua: str | None = None
+    email_smtp_relay_host: str | None = None
+    email_smtp_relay_port: int | None = None
+    email_smtp_relay_user: str | None = None
+    email_smtp_relay_password: str | None = None
 
     start_caddy: bool = True
 

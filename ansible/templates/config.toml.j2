@@ -52,4 +52,13 @@ email_inbound_mx_host = "{{ email_inbound_mx_host | default('inbound-smtp.us-wes
 {% if email_dmarc_rua is defined %}
 email_dmarc_rua = "{{ email_dmarc_rua }}"
 {% endif %}
+{% if email_smtp_relay_host is defined %}
+# SMTP smarthost the instance's mailbox server (Stalwart) relays outbound mail
+# through: the openhost-email-proxy's submission listener.  user is the zone,
+# password is the per-instance HMAC credential the provisioner derived.
+email_smtp_relay_host = "{{ email_smtp_relay_host }}"
+email_smtp_relay_port = {{ email_smtp_relay_port | default(587) }}
+email_smtp_relay_user = "{{ email_smtp_relay_user }}"
+email_smtp_relay_password = "{{ email_smtp_relay_password }}"
+{% endif %}
 {% endif %}

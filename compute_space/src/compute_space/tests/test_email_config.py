@@ -72,3 +72,18 @@ def test_email_config_round_trips_through_toml() -> None:
     assert 'email_proxy_base_url = "https://openhost-email-proxy.fly.dev"' in rendered
     assert 'email_keycloak_client_id = "instance-alice"' in rendered
     assert 'email_inbound_mx_host = "inbound-smtp.us-west-2.amazonaws.com"' in rendered
+
+
+def test_email_smtp_relay_fields_round_trip() -> None:
+    cfg = DefaultConfig(zone_domain="x.example.com").evolve(
+        **_full_email_kwargs(),
+        email_smtp_relay_host="openhost-email-proxy.internal",
+        email_smtp_relay_port=587,
+        email_smtp_relay_user="x.example.com",
+        email_smtp_relay_password="hmac-pw",
+    )
+    rendered = cfg.to_toml_str()
+    assert 'email_smtp_relay_host = "openhost-email-proxy.internal"' in rendered
+    assert "email_smtp_relay_port = 587" in rendered
+    assert 'email_smtp_relay_user = "x.example.com"' in rendered
+    assert 'email_smtp_relay_password = "hmac-pw"' in rendered

@@ -39,23 +39,31 @@ Both facts point to the same answer: outbound mail flows through a
 reputation and enforces per-instance limits, rather than each instance
 talking to the world directly.
 
-The relay is split into two pieces, following the same pattern the
-platform uses for its other managed backends (DNS provisioning, vm-manager):
+Each instance runs a real mailbox server (**Stalwart**) and webmail
+client (**Bulwark**) as default apps, giving a real inbox + outbox. The
+mailbox server relays outbound mail through the central SES proxy as an
+**SMTP smarthost**:
 
-- a **private backend** (`openhost-email-proxy`) that holds the AWS SES
-  credentials and does the SES work. It has **no public listener** — it
-  is reachable only over the operator network (Fly 6PN), so an instance
-  cannot call it directly.
-- the **imbue-hosted-spaces frontend** as the **authenticated public
-  door**. Instances call the frontend's `/api/email/*` endpoints with
-  their Keycloak token; the frontend verifies the token, derives the
-  instance's zone, and proxies to the private backend over 6PN, passing
-  the zone as a trusted `X-OpenHost-Zone` header. The backend enforces
-  From-domain scope and rate limits against that zone.
+- the **email proxy** (`openhost-email-proxy`) runs an **SMTP submission
+  relay** that holds the AWS SES credentials. Instances' Stalwart relays
+  outbound to it over SMTP submission (AUTH), and it enforces From-domain
+  scope + per-instance rate limits, then forwards to SES.
+- **Per-instance SMTP auth is a stateless HMAC credential**: username =
+  the instance's zone FQDN, password = `HMAC-SHA256(relay_secret, zone)`.
+  vm-manager derives the same password at provision and hands it to the
+  instance; the proxy re-derives + constant-time compares, learning the
+  authorized zone from that one check. Rotating `relay_secret` rotates
+  every instance credential.
 
-This keeps the authentication boundary in one place (the frontend, which
-already fronts vm-manager the same way) and keeps the SES-credential-holding
-backend off the public internet entirely.
+This keeps the SES-credential-holding proxy off the public internet
+(reached over Fly 6PN), gives instances a real inbox+outbox instead of a
+send-only shim, and keeps the central multi-tenant safety guarantees
+(From enforcement, rate limits, abuse controls) in one place.
+
+> The SES **domain-identity creation** (to obtain DKIM tokens at
+> provision) still uses a small HTTP call authenticated by the
+> per-instance Keycloak client via the imbue-hosted-spaces frontend; only
+> the high-volume *send* path moved to SMTP.
 
 ## The platform / app divide
 
