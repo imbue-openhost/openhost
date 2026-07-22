@@ -517,6 +517,9 @@ def test_default_volume_name_handles_weird_and_long_zones():
 def test_two_zones_do_not_collide_on_default_volume():
     # The core of the bug: two fresh zones must not both key objects under the
     # same shared prefix.
-    names = {archive_backend.default_volume_name_for_zone(DefaultConfig(zone_domain=f"z{i}.selfhost.imbue.com")) for i in range(20)}
+    names = {
+        archive_backend.default_volume_name_for_zone(DefaultConfig(zone_domain=f"z{i}.selfhost.imbue.com"))
+        for i in range(20)
+    }
     assert len(names) == 20  # all distinct
     assert "openhost" not in names
