@@ -67,6 +67,14 @@ def provision_email_records(config: Config) -> None:
                 # Delegated custom mail domain (optional, one NS record).
                 custom_domain = config.email_custom_domain_normalized
                 if custom_domain is not None:
+                    delegation = config.custom_domain_delegation_record()
+                    if delegation is not None:
+                        logger.info(
+                            "Custom mail domain %s: ensure this single NS record is set at the "
+                            "registrar to delegate it to this instance:  %s",
+                            custom_domain,
+                            delegation.as_display_line(),
+                        )
                     _provision_zone(
                         config,
                         client,

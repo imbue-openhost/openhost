@@ -13,6 +13,7 @@ import pytest
 import typed_settings
 
 from compute_space.config import DefaultConfig
+from compute_space.web.routes.api.system import custom_email_domain
 
 
 def _full_email_kwargs() -> dict[str, object]:
@@ -109,7 +110,11 @@ def test_custom_domain_blank_treated_as_unset() -> None:
 def test_custom_domain_delegation_record() -> None:
     cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com:8443").evolve(email_custom_domain="mail.mydomain.com")
     rec = cfg.custom_domain_delegation_record()
-    assert rec == {"name": "mail.mydomain.com", "type": "NS", "value": "ns.alice.selfhost.imbue.com"}
+    assert rec is not None
+    assert rec.name == "mail.mydomain.com"
+    assert rec.record_type == "NS"
+    assert rec.value == "ns.alice.selfhost.imbue.com"
+    assert rec.as_display_line() == "mail.mydomain.com   NS   ns.alice.selfhost.imbue.com"
 
 
 def test_custom_domain_rejects_malformed() -> None:
@@ -138,3 +143,25 @@ def test_custom_domain_round_trips_through_toml() -> None:
         email_custom_domain="mail.mydomain.com",
     )
     assert 'email_custom_domain = "mail.mydomain.com"' in cfg.to_toml_str()
+
+
+def test_custom_email_domain_route_returns_record_when_set() -> None:
+    # The owner-facing route surfaces the exact NS record to paste at the registrar.
+
+    cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com").evolve(email_custom_domain="mail.mydomain.com")
+    resp = custom_email_domain.fn(cfg)  # type: ignore[attr-defined]
+    assert resp.configured is True
+    assert resp.domain == "mail.mydomain.com"
+    assert resp.record_name == "mail.mydomain.com"
+    assert resp.record_type == "NS"
+    assert resp.record_value == "ns.alice.selfhost.imbue.com"
+    assert resp.display_line == "mail.mydomain.com   NS   ns.alice.selfhost.imbue.com"
+
+
+def test_custom_email_domain_route_reports_unconfigured() -> None:
+
+    cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com")  # no custom domain
+    resp = custom_email_domain.fn(cfg)  # type: ignore[attr-defined]
+    assert resp.configured is False
+    assert resp.domain is None
+    assert resp.display_line is None

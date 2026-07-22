@@ -41,6 +41,23 @@ def _is_well_formed_domain(domain: str) -> bool:
 
 
 @attr.s(auto_attribs=True, frozen=True)
+class DelegationRecord:
+    """A single DNS record the owner must add at their registrar.
+
+    Used to tell the owner exactly what to paste to delegate a custom mail domain
+    to this instance (see Config.custom_domain_delegation_record).
+    """
+
+    name: str
+    record_type: str
+    value: str
+
+    def as_display_line(self) -> str:
+        """A registrar-style one-liner, e.g. 'mail.mydomain.com  NS  ns.<zone>'."""
+        return f"{self.name}   {self.record_type}   {self.value}"
+
+
+@attr.s(auto_attribs=True, frozen=True)
 class Config:
     ## Server
     # zone_domain is where the compute space is hosted, eg `host.example.com`
@@ -300,23 +317,22 @@ class Config:
         """Zone file for the delegated custom mail domain (second authoritative zone)."""
         return self.openhost_data_path / "zonefile.custom"
 
-    def custom_domain_delegation_record(self) -> dict[str, str] | None:
+    def custom_domain_delegation_record(self) -> DelegationRecord | None:
         """The single NS record the owner must add at their registrar to delegate
         their custom mail domain to this instance, or None if none is configured.
 
-        Returns a dict describing the record (name / type / value) so a UI or the
-        CLI can show the owner exactly what to paste. The nameserver host lives
-        under the instance's own zone (``ns.<zone>``), which already resolves to
-        the instance's public IP, so this one record is all that is required.
+        The nameserver host lives under the instance's own zone (``ns.<zone>``),
+        which already resolves to the instance's public IP, so this one record is
+        all that is required.
         """
         custom = self.email_custom_domain_normalized
         if custom is None:
             return None
-        return {
-            "name": custom,
-            "type": "NS",
-            "value": f"ns.{self.zone_domain_no_port}",
-        }
+        return DelegationRecord(
+            name=custom,
+            record_type="NS",
+            value=f"ns.{self.zone_domain_no_port}",
+        )
 
     @property
     def caddyfile_path(self) -> Path:

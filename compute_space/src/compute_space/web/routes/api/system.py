@@ -116,6 +116,22 @@ class DropCacheOk:
 
 
 @attr.s(auto_attribs=True, frozen=True)
+class CustomEmailDomainResponse:
+    """Owner-facing view of the custom mail domain and the single NS record to add.
+
+    ``configured`` is False when no custom mail domain is set on this instance, in
+    which case the record fields are None.
+    """
+
+    configured: bool
+    domain: str | None
+    record_name: str | None
+    record_type: str | None
+    record_value: str | None
+    display_line: str | None
+
+
+@attr.s(auto_attribs=True, frozen=True)
 class VersionInfo:
     """Git info for the running openhost checkout. ``branch`` is None when HEAD is detached.
     ``sha`` is empty when the install isn't a git checkout (e.g. tarball deploys)."""
@@ -336,6 +352,34 @@ async def api_diagnostics(
     return Response(content=diagnostics, status_code=200, media_type=MediaType.JSON, headers=headers)
 
 
+@get("/api/email/custom-domain", guards=[require_owner_auth], sync_to_thread=False)
+def custom_email_domain(config: Config) -> CustomEmailDomainResponse:
+    """Return the owner's custom mail domain and the single NS record to delegate it.
+
+    The owner sets this once at their registrar; the instance's nameserver host
+    (ns.<zone>) already resolves to the instance IP, so this one record is all
+    that is required for the custom domain to work.
+    """
+    record = config.custom_domain_delegation_record()
+    if record is None:
+        return CustomEmailDomainResponse(
+            configured=False,
+            domain=None,
+            record_name=None,
+            record_type=None,
+            record_value=None,
+            display_line=None,
+        )
+    return CustomEmailDomainResponse(
+        configured=True,
+        domain=config.email_custom_domain_normalized,
+        record_name=record.name,
+        record_type=record.record_type,
+        record_value=record.value,
+        display_line=record.as_display_line(),
+    )
+
+
 @post("/restart_router", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
 def restart_router() -> OkResponse:
     """Restart the router systemd service to pick up code changes."""
@@ -368,6 +412,7 @@ system_routes = Router(
         drop_docker_cache,
         api_version,
         api_diagnostics,
+        custom_email_domain,
         restart_router,
     ],
 )
