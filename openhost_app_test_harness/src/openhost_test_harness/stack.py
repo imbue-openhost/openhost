@@ -91,18 +91,11 @@ def _normalize_service_url(url: str) -> str:
     return url.removeprefix("https://").removeprefix("http://").rstrip("/")
 
 
-def _snapshot_working_tree(app_dir: Path, dest: Path) -> None:
-    """Copy ``app_dir``'s git working tree to ``dest``: tracked + untracked files,
-    minus gitignored ones and ``.git`` itself.
-
-    The router clones git repos at HEAD, which would silently deploy stale code while
-    you iterate; deploying a snapshot makes the app under test reflect uncommitted
-    changes, while gitignored build artefacts (.venv, node_modules, ...) stay out of
-    the build context.
-    """
+def _copy_git_listed_files(src_dir: Path, dest_dir: Path) -> None:
+    """Copy ``src_dir``'s tracked + untracked-unignored files into ``dest_dir``."""
     listing = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-        cwd=app_dir,
+        cwd=src_dir,
         capture_output=True,
         check=True,
     )
@@ -110,12 +103,36 @@ def _snapshot_working_tree(app_dir: Path, dest: Path) -> None:
         if not raw:
             continue
         rel = raw.decode()
-        src = app_dir / rel
+        src = src_dir / rel
         if not src.is_file():  # staged deletions still appear in ls-files
             continue
-        target = dest / rel
+        target = dest_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, target)
+
+
+def _snapshot_working_tree(app_dir: Path, dest: Path) -> None:
+    """Copy ``app_dir``'s git working tree to ``dest``: tracked + untracked files,
+    minus gitignored ones and ``.git`` itself. Submodule working trees are included
+    (``git ls-files`` lists a submodule as a single gitlink, not its files).
+
+    The router clones git repos at HEAD, which would silently deploy stale code while
+    you iterate; deploying a snapshot makes the app under test reflect uncommitted
+    changes, while gitignored build artefacts (.venv, node_modules, ...) stay out of
+    the build context.
+    """
+    _copy_git_listed_files(app_dir, dest)
+    submodules = subprocess.run(
+        ["git", "submodule", "foreach", "--quiet", "--recursive", "echo $displaypath"],
+        cwd=app_dir,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    for sub_rel in submodules.stdout.splitlines():
+        sub_rel = sub_rel.strip()
+        if sub_rel:
+            _copy_git_listed_files(app_dir / sub_rel, dest / sub_rel)
 
 
 def _warn_if_linux_gateway_missing() -> None:

@@ -190,6 +190,18 @@ def inject_github_token_in_url(url: str, token: str) -> str:
     return url
 
 
+def github_token_git_config(token: str | None) -> list[str]:
+    """Ephemeral ``git -c`` args that authenticate GitHub HTTPS fetches.
+
+    Rides in GIT_CONFIG_PARAMETERS, which git propagates to child processes —
+    including recursive submodule clones/fetches — so private submodules
+    authenticate without the token ever being written to a git config file.
+    """
+    if not token:
+        return []
+    return ["-c", f"url.https://{token}@github.com/.insteadOf=https://github.com/"]
+
+
 async def clone_and_read_manifest(
     repo_url: str, github_token: str | None = None
 ) -> tuple[AppManifest | None, str | None, str | None]:
@@ -229,14 +241,23 @@ async def clone_and_read_manifest(
     tmp_parent = tempfile.mkdtemp(prefix="openhost-clone-")
     clone_dir = os.path.join(tmp_parent, "repo")
     try:
-        clone_cmd = ["git", "clone", "--recurse-submodules", "--shallow-submodules"]
+        clone_cmd = [
+            "git",
+            *github_token_git_config(github_token),
+            "clone",
+            "--recurse-submodules",
+            "--shallow-submodules",
+        ]
         if ref:
             clone_cmd.extend(["--branch", ref])
         clone_cmd.extend([clone_url, clone_dir])
         result = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
-            return None, None, f"Git clone failed: {result.stderr.strip()}"
+            stderr = result.stderr.strip()
+            if github_token:
+                stderr = stderr.replace(github_token, "***")
+            return None, None, f"Git clone failed: {stderr}"
         # If we cloned with a token, reset the remote URL so the token isn't persisted
         if github_token and clone_url != base_url:
             await asyncio.to_thread(
@@ -246,6 +267,17 @@ async def clone_and_read_manifest(
                 capture_output=True,
                 timeout=10,
             )
+            # Relative .gitmodules URLs resolved against the token-bearing clone
+            # URL, so the recorded submodule URLs may embed the token; re-sync
+            # them against the now-clean origin.
+            if os.path.exists(os.path.join(clone_dir, ".gitmodules")):
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "submodule", "sync", "--recursive"],
+                    cwd=clone_dir,
+                    capture_output=True,
+                    timeout=30,
+                )
         try:
             manifest = parse_manifest(clone_dir)
         except ValueError as e:
@@ -794,7 +826,11 @@ def git_pull(
 ) -> tuple[bool, str | None]:
     """Try to git pull. Returns (ok, error_msg)."""
 
+    def _redact(msg: str) -> str:
+        return msg.replace(github_token, "***") if github_token else msg
+
     def _log(msg: str) -> None:
+        msg = _redact(msg)
         logger.info("%s: %s", app_name, msg)
         if log_file:
             with open(log_file, "a") as f:
@@ -846,16 +882,41 @@ def git_pull(
         except Exception:
             pass
 
-    def _run(cmd: list[str]) -> tuple[bool, str | None]:
+    def _run(cmd: list[str], timeout: int = 60) -> tuple[bool, str | None]:
         _log("$ " + " ".join(cmd))
-        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=timeout)
         if result.stdout.strip():
             _log(result.stdout.strip())
         if result.stderr.strip():
             _log(result.stderr.strip())
         if result.returncode != 0:
-            return False, result.stderr.strip() or result.stdout.strip() or f"{' '.join(cmd)} failed"
+            err = result.stderr.strip() or result.stdout.strip() or f"{' '.join(cmd)} failed"
+            return False, _redact(err)
         return True, None
+
+    def _restore_origin() -> None:
+        if github_token and original_url:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", original_url],
+                cwd=repo_path,
+                capture_output=True,
+                timeout=10,
+            )
+
+    def _update_submodules() -> tuple[bool, str | None]:
+        if not os.path.exists(os.path.join(repo_path, ".gitmodules")):
+            return True, None
+        # Sync recorded submodule URLs against the clean origin URL (relative
+        # .gitmodules paths resolve against it), so the token never lands in a
+        # config file; auth rides only in the ephemeral insteadOf config.
+        _restore_origin()
+        ok, err = _run(["git", "submodule", "sync", "--recursive"])
+        if not ok:
+            return False, err
+        return _run(
+            ["git", *github_token_git_config(github_token), "submodule", "update", "--init", "--recursive"],
+            timeout=300,
+        )
 
     try:
         if not ref:
@@ -866,7 +927,10 @@ def git_pull(
                 return False, default_err
         if not ref:
             # Couldn't determine a default branch; pull the current one.
-            return _run(["git", "pull"])
+            ok, err = _run(["git", "pull"])
+            if not ok:
+                return False, err
+            return _update_submodules()
 
         # Fetch the pinned ref and hard-reset the working tree to it.
         # TODO: this duplicates the branch-vs-tag checkout in
@@ -894,8 +958,12 @@ def git_pull(
             == 0
         )
         if is_branch:
-            return _run(["git", "checkout", "-fB", ref, f"origin/{ref}"])
-        return _run(["git", "checkout", "-f", "FETCH_HEAD"])
+            ok, err = _run(["git", "checkout", "-fB", ref, f"origin/{ref}"])
+        else:
+            ok, err = _run(["git", "checkout", "-f", "FETCH_HEAD"])
+        if not ok:
+            return False, err
+        return _update_submodules()
     except Exception as e:
         _log(f"git update failed: {e}")
         return False, str(e)
