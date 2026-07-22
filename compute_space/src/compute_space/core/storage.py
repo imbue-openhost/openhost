@@ -1,9 +1,11 @@
-"""Storage usage helpers and optional storage guard.
+"""Storage usage helpers and the storage guard.
 
 Reports disk usage totals and per-app breakdowns for the System page.
-When ``storage_min_free_mb`` is configured (> 0), the storage guard runs as a
-daemon thread that periodically checks disk free space and stops apps when free
-space drops below the threshold.  It can be paused from the System page so a
+The storage guard runs as a daemon thread that periodically checks disk free
+space and stops apps when free space drops below ``storage_min_free_mb``.  It is
+enabled by default with a modest threshold so a runaway disk can't silently take
+an instance fully down; operators change the threshold (or disable it by setting
+0) in the router config and reboot.  It can be paused from the System page so a
 user can start one app (e.g. a file browser) to clean up data before re-enabling
 enforcement.
 """
