@@ -98,6 +98,8 @@ def start_coredns(
     zonefile_path: Path,
     container_gateway_ip: str | None = CONTAINER_GATEWAY_IP,
     coredns_bin: str = "coredns",
+    custom_zone_domain: str | None = None,
+    custom_zonefile_path: Path | None = None,
 ) -> subprocess.Popen[bytes]:
     """Write CoreDNS config + zone file, start CoreDNS, return the process.
 
@@ -107,9 +109,17 @@ def start_coredns(
     reach sibling apps' public HTTPS URLs through Caddy (NAT hairpin), with a
     catch-all forward for everything else.  Pass ``None`` to disable (e.g. in
     environments without the gateway interface).
+
+    When ``custom_zone_domain`` is set (the owner's delegated custom mail domain),
+    an additional authoritative zone is served for it from ``custom_zonefile_path``.
+    The email records for the custom zone are appended later by
+    ``apply_email_records`` (same as the primary zone), once the SES identity's
+    DKIM tokens are known.
     """
 
     bind_serial = int(time.time())
+    if custom_zone_domain and custom_zonefile_path is None:
+        raise ValueError("custom_zonefile_path is required when custom_zone_domain is set")
 
     # Only emit the container-facing view when the gateway IP is actually
     # bindable (the openhost0 dummy interface exists in production but not in
@@ -130,6 +140,8 @@ def start_coredns(
         container_gateway_ip=container_gateway_ip,
         container_zone_file_path=container_zonefile_path,
         upstream_dns=" ".join(_host_upstream_resolvers()),
+        custom_zone_domain=custom_zone_domain,
+        custom_zone_file_path=custom_zonefile_path,
     )
     with open(corefile_path, "w") as f:
         f.write(corefile)
@@ -152,6 +164,18 @@ def start_coredns(
         )
         with open(container_zonefile_path, "w") as f:
             f.write(container_content)
+
+    if custom_zone_domain:
+        assert custom_zonefile_path is not None  # guarded at entry
+        custom_content = _jinja_env.get_template("zonefile_custom").render(
+            custom_zone_domain=custom_zone_domain,
+            zone_domain=zone_domain,
+            public_ip=public_ip,
+            serial=bind_serial,
+        )
+        with open(custom_zonefile_path, "w") as f:
+            f.write(custom_content)
+        logger.info(f"Serving delegated custom mail domain {custom_zone_domain}")
 
     logger.info(f"Starting CoreDNS for {zone_domain}")
     proc = subprocess.Popen(

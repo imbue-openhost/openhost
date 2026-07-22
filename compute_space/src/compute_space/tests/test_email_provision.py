@@ -128,6 +128,81 @@ def test_provision_email_records_writes_zone(tmp_path: Path, monkeypatch: pytest
     assert "tok._domainkey.alice.example.com.   IN CNAME  tok.dkim.amazonses.com." in content
 
 
+def test_provision_email_records_provisions_custom_domain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # With a delegated custom mail domain configured, both the built-in zone and
+    # the custom zone get an SES identity + published records, and the proxy is
+    # asked specifically for the custom domain (request_domain != None).
+    zonefile = tmp_path / "zonefile"
+    custom_zonefile = tmp_path / "zonefile.custom"
+    _write_zonefile(zonefile)
+    custom_zonefile.write_text(
+        "$ORIGIN mail.mydomain.com.\n"
+        "$TTL 60\n"
+        "@   IN SOA  ns.alice.example.com. admin.mail.mydomain.com. (\n"
+        "    100   ; serial\n"
+        "    3600  ; refresh\n"
+        "    600   ; retry\n"
+        "    86400 ; expire\n"
+        "    60    ; minimum\n"
+        ")\n"
+        "@   IN NS   ns.alice.example.com.\n"
+        "@   IN A    203.0.113.10\n"
+    )
+
+    cfg = DefaultConfig(zone_domain="alice.example.com").evolve(
+        email_enabled=True,
+        email_proxy_base_url="https://proxy.test",
+        email_keycloak_issuer_url="https://kc.test/realms/openhost-customers",
+        email_keycloak_client_id="instance-alice",
+        email_keycloak_client_secret="s3cr3t",
+        email_inbound_mx_host="inbound-smtp.us-west-2.amazonaws.com",
+        email_custom_domain="mail.mydomain.com",
+    )
+    monkeypatch.setattr(type(cfg), "coredns_zonefile_path", property(lambda self: zonefile))
+    monkeypatch.setattr(type(cfg), "coredns_custom_zonefile_path", property(lambda self: custom_zonefile))
+
+    requested: list[str | None] = []
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def ensure_identity(self, domain=None):
+            requested.append(domain)
+            target = domain or "alice.example.com"
+            return IdentityResult(
+                domain=target,
+                verified=False,
+                dkim_records=(DkimRecord(name=f"tok._domainkey.{target}", value="tok.dkim.amazonses.com"),),
+            )
+
+    class _FakeTokenProvider:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    monkeypatch.setattr(prov.KeycloakTokenProvider, "create", classmethod(lambda cls, creds: _FakeTokenProvider()))
+    monkeypatch.setattr(prov.EmailProxyClient, "create", classmethod(lambda cls, url, tp: _FakeClient()))
+
+    provision_email_records(cfg)
+
+    # Built-in zone asked for with no explicit domain; custom zone asked for by name.
+    assert requested == [None, "mail.mydomain.com"]
+
+    # Built-in zone got its records.
+    assert "tok._domainkey.alice.example.com.   IN CNAME  tok.dkim.amazonses.com." in zonefile.read_text()
+    # Custom zone got its own records (SPF/DMARC/MX/DKIM under the custom origin).
+    custom_content = custom_zonefile.read_text()
+    assert "v=spf1 include:amazonses.com" in custom_content
+    assert "@   IN MX   10 inbound-smtp.us-west-2.amazonaws.com." in custom_content
+    assert "tok._domainkey.mail.mydomain.com.   IN CNAME  tok.dkim.amazonses.com." in custom_content
+
+
 def test_provision_email_records_noop_when_disabled(tmp_path: Path):
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile)

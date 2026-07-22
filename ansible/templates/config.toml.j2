@@ -52,6 +52,12 @@ email_inbound_mx_host = "{{ email_inbound_mx_host | default('inbound-smtp.us-wes
 {% if email_dmarc_rua is defined %}
 email_dmarc_rua = "{{ email_dmarc_rua }}"
 {% endif %}
+{% if email_custom_domain is defined and email_custom_domain %}
+# Owner's custom mail domain, delegated to this instance's CoreDNS with a single
+# NS record (name -> ns.<zone>).  The instance serves it as a second authoritative
+# zone and publishes the same SPF/DKIM/DMARC/MX records into it.
+email_custom_domain = "{{ email_custom_domain }}"
+{% endif %}
 {% if email_smtp_relay_host is defined %}
 # SMTP smarthost the instance's mailbox server (Stalwart) relays outbound mail
 # through: the openhost-email-proxy's submission listener.  user is the zone,

@@ -6,6 +6,11 @@ When email is enabled, this:
      DKIM CNAME records SES requires,
   3. writes those DKIM records plus SPF/DMARC/MX into the CoreDNS zone.
 
+This runs for the instance's built-in zone, and — when the owner has delegated a
+custom mail domain (email_custom_domain) to this instance with an NS record —
+also for that custom zone, so a single NS record is all it takes to send/receive
+as the custom domain.
+
 Runs after start_coredns on each boot (the zone file is regenerated from
 template there, so the email records must be re-applied every time). Best-effort:
 a proxy or SES hiccup logs and returns rather than blocking router startup —
@@ -13,6 +18,8 @@ mail is not load-bearing for the instance coming up.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from compute_space.config import Config
 from compute_space.core.dns import DkimCname
@@ -25,10 +32,12 @@ from compute_space.core.tls.keycloak import KeycloakTokenProvider
 
 
 def provision_email_records(config: Config) -> None:
-    """Create the SES identity and publish email DNS records for this zone.
+    """Create the SES identity/identities and publish email DNS records.
 
-    No-op when email is disabled. Validated config guarantees the email_* fields
-    are populated when email_enabled is True (Config.__attrs_post_init__).
+    Provisions the instance's built-in zone, and the delegated custom mail domain
+    when one is configured. No-op when email is disabled. Validated config
+    guarantees the email_* fields are populated when email_enabled is True
+    (Config.__attrs_post_init__).
     """
     if not config.email_enabled:
         return
@@ -46,7 +55,25 @@ def provision_email_records(config: Config) -> None:
     try:
         with KeycloakTokenProvider.create(credentials) as token_provider:
             with EmailProxyClient.create(config.email_proxy_base_url, token_provider) as client:
-                result = client.ensure_identity()
+                # Built-in zone: the proxy defaults to the caller's zone when no
+                # domain is passed.
+                _provision_zone(
+                    config,
+                    client,
+                    domain=config.zone_domain_no_port,
+                    zone_file_path=config.coredns_zonefile_path,
+                    request_domain=None,
+                )
+                # Delegated custom mail domain (optional, one NS record).
+                custom_domain = config.email_custom_domain_normalized
+                if custom_domain is not None:
+                    _provision_zone(
+                        config,
+                        client,
+                        domain=custom_domain,
+                        zone_file_path=config.coredns_custom_zonefile_path,
+                        request_domain=custom_domain,
+                    )
     except EmailProxyError as e:
         logger.warning(f"Email provisioning skipped: could not reach email proxy: {e}")
         return
@@ -54,15 +81,31 @@ def provision_email_records(config: Config) -> None:
         logger.warning(f"Email provisioning skipped: {e}")
         return
 
+
+def _provision_zone(
+    config: Config,
+    client: EmailProxyClient,
+    *,
+    domain: str,
+    zone_file_path: Path,
+    request_domain: str | None,
+) -> None:
+    """Ensure the SES identity for ``domain`` and write its records into ``zone_file_path``.
+
+    ``request_domain`` is what we ask the proxy for: None means "the caller's own
+    zone" (the proxy scopes it), while a concrete value is the delegated custom
+    domain the proxy must be authorized to create an identity for.
+    """
+    result = client.ensure_identity(request_domain)
     dkim_cnames = [DkimCname(name=r.name, target=r.value) for r in result.dkim_records]
     apply_email_records(
-        config.coredns_zonefile_path,
-        config.zone_domain_no_port,
-        mail_from_host=config.email_inbound_mx_host,
+        zone_file_path,
+        domain,
+        mail_from_host=config.email_inbound_mx_host,  # type: ignore[arg-type]  # asserted non-None by caller
         dkim_cnames=dkim_cnames,
         dmarc_rua=config.email_dmarc_rua,
     )
     logger.info(
-        f"Published email DNS records for {config.zone_domain_no_port} "
+        f"Published email DNS records for {domain} "
         f"({len(dkim_cnames)} DKIM CNAME(s); identity verified={result.verified})"
     )

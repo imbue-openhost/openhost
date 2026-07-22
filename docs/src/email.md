@@ -188,22 +188,40 @@ ACME-challenge records), they are written as part of the zone's base
 configuration so they survive router restarts, and the ACME-challenge
 cleanup is scoped so that it never removes them.
 
-### Bring-your-own domain (optional NS delegation)
+### Bring-your-own domain (one NS record)
 
 A `<name>.selfhost.imbue.com` address works out of the box because the
 parent zone already delegates each subzone to the instance's CoreDNS.
 
-To use a **custom domain** (e.g. `me@mydomain.com`), the user delegates a
-zone to the instance's CoreDNS with a single **NS record** at their
-registrar — the same delegation model selfhost already uses. Once
-delegated, CoreDNS is authoritative for that zone and OpenHost writes all
-the email records automatically; no manual DKIM/verification steps at the
-registrar.
+To use a **custom domain** (e.g. `me@mydomain.com`), the owner sets
+`email_custom_domain` on the instance and adds a **single NS record** at
+their registrar delegating that (sub)zone to the instance's CoreDNS — the
+same delegation model selfhost already uses. The exact record is surfaced
+by `Config.custom_domain_delegation_record()`:
+
+```
+mail.mydomain.com.   NS   ns.<zone>.
+```
+
+The nameserver host (`ns.<zone>`) already resolves to the instance's public
+IP within its built-in zone, so this one record is all that is required —
+there is nothing else to copy from the registrar side.
+
+Once set, the instance serves the custom domain as a **second authoritative
+zone** (`start_coredns` renders an extra CoreDNS server block + a
+`zonefile.custom`), and `provision_email_records` creates a second SES
+identity for it and publishes the same SPF/DKIM/DMARC/MX records into that
+zone. Sending from the custom domain is authorized end-to-end because (a)
+the NS delegation to *this* instance is proof the owner controls the
+domain, and (b) SES verifies the identity via the published DKIM records
+before it will send. The email proxy is told the instance's authorized
+custom domain by the frontend (never by the instance itself), so the
+multi-tenant From-domain boundary is preserved.
 
 Recommendation: delegate a **subdomain** (e.g. `mail.mydomain.com`)
 rather than the apex, so OpenHost only becomes authoritative for the mail
-subzone and the user keeps their existing website/DNS untouched.
-Delegating the apex is possible for users who want OpenHost to serve all
+subzone and the owner keeps their existing website/DNS untouched.
+Delegating the apex is possible for owners who want OpenHost to serve all
 of their DNS, but it is a bigger commitment and makes the instance's
 CoreDNS load-bearing for the whole domain.
 

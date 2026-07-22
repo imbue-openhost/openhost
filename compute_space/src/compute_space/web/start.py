@@ -129,6 +129,10 @@ def main() -> None:
                 config.coredns_corefile_path,
                 config.coredns_zonefile_path,
                 coredns_bin=_ensure_coredns_binary(config),
+                custom_zone_domain=config.email_custom_domain_normalized,
+                custom_zonefile_path=(
+                    config.coredns_custom_zonefile_path if config.email_custom_domain_normalized else None
+                ),
             )
         )
 

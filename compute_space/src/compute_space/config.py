@@ -1,4 +1,5 @@
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,23 @@ CERT_PROVIDER_CERT_API = "cert_api"
 def _lowercase(s: str) -> str:
     # mypy can't handle str.lower apparently
     return s.lower()
+
+
+# A DNS label: 1-63 chars, alphanumeric plus internal hyphens.  A well-formed
+# domain is one or more such labels joined by single dots (no empty labels, so no
+# leading/trailing/double dots).  Deliberately conservative — used to reject a
+# malformed email_custom_domain at config load.
+_DOMAIN_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+def _is_well_formed_domain(domain: str) -> bool:
+    domain = domain.strip().lower().rstrip(".")
+    if not domain or len(domain) > 253:
+        return False
+    labels = domain.split(".")
+    if len(labels) < 2:
+        return False
+    return all(_DOMAIN_LABEL_RE.match(label) for label in labels)
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -80,6 +98,14 @@ class Config:
     email_inbound_mx_host: str | None
     # Optional DMARC aggregate-report address published in the _dmarc record.
     email_dmarc_rua: str | None
+    # Optional custom mail domain the owner delegated to this instance's CoreDNS
+    # with a single NS record (e.g. "mail.mydomain.com").  When set, the instance
+    # serves it as a second authoritative zone and publishes the same
+    # SPF/DKIM/DMARC/MX records into it, so the owner can send/receive as that
+    # domain in addition to the built-in <zone> subdomain.  The NS delegation to
+    # this instance is itself the proof of control; the SES identity's DKIM
+    # verification is the second proof.
+    email_custom_domain: str | None
     # SMTP smarthost the mailbox app (Stalwart) relays outbound through — the
     # email proxy's submission listener.  user is the zone; password is the
     # per-instance HMAC credential (the only sensitive value).  Surfaced to the
@@ -165,10 +191,37 @@ class Config:
             ):
                 if not getattr(self, name):
                     raise ValueError(f"{name} must be set in config when email_enabled is True")
+        # Validate the custom mail domain shape (if set) regardless of
+        # email_enabled, so a typo surfaces at config load rather than at the
+        # first boot that turns email on.
+        custom = self.email_custom_domain_normalized
+        if custom is not None:
+            if not _is_well_formed_domain(custom):
+                raise ValueError(f"email_custom_domain {self.email_custom_domain!r} is not a well-formed domain")
+            # The custom domain must be distinct from the built-in zone (which is
+            # already served); overlapping would double-declare the same names.
+            zone = self.zone_domain_no_port.strip().lower().rstrip(".")
+            if custom == zone or custom.endswith("." + zone) or zone.endswith("." + custom):
+                raise ValueError(
+                    f"email_custom_domain {custom!r} overlaps the instance zone {zone!r}; "
+                    "the built-in zone already handles that name"
+                )
 
     @property
     def zone_domain_no_port(self) -> str:
         return self.zone_domain.split(":")[0]
+
+    @property
+    def email_custom_domain_normalized(self) -> str | None:
+        """The custom mail domain lowercased and stripped of any trailing dot.
+
+        Returns None when no custom domain is configured (or it is blank after
+        normalization), so callers can treat "unset" and "blank" identically.
+        """
+        if not self.email_custom_domain:
+            return None
+        normalized = self.email_custom_domain.strip().lower().rstrip(".")
+        return normalized or None
 
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
@@ -243,6 +296,29 @@ class Config:
         return self.openhost_data_path / "zonefile"
 
     @property
+    def coredns_custom_zonefile_path(self) -> Path:
+        """Zone file for the delegated custom mail domain (second authoritative zone)."""
+        return self.openhost_data_path / "zonefile.custom"
+
+    def custom_domain_delegation_record(self) -> dict[str, str] | None:
+        """The single NS record the owner must add at their registrar to delegate
+        their custom mail domain to this instance, or None if none is configured.
+
+        Returns a dict describing the record (name / type / value) so a UI or the
+        CLI can show the owner exactly what to paste. The nameserver host lives
+        under the instance's own zone (``ns.<zone>``), which already resolves to
+        the instance's public IP, so this one record is all that is required.
+        """
+        custom = self.email_custom_domain_normalized
+        if custom is None:
+            return None
+        return {
+            "name": custom,
+            "type": "NS",
+            "value": f"ns.{self.zone_domain_no_port}",
+        }
+
+    @property
     def caddyfile_path(self) -> Path:
         return self.openhost_data_path / "Caddyfile"
 
@@ -310,6 +386,7 @@ class DefaultConfig(Config):
     email_keycloak_client_secret: str | None = None
     email_inbound_mx_host: str | None = None
     email_dmarc_rua: str | None = None
+    email_custom_domain: str | None = None
     email_smtp_relay_host: str | None = None
     email_smtp_relay_port: int | None = None
     email_smtp_relay_user: str | None = None

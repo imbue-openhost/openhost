@@ -210,6 +210,66 @@ def test_container_dns_view_skipped_when_gateway_not_bindable(tmp_path: Path, mo
     assert not (tmp_path / "zonefile.container").exists()
 
 
+def test_custom_zone_served_as_second_authoritative_zone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # When a delegated custom mail domain is configured, CoreDNS serves it as a
+    # second authoritative zone with its own zone file (SOA/NS/A -> instance IP).
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    zonefile = tmp_path / "zonefile"
+    custom_zonefile = tmp_path / "zonefile.custom"
+    dns_mod.start_coredns(
+        "app.example.com",
+        "203.0.113.10",
+        corefile,
+        zonefile,
+        container_gateway_ip=None,
+        custom_zone_domain="mail.mydomain.com",
+        custom_zonefile_path=custom_zonefile,
+    )
+
+    cf = corefile.read_text()
+    # Both zones are declared as authoritative server blocks, bound to the same IP.
+    assert "app.example.com:53 {" in cf
+    assert "mail.mydomain.com:53 {" in cf
+
+    assert custom_zonefile.exists()
+    cz = custom_zonefile.read_text()
+    assert "$ORIGIN mail.mydomain.com." in cz
+    # NS host lives under the instance's own zone (so one NS record delegates it).
+    assert "@   IN NS   ns.app.example.com." in cz
+    # A/wildcard point at the instance public IP.
+    assert "@   IN A    203.0.113.10" in cz
+    assert "*   IN A    203.0.113.10" in cz
+
+
+def test_custom_zone_not_served_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    dns_mod.start_coredns(
+        "app.example.com", "203.0.113.10", corefile, tmp_path / "zonefile", container_gateway_ip=None
+    )
+
+    assert "mail.mydomain.com" not in corefile.read_text()
+    assert not (tmp_path / "zonefile.custom").exists()
+
+
+def test_custom_zone_requires_zonefile_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_popen(monkeypatch)
+    with pytest.raises(ValueError, match="custom_zonefile_path is required"):
+        dns_mod.start_coredns(
+            "app.example.com",
+            "203.0.113.10",
+            tmp_path / "Corefile",
+            tmp_path / "zonefile",
+            container_gateway_ip=None,
+            custom_zone_domain="mail.mydomain.com",
+        )
+
+
 def test_host_upstream_resolvers_filters_loopback_and_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     resolv = tmp_path / "resolv.conf"
     resolv.write_text(

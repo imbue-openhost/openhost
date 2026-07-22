@@ -1,0 +1,16 @@
+$ORIGIN {{ custom_zone_domain }}.
+$TTL 60
+@   IN SOA  ns.{{ zone_domain }}. admin.{{ custom_zone_domain }}. (
+    {{ serial }}   ; serial
+    3600  ; refresh
+    600   ; retry
+    86400 ; expire
+    60    ; minimum
+)
+; This instance is the authoritative nameserver for the delegated custom zone.
+; The NS host lives under the instance's primary zone (ns.{{ zone_domain }}),
+; which resolves to the instance's public IP, so the single NS record the owner
+; adds at their registrar is all that is needed for delegation.
+@   IN NS   ns.{{ zone_domain }}.
+@   IN A    {{ public_ip }}
+*   IN A    {{ public_ip }}
