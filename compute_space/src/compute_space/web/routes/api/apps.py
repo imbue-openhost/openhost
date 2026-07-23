@@ -87,9 +87,9 @@ class CloneInfoResponse:
     clone_dir: str
     app_name: str
     validation_error: str | None = None
-    # Storage tiers the app will use + any operator-facing notices (e.g.
-    # "archive data will land on non-durable local disk").  Surfaced on the
-    # install screen alongside permissions.  See archive_backend.storage_summary.
+    # Storage tiers the app will use, including whether its archive data lands
+    # on durable S3 or non-durable local disk.  Surfaced on the install screen
+    # alongside permissions.  See archive_backend.storage_summary.
     storage: archive_backend.StorageSummary | None = None
 
 

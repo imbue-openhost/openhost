@@ -164,7 +164,6 @@ class StorageSummary:
     requires_archive: bool  # hard app_archive requirement
     archive_backend: str  # "local" | "s3" | "disabled"
     archive_is_durable: bool  # True only when backend == "s3"
-    warnings: list[str]
 
 
 def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary:
@@ -174,16 +173,6 @@ def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary
     uses = bool(data.get("app_archive") or data.get("access_all_archive") or data.get("access_all_data"))
     backend = read_state(db).backend
     durable = backend == "s3"
-    warnings: list[str] = []
-    if uses and backend != "s3":
-        warnings.append(
-            "This app stores bulk data on the ARCHIVE tier, which is currently "
-            "backed by LOCAL disk on this instance. Local archive data is kept on "
-            "the instance and included in backups, but it is NOT on durable object "
-            "storage. Configure an S3 archive backend on the Settings page for "
-            "durable, elastic storage; existing local data is migrated into S3 when "
-            "you do."
-        )
     return StorageSummary(
         app_data=bool(data.get("app_data", True)) or bool(data.get("sqlite")) or bool(data.get("access_all_app_data")),
         app_temp_data=bool(data.get("app_temp_data")) or bool(data.get("access_all_app_data")),
@@ -191,7 +180,6 @@ def storage_summary(manifest_raw: str, db: sqlite3.Connection) -> StorageSummary
         requires_archive=requires,
         archive_backend=backend,
         archive_is_durable=durable,
-        warnings=warnings,
     )
 
 

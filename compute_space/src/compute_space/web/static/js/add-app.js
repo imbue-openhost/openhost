@@ -125,11 +125,6 @@ function renderManifest(m, url, storage) {
     } else if (storage.archive_backend === 'local') {
       row('Archive tier', 'Local disk on this instance (not durable object storage yet)');
     }
-    if (Array.isArray(storage.warnings)) {
-      storage.warnings.forEach(function (w) {
-        rows += `<tr><td colspan="2" style="background:#fff3cd;color:#664d03;">\u26a0\ufe0f ${esc(w)}</td></tr>`;
-      });
-    }
   }
 
   if (m.public_paths.length) {
