@@ -25,7 +25,9 @@ function domainCertBadge(d) {
 }
 
 function loadDomains() {
-  fetch(DOMAINS_URL, {credentials: 'same-origin'})
+  // no-store so a reload right after add/remove reflects the current set instead of a
+  // cached list that's missing the just-added domain.
+  fetch(DOMAINS_URL, {credentials: 'same-origin', cache: 'no-store'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var domains = (data && data.domains) || [];
