@@ -434,12 +434,65 @@ def test_format_local_volume_raises_on_failure(cfg):
                     archive_backend.format_local_volume(cfg, "vol")
 
 
-def test_ensure_local_volume_formatted_skips_when_meta_exists(cfg):
+def _write_formatted_meta_db(cfg) -> None:
+    """Create a meta.db that looks like a REAL formatted JuiceFS volume: the
+    ``jfs_setting`` table with a non-empty ``format`` row."""
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    conn = sqlite3.connect(archive_backend.juicefs_meta_db_path(cfg))
+    try:
+        conn.execute("CREATE TABLE jfs_setting (name TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO jfs_setting (name, value) VALUES ('format', '{\"Name\":\"vol\"}')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_local_volume_formatted_false_when_file_missing(cfg):
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+def test_local_volume_formatted_false_for_empty_metadb(cfg):
+    """A meta.db file that exists but was never formatted (e.g. created by a
+    restart-looping mount unit) must be reported as NOT formatted — otherwise
+    format is skipped and the mount fatal-loops forever."""
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    Path(archive_backend.juicefs_meta_db_path(cfg)).write_bytes(b"")
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+def test_local_volume_formatted_false_when_setting_row_absent(cfg):
+    """A meta.db with JuiceFS's tables but no populated ``format`` row is not
+    formatted."""
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    conn = sqlite3.connect(archive_backend.juicefs_meta_db_path(cfg))
+    try:
+        conn.execute("CREATE TABLE jfs_setting (name TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+def test_local_volume_formatted_true_for_real_format_marker(cfg):
+    _write_formatted_meta_db(cfg)
+    assert archive_backend._local_volume_formatted(cfg) is True
+
+
+def test_ensure_local_volume_formatted_skips_when_really_formatted(cfg):
+    _write_formatted_meta_db(cfg)
+    with mock.patch.object(archive_backend, "format_local_volume") as fmt:
+        archive_backend._ensure_local_volume_formatted(cfg, "vol")
+    fmt.assert_not_called()
+
+
+def test_ensure_local_volume_formatted_reformats_unformatted_metadb(cfg):
+    """Self-heal: an existing-but-unformatted meta.db must be (re)formatted, not
+    skipped.  This is the regression guard for the fatal-loop outage."""
     os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
     Path(archive_backend.juicefs_meta_db_path(cfg)).write_bytes(b"")
     with mock.patch.object(archive_backend, "format_local_volume") as fmt:
         archive_backend._ensure_local_volume_formatted(cfg, "vol")
-    fmt.assert_not_called()
+    fmt.assert_called_once()
 
 
 # ── 57-60: quiesce/resume helpers ─────────────────────────────────────────

@@ -511,6 +511,40 @@ def test_attach_on_startup_local_skips_format_when_already_formatted(cfg, db):
     mnt.assert_called_once()
 
 
+def test_attach_on_startup_local_selfheals_unformatted_metadb(cfg, db):
+    """Regression: an existing-but-UNFORMATTED meta.db (created by the
+    restart-looping mount unit before the first format) must NOT be treated as
+    formatted.  On such a legacy-'openhost' zone attach must rename to a unique
+    per-zone volume AND format it, rather than skipping format and leaving the
+    mount to fatal-loop forever.
+
+    Here ``_local_volume_formatted`` is NOT mocked; instead an empty meta.db
+    file is placed on disk so the real (fixed) check runs against it.
+    """
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    # Empty file == created but never formatted (no jfs_setting 'format' row).
+    open(archive_backend.juicefs_meta_db_path(cfg), "wb").close()
+    # Legacy shared default volume name, as a pre-per-zone-name zone would carry.
+    db.execute("UPDATE archive_backend SET juicefs_volume_name='openhost' WHERE id=1")
+    db.commit()
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "format_local_volume") as fmt,
+        mock.patch.object(archive_backend, "mount") as mnt,
+    ):
+        archive_backend.attach_on_startup(cfg, db)
+    # Must (re)format because the DB was never actually formatted.
+    fmt.assert_called_once()
+    mnt.assert_called_once()
+    state = read_state(db)
+    assert state.state_message is None
+    # And the legacy 'openhost' name must have been replaced with a unique one.
+    assert state.juicefs_volume_name != "openhost"
+    assert state.juicefs_volume_name.startswith("oh-")
+    # format was invoked with that unique name.
+    assert fmt.call_args[0][1] == state.juicefs_volume_name
+
+
 def test_attach_on_startup_local_records_error_on_failure(cfg, db):
     """A failure bringing up the local mount is recorded in state_message and
     doesn't crash boot."""

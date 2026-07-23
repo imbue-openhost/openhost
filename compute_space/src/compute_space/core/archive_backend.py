@@ -693,16 +693,49 @@ def attach_on_startup(config: Config, db: sqlite3.Connection) -> None:
 
 
 def _local_volume_formatted(config: Config) -> bool:
-    """True iff a JuiceFS volume already exists in the local meta DB.
+    """True iff a JuiceFS volume has actually been FORMATTED in the local meta DB.
 
-    We treat the presence of the meta.db file (created by ``juicefs format``)
-    as the signal: JuiceFS won't mount a volume that was never formatted.
+    IMPORTANT: this must NOT merely check that the meta.db *file* exists.  When
+    JuiceFS opens a ``sqlite3://`` meta address it creates the sqlite file
+    immediately — including on a ``mount`` attempt that then fatally exits with
+    "database is not formatted" — so a bare file-existence check yields false
+    positives.  A false positive is pathological: ``_ensure_local_volume_formatted``
+    would skip ``format``, and the ``openhost-juicefs`` unit (Restart=always)
+    then fatal-loops forever on the unformatted DB, leaving the archive tier
+    permanently down.  This was observed on an upgraded instance whose JuiceFS
+    unit created an empty meta.db (via failing mounts) before attach_on_startup
+    could format it.
+
+    Instead we look for JuiceFS's own format marker: the ``jfs_setting`` row
+    named ``format`` that ``juicefs format`` writes.  Any error (missing file,
+    missing table, empty row) is treated as NOT formatted, so we fail safe
+    toward (re)formatting rather than toward the fatal-loop.
     """
-    return os.path.isfile(_juicefs_meta_db(config))
+    meta_db = _juicefs_meta_db(config)
+    if not os.path.isfile(meta_db):
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{meta_db}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT value FROM jfs_setting WHERE name = 'format'").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        # No jfs_setting table (file created but never formatted) or the DB is
+        # locked/corrupt: treat as not formatted so we (re)format it.
+        return False
+    return bool(row and row[0])
 
 
 def _ensure_local_volume_formatted(config: Config, juicefs_volume_name: str) -> None:
-    """Format the local file-backed volume if it hasn't been yet.  Idempotent."""
+    """Format the local file-backed volume if it hasn't been yet.  Idempotent.
+
+    Self-healing: because :func:`_local_volume_formatted` checks the real format
+    marker (not just the file), a meta.db that exists but was never successfully
+    formatted (e.g. created by the restart-looping mount unit before the first
+    format) is detected here and formatted.  ``juicefs format`` is idempotent on
+    an already-formatted volume, so re-running it is safe.
+    """
     if _local_volume_formatted(config):
         return
     format_local_volume(config, juicefs_volume_name or DEFAULT_VOLUME_NAME)
