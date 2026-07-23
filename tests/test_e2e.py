@@ -793,7 +793,9 @@ class TestSelfHost:
             'mcarch=$(case "$(uname -m)" in (aarch64|arm64) echo linux-arm64;; *) echo linux-amd64;; esac) && '
             "curl -sL https://dl.min.io/client/mc/release/$mcarch/mc -o /tmp/mc && chmod +x /tmp/mc && "
             f"/tmp/mc alias set e2e {endpoint} '{minio_user}' '{minio_password}' && "
-            f"/tmp/mc mb --ignore-existing e2e/{bucket}"
+            f"/tmp/mc mb --ignore-existing e2e/{bucket} && "
+            # Second bucket for the later s3->s3 migration test (13k).
+            f"/tmp/mc mb --ignore-existing e2e/{bucket}-2"
         )
         result = subprocess.run(
             f"ssh {ssh_opts} host@{public_ip} {shlex.quote(commands)}",
@@ -804,6 +806,7 @@ class TestSelfHost:
         )
         assert result.returncode == 0, f"Bucket creation failed: {result.stderr}"
         TestSelfHost._minio_bucket = bucket
+        TestSelfHost._minio_bucket_2 = f"{bucket}-2"
         TestSelfHost._minio_endpoint = endpoint
 
     # Content written to the LOCAL archive before S3 is configured; it must
@@ -942,6 +945,66 @@ class TestSelfHost:
         # Verify gone
         r = session.get(f"{fb_url}/app_archive/file-browser/e2e-test-file.txt", timeout=10)
         assert r.status_code == 404
+
+    def test_13k_migrate_s3_to_s3(self, session, router_url, domain):
+        """Migrate the archive from the first MinIO bucket to a SECOND bucket
+        (s3->s3), and prove pre-migration data survives byte-identical and the
+        roundtrip file is gone (it was deleted in 13i) — exercising the
+        juicefs sync + config s3->s3 path on a live instance."""
+        minio_user = getattr(TestSelfHost, "_minio_user", None)
+        minio_password = getattr(TestSelfHost, "_minio_password", None)
+        bucket2 = getattr(TestSelfHost, "_minio_bucket_2", None)
+        endpoint = getattr(TestSelfHost, "_minio_endpoint", None)
+        assert all([minio_user, minio_password, bucket2, endpoint])
+
+        # Without confirm_migrate_s3 the API must refuse (409) since we're on s3.
+        r = session.post(
+            f"{router_url}/api/storage/archive_backend/configure",
+            json={
+                "s3_bucket": bucket2,
+                "s3_access_key_id": minio_user,
+                "s3_secret_access_key": minio_password,
+                "s3_endpoint": endpoint,
+                "s3_region": "us-east-1",
+            },
+            timeout=60,
+        )
+        assert r.status_code == 409, f"expected 409 without confirm_migrate_s3, got {r.status_code}: {r.text[:300]}"
+        assert "confirm_migrate_s3" in r.text
+
+        # Now migrate for real.
+        r = session.post(
+            f"{router_url}/api/storage/archive_backend/configure",
+            json={
+                "s3_bucket": bucket2,
+                "s3_access_key_id": minio_user,
+                "s3_secret_access_key": minio_password,
+                "s3_endpoint": endpoint,
+                "s3_region": "us-east-1",
+                "confirm_migrate_s3": True,
+            },
+            timeout=600,
+        )
+        assert r.status_code == 200, f"s3->s3 configure failed: {r.status_code}: {r.text[:500]}"
+        data = r.json()
+        assert data.get("backend") == "s3"
+        assert data.get("s3_bucket") == bucket2, f"backend not on new bucket: {data}"
+
+        # State reflects the new bucket.
+        r = session.get(f"{router_url}/api/storage/archive_backend", timeout=10)
+        assert r.json()["s3_bucket"] == bucket2
+
+        # Pre-migration data (seeded in 13f2, already survived local->s3 in 13h2)
+        # must ALSO survive s3->s3, byte-identical.
+        fb_url = f"https://file-browser.{domain}"
+        r = poll_endpoint(
+            session,
+            f"{fb_url}/{self._PRE_MIGRATION_PATH}",
+            timeout=90,
+            interval=5,
+            fail_msg="pre-migration archive file not readable after s3->s3 migration",
+        )
+        assert r.text == self._PRE_MIGRATION_CONTENT, "pre-migration archive content changed across s3->s3 migration"
 
     def test_13j_cleanup_archive_test(self, session, router_url):
         """Remove MinIO and optionally file-browser."""

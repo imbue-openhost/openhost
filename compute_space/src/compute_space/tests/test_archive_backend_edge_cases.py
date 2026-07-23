@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -434,12 +435,65 @@ def test_format_local_volume_raises_on_failure(cfg):
                     archive_backend.format_local_volume(cfg, "vol")
 
 
-def test_ensure_local_volume_formatted_skips_when_meta_exists(cfg):
+def _write_formatted_meta_db(cfg) -> None:
+    """Create a meta.db that looks like a REAL formatted JuiceFS volume: the
+    ``jfs_setting`` table with a non-empty ``format`` row."""
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    conn = sqlite3.connect(archive_backend.juicefs_meta_db_path(cfg))
+    try:
+        conn.execute("CREATE TABLE jfs_setting (name TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO jfs_setting (name, value) VALUES ('format', '{\"Name\":\"vol\"}')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_local_volume_formatted_false_when_file_missing(cfg):
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+def test_local_volume_formatted_false_for_empty_metadb(cfg):
+    """A meta.db file that exists but was never formatted (e.g. created by a
+    restart-looping mount unit) must be reported as NOT formatted — otherwise
+    format is skipped and the mount fatal-loops forever."""
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    Path(archive_backend.juicefs_meta_db_path(cfg)).write_bytes(b"")
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+def test_local_volume_formatted_false_when_setting_row_absent(cfg):
+    """A meta.db with JuiceFS's tables but no populated ``format`` row is not
+    formatted."""
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    conn = sqlite3.connect(archive_backend.juicefs_meta_db_path(cfg))
+    try:
+        conn.execute("CREATE TABLE jfs_setting (name TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+def test_local_volume_formatted_true_for_real_format_marker(cfg):
+    _write_formatted_meta_db(cfg)
+    assert archive_backend._local_volume_formatted(cfg) is True
+
+
+def test_ensure_local_volume_formatted_skips_when_really_formatted(cfg):
+    _write_formatted_meta_db(cfg)
+    with mock.patch.object(archive_backend, "format_local_volume") as fmt:
+        archive_backend._ensure_local_volume_formatted(cfg, "vol")
+    fmt.assert_not_called()
+
+
+def test_ensure_local_volume_formatted_reformats_unformatted_metadb(cfg):
+    """Self-heal: an existing-but-unformatted meta.db must be (re)formatted, not
+    skipped.  This is the regression guard for the fatal-loop outage."""
     os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
     Path(archive_backend.juicefs_meta_db_path(cfg)).write_bytes(b"")
     with mock.patch.object(archive_backend, "format_local_volume") as fmt:
         archive_backend._ensure_local_volume_formatted(cfg, "vol")
-    fmt.assert_not_called()
+    fmt.assert_called_once()
 
 
 # ── 57-60: quiesce/resume helpers ─────────────────────────────────────────
@@ -700,3 +754,111 @@ def test_s3_to_s3_no_source_creds_refused(db, cfg):
             s3_access_key_id="newak",
             s3_secret_access_key="newsk",
         )
+
+
+# ── Real-JuiceFS integration: the disabled->local upgrade format check ──────
+#
+# These use an ACTUAL juicefs binary (not mocks) to reproduce the exact
+# artifacts that caused the production fatal-loop: a meta.db file that a FAILED
+# `juicefs mount` created before the volume was ever formatted.  They are the
+# regression guard for the most common upgrade path (disabled -> local).  They
+# skip automatically when no juicefs binary is available (e.g. offline CI
+# without the pinned-binary cache); the container/e2e CI jobs run them.
+
+
+def _find_juicefs_binary() -> str | None:
+    """Locate a usable juicefs binary for the integration tests.
+
+    Prefers an explicit OPENHOST_TEST_JUICEFS env var, then PATH, then the
+    pinned-binary install location if it has already been fetched.
+    """
+    env = os.environ.get("OPENHOST_TEST_JUICEFS")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    on_path = shutil.which("juicefs")
+    if on_path:
+        return on_path
+    return None
+
+
+_JUICEFS_BIN = _find_juicefs_binary()
+requires_juicefs = pytest.mark.skipif(
+    _JUICEFS_BIN is None,
+    reason="no juicefs binary available (set OPENHOST_TEST_JUICEFS or put juicefs on PATH)",
+)
+
+
+def _install_juicefs_into(cfg) -> None:
+    """Place the located juicefs binary where the code expects it, so the real
+    format/status helpers run against it."""
+
+    dest = archive_backend._juicefs_binary(cfg)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copy2(_JUICEFS_BIN, dest)
+    os.chmod(dest, 0o755)
+
+
+@requires_juicefs
+def test_real_juicefs_format_marks_volume_formatted(cfg):
+    """After a REAL `juicefs format`, _local_volume_formatted must be True."""
+    _install_juicefs_into(cfg)
+    assert archive_backend._local_volume_formatted(cfg) is False
+    archive_backend.format_local_volume(cfg, "oh-testvol")
+    assert archive_backend._local_volume_formatted(cfg) is True
+
+
+@requires_juicefs
+def test_real_juicefs_failed_mount_metadb_is_not_formatted(cfg):
+    """THE REGRESSION: a meta.db created by a FAILED mount-before-format must be
+    reported as NOT formatted (the old file-existence check reported True here,
+    which is what took the archive tier down in a permanent fatal-loop)."""
+
+    _install_juicefs_into(cfg)
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    os.makedirs(archive_backend.juicefs_mount_dir(cfg), exist_ok=True)
+    dsn = f"sqlite3://{archive_backend.juicefs_meta_db_path(cfg)}"
+    # Mount against an UNFORMATTED DSN: fatally exits but creates the sqlite file.
+    subprocess.run(
+        [
+            archive_backend._juicefs_binary(cfg),
+            "--no-agent",
+            "mount",
+            "--no-usage-report",
+            dsn,
+            archive_backend.juicefs_mount_dir(cfg),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    # The file now exists (the bug trigger)...
+    assert os.path.isfile(archive_backend.juicefs_meta_db_path(cfg))
+    # ...but the FIXED check must still say NOT formatted.
+    assert archive_backend._local_volume_formatted(cfg) is False
+
+
+@requires_juicefs
+def test_real_juicefs_ensure_formatted_selfheals_poisoned_metadb(cfg):
+    """End-to-end self-heal with a real binary: given a poisoned (failed-mount)
+    meta.db, _ensure_local_volume_formatted must actually format it so the
+    volume becomes usable."""
+
+    _install_juicefs_into(cfg)
+    os.makedirs(archive_backend.juicefs_state_dir(cfg), exist_ok=True)
+    os.makedirs(archive_backend.juicefs_mount_dir(cfg), exist_ok=True)
+    dsn = f"sqlite3://{archive_backend.juicefs_meta_db_path(cfg)}"
+    subprocess.run(
+        [
+            archive_backend._juicefs_binary(cfg),
+            "--no-agent",
+            "mount",
+            "--no-usage-report",
+            dsn,
+            archive_backend.juicefs_mount_dir(cfg),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    assert archive_backend._local_volume_formatted(cfg) is False
+    # Self-heal: this must format the poisoned DB rather than skip it.
+    archive_backend._ensure_local_volume_formatted(cfg, "oh-selfheal-vol")
+    assert archive_backend._local_volume_formatted(cfg) is True
