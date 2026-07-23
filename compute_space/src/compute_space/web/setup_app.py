@@ -34,6 +34,7 @@ from compute_space.core.updates import is_shutdown_pending
 from compute_space.core.updates import trigger_restart
 from compute_space.db import get_db
 from compute_space.web.auth.cookies import build_session_cookie
+from compute_space.web.helpers.zone import zone_for_request
 
 # Set when setup_post succeeds. /health flips to 503 immediately so clients
 # polling for the post-restart main app don't see a stale 200 from the setup
@@ -144,7 +145,7 @@ async def setup_post(request: Request[Any, Any, Any], config: Config) -> Respons
         "<p>Setup complete. Restarting…</p></body></html>"
     )
     response = Response(content=body, status_code=200, media_type=MediaType.HTML)
-    response.set_cookie(build_session_cookie(session_token, cookie_domain=config.zone_domain_no_port))
+    response.set_cookie(build_session_cookie(session_token, zone_for_request(request)))
 
     global _setup_completed  # noqa: PLW0603
     _setup_completed = True

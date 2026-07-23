@@ -3,6 +3,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from jinja2 import pass_context
+from jinja2.runtime import Context
 from litestar import HttpMethod
 from litestar import Litestar
 from litestar import MediaType
@@ -24,6 +26,8 @@ from compute_space.config import provide_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.identity import load_identity_keys
+from compute_space.core.domain_store import rebuild_active_domains
+from compute_space.core.domain_store import set_base_domains
 from compute_space.core.image_pruner import start_image_pruner
 from compute_space.core.logging import logger
 from compute_space.core.startup import check_app_status
@@ -33,9 +37,11 @@ from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import get_db
 from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
+from compute_space.web.helpers.zone import zone_for_request
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
 from compute_space.web.routes.api.apps import api_apps_routes
 from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
+from compute_space.web.routes.api.domains import api_domains_routes
 from compute_space.web.routes.api.identity import identity_routes
 from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
 from compute_space.web.routes.api.services_v2 import api_services_v2_routes
@@ -73,9 +79,19 @@ def _template_globals(config: Config, static_dir: Path) -> dict[str, Any]:
     zone_domain = config.zone_domain
     zone_name = zone_domain.split(".")[0] if zone_domain else None
 
-    def app_url(app_name: str) -> str:
-        proto = "https" if config.tls_enabled else "http"
-        return f"{proto}://{app_name}.{zone_domain}/"
+    @pass_context
+    def app_url(context: Context, app_name: str) -> str:
+        """Absolute URL to an app, on the domain the *current request* arrived on.
+
+        Building on the request's domain (rather than the single canonical one) keeps
+        dashboard app links on the domain the operator is using — click an app from the
+        ``.local`` dashboard and you land on ``<app>.myhost.local`` over http; from the
+        public dashboard you land on the https public URL.  Falls back to the primary
+        domain when there's no request in context (e.g. a non-request render).
+        """
+        request = context.get("request")
+        zone = zone_for_request(request) if request is not None else config.primary_domain
+        return f"{zone.scheme}://{app_name}.{zone.name}/"
 
     def owner_name() -> str | None:
         """The owner's configured username, or None if unset / pre-setup.
@@ -120,6 +136,11 @@ def _full_app_bootstrap(config: Config) -> None:
     start_storage_guard(config)
     start_image_pruner(config)
     retry_pending_default_apps(config)
+    # Fold any runtime-added domains (from runtime_domains.json) into the active config, so a
+    # domain added via /api/domains in a previous run is served again after restart.  The
+    # config-file/synthesized set is the immutable "base"; runtime records layer on top.
+    set_base_domains(config.all_domains)
+    rebuild_active_domains(config)
 
 
 @route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
@@ -161,13 +182,14 @@ def _reject_app_subdomain_requests(request: Request[Any, Any, Any]) -> Response[
 
     App-subdomain traffic is supposed to be intercepted by SubdomainProxyMiddleware
     (outer ASGI) before Litestar ever sees it.  If a request reaches Litestar with
-    a ``*.zone_domain`` Host — e.g. the middleware was bypassed in a test or a
-    deployment variant — refuse it rather than accidentally serve a router route
-    (like /health) under the app's hostname.
+    an app-subdomain Host of any configured domain — e.g. the middleware was
+    bypassed in a test or a deployment variant — refuse it rather than accidentally
+    serve a router route (like /health) under the app's hostname.
     """
-    host = request.url.netloc.split(":", 1)[0]
-    zone = get_config().zone_domain
-    if zone and host.endswith("." + zone):
+    netloc = request.url.netloc
+    host = netloc.split(":", 1)[0].lower()
+    matched = get_config().match_domain(netloc)
+    if matched is not None and host != matched.name_no_port:
         return Response(content=None, status_code=404)
     return None
 
@@ -202,6 +224,7 @@ def create_app(config: Config) -> ASGIApp:
             static_router,
             api_apps_routes,
             api_archive_backend_routes,
+            api_domains_routes,
             api_permissions_v2_routes,
             api_services_v2_routes,
             api_settings_routes,

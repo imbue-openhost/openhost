@@ -17,8 +17,15 @@ from compute_space.config import load_config
 from compute_space.config import set_active_config
 from compute_space.core.auth.keys import load_keys
 from compute_space.core.caddy import CaddyProcess
+from compute_space.core.caddy import config_cert_resolver
+from compute_space.core.caddy import set_active_caddy
 from compute_space.core.caddy import start_caddy
+from compute_space.core.dns import CoreDnsProcess
+from compute_space.core.dns import public_dns_zones
+from compute_space.core.dns import set_active_coredns
 from compute_space.core.dns import start_coredns
+from compute_space.core.domain_store import rebuild_active_domains
+from compute_space.core.domain_store import set_base_domains
 from compute_space.core.logging import logger
 from compute_space.core.logging import setup_file_logging
 from compute_space.core.pinned_binary import get_pinned_binary
@@ -116,39 +123,58 @@ def main() -> None:
     config = load_config()
     config.make_all_dirs()
     _bootstrap(config)
+    # Fold runtime-added domains (from /api/domains, persisted in runtime_domains.json) into the
+    # domain set *before* starting CoreDNS/Caddy, so a domain added at runtime is served again
+    # (DNS zone + Caddy site) after a restart — not merely present in the in-memory routing config.
+    # create_app re-folds later; the fold is idempotent (deduped by name).
+    set_base_domains(config.all_domains)
+    config = rebuild_active_domains(config)
     children: list[subprocess.Popen[bytes]] = []
 
+    coredns: CoreDnsProcess | None = None
     if config.coredns_enabled:
         if not config.public_ip:
             raise RuntimeError("Public IP must be set in config to use CoreDNS")
-        children.append(
-            start_coredns(
-                config.zone_domain,
-                config.public_ip,
-                config.coredns_corefile_path,
-                config.coredns_zonefile_path,
-                coredns_bin=_ensure_coredns_binary(config),
-            )
+        # Authoritative for every public (non-mDNS) domain the instance answers on, so a
+        # secondary domain delegated to this box resolves too — not just the primary.
+        coredns = start_coredns(
+            public_dns_zones(config),
+            config.public_ip,
+            config.coredns_corefile_path,
+            coredns_bin=_ensure_coredns_binary(config),
         )
+        # Register so /api/domains can regenerate zones + restart CoreDNS when a domain is added.
+        set_active_coredns(coredns)
 
     if config.tls_enabled:
         _ensure_tls_cert(config)
 
-    # Caddy reverse proxy. mainly for TLS termination, but also some other features
+    # Caddy reverse proxy. mainly for TLS termination, but also some other features.
+    # The acquired file cert covers the primary domain (a wildcard for zone_domain);
+    # any additional TLS domains fall back to Caddy's internal CA (see generate_caddyfile).
+    needs_caddy_for_tls = any(d.tls for d in config.all_domains)
     caddy: CaddyProcess | None = None
     if config.start_caddy:
         caddy = start_caddy(
-            config.caddyfile_path, config.tls_enabled, config.tls_cert_path, config.tls_key_path, config.port
+            config.caddyfile_path,
+            config.all_domains,
+            config.port,
+            cert_for=config_cert_resolver(config),
         )
+        # Register so /api/domains can regenerate + restart Caddy when a domain is added/removed.
+        set_active_caddy(caddy)
         if config.tls_enabled and config.coredns_enabled and config.acquire_tls_cert_if_missing:
-            start_renewal_thread(config, caddy.restart)
+            start_renewal_thread(caddy.restart)
     else:
-        if config.tls_enabled:
-            raise RuntimeError("TLS is enabled but start_caddy is False. Caddy is required for TLS termination.")
+        if needs_caddy_for_tls:
+            raise RuntimeError(
+                "A TLS domain is configured but start_caddy is False. Caddy is required for TLS termination."
+            )
 
     def _all_children() -> list[subprocess.Popen[bytes]]:
-        # Read caddy.proc at shutdown time: restart() may have replaced it.
-        return children + ([caddy.proc] if caddy is not None else [])
+        # Read caddy.proc / coredns.proc at shutdown time: restart() may have replaced them.
+        live = [p.proc for p in (caddy, coredns) if p is not None]
+        return children + live
 
     hypercorn_config = hypercorn.config.Config()
     # Bind the primary address (127.0.0.1 in production) plus the container

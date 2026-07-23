@@ -22,6 +22,7 @@ from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.auth.auth import verify_owner_auth
 from compute_space.web.helpers.proxy import proxy_http_request
 from compute_space.web.helpers.proxy import proxy_websocket_request
+from compute_space.web.helpers.zone import ZONE_SCOPE_KEY
 
 IS_OWNER_HEADER = ("X-OpenHost-Is-Owner", "true")
 
@@ -82,13 +83,13 @@ async def _send_internal_error(scope: Scope, send: Send) -> None:
 
 
 def _looks_like_app_subdomain(netloc: str) -> bool:
-    """True iff ``netloc`` looks like ``<something>.<zone_domain>`` (i.e. the
-    request hit what looks like an app subdomain of the configured zone).
-    The router itself answers on ``zone_domain`` exactly, not on a subdomain.
+    """True iff ``netloc`` looks like ``<something>.<domain>`` for any configured
+    domain (i.e. the request hit what looks like an app subdomain).  The router
+    itself answers on a domain exactly, not on a subdomain of it.
     """
-    host = netloc.split(":", 1)[0]
-    zone = get_config().zone_domain
-    return bool(zone) and host.endswith("." + zone)
+    host = netloc.split(":", 1)[0].lower()
+    matched = get_config().match_domain(netloc)
+    return matched is not None and host != matched.name_no_port
 
 
 class SubdomainProxyMiddleware:
@@ -134,6 +135,14 @@ class SubdomainProxyMiddleware:
             await _send_bad_request(scope, send)
             return
 
+        # Resolve which configured Domain this request arrived on, and stash it in
+        # the scope so downstream Litestar handlers (login redirect, cookies,
+        # absolute-URL building) can stay on the arriving domain instead of the
+        # single canonical one.  None for unrelated hosts.
+        config = get_config()
+        zone = config.match_domain(netloc)
+        scope[ZONE_SCOPE_KEY] = zone  # type: ignore[literal-required]
+
         app = get_app_from_hostname(netloc)
         if not app:
             if _looks_like_app_subdomain(netloc):
@@ -161,9 +170,15 @@ class SubdomainProxyMiddleware:
         #  - client IP: connection.client is always Caddy; recover the real one
         #    from the X-Forwarded-For Caddy set (see _resolve_forwarded_for).
         # X-Forwarded-Host preserves the original Host so apps that build absolute URLs don't use the proxy's internal hostname.
+        # Proto follows the domain the request arrived on (https for a TLS domain,
+        # http for an mDNS `.local` domain), so an app served on both sees the
+        # right scheme per request rather than one global value.  `app` truthy
+        # implies `zone` is set (get_app_from_hostname only matches a configured
+        # domain); fall back to the primary domain defensively.
+        proto = zone.scheme if zone is not None else config.primary_domain.scheme
         extra_headers = [
             ("X-Forwarded-Host", netloc),
-            ("X-Forwarded-Proto", "https" if get_config().tls_enabled else "http"),
+            ("X-Forwarded-Proto", proto),
         ]
         if forwarded_for := _resolve_forwarded_for(connection):
             extra_headers.append(("X-Forwarded-For", forwarded_for))
