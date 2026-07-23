@@ -43,6 +43,7 @@ from compute_space.web.routes.api.settings import api_settings_routes
 from compute_space.web.routes.api.system import system_routes
 from compute_space.web.routes.docs import docs_routes
 from compute_space.web.routes.pages.apps import pages_apps_routes
+from compute_space.web.routes.pages.federation import pages_federation_routes
 from compute_space.web.routes.pages.login import pages_login_routes
 from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_routes
 from compute_space.web.routes.pages.settings import pages_settings_routes
@@ -209,6 +210,7 @@ def create_app(config: Config) -> ASGIApp:
             identity_routes,
             docs_routes,
             pages_apps_routes,
+            pages_federation_routes,
             pages_login_routes,
             pages_permissions_v2_routes,
             pages_settings_routes,
