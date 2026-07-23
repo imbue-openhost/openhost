@@ -1,4 +1,5 @@
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,40 @@ CERT_PROVIDER_CERT_API = "cert_api"
 def _lowercase(s: str) -> str:
     # mypy can't handle str.lower apparently
     return s.lower()
+
+
+# A DNS label: 1-63 chars, alphanumeric plus internal hyphens.  A well-formed
+# domain is one or more such labels joined by single dots (no empty labels, so no
+# leading/trailing/double dots).  Deliberately conservative — used to reject a
+# malformed email_custom_domain at config load.
+_DOMAIN_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+def _is_well_formed_domain(domain: str) -> bool:
+    domain = domain.strip().lower().rstrip(".")
+    if not domain or len(domain) > 253:
+        return False
+    labels = domain.split(".")
+    if len(labels) < 2:
+        return False
+    return all(_DOMAIN_LABEL_RE.match(label) for label in labels)
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class DelegationRecord:
+    """A single DNS record the owner must add at their registrar.
+
+    Used to tell the owner exactly what to paste to delegate a custom mail domain
+    to this instance (see Config.custom_domain_delegation_record).
+    """
+
+    name: str
+    record_type: str
+    value: str
+
+    def as_display_line(self) -> str:
+        """A registrar-style one-liner, e.g. 'mail.mydomain.com  NS  ns.<zone>'."""
+        return f"{self.name}   {self.record_type}   {self.value}"
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -56,6 +91,46 @@ class Config:
     cert_api_keycloak_client_id: str | None
     #   per-instance client secret (the only sensitive value — treat like the ACME account key)
     cert_api_keycloak_client_secret: str | None
+
+    ## Email
+    # When True, the instance publishes email DNS records (SPF/DKIM/DMARC/MX) into
+    # its CoreDNS zone and can relay outbound mail through the email proxy.  All
+    # the email_* fields below must be set when this is True (validated in
+    # __attrs_post_init__).  Provisioning injects these per instance, mirroring
+    # the cert_api Keycloak fields.
+    email_enabled: bool
+    # Base URL of the email API (the imbue-hosted-spaces frontend, the
+    # authenticated public door), e.g. "https://openhost.imbue.com".  The instance
+    # calls the frontend's /api/email/* endpoints; the frontend authenticates this
+    # instance and proxies to the private email backend over 6PN.
+    email_proxy_base_url: str | None
+    # Keycloak client-credentials for the email proxy.  Reuses the same per-instance
+    # confidential client as cert_api when present, but kept as distinct fields so
+    # email can be enabled independently.  Issuer is the openhost-customers realm.
+    email_keycloak_issuer_url: str | None
+    email_keycloak_client_id: str | None
+    email_keycloak_client_secret: str | None
+    # The SES-managed inbound MX host for the region, e.g.
+    # "inbound-smtp.us-west-2.amazonaws.com".
+    email_inbound_mx_host: str | None
+    # Optional DMARC aggregate-report address published in the _dmarc record.
+    email_dmarc_rua: str | None
+    # Optional custom mail domain the owner delegated to this instance's CoreDNS
+    # with a single NS record (e.g. "mail.mydomain.com").  When set, the instance
+    # serves it as a second authoritative zone and publishes the same
+    # SPF/DKIM/DMARC/MX records into it, so the owner can send/receive as that
+    # domain in addition to the built-in <zone> subdomain.  The NS delegation to
+    # this instance is itself the proof of control; the SES identity's DKIM
+    # verification is the second proof.
+    email_custom_domain: str | None
+    # App name(s) allowed to fetch the SMTP relay config from
+    # /api/email/relay-config.  The relay host/port + per-instance credential are
+    # NOT stored on the instance: the router fetches them at runtime from the
+    # frontend (which has the backend derive HMAC(RELAY_SECRET, zone)), so nothing
+    # email-specific is baked into instance config and rotating RELAY_SECRET needs
+    # no re-provisioning.  The endpoint is scoped to these mailbox app names so the
+    # credential only reaches the mailbox app.
+    email_mailbox_app_names: list[str]
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
     coredns_enabled: bool
@@ -121,10 +196,49 @@ class Config:
             ):
                 if not getattr(self, name):
                     raise ValueError(f"{name} must be set in config to use the cert_api provider")
+        if self.email_enabled:
+            # Enabling email requires the proxy URL, the per-instance Keycloak
+            # client-credentials, and the inbound MX host; none have a usable default.
+            for name in (
+                "email_proxy_base_url",
+                "email_keycloak_issuer_url",
+                "email_keycloak_client_id",
+                "email_keycloak_client_secret",
+                "email_inbound_mx_host",
+            ):
+                if not getattr(self, name):
+                    raise ValueError(f"{name} must be set in config when email_enabled is True")
+        # Validate the custom mail domain shape (if set) regardless of
+        # email_enabled, so a typo surfaces at config load rather than at the
+        # first boot that turns email on.
+        custom = self.email_custom_domain_normalized
+        if custom is not None:
+            if not _is_well_formed_domain(custom):
+                raise ValueError(f"email_custom_domain {self.email_custom_domain!r} is not a well-formed domain")
+            # The custom domain must be distinct from the built-in zone (which is
+            # already served); overlapping would double-declare the same names.
+            zone = self.zone_domain_no_port.strip().lower().rstrip(".")
+            if custom == zone or custom.endswith("." + zone) or zone.endswith("." + custom):
+                raise ValueError(
+                    f"email_custom_domain {custom!r} overlaps the instance zone {zone!r}; "
+                    "the built-in zone already handles that name"
+                )
 
     @property
     def zone_domain_no_port(self) -> str:
         return self.zone_domain.split(":")[0]
+
+    @property
+    def email_custom_domain_normalized(self) -> str | None:
+        """The custom mail domain lowercased and stripped of any trailing dot.
+
+        Returns None when no custom domain is configured (or it is blank after
+        normalization), so callers can treat "unset" and "blank" identically.
+        """
+        if not self.email_custom_domain:
+            return None
+        normalized = self.email_custom_domain.strip().lower().rstrip(".")
+        return normalized or None
 
     def evolve(self, **kwargs: Any) -> Self:
         return attr.evolve(self, **kwargs)
@@ -214,6 +328,28 @@ class Config:
         return self.openhost_data_path / "zonefile"
 
     @property
+    def coredns_custom_zonefile_path(self) -> Path:
+        """Zone file for the delegated custom mail domain (second authoritative zone)."""
+        return self.openhost_data_path / "zonefile.custom"
+
+    def custom_domain_delegation_record(self) -> DelegationRecord | None:
+        """The single NS record the owner must add at their registrar to delegate
+        their custom mail domain to this instance, or None if none is configured.
+
+        The nameserver host lives under the instance's own zone (``ns.<zone>``),
+        which already resolves to the instance's public IP, so this one record is
+        all that is required.
+        """
+        custom = self.email_custom_domain_normalized
+        if custom is None:
+            return None
+        return DelegationRecord(
+            name=custom,
+            record_type="NS",
+            value=f"ns.{self.zone_domain_no_port}",
+        )
+
+    @property
     def caddyfile_path(self) -> Path:
         return self.openhost_data_path / "Caddyfile"
 
@@ -276,6 +412,17 @@ class DefaultConfig(Config):
     cert_api_keycloak_issuer_url: str | None = None
     cert_api_keycloak_client_id: str | None = None
     cert_api_keycloak_client_secret: str | None = None
+
+    # Email — disabled by default. All fields injected by provisioning when enabled.
+    email_enabled: bool = False
+    email_proxy_base_url: str | None = None
+    email_keycloak_issuer_url: str | None = None
+    email_keycloak_client_id: str | None = None
+    email_keycloak_client_secret: str | None = None
+    email_inbound_mx_host: str | None = None
+    email_dmarc_rua: str | None = None
+    email_custom_domain: str | None = None
+    email_mailbox_app_names: list[str] = attr.Factory(lambda: ["stalwart-email-server"])
 
     start_caddy: bool = True
 

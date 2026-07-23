@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 import compute_space.core.dns as dns_mod
+from compute_space.core.dns import DkimCname
 from compute_space.core.dns import TxtRecord
 from compute_space.core.dns import append_txt_records
+from compute_space.core.dns import apply_email_records
 from compute_space.core.dns import clear_txt
 
 
@@ -95,7 +97,7 @@ def test_append_txt_records_writes_absolute_fqdn_names_verbatim(tmp_path: Path) 
     assert "app.example.com.app.example.com" not in content
 
 
-def test_clear_txt_removes_records(tmp_path: Path) -> None:
+def test_clear_txt_removes_acme_records(tmp_path: Path) -> None:
     zonefile = tmp_path / "zonefile"
     _write_zonefile(zonefile)
     append_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge.app.example.com.", record_value="v")])
@@ -103,6 +105,54 @@ def test_clear_txt_removes_records(tmp_path: Path) -> None:
     clear_txt(zonefile)
 
     assert "IN TXT" not in zonefile.read_text()
+
+
+def test_clear_txt_preserves_email_txt_records(tmp_path: Path) -> None:
+    # clear_txt runs on every cert renewal; it must remove ACME challenges but
+    # NOT the persistent SPF/DMARC TXT records, or mail would break on renewal.
+    zonefile = tmp_path / "zonefile"
+    _write_zonefile(zonefile)
+    apply_email_records(
+        zonefile,
+        "app.example.com",
+        mail_from_host="inbound-smtp.us-west-2.amazonaws.com",
+        dkim_cnames=[DkimCname(name="tok1._domainkey.app.example.com", target="tok1.dkim.amazonses.com")],
+        dmarc_rua="dmarc@app.example.com",
+    )
+    append_txt_records(zonefile, [TxtRecord(record_name="_acme-challenge", record_value="challenge")])
+
+    clear_txt(zonefile)
+
+    content = zonefile.read_text()
+    # ACME challenge gone...
+    assert "challenge" not in content
+    # ...but SPF, DMARC, MX, DKIM survive.
+    assert "v=spf1 include:amazonses.com" in content
+    assert "v=DMARC1" in content
+    assert "IN MX" in content
+    assert "tok1._domainkey.app.example.com.   IN CNAME  tok1.dkim.amazonses.com." in content
+
+
+def test_apply_email_records_bumps_serial_and_is_appendable(tmp_path: Path) -> None:
+    zonefile = tmp_path / "zonefile"
+    _write_zonefile(zonefile, serial=100)
+    apply_email_records(
+        zonefile,
+        "app.example.com",
+        mail_from_host="inbound-smtp.us-west-2.amazonaws.com",
+        dkim_cnames=[
+            DkimCname(name="a._domainkey.app.example.com", target="a.dkim.amazonses.com"),
+            DkimCname(name="b._domainkey.app.example.com", target="b.dkim.amazonses.com"),
+        ],
+    )
+    content = zonefile.read_text()
+    assert "101   ; serial" in content
+    assert '@   IN TXT  "v=spf1 include:amazonses.com ~all"' in content
+    assert "@   IN MX   10 inbound-smtp.us-west-2.amazonaws.com." in content
+    assert "a._domainkey.app.example.com.   IN CNAME  a.dkim.amazonses.com." in content
+    assert "b._domainkey.app.example.com.   IN CNAME  b.dkim.amazonses.com." in content
+    # Default DMARC has no rua when none provided.
+    assert '_dmarc   IN TXT  "v=DMARC1; p=quarantine"' in content
 
 
 class _FakeProc:
@@ -158,6 +208,66 @@ def test_container_dns_view_skipped_when_gateway_not_bindable(tmp_path: Path, mo
     assert "forward" not in cf
     # No container zonefile written.
     assert not (tmp_path / "zonefile.container").exists()
+
+
+def test_custom_zone_served_as_second_authoritative_zone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # When a delegated custom mail domain is configured, CoreDNS serves it as a
+    # second authoritative zone with its own zone file (SOA/NS/A -> instance IP).
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    zonefile = tmp_path / "zonefile"
+    custom_zonefile = tmp_path / "zonefile.custom"
+    dns_mod.start_coredns(
+        "app.example.com",
+        "203.0.113.10",
+        corefile,
+        zonefile,
+        container_gateway_ip=None,
+        custom_zone_domain="mail.mydomain.com",
+        custom_zonefile_path=custom_zonefile,
+    )
+
+    cf = corefile.read_text()
+    # Both zones are declared as authoritative server blocks, bound to the same IP.
+    assert "app.example.com:53 {" in cf
+    assert "mail.mydomain.com:53 {" in cf
+
+    assert custom_zonefile.exists()
+    cz = custom_zonefile.read_text()
+    assert "$ORIGIN mail.mydomain.com." in cz
+    # NS host lives under the instance's own zone (so one NS record delegates it).
+    assert "@   IN NS   ns.app.example.com." in cz
+    # A/wildcard point at the instance public IP.
+    assert "@   IN A    203.0.113.10" in cz
+    assert "*   IN A    203.0.113.10" in cz
+
+
+def test_custom_zone_not_served_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dns_mod, "_coredns_bind_ip", lambda ip: "10.0.0.5")
+    _stub_popen(monkeypatch)
+
+    corefile = tmp_path / "Corefile"
+    dns_mod.start_coredns(
+        "app.example.com", "203.0.113.10", corefile, tmp_path / "zonefile", container_gateway_ip=None
+    )
+
+    assert "mail.mydomain.com" not in corefile.read_text()
+    assert not (tmp_path / "zonefile.custom").exists()
+
+
+def test_custom_zone_requires_zonefile_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_popen(monkeypatch)
+    with pytest.raises(ValueError, match="custom_zonefile_path is required"):
+        dns_mod.start_coredns(
+            "app.example.com",
+            "203.0.113.10",
+            tmp_path / "Corefile",
+            tmp_path / "zonefile",
+            container_gateway_ip=None,
+            custom_zone_domain="mail.mydomain.com",
+        )
 
 
 def test_host_upstream_resolvers_filters_loopback_and_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

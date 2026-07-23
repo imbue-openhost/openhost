@@ -6,6 +6,19 @@
     log
     errors
 }
+{% if custom_zone_domain %}
+# Delegated custom mail domain (e.g. mail.mydomain.com).  Served as a second
+# authoritative zone so the owner can use their own domain for email after
+# delegating it to this instance's CoreDNS with a single NS record.
+{{ custom_zone_domain }}:53 {
+    bind {{ bind_ip }}
+    file {{ custom_zone_file_path }} {
+        reload 2s
+    }
+    log
+    errors
+}
+{% endif %}
 {% if container_gateway_ip %}
 # Container-facing view.  Pasta app containers point their resolver here (see
 # core/containers.py --dns).  It answers the zone wildcard with the gateway IP
