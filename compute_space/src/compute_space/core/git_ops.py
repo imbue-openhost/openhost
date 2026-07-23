@@ -138,6 +138,17 @@ def get_head_sha(repo_path: Path) -> str:
 
 
 @async_wrap
+def reset_hard(repo_path: Path, sha: str) -> None:
+    """Hard-reset the working tree back to ``sha``.
+
+    Used to undo a git pull whose resulting update was refused (e.g. the owner
+    has not approved new permissions the pulled manifest declares), so the
+    on-disk repo keeps matching the version the app is actually running.
+    """
+    git.Repo(repo_path).git.reset("--hard", sha)
+
+
+@async_wrap
 def get_branch_name(repo_path: Path) -> str | None:
     """Return the current branch name, or None if HEAD is detached."""
     repo = git.Repo(repo_path)

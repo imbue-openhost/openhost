@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from compute_space.config import Config
 from compute_space.config import Domain
 from compute_space.core.app_id import is_valid_app_name
 from compute_space.core.apps import deserialize_links
+from compute_space.core.apps import manifest_ungranted_permissions_v2
 from compute_space.core.auth.permissions_v2 import get_all_permissions_v2
 from compute_space.core.containers import get_docker_logs
 from compute_space.core.git_ops import UnsupportedRepoUrlError
@@ -66,28 +66,26 @@ async def app_detail(
     # User-facing links the app advertised in its manifest's [[links]].
     links = deserialize_links(app_row["links"])
 
-    # Permissions: granted + manifest-declared but not yet granted
-    granted_perms = [
-        {"service_url": p.service_url, "grant": p.grant, "scope": p.scope}
-        for p in get_all_permissions_v2(consumer_app_id=app_id)
-    ]
+    # Permissions: granted + manifest-declared but not yet granted. The
+    # ungranted diff uses the same shared helper the update/reload gate uses,
+    # so the "needs approval" set the owner sees here matches what an update
+    # would refuse to apply.
+    granted_records = get_all_permissions_v2(consumer_app_id=app_id)
+    granted_perms = [{"service_url": p.service_url, "grant": p.grant, "scope": p.scope} for p in granted_records]
     ungranted_perms: list[dict[str, object]] = []
     manifest_raw = app_row["manifest_raw"]
     if manifest_raw:
         try:
             manifest = parse_manifest_from_string(manifest_raw)
-            granted_set = {(p["service_url"], json.dumps(p["grant"], sort_keys=True)) for p in granted_perms}
-            for consume in manifest.consumes_services_v2:
-                for grant_payload in consume.grants:
-                    key = (consume.service, json.dumps(grant_payload, sort_keys=True))
-                    if key not in granted_set:
-                        ungranted_perms.append(
-                            {
-                                "service_url": consume.service,
-                                "grant": grant_payload,
-                                "shortname": consume.shortname,
-                            }
-                        )
+            shortname_by_service = {c.service: c.shortname for c in manifest.consumes_services_v2}
+            for pg in manifest_ungranted_permissions_v2(manifest, granted_records):
+                ungranted_perms.append(
+                    {
+                        "service_url": pg.service_url,
+                        "grant": pg.grant,
+                        "shortname": shortname_by_service.get(pg.service_url, ""),
+                    }
+                )
         except Exception:
             logger.opt(exception=True).warning("Failed to parse manifest for permission display (app %s)", app_id)
 

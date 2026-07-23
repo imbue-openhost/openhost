@@ -28,6 +28,7 @@ from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.identity import load_identity_keys
 from compute_space.core.domain_store import rebuild_active_domains
 from compute_space.core.domain_store import set_base_domains
+from compute_space.core.image_pruner import start_image_pruner
 from compute_space.core.logging import logger
 from compute_space.core.startup import check_app_status
 from compute_space.core.startup import retry_pending_default_apps
@@ -133,6 +134,7 @@ def _full_app_bootstrap(config: Config) -> None:
     check_app_status(config)
     load_identity_keys(config.persistent_data_dir)
     start_storage_guard(config)
+    start_image_pruner(config)
     retry_pending_default_apps(config)
     # Fold any runtime-added domains (from runtime_domains.json) into the active config, so a
     # domain added via /api/domains in a previous run is served again after restart.  The

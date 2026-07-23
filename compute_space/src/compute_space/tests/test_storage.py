@@ -9,12 +9,14 @@ from typing import cast
 import pytest
 
 import compute_space.core.storage as storage
+from compute_space.config import DefaultConfig
 from compute_space.core.app_id import new_app_id
 from compute_space.tests.conftest import _make_test_config
 
 
 def test_storage_status_includes_disk_totals(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
+    # Guard off here so storage_min_free_bytes is None (this test asserts that).
+    config = _make_test_config(tmp_path, storage_min_free_mb=0)
     usage = namedtuple("usage", ["total", "used", "free"])
 
     vm_data = os.path.join(config.persistent_data_dir, "vm_data")
@@ -266,7 +268,7 @@ def test_enforce_guard_skips_when_paused(tmp_path, monkeypatch):
 
 
 def test_start_storage_guard_noop_without_threshold(tmp_path, monkeypatch):
-    config = _make_test_config(tmp_path)
+    config = _make_test_config(tmp_path, storage_min_free_mb=0)
     storage._guard_db_paths.clear()
 
     started = []
@@ -303,3 +305,19 @@ def test_start_storage_guard_starts_with_threshold(tmp_path, monkeypatch):
     storage.start_storage_guard(config)  # idempotent
 
     assert len(started) == 1
+
+
+def test_guard_enabled_by_default() -> None:
+    # The storage guard ships enabled with a modest threshold (per the decision on
+    # PR #236: keep it config-only but on by default). A fresh DefaultConfig must
+    # therefore carry a positive storage_min_free_mb so the guard actually runs.
+    cfg = DefaultConfig(zone_domain="x.example.com")
+    assert cfg.storage_min_free_mb > 0
+    # And the guard treats that as an active threshold.
+    assert storage.storage_min_free_bytes(cfg) == cfg.storage_min_free_mb * 1024 * 1024
+
+
+def test_guard_disabled_when_config_zero(tmp_path: Any) -> None:
+    # Operators can still turn the guard off via the config (0 = no enforcement).
+    cfg = _make_test_config(tmp_path, storage_min_free_mb=0)
+    assert storage.storage_min_free_bytes(cfg) is None
