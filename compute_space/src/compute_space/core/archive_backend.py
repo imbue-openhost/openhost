@@ -1180,15 +1180,27 @@ def configure_backend(
                 "database; cannot migrate to a new bucket.  Re-provision or contact support."
             )
 
-    # The volume name is fixed once a volume exists; for a local or s3 zone we
-    # must keep using the volume that was already formatted (its objects live
-    # under that prefix), UNLESS the volume still carries the legacy shared
-    # default ``openhost`` — in that case an operator-supplied prefix/name is
-    # honored so the migrated objects are isolated in the shared bucket.  Fresh
-    # zones now format under a unique per-zone name (default_volume_name_for_zone),
-    # so this legacy branch only fires for zones formatted before that change.
-    # A legacy 'disabled' zone gets a brand-new volume.
-    if migrating_from_local or migrating_from_s3:
+    # Pick the volume name (== object prefix) for this configuration.
+    #
+    # s3 -> s3: the volume name MUST be preserved exactly.  The migration syncs
+    # objects from ``<old-bucket>/<volume>/`` to ``<new-bucket>/<volume>/`` and
+    # the JuiceFS meta DB already keys chunks under it; renaming it (even a
+    # legacy shared ``openhost``) would point the sync SOURCE at an empty prefix
+    # and copy nothing.  A legacy ``openhost`` prefix in a shared bucket is not
+    # ideal, but rotating buckets is not the place to fix it — keep it stable.
+    #
+    # local -> s3: keep the already-formatted local volume name, UNLESS it is
+    # still the legacy shared default ``openhost`` — in that case an operator
+    # prefix/name (or a unique per-zone default) is used so the migrated objects
+    # are isolated in a shared bucket.  This rename is safe here because the
+    # local file store is re-keyed under the new name as part of the sync and no
+    # S3 objects exist under either name yet.  Fresh zones already format under a
+    # unique per-zone name, so this legacy branch only fires for old zones.
+    #
+    # disabled -> s3: no volume yet; pick a fresh (prefix/unique) name.
+    if migrating_from_s3:
+        volume = state.juicefs_volume_name or DEFAULT_VOLUME_NAME
+    elif migrating_from_local:
         existing = state.juicefs_volume_name or DEFAULT_VOLUME_NAME
         if existing == DEFAULT_VOLUME_NAME:
             volume = juicefs_volume_name or s3_prefix or default_volume_name_for_zone(config)

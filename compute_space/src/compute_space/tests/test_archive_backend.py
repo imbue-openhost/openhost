@@ -668,6 +668,47 @@ def test_configure_backend_s3_to_s3_syncs_repoints_and_reclaims(cfg, db):
     assert state.s3_prefix == "oh-zone-1234"
 
 
+def test_configure_backend_s3_to_s3_preserves_legacy_openhost_volume(cfg, db):
+    """A legacy zone whose s3 volume name is the shared default 'openhost' MUST
+    keep it during an s3->s3 migration: the source objects live under
+    <old-bucket>/openhost/ and both sync source + dest use this one volume, so
+    renaming would read from an empty prefix and copy nothing.  An operator
+    prefix on the request must be ignored here."""
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='oldbucket', s3_region='us-west-2', "
+        "s3_endpoint=NULL, s3_access_key_id='oldak', s3_secret_access_key='oldsk', "
+        "s3_prefix='openhost', juicefs_volume_name='openhost' WHERE id=1"
+    )
+    db.commit()
+    captured = {}
+
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "mount"),
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "_migrate_s3_to_s3", side_effect=lambda config, **k: captured.update(k)),
+        mock.patch.object(
+            archive_backend, "_remove_s3_object_prefix", side_effect=lambda **k: captured.update(reclaim=k)
+        ),
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="newbucket",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix="operator-tried-to-rename",  # must be ignored
+            s3_access_key_id="newak",
+            s3_secret_access_key="newsk",
+        )
+    # Source AND dest prefixes both stay 'openhost' so the sync reads real data.
+    assert captured["volume"] == "openhost"
+    assert captured["reclaim"]["volume"] == "openhost"
+    state = read_state(db)
+    assert state.juicefs_volume_name == "openhost"
+    assert state.s3_prefix == "openhost"
+
+
 def test_configure_backend_s3_to_s3_same_location_skips_reclaim(cfg, db):
     """A no-op 'migration' to the SAME bucket/endpoint/region must NOT reclaim
     the prefix (that would delete the data we kept in place)."""
