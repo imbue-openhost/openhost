@@ -126,6 +126,19 @@ def test_settings_renders_logout_button(cfg: Any) -> None:
     assert "Log out" not in dashboard_resp.text
 
 
+def test_settings_renders_domains_section(cfg: Any) -> None:
+    """The settings page exposes the Domains management UI over /api/domains."""
+    set_active_config(cfg)
+    cookie = auth_cookie(cfg, username="owner")
+
+    with TestClient(app=_build_app(cfg)) as client:
+        settings_resp = client.get("/settings", cookies=cookie)
+    assert settings_resp.status_code == 200
+    assert ">Domains</h2>" in settings_resp.text
+    assert 'onclick="addDomain()"' in settings_resp.text
+    assert "js/domains.js" in settings_resp.text
+
+
 def test_owner_name_global_reads_live(cfg: Any) -> None:
     set_active_config(cfg)
     globals_ = _template_globals(cfg, Path("static"))
