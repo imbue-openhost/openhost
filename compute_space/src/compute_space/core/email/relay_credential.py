@@ -18,7 +18,6 @@ request, while still picking up a rotated secret within the TTL.
 
 from __future__ import annotations
 
-import hmac
 import threading
 import time
 
@@ -26,7 +25,6 @@ import attr
 import httpx
 
 from compute_space.config import Config
-from compute_space.core.logging import logger
 from compute_space.core.tls.keycloak import KeycloakClientCredentials
 from compute_space.core.tls.keycloak import KeycloakTokenProvider
 
@@ -113,21 +111,3 @@ class RelayCredentialProvider:
             )
         except (KeyError, TypeError, ValueError) as e:
             raise RelayCredentialError(f"relay-config response malformed: {e}") from e
-
-    def verify_inbound_token(self, token: str) -> bool:
-        """Constant-time check that ``token`` matches this instance's relay password.
-
-        Used to authenticate the proxy's inbound forward. Returns False on any
-        fetch problem rather than raising, so a transient frontend blip fails
-        closed (rejects inbound) instead of 500-ing.
-        """
-        if not token:
-            return False
-        try:
-            cred = self.get()
-        except RelayCredentialError as e:
-            logger.warning(f"inbound auth: could not resolve relay credential: {e}")
-            return False
-        if cred is None:
-            return False
-        return hmac.compare_digest(token, cred.smtp_relay_password)

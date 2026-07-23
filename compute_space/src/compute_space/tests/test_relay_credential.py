@@ -60,25 +60,3 @@ def test_fetch_and_cache(tmp_path: Path) -> None:
         clock[0] += rc._CACHE_TTL_SECONDS + 1
         provider.get()
         assert fetch.call_count == 2
-
-
-def test_verify_inbound_token_constant_time_match(tmp_path: Path) -> None:
-    provider = _provider(tmp_path, [0.0])
-    cred = rc.RelayCredential(
-        smtp_relay_host="h",
-        smtp_relay_port=465,
-        smtp_relay_user="u",
-        smtp_relay_password="the-pw",
-        zone_domain="z",
-        custom_domain=None,
-    )
-    with mock.patch.object(RelayCredentialProvider, "_fetch", return_value=cred):
-        assert provider.verify_inbound_token("the-pw") is True
-        assert provider.verify_inbound_token("wrong") is False
-        assert provider.verify_inbound_token("") is False
-
-
-def test_verify_fails_closed_on_fetch_error(tmp_path: Path) -> None:
-    provider = _provider(tmp_path, [0.0])
-    with mock.patch.object(RelayCredentialProvider, "_fetch", side_effect=rc.RelayCredentialError("boom")):
-        assert provider.verify_inbound_token("anything") is False

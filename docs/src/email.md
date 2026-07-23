@@ -235,29 +235,14 @@ CoreDNS load-bearing for the whole domain.
 
 ## Receiving mail
 
-Inbound port 25 is blocked, so the instance cannot accept mail directly.
-Instead:
-
-1. **MX points at SES.** The instance's CoreDNS publishes an MX record
-   directing mail for the zone to SES's inbound endpoint.
-2. **SES receives and stores.** SES accepts the message, writes the raw
-   RFC822 to an OpenHost-owned S3 bucket, and publishes an SNS
-   notification.
-3. **The proxy is notified and forwards to the instance.** SNS delivers a
-   signed notification; the proxy **verifies the SNS signature**, fetches
-   the raw message from S3, and hands it to the destination instance.
-4. **The instance's mailbox server ingests it** via LMTP/SMTP, where the
-   owner can read it.
-
-Signature verification is mandatory: the inbound webhook is
-internet-reachable, so an unverified payload would let anyone inject
-mail. Only notifications with a valid AWS SNS signature from the expected
-topic are accepted.
-
-Inbound is also multi-tenant-sensitive — untrusted users receiving
-unbounded mail is a storage/content-abuse vector — so the design applies
-**per-instance inbound quotas** (rate and total mailbox storage) and
-routes inbound mail only to the instance that owns the destination zone.
+> **Status:** the previous SES-based inbound path (SES receiving → S3 → SNS →
+> proxy → instance over HTTPS) has been removed. It existed to work around
+> providers that block inbound port 25. For the environments OpenHost targets
+> (instances that can accept inbound SMTP on port 25), inbound is being reworked
+> to be **direct to the instance's own mail server**: the zone's MX points at the
+> instance, and Stalwart receives on port 25 — no S3/SNS/proxy hop. That design
+> lands in a follow-up. Only **outbound** currently flows through the central
+> SES relay (see [Sending](#sending-mail)); inbound is handled by the instance.
 
 ## The mailbox and webmail apps
 
@@ -343,7 +328,7 @@ NS delegation; everything after that is automatic.
 | SES identity + verification | Central SES proxy | SES won't send for an unverified domain |
 | DKIM/SPF/DMARC/MX | CoreDNS (auto) | Instance owns its zone |
 | Custom domains | Optional NS delegation → CoreDNS | Seamless BYO-domain via one record |
-| Inbound receive | SES → S3 → SNS → proxy → instance | Port 25 blocked; signature-verified |
+| Inbound receive | Direct to instance (MX → instance, Stalwart :25) | Instances accept inbound 25; no central hop |
 | Mailbox store + webmail | Default apps | Mail data stays on the operator's zone; iterate freely |
 | Read access (single owner) | OpenHost owner auth + JMAP proxy | App never sees mail credentials |
 
