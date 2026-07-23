@@ -516,10 +516,10 @@ function showConfigureForm(state) {
     + '<tr><th><label for="ab-access-key">Access key ID</label></th><td><input id="ab-access-key" type="text"></td></tr>'
     + '<tr><th><label for="ab-secret-key">Secret access key</label></th><td><input id="ab-secret-key" type="password"></td></tr>'
     + '</tbody></table>'
-    + '<p><label><input type="checkbox" id="ab-confirm"> I understand the S3 archive backend is experimental, that reconfiguration is not supported, and'
+    + '<p><label><input type="checkbox" id="ab-confirm"> I understand the S3 archive backend is experimental'
     + (state.backend === 'local'
-        ? ' that my existing local archive data will be migrated into S3 and the local copy removed.'
-        : ' that this configures S3 for the archive tier.')
+        ? ' and that my existing local archive data will be migrated into S3.'
+        : ' and that this configures S3 for the archive tier.')
     + '</label></p>'
     + '<div class="control-row">'
     + '<button class="btn" id="ab-test-btn">Test connection</button>'
