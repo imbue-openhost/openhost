@@ -194,24 +194,74 @@ def test_configure_rejects_invalid_s3_prefix(client: TestClient[Litestar], cooki
         assert "s3_prefix" in body["error"], (bad, body)
 
 
-def test_configure_rejects_when_already_configured(
+def test_configure_s3_requires_confirm_migrate_s3(
     cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]
 ) -> None:
-    """Configure is one-shot: once the backend is 's3', subsequent
-    configure calls return 409.  Reconfiguration is intentionally not
-    supported."""
+    """When already on S3, configuring a new bucket MIGRATES the data.  Without
+    confirm_migrate_s3 it returns 409 explaining the migration."""
     db = sqlite3.connect(cfg.db_path)
     try:
-        db.execute("UPDATE archive_backend SET backend='s3', s3_bucket='b'")
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='oldbucket', "
+            "s3_access_key_id='ak', s3_secret_access_key='sk' WHERE id=1"
+        )
         db.commit()
     finally:
         db.close()
     resp = client.post(
         "/api/storage/archive_backend/configure",
-        json={"s3_bucket": "b2", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
+        json={"s3_bucket": "newbucket", "s3_access_key_id": "a", "s3_secret_access_key": "s"},
         cookies=cookies,
     )
     assert resp.status_code == 409
+    assert "confirm_migrate_s3" in resp.json()["error"]
+    assert "oldbucket" in resp.json()["error"]
+
+
+def test_configure_s3_to_s3_happy_path(cfg: Any, client: TestClient[Litestar], cookies: dict[str, str]) -> None:
+    """With confirm_migrate_s3, the s3->s3 migration proceeds and the response
+    reflects the new bucket."""
+    db = sqlite3.connect(cfg.db_path)
+    try:
+        db.execute(
+            "UPDATE archive_backend SET backend='s3', s3_bucket='oldbucket', "
+            "s3_access_key_id='ak', s3_secret_access_key='sk', "
+            "s3_prefix='oh-zone-1', juicefs_volume_name='oh-zone-1' WHERE id=1"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    with mock.patch.object(archive_backend, "configure_backend") as mock_configure:
+
+        def side_effect(_config: Any, db: sqlite3.Connection, **kwargs: Any) -> None:
+            db.execute(
+                "UPDATE archive_backend SET s3_bucket=?, s3_access_key_id=?, s3_secret_access_key=? WHERE id=1",
+                (kwargs["s3_bucket"], kwargs["s3_access_key_id"], kwargs["s3_secret_access_key"]),
+            )
+            db.commit()
+
+        mock_configure.side_effect = side_effect
+
+        resp = client.post(
+            "/api/storage/archive_backend/configure",
+            json={
+                "s3_bucket": "newbucket",
+                "s3_access_key_id": "newak",
+                "s3_secret_access_key": "newsk",
+                "confirm_migrate_s3": True,
+            },
+            cookies=cookies,
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["backend"] == "s3"
+    assert body["s3_bucket"] == "newbucket"
+    assert "s3_secret_access_key" not in body
+    # The new-bucket creds were forwarded to configure_backend as the DESTINATION.
+    _, kwargs = mock_configure.call_args
+    assert kwargs["s3_bucket"] == "newbucket"
+    assert kwargs["s3_access_key_id"] == "newak"
 
 
 def test_configure_happy_path(client: TestClient[Litestar], cookies: dict[str, str]) -> None:

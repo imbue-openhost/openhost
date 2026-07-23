@@ -523,3 +523,180 @@ def test_two_zones_do_not_collide_on_default_volume():
     }
     assert len(names) == 20  # all distinct
     assert "openhost" not in names
+
+
+# --- s3 -> s3 migration edge cases -----------------------------------------
+
+
+def _seed_s3(db, **overrides):
+    fields = {
+        "s3_bucket": "oldbucket",
+        "s3_region": "us-west-2",
+        "s3_endpoint": None,
+        "s3_access_key_id": "oldak",
+        "s3_secret_access_key": "oldsk",
+        "s3_prefix": "oh-zone-1234",
+        "juicefs_volume_name": "oh-zone-1234",
+    }
+    fields.update(overrides)
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket=?, s3_region=?, s3_endpoint=?, "
+        "s3_access_key_id=?, s3_secret_access_key=?, s3_prefix=?, juicefs_volume_name=? WHERE id=1",
+        (
+            fields["s3_bucket"],
+            fields["s3_region"],
+            fields["s3_endpoint"],
+            fields["s3_access_key_id"],
+            fields["s3_secret_access_key"],
+            fields["s3_prefix"],
+            fields["juicefs_volume_name"],
+        ),
+    )
+    db.commit()
+
+
+def test_s3_to_s3_preserves_volume_name(db, cfg):
+    """The volume prefix is fixed by the existing volume; an operator prefix on
+    the request cannot rename it for an s3->s3 migration."""
+    _seed_s3(db, s3_prefix="oh-zone-1234", juicefs_volume_name="oh-zone-1234")
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "mount"),
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "_migrate_s3_to_s3") as mig,
+        mock.patch.object(archive_backend, "_remove_s3_object_prefix"),
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="newbucket",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix="operator-wants-this",
+            s3_access_key_id="newak",
+            s3_secret_access_key="newsk",
+        )
+    _, kwargs = mig.call_args
+    assert kwargs["volume"] == "oh-zone-1234"
+    assert read_state(db).juicefs_volume_name == "oh-zone-1234"
+
+
+def test_s3_to_s3_migrate_passes_insecure_when_dest_http(cfg):
+    """--no-https must be enabled when the DEST endpoint is plain HTTP (MinIO)."""
+    seen = {}
+
+    def fake_sync(
+        config,
+        *,
+        src,
+        dst,
+        src_access_key_id,
+        src_secret_access_key,
+        dst_access_key_id,
+        dst_secret_access_key,
+        insecure,
+    ):
+        seen["insecure"] = insecure
+
+    with (
+        mock.patch.object(archive_backend, "_sync_objects_s3_to_s3", side_effect=fake_sync),
+        mock.patch.object(archive_backend, "_reconfigure_volume_storage"),
+    ):
+        archive_backend._migrate_s3_to_s3(
+            cfg,
+            volume="v",
+            src_bucket="old",
+            src_region="us-west-2",
+            src_endpoint=None,
+            src_access_key_id="oak",
+            src_secret_access_key="osk",
+            dst_bucket="new",
+            dst_region=None,
+            dst_endpoint="http://minio.local:9000",
+            dst_access_key_id="nak",
+            dst_secret_access_key="nsk",
+        )
+    assert seen["insecure"] is True
+
+
+def test_s3_to_s3_migrate_secure_when_both_https(cfg):
+    seen = {}
+
+    def fake_sync(
+        config,
+        *,
+        src,
+        dst,
+        src_access_key_id,
+        src_secret_access_key,
+        dst_access_key_id,
+        dst_secret_access_key,
+        insecure,
+    ):
+        seen["insecure"] = insecure
+
+    with (
+        mock.patch.object(archive_backend, "_sync_objects_s3_to_s3", side_effect=fake_sync),
+        mock.patch.object(archive_backend, "_reconfigure_volume_storage"),
+    ):
+        archive_backend._migrate_s3_to_s3(
+            cfg,
+            volume="v",
+            src_bucket="old",
+            src_region="us-west-2",
+            src_endpoint=None,
+            src_access_key_id="oak",
+            src_secret_access_key="osk",
+            dst_bucket="new",
+            dst_region="us-east-1",
+            dst_endpoint=None,
+            dst_access_key_id="nak",
+            dst_secret_access_key="nsk",
+        )
+    assert seen["insecure"] is False
+
+
+def test_sync_s3_to_s3_embeds_both_creds_and_raises_on_failure(cfg):
+    """Each side's creds are embedded in its own URL; a failure raises without
+    leaking the credential-bearing argv."""
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, timeout):
+        captured["cmd"] = cmd
+        return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    with mock.patch.object(archive_backend, "_juicefs_binary", return_value="/jfs"):
+        with mock.patch.object(subprocess, "run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="s3->s3") as exc:
+                archive_backend._sync_objects_s3_to_s3(
+                    cfg,
+                    src="s3://old.s3.us-west-2.amazonaws.com/v/",
+                    dst="s3://new.s3.us-east-1.amazonaws.com/v/",
+                    src_access_key_id="oldak",
+                    src_secret_access_key="oldsk",
+                    dst_access_key_id="newak",
+                    dst_secret_access_key="newsk",
+                )
+    # Both credential pairs are embedded in the two URL args.
+    src_arg = captured["cmd"][-2]
+    dst_arg = captured["cmd"][-1]
+    assert "oldak:oldsk@old.s3" in src_arg
+    assert "newak:newsk@new.s3" in dst_arg
+    # The raised error must not contain the secret-bearing argv.
+    assert "oldsk" not in str(exc.value)
+    assert "newsk" not in str(exc.value)
+
+
+def test_s3_to_s3_no_source_creds_refused(db, cfg):
+    _seed_s3(db, s3_access_key_id=None)
+    with pytest.raises(BackendConfigureError, match="missing its bucket/credentials"):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="newbucket",
+            s3_region=None,
+            s3_endpoint=None,
+            s3_prefix=None,
+            s3_access_key_id="newak",
+            s3_secret_access_key="newsk",
+        )

@@ -20,9 +20,11 @@ Migrating between backends is JuiceFS-native and provider-agnostic: copy the
 underlying objects with ``juicefs sync`` from the old object store to the new
 one, then re-point the *same* volume at the new store with ``juicefs config
 --storage/--bucket``.  The metadata database is untouched, so every file,
-directory, mode, and ownership is preserved exactly.  Today only
-``local`` -> ``s3`` is exposed in the UI, but the mechanism generalises to
-``s3`` -> ``s3`` (change provider) or ``s3`` -> ``local`` if we ever want it.
+directory, mode, and ownership is preserved exactly.  ``local`` -> ``s3``
+(first S3 configuration, migrating the local data in) and ``s3`` -> ``s3``
+(rotating to a new bucket or a different provider, e.g. AWS -> MinIO) are both
+exposed in the UI; the same mechanism would generalise to ``s3`` -> ``local``
+if we ever want it.
 """
 
 from __future__ import annotations
@@ -831,6 +833,11 @@ def _sync_objects(
     SDK credential chain — NOT from JuiceFS's own ``ACCESS_KEY``/``SECRET_KEY``
     vars — so we use the AWS_* env form to keep the secret out of ``ps``.
 
+    Used for the ``local`` -> ``s3`` migration, where only ONE side is S3.
+    For ``s3`` -> ``s3`` (where the two ends can have different credentials
+    and endpoints) use :func:`_sync_objects_s3_to_s3`, which encodes each
+    side's creds in its own URL.
+
     Raises on any sync failure.  Never deletes the source.
     """
     cmd = [
@@ -857,6 +864,70 @@ def _sync_objects(
     if result.returncode != 0:
         detail = (result.stderr or "").strip() or (result.stdout or "").strip() or f"exit {result.returncode}"
         raise RuntimeError(f"juicefs sync failed: {detail}")
+
+
+def _s3_url_with_creds(url: str, access_key_id: str, secret_access_key: str) -> str:
+    """Return an ``s3://`` URL with ``AK:SK@`` credentials spliced into the host.
+
+    ``juicefs sync`` reads per-endpoint credentials from the URL itself
+    (``s3://ACCESS:SECRET@bucket.endpoint/prefix/``).  A single pair of
+    ``AWS_*`` env vars cannot describe TWO different S3 endpoints, so for an
+    ``s3`` -> ``s3`` migration between providers with distinct credentials we
+    must encode each side's creds in its own URL.  The keys are percent-encoded
+    so a secret containing ``/``, ``@``, ``:`` or ``+`` (common in AWS/MinIO
+    secret keys) can't corrupt the URL structure.
+    """
+    from urllib.parse import quote  # noqa: PLC0415
+
+    scheme, rest = url.split("://", 1)
+    ak = quote(access_key_id, safe="")
+    sk = quote(secret_access_key, safe="")
+    return f"{scheme}://{ak}:{sk}@{rest}"
+
+
+def _sync_objects_s3_to_s3(
+    config: Config,
+    *,
+    src: str,
+    dst: str,
+    src_access_key_id: str,
+    src_secret_access_key: str,
+    dst_access_key_id: str,
+    dst_secret_access_key: str,
+    insecure: bool = False,
+) -> None:
+    """``juicefs sync`` an S3 object store to another S3 object store.
+
+    Unlike :func:`_sync_objects` (one S3 side, creds via ``AWS_*`` env), both
+    ends here are S3 and may use different providers/credentials, so each
+    side's credentials are encoded in its own URL via
+    :func:`_s3_url_with_creds`.  This puts the keys on ``juicefs sync``'s argv
+    (visible in ``ps`` for the lifetime of this one-shot command) — an
+    acceptable trade on a single-tenant, root-only host, matching the same
+    trade already made by ``juicefs config`` for ``--secret-key``.
+
+    ``--check-all`` verifies every synced object; raises on failure and never
+    deletes the source.
+    """
+    cmd = [
+        _juicefs_binary(config),
+        "--no-agent",
+        "sync",
+        "--check-all",
+    ]
+    if insecure:
+        cmd.append("--no-https")
+    cmd += [
+        _s3_url_with_creds(src, src_access_key_id, src_secret_access_key),
+        _s3_url_with_creds(dst, dst_access_key_id, dst_secret_access_key),
+    ]
+    # Log without the credential-bearing URLs.
+    logger.info("juicefs sync (s3->s3) %s -> %s", src, dst)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 60 * 60)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or f"exit {result.returncode}"
+        # Never surface the credential-bearing argv in the error.
+        raise RuntimeError(f"juicefs sync (s3->s3) failed: {detail}")
 
 
 def _reconfigure_volume_storage(
@@ -936,6 +1007,71 @@ def _s3_sync_dest(
     return f"s3://{s3_bucket}.s3.{region}.amazonaws.com/{volume}/"
 
 
+# The ``juicefs sync`` SOURCE for an S3 object store is built identically to
+# the destination (same URL grammar); alias for call-site clarity.
+_s3_sync_source = _s3_sync_dest
+
+
+def _migrate_s3_to_s3(
+    config: Config,
+    *,
+    volume: str,
+    src_bucket: str,
+    src_region: str | None,
+    src_endpoint: str | None,
+    src_access_key_id: str,
+    src_secret_access_key: str,
+    dst_bucket: str,
+    dst_region: str | None,
+    dst_endpoint: str | None,
+    dst_access_key_id: str,
+    dst_secret_access_key: str,
+) -> None:
+    """Migrate the archive from one S3 object store to another, JuiceFS-native.
+
+    Mirrors :func:`_migrate_local_to_s3` but with an S3 source: the metadata
+    DB (every file, dir, mode, uid/gid) is local and never re-formatted, so
+    only the underlying objects move and everything is preserved.
+
+    1. ``juicefs sync`` copies every object under ``<volume>/`` from the OLD
+       bucket to the NEW bucket, ``--check-all`` verifying each.  Both ends'
+       credentials are carried in their own URLs so the two providers can
+       differ.
+    2. ``juicefs config --storage s3 --bucket ...`` re-points the same volume
+       at the NEW bucket + credentials.
+
+    FAIL-OPEN CONTRACT: either fully succeeds or raises, and never deletes the
+    source objects.  The re-point (step 2) is the only thing that changes what
+    the volume reads from, so a failure in step 1 leaves the volume still
+    pointing at the intact OLD bucket.  The caller only flips the DB row and
+    reclaims the old objects AFTER this returns successfully AND the mount has
+    been restarted against the new bucket.
+    """
+    src = _s3_sync_source(src_bucket, src_region, src_endpoint, volume)
+    dst = _s3_sync_dest(dst_bucket, dst_region, dst_endpoint, volume)
+    _sync_objects_s3_to_s3(
+        config,
+        src=src,
+        dst=dst,
+        src_access_key_id=src_access_key_id,
+        src_secret_access_key=src_secret_access_key,
+        dst_access_key_id=dst_access_key_id,
+        dst_secret_access_key=dst_secret_access_key,
+        # --no-https is a single global flag in juicefs sync; enable it if
+        # EITHER endpoint is plain HTTP (e.g. a same-host MinIO target).  An
+        # HTTPS AWS source still works under --no-https because the source URL
+        # carries its own https scheme via the amazonaws.com host resolution.
+        insecure=_endpoint_is_insecure_http(src_endpoint) or _endpoint_is_insecure_http(dst_endpoint),
+    )
+    _reconfigure_volume_storage(
+        config,
+        storage="s3",
+        bucket=_bucket_url(dst_bucket, dst_region or "us-east-1", dst_endpoint),
+        s3_access_key_id=dst_access_key_id,
+        s3_secret_access_key=dst_secret_access_key,
+    )
+
+
 def _migrate_local_to_s3(
     config: Config,
     *,
@@ -996,49 +1132,63 @@ def configure_backend(
     juicefs_volume_name: str | None = None,
     quiesce_archive_apps: Callable[[], None] | None = None,
 ) -> None:
-    """Upgrade the archive backend from local (file) to S3, in one shot.
+    """Configure / re-configure the S3 archive backend, in one shot.
 
-    Allowed starting states: ``'local'`` (the default — archive data lives
-    in the local file store and is MIGRATED into S3 via ``juicefs sync`` +
-    ``juicefs config``) or ``'disabled'`` (legacy pre-v12 zone with no
-    volume — formatted fresh against S3).  Once the backend is ``'s3'`` it
-    cannot be reconfigured.
+    Allowed starting states:
 
-    Steps for a local zone: sync objects into the bucket and re-point the
-    volume storage to S3, then restart the mount against S3, flip the DB row
-    to 's3', and reclaim the local object store.
+    * ``'local'`` (the default) — archive data lives in the local file store
+      and is MIGRATED into S3 via ``juicefs sync`` + ``juicefs config``.
+    * ``'disabled'`` (legacy pre-v12 zone with no volume) — formatted fresh
+      against S3.
+    * ``'s3'`` — the archive is ALREADY on S3 and is MIGRATED to a DIFFERENT
+      S3 bucket/provider (e.g. AWS -> MinIO, or bucket rotation), via
+      ``juicefs sync`` (old bucket -> new bucket, under the same volume
+      prefix) + ``juicefs config`` re-point.  The source credentials come
+      from the current DB state.
+
+    The volume name (object prefix) is fixed once a volume exists and is
+    always preserved across a migration, so metadata (every file, dir, mode,
+    uid/gid — held in the LOCAL meta DB, never re-formatted) is untouched.
 
     ``quiesce_archive_apps`` (when provided) is called just before the sync,
     to STOP every running archive-using app.  This is required: no app may
-    write into the local store once the sync starts (that write would be
+    write into the source store once the sync starts (that write would be
     lost), and ``systemctl stop openhost-juicefs`` cannot unmount the FUSE
     filesystem while an app container holds it open (the unmount times out).
     The caller is responsible for RE-STARTING those apps afterwards (the web
     route records the quiesced app ids and calls ``start_apps_by_id`` in a
-    ``finally``), which re-opens the now-S3-backed archive.
+    ``finally``), which re-opens the now-migrated archive.
 
     FAIL-OPEN: if any step before the DB flip fails, the volume is left
-    pointing at the intact local store (best-effort remounted local) and
-    the backend stays ``'local'``, so the operator's files remain available.
-    The local objects are deleted only after the switch to 's3' has been
-    committed.
+    pointing at the intact SOURCE store (best-effort remounted) and the DB
+    backend/credentials are unchanged, so the operator's files remain
+    available.  The source objects are deleted only after the switch has been
+    committed and the mount restarted against the new store.
     """
     state = read_state(db)
-    if state.backend == "s3":
-        raise BackendConfigureError("archive backend is already configured to S3; reconfiguration is not supported")
-    if state.backend not in ("local", "disabled"):
+    if state.backend not in ("local", "disabled", "s3"):
         raise BackendConfigureError(f"cannot configure S3 from backend={state.backend!r}")
 
     migrating_from_local = state.backend == "local"
-    # The volume name is fixed once a volume exists; for a local zone we must
-    # keep using the volume that was already formatted (its objects live under
-    # that prefix), UNLESS the volume still carries the legacy shared default
-    # ``openhost`` — in that case an operator-supplied prefix/name is honored so
-    # the migrated objects are isolated in the shared bucket.  Fresh zones now
-    # format under a unique per-zone name (default_volume_name_for_zone), so
-    # this legacy branch only fires for zones formatted before that change.
+    migrating_from_s3 = state.backend == "s3"
+    if migrating_from_s3:
+        # Source creds must exist for an s3->s3 migration; without them we
+        # cannot read the old bucket to copy it forward.
+        if not state.s3_bucket or state.s3_access_key_id is None or state.s3_secret_access_key is None:
+            raise BackendConfigureError(
+                "current S3 archive backend is missing its bucket/credentials in the "
+                "database; cannot migrate to a new bucket.  Re-provision or contact support."
+            )
+
+    # The volume name is fixed once a volume exists; for a local or s3 zone we
+    # must keep using the volume that was already formatted (its objects live
+    # under that prefix), UNLESS the volume still carries the legacy shared
+    # default ``openhost`` — in that case an operator-supplied prefix/name is
+    # honored so the migrated objects are isolated in the shared bucket.  Fresh
+    # zones now format under a unique per-zone name (default_volume_name_for_zone),
+    # so this legacy branch only fires for zones formatted before that change.
     # A legacy 'disabled' zone gets a brand-new volume.
-    if migrating_from_local:
+    if migrating_from_local or migrating_from_s3:
         existing = state.juicefs_volume_name or DEFAULT_VOLUME_NAME
         if existing == DEFAULT_VOLUME_NAME:
             volume = juicefs_volume_name or s3_prefix or default_volume_name_for_zone(config)
@@ -1077,6 +1227,36 @@ def configure_backend(
                 s3_secret_access_key=s3_secret_access_key,
             )
             # Restart the mount so the FUSE process talks to S3 now.
+            _remount(config, s3_access_key_id, s3_secret_access_key)
+        elif migrating_from_s3:
+            # The current S3 mount must be live so the source bucket is
+            # complete + consistent before we sync it.
+            mount(config, state.s3_access_key_id, state.s3_secret_access_key)
+            # Stop archive-using apps for the same two reasons as the local
+            # case: consistency (no writes race the sync) and unmount (a held
+            # FUSE mount blocks the later restart).
+            if quiesce_archive_apps is not None:
+                quiesce_archive_apps()
+            # Copy objects OLD bucket -> NEW bucket and re-point the volume.
+            # On any failure the volume still reads from the intact old bucket.
+            assert state.s3_bucket is not None
+            assert state.s3_access_key_id is not None
+            assert state.s3_secret_access_key is not None
+            _migrate_s3_to_s3(
+                config,
+                volume=volume,
+                src_bucket=state.s3_bucket,
+                src_region=state.s3_region,
+                src_endpoint=state.s3_endpoint,
+                src_access_key_id=state.s3_access_key_id,
+                src_secret_access_key=state.s3_secret_access_key,
+                dst_bucket=s3_bucket,
+                dst_region=s3_region,
+                dst_endpoint=s3_endpoint,
+                dst_access_key_id=s3_access_key_id,
+                dst_secret_access_key=s3_secret_access_key,
+            )
+            # Restart the mount so the FUSE process talks to the NEW bucket now.
             _remount(config, s3_access_key_id, s3_secret_access_key)
         else:
             # Legacy 'disabled' zone: no data, just format+mount S3 fresh.
@@ -1151,6 +1331,35 @@ def configure_backend(
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception("failed to record archive state_message after aborted migration")
+        elif migrating_from_s3:
+            # Re-point the volume back at the intact OLD bucket + creds so the
+            # operator keeps working.  We only ever re-pointed storage; the old
+            # objects were never touched, and the DB row still describes the old
+            # bucket (it is flipped only on success), so a retry is safe.
+            try:
+                assert state.s3_bucket is not None
+                assert state.s3_access_key_id is not None
+                assert state.s3_secret_access_key is not None
+                _reconfigure_volume_storage(
+                    config,
+                    storage="s3",
+                    bucket=_bucket_url(state.s3_bucket, state.s3_region or "us-east-1", state.s3_endpoint),
+                    s3_access_key_id=state.s3_access_key_id,
+                    s3_secret_access_key=state.s3_secret_access_key,
+                )
+                _remount(config, state.s3_access_key_id, state.s3_secret_access_key)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to restore original S3 archive mount after aborted migration")
+                try:
+                    _set_state_message(
+                        db,
+                        "Migration to a new S3 bucket failed and the original archive mount "
+                        "could not be restarted automatically; your archive data is intact in "
+                        "the original bucket. Restart the instance (or the openhost service) to "
+                        "bring the archive back online, then retry.",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to record archive state_message after aborted s3->s3 migration")
         else:
             try:
                 umount(config)
@@ -1158,12 +1367,36 @@ def configure_backend(
                 logger.exception("failed to unmount juicefs after aborted S3 format")
         raise BackendConfigureError(f"Failed to configure S3 archive backend: {exc}") from exc
 
-    # DB is now committed to 's3' and the volume reads from S3.  Only now is
-    # it safe to reclaim the local object store.  A failure here is
-    # non-fatal: the data is already durably in S3; the stale local objects
-    # just waste disk.
+    # DB is now committed to 's3' and the volume reads from the new store.
+    # Only now is it safe to reclaim the source objects.  A failure here is
+    # non-fatal: the data is already durably in the new bucket; stale source
+    # objects just waste storage.
     if migrating_from_local:
         _remove_local_object_store(config)
+    elif migrating_from_s3:
+        # Delete the old bucket's objects under this volume's prefix only.
+        # Scoped strictly to ``<old-bucket>/<volume>/`` so a shared bucket's
+        # other zones are never touched.
+        assert state.s3_bucket is not None
+        assert state.s3_access_key_id is not None
+        assert state.s3_secret_access_key is not None
+        # Skip reclaim in the degenerate case where the new store is the SAME
+        # bucket+endpoint+prefix as the old (a no-op "migration"): deleting the
+        # prefix would wipe the data we just kept in place.
+        same_location = (
+            state.s3_bucket == s3_bucket
+            and (state.s3_endpoint or None) == (s3_endpoint or None)
+            and (state.s3_region or None) == (s3_region or None)
+        )
+        if not same_location:
+            _remove_s3_object_prefix(
+                s3_bucket=state.s3_bucket,
+                s3_region=state.s3_region,
+                s3_endpoint=state.s3_endpoint,
+                s3_access_key_id=state.s3_access_key_id,
+                s3_secret_access_key=state.s3_secret_access_key,
+                volume=volume,
+            )
 
 
 def _remove_local_object_store(config: Config) -> None:
@@ -1185,4 +1418,54 @@ def _remove_local_object_store(config: Config) -> None:
         logger.exception(
             "migrated local archive to S3 but failed to remove the local object store at %s; safe to delete manually",
             path,
+        )
+
+
+def _remove_s3_object_prefix(
+    *,
+    s3_bucket: str,
+    s3_region: str | None,
+    s3_endpoint: str | None,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+    volume: str,
+) -> None:
+    """Delete every object under ``<bucket>/<volume>/`` in an S3 store.
+
+    Called to reclaim the OLD bucket after a successful ``s3`` -> ``s3``
+    migration.  Strictly scoped to the ``<volume>/`` prefix so a bucket shared
+    by several zones (each keyed under its own per-zone volume prefix) is never
+    otherwise touched.  Non-fatal: the data is already durable in the new
+    bucket; stale objects only waste storage.
+
+    An empty/whitespace ``volume`` would produce an unscoped prefix that could
+    match the whole bucket, so it is refused outright.
+    """
+    prefix = (volume or "").strip().strip("/").strip()
+    if not prefix:
+        logger.error("refusing to reclaim S3 objects: empty volume prefix would target the whole bucket")
+        return
+    list_prefix = f"{prefix}/"
+    try:
+        client = _s3_client(s3_region, s3_endpoint, s3_access_key_id, s3_secret_access_key)
+        paginator = client.get_paginator("list_objects_v2")
+        to_delete: list[dict[str, str]] = []
+        for page in paginator.paginate(Bucket=s3_bucket, Prefix=list_prefix):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key")
+                # Defence-in-depth: only ever delete keys that really live
+                # under the volume prefix (guards against any pagination or
+                # server quirk returning an out-of-prefix key).
+                if key and key.startswith(list_prefix):
+                    to_delete.append({"Key": key})
+                    if len(to_delete) == 1000:
+                        client.delete_objects(Bucket=s3_bucket, Delete={"Objects": to_delete, "Quiet": True})
+                        to_delete = []
+        if to_delete:
+            client.delete_objects(Bucket=s3_bucket, Delete={"Objects": to_delete, "Quiet": True})
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "migrated archive to new S3 bucket but failed to reclaim old objects under %s/%s; safe to delete manually",
+            s3_bucket,
+            list_prefix,
         )

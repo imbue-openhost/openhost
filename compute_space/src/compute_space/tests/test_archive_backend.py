@@ -590,20 +590,205 @@ def test_local_archive_apps_with_data_reads_mount(cfg, db):
 # --- configure_backend -----------------------------------------------------
 
 
-def test_configure_backend_refuses_when_already_configured(cfg, db):
-    db.execute("UPDATE archive_backend SET backend='s3', s3_bucket='b' WHERE id=1")
+def test_configure_backend_s3_to_s3_refuses_without_source_creds(cfg, db):
+    """An s3 zone missing its stored bucket/creds can't be read for a copy, so
+    an s3->s3 migration is refused up front rather than losing data."""
+    db.execute("UPDATE archive_backend SET backend='s3', s3_bucket=NULL WHERE id=1")
     db.commit()
-    with pytest.raises(BackendConfigureError, match="already configured"):
+    with pytest.raises(BackendConfigureError, match="missing its bucket/credentials"):
         configure_backend(
             cfg,
             db,
-            s3_bucket="b2",
+            s3_bucket="newbucket",
             s3_region=None,
             s3_endpoint=None,
             s3_prefix=None,
             s3_access_key_id="ak",
             s3_secret_access_key="sk",
         )
+
+
+def test_configure_backend_s3_to_s3_syncs_repoints_and_reclaims(cfg, db):
+    """Migrating s3->s3 remounts the source, syncs old->new, re-points+remounts,
+    flips the DB to the new bucket, and reclaims the OLD bucket's prefix."""
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='oldbucket', s3_region='us-west-2', "
+        "s3_endpoint=NULL, s3_access_key_id='oldak', s3_secret_access_key='oldsk', "
+        "s3_prefix='oh-zone-1234', juicefs_volume_name='oh-zone-1234' WHERE id=1"
+    )
+    db.commit()
+    calls = []
+    captured = {}
+
+    def fake_migrate_s3(config, **kwargs):
+        calls.append("migrate")
+        captured.update(kwargs)
+
+    def fake_reclaim(**kwargs):
+        calls.append("reclaim")
+        captured["reclaim"] = kwargs
+
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "mount", side_effect=lambda *a, **k: calls.append("mount")),
+        mock.patch.object(archive_backend, "umount", side_effect=lambda *a, **k: calls.append("umount")),
+        mock.patch.object(archive_backend, "_migrate_s3_to_s3", side_effect=fake_migrate_s3),
+        mock.patch.object(archive_backend, "_migrate_local_to_s3") as local_mig,
+        mock.patch.object(archive_backend, "_remove_s3_object_prefix", side_effect=fake_reclaim),
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="newbucket",
+            s3_region="us-east-1",
+            s3_endpoint="http://minio.local:9000",
+            s3_prefix=None,
+            s3_access_key_id="newak",
+            s3_secret_access_key="newsk",
+        )
+    local_mig.assert_not_called()
+    # mount source, migrate (sync+repoint), remount (umount+mount), reclaim old.
+    assert calls == ["mount", "migrate", "umount", "mount", "reclaim"]
+    # The migration read from the OLD store and wrote to the NEW store.
+    assert captured["src_bucket"] == "oldbucket"
+    assert captured["src_access_key_id"] == "oldak"
+    assert captured["dst_bucket"] == "newbucket"
+    assert captured["dst_access_key_id"] == "newak"
+    # Volume prefix preserved across the migration.
+    assert captured["volume"] == "oh-zone-1234"
+    # Reclaim targets the OLD bucket under the volume prefix only.
+    assert captured["reclaim"]["s3_bucket"] == "oldbucket"
+    assert captured["reclaim"]["volume"] == "oh-zone-1234"
+    state = read_state(db)
+    assert state.backend == "s3"
+    assert state.s3_bucket == "newbucket"
+    assert state.s3_endpoint == "http://minio.local:9000"
+    assert state.s3_access_key_id == "newak"
+    assert state.juicefs_volume_name == "oh-zone-1234"
+    assert state.s3_prefix == "oh-zone-1234"
+
+
+def test_configure_backend_s3_to_s3_same_location_skips_reclaim(cfg, db):
+    """A no-op 'migration' to the SAME bucket/endpoint/region must NOT reclaim
+    the prefix (that would delete the data we kept in place)."""
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='b', s3_region='us-east-1', "
+        "s3_endpoint=NULL, s3_access_key_id='ak', s3_secret_access_key='sk', "
+        "s3_prefix='oh-zone-1234', juicefs_volume_name='oh-zone-1234' WHERE id=1"
+    )
+    db.commit()
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "mount"),
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "_migrate_s3_to_s3"),
+        mock.patch.object(archive_backend, "_remove_s3_object_prefix") as reclaim,
+    ):
+        configure_backend(
+            cfg,
+            db,
+            s3_bucket="b",
+            s3_region="us-east-1",
+            s3_endpoint=None,
+            s3_prefix=None,
+            s3_access_key_id="ak2",
+            s3_secret_access_key="sk2",
+        )
+    reclaim.assert_not_called()
+    state = read_state(db)
+    assert state.backend == "s3"
+    # Credentials still updated even though location is unchanged.
+    assert state.s3_access_key_id == "ak2"
+
+
+def test_configure_backend_s3_to_s3_failopen_restores_old_bucket(cfg, db):
+    """Fail-open: if the s3->s3 migration fails, the DB stays on the OLD bucket
+    and the volume is re-pointed back to it + remounted; nothing is reclaimed."""
+    db.execute(
+        "UPDATE archive_backend SET backend='s3', s3_bucket='oldbucket', s3_region='us-west-2', "
+        "s3_endpoint=NULL, s3_access_key_id='oldak', s3_secret_access_key='oldsk', "
+        "s3_prefix='oh-zone-1234', juicefs_volume_name='oh-zone-1234' WHERE id=1"
+    )
+    db.commit()
+    restored = {}
+
+    def fake_reconfig(config, *, storage, bucket, s3_access_key_id, s3_secret_access_key):
+        restored["storage"] = storage
+        restored["bucket"] = bucket
+        restored["ak"] = s3_access_key_id
+
+    with (
+        mock.patch.object(archive_backend, "is_juicefs_installed", return_value=True),
+        mock.patch.object(archive_backend, "mount"),
+        mock.patch.object(archive_backend, "umount"),
+        mock.patch.object(archive_backend, "_migrate_s3_to_s3", side_effect=RuntimeError("sync exploded")),
+        mock.patch.object(archive_backend, "_reconfigure_volume_storage", side_effect=fake_reconfig),
+        mock.patch.object(archive_backend, "_remove_s3_object_prefix") as reclaim,
+    ):
+        with pytest.raises(BackendConfigureError):
+            configure_backend(
+                cfg,
+                db,
+                s3_bucket="newbucket",
+                s3_region="us-east-1",
+                s3_endpoint=None,
+                s3_prefix=None,
+                s3_access_key_id="newak",
+                s3_secret_access_key="newsk",
+            )
+    state = read_state(db)
+    # DB unchanged: still the OLD bucket + creds.
+    assert state.backend == "s3"
+    assert state.s3_bucket == "oldbucket"
+    assert state.s3_access_key_id == "oldak"
+    # Volume re-pointed back at the OLD bucket with OLD creds.
+    assert restored.get("storage") == "s3"
+    assert "oldbucket" in restored.get("bucket", "")
+    assert restored.get("ak") == "oldak"
+    reclaim.assert_not_called()
+
+
+def test_migrate_s3_to_s3_syncs_then_repoints(cfg):
+    """The s3->s3 helper syncs objects first, THEN re-points storage."""
+    order = []
+    with (
+        mock.patch.object(archive_backend, "_sync_objects_s3_to_s3", side_effect=lambda *a, **k: order.append("sync")),
+        mock.patch.object(
+            archive_backend, "_reconfigure_volume_storage", side_effect=lambda *a, **k: order.append("repoint")
+        ),
+    ):
+        archive_backend._migrate_s3_to_s3(
+            cfg,
+            volume="oh-zone-1234",
+            src_bucket="oldbucket",
+            src_region="us-west-2",
+            src_endpoint=None,
+            src_access_key_id="oldak",
+            src_secret_access_key="oldsk",
+            dst_bucket="newbucket",
+            dst_region="us-east-1",
+            dst_endpoint=None,
+            dst_access_key_id="newak",
+            dst_secret_access_key="newsk",
+        )
+    assert order == ["sync", "repoint"]
+
+
+def test_s3_url_with_creds_percent_encodes(cfg):
+    """Credentials with URL-special characters must be percent-encoded so they
+    can't corrupt the s3://AK:SK@host structure."""
+    url = archive_backend._s3_url_with_creds(
+        "s3://bucket.s3.us-east-1.amazonaws.com/vol/",
+        "AKIA/EXAMPLE+KEY",
+        "secret/with+special:chars@here",
+    )
+    assert url.startswith("s3://")
+    # The raw special chars must NOT appear unescaped in the creds section.
+    creds = url[len("s3://") : url.index("@")]
+    assert "/" not in creds
+    assert "@" not in creds
+    # Host/prefix preserved after the '@'.
+    assert url.endswith("@bucket.s3.us-east-1.amazonaws.com/vol/")
 
 
 def test_configure_backend_from_disabled_formats_s3_fresh(cfg, db):
@@ -844,6 +1029,106 @@ def test_remove_local_object_store_recreates_empty_root(cfg):
     for _dp, _d, files in os.walk(store):
         leftover.extend(files)
     assert leftover == []
+
+
+# --- _remove_s3_object_prefix (s3->s3 old-bucket reclaim) ------------------
+
+
+def _paginator_client(pages):
+    """A fake boto3 S3 client whose paginator yields the given pages and records
+    every delete_objects call."""
+    deleted = []
+    client = mock.MagicMock()
+    paginator = mock.MagicMock()
+    paginator.paginate.return_value = iter(pages)
+    client.get_paginator.return_value = paginator
+    client.delete_objects.side_effect = lambda **kw: deleted.append(kw)
+    return client, deleted
+
+
+def test_remove_s3_object_prefix_deletes_only_under_volume_prefix():
+    pages = [
+        {
+            "Contents": [
+                {"Key": "oh-zone-1234/chunks/0/1_0_5"},
+                {"Key": "oh-zone-1234/meta/dump-1.json.gz"},
+            ]
+        }
+    ]
+    client, deleted = _paginator_client(pages)
+    with mock.patch.object(archive_backend, "_s3_client", return_value=client):
+        archive_backend._remove_s3_object_prefix(
+            s3_bucket="oldbucket",
+            s3_region="us-west-2",
+            s3_endpoint=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+            volume="oh-zone-1234",
+        )
+    client.get_paginator.assert_called_once_with("list_objects_v2")
+    # Listing is scoped to the volume prefix.
+    _, list_kwargs = client.get_paginator.return_value.paginate.call_args
+    assert list_kwargs["Prefix"] == "oh-zone-1234/"
+    assert list_kwargs["Bucket"] == "oldbucket"
+    # Both keys deleted, in one batch.
+    keys = [o["Key"] for call in deleted for o in call["Delete"]["Objects"]]
+    assert keys == ["oh-zone-1234/chunks/0/1_0_5", "oh-zone-1234/meta/dump-1.json.gz"]
+
+
+def test_remove_s3_object_prefix_refuses_empty_volume():
+    """An empty volume prefix would match the whole bucket; refuse to delete."""
+    client, deleted = _paginator_client([])
+    with mock.patch.object(archive_backend, "_s3_client", return_value=client) as mk:
+        archive_backend._remove_s3_object_prefix(
+            s3_bucket="oldbucket",
+            s3_region=None,
+            s3_endpoint=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+            volume="   ",
+        )
+    # Never even constructs a client / lists / deletes.
+    mk.assert_not_called()
+    assert deleted == []
+
+
+def test_remove_s3_object_prefix_skips_out_of_prefix_keys():
+    """Defence-in-depth: any key not under the prefix is never deleted."""
+    pages = [
+        {
+            "Contents": [
+                {"Key": "oh-zone-1234/chunks/0/1_0_5"},
+                {"Key": "other-zone/chunks/0/9_0_5"},  # must be ignored
+            ]
+        }
+    ]
+    client, deleted = _paginator_client(pages)
+    with mock.patch.object(archive_backend, "_s3_client", return_value=client):
+        archive_backend._remove_s3_object_prefix(
+            s3_bucket="oldbucket",
+            s3_region=None,
+            s3_endpoint=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+            volume="oh-zone-1234",
+        )
+    keys = [o["Key"] for call in deleted for o in call["Delete"]["Objects"]]
+    assert keys == ["oh-zone-1234/chunks/0/1_0_5"]
+
+
+def test_remove_s3_object_prefix_swallows_errors():
+    """Reclaim is non-fatal: an S3 error must not raise (data already durable in
+    the new bucket)."""
+    with mock.patch.object(archive_backend, "_s3_client", side_effect=RuntimeError("boom")):
+        # Must not raise.
+        archive_backend._remove_s3_object_prefix(
+            s3_bucket="oldbucket",
+            s3_region=None,
+            s3_endpoint=None,
+            s3_access_key_id="ak",
+            s3_secret_access_key="sk",
+            volume="oh-zone-1234",
+        )
 
 
 # --- storage_summary -------------------------------------------------------

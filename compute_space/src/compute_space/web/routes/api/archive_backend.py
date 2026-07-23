@@ -136,6 +136,12 @@ class ConfigureArchiveRequest:
     # to S3 is one-way and the local copy is removed afterwards, so we
     # require an explicit opt-in rather than doing it silently.
     confirm_migrate_local: bool = False
+    # When the current backend is already 's3', configuring a new bucket
+    # MIGRATES the archive from the old bucket to the new one (juicefs sync +
+    # re-point) and, on success, reclaims the old bucket's objects.  It is
+    # fail-open (old bucket kept intact if anything goes wrong), but it moves
+    # live data between providers, so we require an explicit opt-in.
+    confirm_migrate_s3: bool = False
 
 
 @get("/api/storage/archive_backend", guards=[require_owner_auth])
@@ -200,17 +206,11 @@ async def configure_archive_backend(
     db: sqlite3.Connection,
     config: Config,
 ) -> Response[BackendStateResponse] | Response[ErrorResponse]:
-    """One-shot upgrade to S3.  Allowed from ``'local'`` (the default —
-    migrates local archive data into the bucket) or the legacy ``'disabled'``
-    state.  Refused once ``backend='s3'``."""
+    """One-shot S3 configure / re-configure.  Allowed from ``'local'`` (the
+    default — migrates local archive data into the bucket), the legacy
+    ``'disabled'`` state (fresh format), or ``'s3'`` (migrates the archive from
+    the current bucket to a new bucket/provider)."""
     state = archive_backend.read_state(db)
-    if state.backend == "s3":
-        return Response(
-            content=ErrorResponse(
-                error=("archive backend is already configured to S3; reconfiguration is not supported")
-            ),
-            status_code=409,
-        )
 
     # Guard the local->S3 migration behind an explicit acknowledgement when
     # there is actually local data to migrate.  The dashboard shows which
@@ -234,6 +234,25 @@ async def configure_archive_backend(
                 status_code=409,
             )
 
+    # Guard the s3->s3 migration behind its own explicit acknowledgement: the
+    # archive is already on S3, and configuring a new bucket copies the data to
+    # the new bucket, re-points the volume, and reclaims the old bucket.  It is
+    # fail-open, but it moves live data, so require confirm_migrate_s3.
+    if state.backend == "s3" and not data.confirm_migrate_s3:
+        return Response(
+            content=ErrorResponse(
+                error=(
+                    "The archive tier is already on S3 (bucket "
+                    f"{state.s3_bucket!r}).  Configuring a new bucket will MIGRATE the "
+                    "archive to it (copy + verify), re-point the volume, and then reclaim "
+                    "the old bucket's objects.  This is fail-open (the old bucket is kept "
+                    "intact if anything fails), but it moves live data.  Re-submit with "
+                    "confirm_migrate_s3=true to proceed."
+                )
+            ),
+            status_code=409,
+        )
+
     try:
         prefix = _normalise_s3_prefix(data.s3_prefix or None)
     except ValueError as exc:
@@ -253,19 +272,22 @@ async def configure_archive_backend(
         worker_db = sqlite3.connect(db_path)
         worker_db.row_factory = sqlite3.Row
         try:
-            was_local = archive_backend.read_state(worker_db).backend == "local"
+            # A migration (local->S3 or s3->s3) must restart the JuiceFS mount
+            # (juicefs config re-points the volume) and must not let apps write
+            # during the sync.  A fresh format from the legacy 'disabled' state
+            # has no data + no live mount, so it needs no quiesce.
+            migrating = archive_backend.read_state(worker_db).backend in ("local", "s3")
             # Imported lazily to avoid a core<-web import cycle.
             from compute_space.core.apps import start_apps_by_id  # noqa: PLC0415
             from compute_space.core.apps import stop_running_archive_apps  # noqa: PLC0415
 
-            # For a local->S3 migration the JuiceFS mount must be restarted
-            # (juicefs config re-points the volume to S3).  A running app
-            # container holding the mount open would make the unmount time out
-            # and could keep writing during the sync, so we STOP archive-using
-            # apps just before the sync and record which ones, then RESTART
-            # them afterwards so they re-open the (now S3-backed) archive.  The
-            # quiesce callback runs inside configure_backend right before the
-            # sync.
+            # For a migration the JuiceFS mount must be restarted (juicefs
+            # config re-points the volume).  A running app container holding the
+            # mount open would make the unmount time out and could keep writing
+            # during the sync, so we STOP archive-using apps just before the
+            # sync and record which ones, then RESTART them afterwards so they
+            # re-open the (now migrated) archive.  The quiesce callback runs
+            # inside configure_backend right before the sync.
             quiesced: list[str] = []
 
             def _quiesce() -> None:
@@ -286,7 +308,7 @@ async def configure_archive_backend(
                     s3_access_key_id=data.s3_access_key_id,
                     s3_secret_access_key=data.s3_secret_access_key,
                     juicefs_volume_name=volume_name,
-                    quiesce_archive_apps=_quiesce if was_local else None,
+                    quiesce_archive_apps=_quiesce if migrating else None,
                 )
             finally:
                 # Only restart the quiesced apps if the archive mount is
