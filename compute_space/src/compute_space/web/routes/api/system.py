@@ -1,4 +1,6 @@
 import hashlib
+import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -17,9 +19,11 @@ from litestar import delete
 from litestar import get
 from litestar import post
 from litestar.exceptions import NotAuthorizedException
+from litestar.response.base import ASGIResponse
 
 from compute_space import OPENHOST_PROJECT_DIR
 from compute_space.config import Config
+from compute_space.core.apps import find_app_by_name
 from compute_space.core.auth.security_audit import ListeningPort
 from compute_space.core.auth.security_audit import external_ports
 from compute_space.core.auth.security_audit import is_sshd_active
@@ -31,6 +35,7 @@ from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
 from compute_space.core.logging import get_log_path
+from compute_space.core.logging import logger
 from compute_space.core.storage import is_guard_paused
 from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
@@ -38,8 +43,18 @@ from compute_space.core.updates import is_shutdown_pending
 from compute_space.web.auth.auth import require_app_auth
 from compute_space.web.auth.auth import require_owner_auth
 from compute_space.web.auth.auth import verify_app_auth
+from compute_space.web.helpers.proxy import proxy_http_request
 
 DEFAULT_TOKEN_EXPIRY_HOURS: float = 8.0
+
+
+def _asgi_json_error(error: str, message: str, status: int) -> ASGIResponse:
+    """JSON error as an already-encoded ASGIResponse (for handlers returning ASGIResponse)."""
+    return ASGIResponse(
+        body=json.dumps({"error": error, "message": message}).encode(),
+        status_code=status,
+        media_type=MediaType.JSON,
+    )
 
 
 # ─── attrs models ──────────────────────────────────────────────────────────
@@ -446,6 +461,47 @@ def custom_email_domain(config: Config) -> CustomEmailDomainResponse:
     )
 
 
+@post("/_email/inbound")
+async def email_inbound(request: Request[Any, Any, Any], config: Config) -> ASGIResponse:
+    """Receive an inbound message from the email proxy and hand it to the mailbox app.
+
+    The email proxy (openhost-email-proxy), after verifying the AWS SNS signature
+    and fetching the raw RFC822 from S3, POSTs it here (via the imbue-hosted-spaces
+    public door). We authenticate that hop with the per-instance credential the
+    instance already holds — the SMTP relay password, which is
+    HMAC-SHA256(RELAY_SECRET, zone) — presented as ``Authorization: Bearer <pw>``,
+    then forward the request to the mailbox app's own ``/_email/inbound`` on its
+    loopback port. The mailbox app performs the actual mailbox delivery.
+
+    Auth is constant-time. An unconfigured instance and a bad credential both
+    return 401 so we don't leak whether email is enabled here.
+    """
+    header = request.headers.get("Authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else ""
+    expected = config.email_smtp_relay_password or ""
+    ok = bool(config.email_enabled and expected and token and hmac.compare_digest(token, expected))
+    if not ok:
+        return _asgi_json_error("unauthorized", "invalid inbound credential", 401)
+
+    # Deliver to the first configured mailbox app that is deployed.
+    target_port: int | None = None
+    for name in config.email_mailbox_app_names:
+        app = find_app_by_name(name)
+        if app is not None:
+            target_port = app.local_port
+            break
+    if target_port is None:
+        logger.warning("Inbound mail received but no mailbox app is deployed; dropping")
+        return _asgi_json_error("no_mailbox_app", "no mailbox app deployed", 503)
+
+    return await proxy_http_request(
+        request,
+        target_port=target_port,
+        override_path="/_email/inbound",
+        read_timeout=30,
+    )
+
+
 @post("/restart_router", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
 def restart_router() -> OkResponse:
     """Restart the router systemd service to pick up code changes."""
@@ -480,6 +536,7 @@ system_routes = Router(
         api_diagnostics,
         email_relay_config,
         custom_email_domain,
+        email_inbound,
         restart_router,
     ],
 )
