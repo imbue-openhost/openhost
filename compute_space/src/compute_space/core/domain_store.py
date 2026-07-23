@@ -18,6 +18,7 @@ import attr
 from compute_space.config import Config
 from compute_space.config import Domain
 from compute_space.config import set_active_config
+from compute_space.core.logging import logger
 
 # Per-domain cert/acquisition status surfaced by /api/domains.
 CERT_STATUS_NONE = "none"  # TLS domain with no cert yet acquired
@@ -45,17 +46,24 @@ def load_records(config: Config) -> tuple[DomainRecord, ...]:
     path = config.runtime_domains_path
     if not path.exists():
         return ()
-    raw = json.loads(path.read_text() or "[]")
-    return tuple(
-        DomainRecord(
-            name=str(e["name"]).lower(),
-            tls=bool(e.get("tls", False)),
-            mdns=bool(e.get("mdns", False)),
-            cert_status=str(e.get("cert_status", CERT_STATUS_NONE)),
-            error_message=e.get("error_message"),
+    try:
+        raw = json.loads(path.read_text() or "[]")
+        return tuple(
+            DomainRecord(
+                name=str(e["name"]).lower(),
+                tls=bool(e.get("tls", False)),
+                mdns=bool(e.get("mdns", False)),
+                cert_status=str(e.get("cert_status", CERT_STATUS_NONE)),
+                error_message=e.get("error_message"),
+            )
+            for e in raw
         )
-        for e in raw
-    )
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        # A corrupt/partial file must not brick startup (rebuild_active_domains runs at boot) or
+        # every /api/domains call.  Ignore the runtime additions and keep serving the base/primary
+        # domains from config.toml; log loudly so the operator can repair or delete the file.
+        logger.error("Ignoring unreadable {} ({}); serving config-file domains only", path, exc)
+        return ()
 
 
 def save_records(config: Config, records: tuple[DomainRecord, ...]) -> None:

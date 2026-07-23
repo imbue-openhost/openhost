@@ -183,6 +183,10 @@ class Config:
         best: Domain | None = None
         for domain in self.all_domains:
             name = domain.name_no_port
+            if not name:
+                # An empty name would make `endswith("." + name)` match any trailing-dot host;
+                # skip it (only reachable via a misconfigured empty domain).
+                continue
             if host_no_port == name or host_no_port.endswith("." + name):
                 if best is None or len(name) > len(best.name_no_port):
                     best = domain
@@ -299,9 +303,12 @@ class Config:
         compatibility; additional public domains get a per-domain file under ``zones/``.  Each
         public domain is a separate authoritative zone, so its ACME DNS-01 ``_acme-challenge``
         TXT records must land in its own zone file (not the primary's)."""
-        if domain_name == self.zone_domain_no_port:
+        # Strip any port so the primary maps to the legacy path (callers may pass the full
+        # ``zone_domain``, which can include a port) and no ``:`` ends up in a filename.
+        name = domain_name.split(":")[0]
+        if name == self.zone_domain_no_port:
             return self.coredns_zonefile_path
-        return self.zones_dir / f"{domain_name}.zone"
+        return self.zones_dir / f"{name}.zone"
 
     @property
     def caddyfile_path(self) -> Path:

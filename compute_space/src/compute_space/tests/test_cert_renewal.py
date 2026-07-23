@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from compute_space.config import Config
 from compute_space.config import DefaultConfig
+from compute_space.config import Domain
 from compute_space.core.tls.renewal import RENEW_BEFORE
 from compute_space.core.tls.renewal import CertStatus
 from compute_space.core.tls.renewal import get_cert_status
@@ -122,3 +123,52 @@ def test_renew_failure_does_not_restart_caddy(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="ACME is down"):
         renew_cert_if_needed(config, lambda: calls.append("restart"), provision=_failing_provision)
     assert calls == []
+
+
+def _multidomain_config(tmp_path: Path, *secondaries: str) -> Config:
+    config = DefaultConfig(
+        zone_domain="test.example.com",
+        data_root_dir=str(tmp_path),
+        tls_enabled=True,
+        domains=(Domain("test.example.com", tls=True), *(Domain(s, tls=True) for s in secondaries)),
+    )
+    config.openhost_data_path.mkdir(parents=True)
+    # Primary cert valid so only the secondaries drive behavior.
+    _write_self_signed_cert(
+        config.tls_cert_path, config.tls_key_path, datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=60)
+    )
+    return config
+
+
+def test_renew_acquires_stale_secondary_domain(tmp_path: Path) -> None:
+    # A secondary TLS domain with no cert on disk must be acquired to its per-domain path, and
+    # Caddy restarted — without touching the (valid) primary.
+    config = _multidomain_config(tmp_path, "second.example.com")
+    calls: list[str] = []
+    acquired: list[str] = []
+    renewed = renew_cert_if_needed(
+        config,
+        lambda: calls.append("restart"),
+        provision=lambda c: calls.append("provision"),
+        acquire=lambda c, name, cp, kp: acquired.append(name),
+    )
+    assert renewed is True
+    assert acquired == ["second.example.com"]
+    assert calls == ["restart"]  # primary was OK, so provision was never called
+
+
+def test_renew_isolates_a_failing_secondary(tmp_path: Path) -> None:
+    # One secondary whose acquisition fails (e.g. DNS not delegated) must not block the others.
+    config = _multidomain_config(tmp_path, "bad.example.com", "good.example.com")
+    acquired: list[str] = []
+
+    def _acquire(c: Config, name: str, cert_path: Path, key_path: Path) -> None:
+        if name == "bad.example.com":
+            raise RuntimeError("DNS not delegated")
+        acquired.append(name)
+
+    calls: list[str] = []
+    renewed = renew_cert_if_needed(config, lambda: calls.append("restart"), provision=lambda c: None, acquire=_acquire)
+    assert renewed is True
+    assert acquired == ["good.example.com"]  # bad one failed but didn't abort the loop
+    assert calls == ["restart"]

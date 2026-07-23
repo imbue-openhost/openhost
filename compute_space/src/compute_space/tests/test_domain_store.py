@@ -42,6 +42,18 @@ def test_records_round_trip_through_json_file(tmp_path: Path) -> None:
     assert cfg.runtime_domains_path.exists()
 
 
+def test_load_records_tolerates_corrupt_json(tmp_path: Path) -> None:
+    # A corrupt/partial runtime_domains.json must not raise — rebuild_active_domains runs at boot
+    # and on every /api/domains call, so a raise here would brick the router.  Fail safe to ().
+    cfg = _cfg(tmp_path)
+    cfg.runtime_domains_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.runtime_domains_path.write_text('[{"name": "ok.example.com"}, {"nope": 1}]  <<garbage')
+    assert load_records(cfg) == ()
+    # The effective set still serves the base/primary domain rather than crashing.
+    set_base_domains((PRIMARY,))
+    assert effective_domains(cfg) == (PRIMARY,)
+
+
 def test_upsert_replaces_same_name(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     upsert_record(cfg, DomainRecord("host.example.org", tls=True, mdns=False))

@@ -22,6 +22,7 @@ from litestar.enums import MediaType
 
 from compute_space.config import Config
 from compute_space.config import Domain
+from compute_space.config import get_config
 from compute_space.core.caddy import reload_caddy_for_domains
 from compute_space.core.dns import reload_coredns_for_domains
 from compute_space.core.domain_store import CERT_STATUS_ACQUIRING
@@ -105,7 +106,9 @@ def _run_acquisition(config: Config, domain: Domain) -> None:
         set_record_status(config, domain.name_no_port, CERT_STATUS_ERROR, error_message=str(exc))
         return
     set_record_status(config, domain.name_no_port, CERT_STATUS_ACTIVE)
-    reload_caddy_for_domains(config)
+    # Regenerate Caddy from the *live* active config, not the snapshot captured at add time — a
+    # domain added while this (slow) acquisition ran would otherwise be dropped from the Caddyfile.
+    reload_caddy_for_domains(get_config())
 
 
 def _spawn_acquisition(config: Config, domain: Domain) -> None:

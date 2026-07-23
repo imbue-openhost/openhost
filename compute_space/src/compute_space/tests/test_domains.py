@@ -98,3 +98,22 @@ def test_match_domain_longest_suffix_wins() -> None:
         domains=(Domain(name="example.com", tls=True), Domain(name="host.example.com", tls=True)),
     )
     assert cfg.match_domain("app.host.example.com").name == "host.example.com"
+
+
+def test_match_domain_empty_name_never_matches() -> None:
+    # An empty domain name (misconfiguration) must not `endswith(".")`-match any trailing-dot host.
+    cfg = DefaultConfig(
+        zone_domain="host.example.com",
+        tls_enabled=True,
+        domains=(Domain(name="host.example.com", tls=True), Domain(name="", tls=False)),
+    )
+    assert cfg.match_domain("evil.com.") is None
+    assert cfg.match_domain("host.example.com").name == "host.example.com"
+
+
+def test_coredns_zonefile_path_for_primary_ignores_port() -> None:
+    # The primary must map to the legacy zonefile even when zone_domain carries a port, and no
+    # ':' may leak into a per-domain filename.
+    cfg = DefaultConfig(zone_domain="host.example.com:8443", tls_enabled=True)
+    assert cfg.coredns_zonefile_path_for(cfg.zone_domain) == cfg.coredns_zonefile_path
+    assert ":" not in cfg.coredns_zonefile_path_for("other.example.com:99").name
