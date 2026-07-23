@@ -94,9 +94,7 @@ def test_good_token_forwards_to_mailbox_app(client: TestClient) -> None:
     with (
         mock.patch(_VERIFY, lambda self, t: t == RELAY_PW),
         mock.patch("compute_space.web.routes.api.system.find_app_by_name", return_value=fake_app),
-        mock.patch(
-            "compute_space.web.routes.api.system.proxy_http_request", side_effect=fake_proxy
-        ) as proxied,
+        mock.patch("compute_space.web.routes.api.system.proxy_http_request", side_effect=fake_proxy) as proxied,
     ):
         resp = client.post("/_email/inbound", content=b"raw rfc822", headers=_auth(RELAY_PW))
 

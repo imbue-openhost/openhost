@@ -45,8 +45,12 @@ def test_fetch_and_cache(tmp_path: Path) -> None:
     provider = _provider(tmp_path, clock)
     with mock.patch.object(RelayCredentialProvider, "_fetch") as fetch:
         fetch.return_value = rc.RelayCredential(
-            smtp_relay_host="h", smtp_relay_port=465, smtp_relay_user="u",
-            smtp_relay_password="pw", zone_domain="z", custom_domain=None,
+            smtp_relay_host="h",
+            smtp_relay_port=465,
+            smtp_relay_user="u",
+            smtp_relay_password="pw",
+            zone_domain="z",
+            custom_domain=None,
         )
         c1 = provider.get()
         c2 = provider.get()  # within TTL -> cached, no second fetch
@@ -61,8 +65,12 @@ def test_fetch_and_cache(tmp_path: Path) -> None:
 def test_verify_inbound_token_constant_time_match(tmp_path: Path) -> None:
     provider = _provider(tmp_path, [0.0])
     cred = rc.RelayCredential(
-        smtp_relay_host="h", smtp_relay_port=465, smtp_relay_user="u",
-        smtp_relay_password="the-pw", zone_domain="z", custom_domain=None,
+        smtp_relay_host="h",
+        smtp_relay_port=465,
+        smtp_relay_user="u",
+        smtp_relay_password="the-pw",
+        zone_domain="z",
+        custom_domain=None,
     )
     with mock.patch.object(RelayCredentialProvider, "_fetch", return_value=cred):
         assert provider.verify_inbound_token("the-pw") is True
@@ -72,7 +80,5 @@ def test_verify_inbound_token_constant_time_match(tmp_path: Path) -> None:
 
 def test_verify_fails_closed_on_fetch_error(tmp_path: Path) -> None:
     provider = _provider(tmp_path, [0.0])
-    with mock.patch.object(
-        RelayCredentialProvider, "_fetch", side_effect=rc.RelayCredentialError("boom")
-    ):
+    with mock.patch.object(RelayCredentialProvider, "_fetch", side_effect=rc.RelayCredentialError("boom")):
         assert provider.verify_inbound_token("anything") is False
