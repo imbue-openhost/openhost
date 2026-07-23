@@ -58,13 +58,10 @@ email_dmarc_rua = "{{ email_dmarc_rua }}"
 # zone and publishes the same SPF/DKIM/DMARC/MX records into it.
 email_custom_domain = "{{ email_custom_domain }}"
 {% endif %}
-{% if email_smtp_relay_host is defined %}
-# SMTP smarthost the instance's mailbox server (Stalwart) relays outbound mail
-# through: the openhost-email-proxy's submission listener.  user is the zone,
-# password is the per-instance HMAC credential the provisioner derived.
-email_smtp_relay_host = "{{ email_smtp_relay_host }}"
-email_smtp_relay_port = {{ email_smtp_relay_port | default(587) }}
-email_smtp_relay_user = "{{ email_smtp_relay_user }}"
-email_smtp_relay_password = "{{ email_smtp_relay_password }}"
-{% endif %}
+# NOTE: the SMTP smarthost host/port + per-instance relay credential are NOT
+# stored here. The router fetches them at runtime from the frontend
+# (GET /api/email/relay-config), which has the backend derive
+# HMAC(RELAY_SECRET, zone). So nothing email-specific is baked into this config,
+# enabling email needs no secret injection, and rotating RELAY_SECRET requires no
+# re-provisioning.
 {% endif %}

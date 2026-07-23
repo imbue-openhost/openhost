@@ -123,18 +123,13 @@ class Config:
     # this instance is itself the proof of control; the SES identity's DKIM
     # verification is the second proof.
     email_custom_domain: str | None
-    # SMTP smarthost the mailbox app (Stalwart) relays outbound through — the
-    # email proxy's submission listener.  user is the zone; password is the
-    # per-instance HMAC credential (the only sensitive value).  Surfaced to the
-    # mailbox app on request via /api/email/relay-config (NOT injected into every
-    # app's environment) so the relay password stays scoped to the mailbox app.
-    email_smtp_relay_host: str | None
-    email_smtp_relay_port: int | None
-    email_smtp_relay_user: str | None
-    email_smtp_relay_password: str | None
     # App name(s) allowed to fetch the SMTP relay config from
-    # /api/email/relay-config.  Only the mailbox app needs the relay password, so
-    # the endpoint is scoped to these names (defaults to the built-in mailbox app).
+    # /api/email/relay-config.  The relay host/port + per-instance credential are
+    # NOT stored on the instance: the router fetches them at runtime from the
+    # frontend (which has the backend derive HMAC(RELAY_SECRET, zone)), so nothing
+    # email-specific is baked into instance config and rotating RELAY_SECRET needs
+    # no re-provisioning.  The endpoint is scoped to these mailbox app names so the
+    # credential only reaches the mailbox app.
     email_mailbox_app_names: list[str]
 
     ## coredns (only really needed if acquiring TLS certs via DNS-01, or if using NS dns records)
@@ -408,10 +403,6 @@ class DefaultConfig(Config):
     email_inbound_mx_host: str | None = None
     email_dmarc_rua: str | None = None
     email_custom_domain: str | None = None
-    email_smtp_relay_host: str | None = None
-    email_smtp_relay_port: int | None = None
-    email_smtp_relay_user: str | None = None
-    email_smtp_relay_password: str | None = None
     email_mailbox_app_names: list[str] = attr.Factory(lambda: ["stalwart-email-server"])
 
     start_caddy: bool = True

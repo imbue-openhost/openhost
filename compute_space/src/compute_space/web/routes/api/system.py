@@ -1,10 +1,10 @@
 import hashlib
-import hmac
 import json
 import os
 import secrets
 import sqlite3
 import subprocess
+import threading
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -31,6 +31,8 @@ from compute_space.core.auth.security_audit import list_listening_ports
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.diagnostics import PlatformDiagnostics
 from compute_space.core.diagnostics import collect_platform_diagnostics
+from compute_space.core.email.relay_credential import RelayCredentialError
+from compute_space.core.email.relay_credential import RelayCredentialProvider
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
@@ -55,6 +57,23 @@ def _asgi_json_error(error: str, message: str, status: int) -> ASGIResponse:
         status_code=status,
         media_type=MediaType.JSON,
     )
+
+
+# Process-wide relay-credential provider (caches the frontend-fetched credential
+# with a short TTL). One per config identity so tests with distinct configs don't
+# bleed into each other.
+_relay_providers: dict[int, RelayCredentialProvider] = {}
+_relay_providers_lock = threading.Lock()
+
+
+def get_relay_credential_provider(config: Config) -> RelayCredentialProvider:
+    key = id(config)
+    with _relay_providers_lock:
+        provider = _relay_providers.get(key)
+        if provider is None:
+            provider = RelayCredentialProvider(config=config)
+            _relay_providers[key] = provider
+        return provider
 
 
 # ─── attrs models ──────────────────────────────────────────────────────────
@@ -390,44 +409,53 @@ async def api_diagnostics(
     return Response(content=diagnostics, status_code=200, media_type=MediaType.JSON, headers=headers)
 
 
-@get("/api/email/relay-config", guards=[require_app_auth], sync_to_thread=False)
+@get("/api/email/relay-config", guards=[require_app_auth], sync_to_thread=True)
 def email_relay_config(
     request: Request[Any, Any, Any], db: sqlite3.Connection, config: Config
 ) -> Response[EmailRelayConfigResponse]:
     """Return the SMTP smarthost relay config for the mailbox app.
 
     Scoped: the request must be authenticated as an app (OPENHOST_APP_TOKEN), and
-    that app must be one of ``config.email_mailbox_app_names``. This keeps the
-    per-instance relay password out of every other app's environment — only the
-    mailbox app can fetch it, and only over the loopback router URL.
+    that app must be one of ``config.email_mailbox_app_names``. The relay host/port
+    + per-instance credential are fetched at runtime from the frontend (never baked
+    into this instance's config), then handed only to the mailbox app.
     """
     app_id = verify_app_auth(request)
     row = db.execute("SELECT name FROM apps WHERE app_id = ?", (app_id,)).fetchone()
     app_name = row["name"] if row is not None else None
     if app_name not in config.email_mailbox_app_names:
         raise NotAuthorizedException(detail="app is not authorized to fetch email relay config")
-    if not config.email_enabled or not config.email_smtp_relay_host:
-        return Response(
-            content=EmailRelayConfigResponse(
-                configured=False,
-                smtp_relay_host=None,
-                smtp_relay_port=None,
-                smtp_relay_user=None,
-                smtp_relay_password=None,
-                zone_domain=None,
-                custom_domain=None,
-            ),
-            media_type=MediaType.JSON,
-        )
+
+    unconfigured = Response(
+        content=EmailRelayConfigResponse(
+            configured=False,
+            smtp_relay_host=None,
+            smtp_relay_port=None,
+            smtp_relay_user=None,
+            smtp_relay_password=None,
+            zone_domain=None,
+            custom_domain=None,
+        ),
+        media_type=MediaType.JSON,
+    )
+    if not config.email_enabled:
+        return unconfigured
+    try:
+        cred = get_relay_credential_provider(config).get()
+    except RelayCredentialError as e:
+        logger.warning(f"relay-config: could not fetch credential from frontend: {e}")
+        return unconfigured
+    if cred is None:
+        return unconfigured
     return Response(
         content=EmailRelayConfigResponse(
             configured=True,
-            smtp_relay_host=config.email_smtp_relay_host,
-            smtp_relay_port=config.email_smtp_relay_port,
-            smtp_relay_user=config.email_smtp_relay_user,
-            smtp_relay_password=config.email_smtp_relay_password,
-            zone_domain=config.zone_domain_no_port,
-            custom_domain=config.email_custom_domain_normalized,
+            smtp_relay_host=cred.smtp_relay_host,
+            smtp_relay_port=cred.smtp_relay_port,
+            smtp_relay_user=cred.smtp_relay_user,
+            smtp_relay_password=cred.smtp_relay_password,
+            zone_domain=cred.zone_domain,
+            custom_domain=cred.custom_domain,
         ),
         media_type=MediaType.JSON,
     )
@@ -478,9 +506,10 @@ async def email_inbound(request: Request[Any, Any, Any], config: Config) -> ASGI
     """
     header = request.headers.get("Authorization", "")
     token = header[7:] if header.startswith("Bearer ") else ""
-    expected = config.email_smtp_relay_password or ""
-    ok = bool(config.email_enabled and expected and token and hmac.compare_digest(token, expected))
-    if not ok:
+    # Verify against this instance's relay password, resolved at runtime from the
+    # frontend (HMAC(RELAY_SECRET, zone)); no secret is stored in config. Fails
+    # closed (401) on a fetch blip so we never accept unauthenticated inbound.
+    if not config.email_enabled or not get_relay_credential_provider(config).verify_inbound_token(token):
         return _asgi_json_error("unauthorized", "invalid inbound credential", 401)
 
     # Deliver to the first configured mailbox app that is deployed.

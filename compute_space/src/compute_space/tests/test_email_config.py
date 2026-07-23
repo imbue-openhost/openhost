@@ -15,6 +15,7 @@ from litestar.exceptions import NotAuthorizedException
 
 import compute_space.web.routes.api.system as sys_mod
 from compute_space.config import DefaultConfig
+from compute_space.core.email.relay_credential import RelayCredential
 from compute_space.web.routes.api.system import custom_email_domain
 
 
@@ -77,19 +78,13 @@ def test_email_config_round_trips_through_toml() -> None:
     assert 'email_inbound_mx_host = "inbound-smtp.us-west-2.amazonaws.com"' in rendered
 
 
-def test_email_smtp_relay_fields_round_trip() -> None:
-    cfg = DefaultConfig(zone_domain="x.example.com").evolve(
-        **_full_email_kwargs(),
-        email_smtp_relay_host="openhost-email-proxy.internal",
-        email_smtp_relay_port=587,
-        email_smtp_relay_user="x.example.com",
-        email_smtp_relay_password="hmac-pw",
-    )
+def test_email_config_has_no_baked_in_relay_secret() -> None:
+    # The relay host/port/user/password are fetched at runtime from the frontend,
+    # never rendered into the instance config.
+    cfg = DefaultConfig(zone_domain="x.example.com").evolve(**_full_email_kwargs())
     rendered = cfg.to_toml_str()
-    assert 'email_smtp_relay_host = "openhost-email-proxy.internal"' in rendered
-    assert "email_smtp_relay_port = 587" in rendered
-    assert 'email_smtp_relay_user = "x.example.com"' in rendered
-    assert 'email_smtp_relay_password = "hmac-pw"' in rendered
+    assert "email_smtp_relay_password" not in rendered
+    assert "email_smtp_relay_host" not in rendered
 
 
 def test_custom_domain_none_by_default() -> None:
@@ -197,16 +192,28 @@ def test_relay_config_returns_creds_to_mailbox_app(monkeypatch) -> None:
     monkeypatch.setattr(sys_mod, "verify_app_auth", lambda request: "app-mail")
     cfg = DefaultConfig(zone_domain="alice.selfhost.imbue.com").evolve(
         **_full_email_kwargs(),
-        email_smtp_relay_host="openhost-email-proxy.internal",
-        email_smtp_relay_port=587,
-        email_smtp_relay_user="alice.selfhost.imbue.com",
-        email_smtp_relay_password="hmac-pw",
         email_custom_domain="mail.mydomain.com",
     )
+    # The router fetches the credential at runtime from the frontend; stub the
+    # provider so we don't need a live frontend.
+    cred = RelayCredential(
+        smtp_relay_host="openhost-email-proxy.fly.dev",
+        smtp_relay_port=465,
+        smtp_relay_user="alice.selfhost.imbue.com",
+        smtp_relay_password="hmac-pw",
+        zone_domain="alice.selfhost.imbue.com",
+        custom_domain="mail.mydomain.com",
+    )
+
+    class _StubProvider:
+        def get(self) -> RelayCredential:
+            return cred
+
+    monkeypatch.setattr(sys_mod, "get_relay_credential_provider", lambda config: _StubProvider())
     resp = sys_mod.email_relay_config.fn(object(), _FakeDB("stalwart-email-server"), cfg)  # type: ignore[attr-defined]
     body = resp.content
     assert body.configured is True
-    assert body.smtp_relay_host == "openhost-email-proxy.internal"
+    assert body.smtp_relay_host == "openhost-email-proxy.fly.dev"
     assert body.smtp_relay_password == "hmac-pw"
     assert body.zone_domain == "alice.selfhost.imbue.com"
     assert body.custom_domain == "mail.mydomain.com"
