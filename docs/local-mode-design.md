@@ -210,6 +210,12 @@ domains at once**. Remaining gaps for a clean end-to-end two-public-domain test:
   Caddy's internal CA (`tls internal`) while `acquiring`, then flips to the real cert
   (status `active`). Without DNS delegation, acquisition reports `error` and it stays
   on the self-signed cert.
+- **Authoritative DNS.** ✅ CoreDNS is now authoritative for **every public (non-mDNS)
+  domain**, not just the primary — one server block + zone file per domain, restarted on
+  `POST/DELETE /api/domains`. Before this, a delegated secondary (NS → this box) got a
+  bare `REFUSED` from CoreDNS because only the primary zone was configured (fixed
+  2026-07-23). Each domain's ACME DNS-01 `_acme-challenge` TXT now lands in **its own**
+  zone file, so DNS-01 works for secondaries too.
 - **Phase 2 is done** ✅ → login, cookies, and dashboard links now stay on the
   arriving domain. So the *second* domain no longer bounces you to the primary;
   the only remaining gap for a fully first-class second **public** domain is the
@@ -472,7 +478,8 @@ Domain) · ⚙️ **config / provisioning** entry point.
 **F. Caddy config generation** 🟡 — `core/caddy.py:10,12,83,87` `generate_caddyfile(tls_enabled,…)`
 
 **G. Background / non-request** 🟢 (keep = primary Domain; `.local` never uses these)
-- `web/start.py:126` start_coredns; `:134-146` TLS gating 🟡
+- `web/start.py:126` start_coredns 🟠 (now iterates **all public domains**, not just the
+  primary — CoreDNS is authoritative for every non-mDNS domain; see 2026-07-23 log) · `:134-146` TLS gating 🟡
 - `core/dns.py:95,127,139,149,156,171` · `core/tls/provision.py:28,54` ·
   `core/tls/renewal.py:58,61` · `core/tls/util.py:47,58,181-182` ·
   `core/tls/acquire_cert_broker.py:72,81`
@@ -520,6 +527,17 @@ per-request logic.
   ACME acquisition is shared by initial setup and later domain addition; per-domain
   cert storage; a runtime `domains` store merged with the config-file set. This
   replaces the `tls internal` fallback for any domain that can get a real cert.
+- **2026-07-23** — **CoreDNS made multi-zone.** The DNS layer (group G) was the last
+  single-domain holdout: `start_coredns` took one `zone_domain` and the Corefile had one
+  server block, so a *delegated* secondary domain got `REFUSED` (the box wasn't
+  authoritative for it) even though routing/Caddy/certs were already per-domain. Now
+  `start_coredns(zones, …)` emits one authoritative server block + zone file per **public**
+  (non-mDNS) domain (`public_dns_zones(config)`), each ACME DNS-01 challenge writes to its
+  own zone file (`Config.coredns_zonefile_path_for`), and `/api/domains` regenerates +
+  restarts CoreDNS (new `CoreDnsProcess`/`reload_coredns_for_domains`, mirroring the active
+  Caddy registry) — before kicking off acquisition, so the challenge zone is already served.
+  mDNS `.local` domains stay out of CoreDNS entirely. Also switched the DNS Jinja env to
+  `StrictUndefined` (a template typo silently rendered a blank `file` path).
 - **2026-07-21** — Phase 3b persistence: runtime-added domains go in a router-owned
   `runtime_domains.json` (like `default_apps.json`), **not a DB table** (dropped the
   planned migration — a small single-owner list isn't relational data) and **not

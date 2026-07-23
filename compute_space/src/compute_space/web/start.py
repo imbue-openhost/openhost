@@ -20,7 +20,12 @@ from compute_space.core.caddy import CaddyProcess
 from compute_space.core.caddy import config_cert_resolver
 from compute_space.core.caddy import set_active_caddy
 from compute_space.core.caddy import start_caddy
+from compute_space.core.dns import CoreDnsProcess
+from compute_space.core.dns import public_dns_zones
+from compute_space.core.dns import set_active_coredns
 from compute_space.core.dns import start_coredns
+from compute_space.core.domain_store import rebuild_active_domains
+from compute_space.core.domain_store import set_base_domains
 from compute_space.core.logging import logger
 from compute_space.core.logging import setup_file_logging
 from compute_space.core.pinned_binary import get_pinned_binary
@@ -118,20 +123,28 @@ def main() -> None:
     config = load_config()
     config.make_all_dirs()
     _bootstrap(config)
+    # Fold runtime-added domains (from /api/domains, persisted in runtime_domains.json) into the
+    # domain set *before* starting CoreDNS/Caddy, so a domain added at runtime is served again
+    # (DNS zone + Caddy site) after a restart — not merely present in the in-memory routing config.
+    # create_app re-folds later; the fold is idempotent (deduped by name).
+    set_base_domains(config.all_domains)
+    config = rebuild_active_domains(config)
     children: list[subprocess.Popen[bytes]] = []
 
+    coredns: CoreDnsProcess | None = None
     if config.coredns_enabled:
         if not config.public_ip:
             raise RuntimeError("Public IP must be set in config to use CoreDNS")
-        children.append(
-            start_coredns(
-                config.zone_domain,
-                config.public_ip,
-                config.coredns_corefile_path,
-                config.coredns_zonefile_path,
-                coredns_bin=_ensure_coredns_binary(config),
-            )
+        # Authoritative for every public (non-mDNS) domain the instance answers on, so a
+        # secondary domain delegated to this box resolves too — not just the primary.
+        coredns = start_coredns(
+            public_dns_zones(config),
+            config.public_ip,
+            config.coredns_corefile_path,
+            coredns_bin=_ensure_coredns_binary(config),
         )
+        # Register so /api/domains can regenerate zones + restart CoreDNS when a domain is added.
+        set_active_coredns(coredns)
 
     if config.tls_enabled:
         _ensure_tls_cert(config)
@@ -159,8 +172,9 @@ def main() -> None:
             )
 
     def _all_children() -> list[subprocess.Popen[bytes]]:
-        # Read caddy.proc at shutdown time: restart() may have replaced it.
-        return children + ([caddy.proc] if caddy is not None else [])
+        # Read caddy.proc / coredns.proc at shutdown time: restart() may have replaced them.
+        live = [p.proc for p in (caddy, coredns) if p is not None]
+        return children + live
 
     hypercorn_config = hypercorn.config.Config()
     # Bind the primary address (127.0.0.1 in production) plus the container

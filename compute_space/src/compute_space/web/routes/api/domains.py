@@ -23,6 +23,7 @@ from litestar.enums import MediaType
 from compute_space.config import Config
 from compute_space.config import Domain
 from compute_space.core.caddy import reload_caddy_for_domains
+from compute_space.core.dns import reload_coredns_for_domains
 from compute_space.core.domain_store import CERT_STATUS_ACQUIRING
 from compute_space.core.domain_store import CERT_STATUS_ACTIVE
 from compute_space.core.domain_store import CERT_STATUS_ERROR
@@ -151,6 +152,11 @@ async def add_domain(data: AddDomainRequest, config: Config) -> Response[DomainI
     )
     new_config = rebuild_active_domains(config)
     reload_caddy_for_domains(new_config)  # serve the domain now (tls internal for TLS domains)
+    if not data.mdns:
+        # Make CoreDNS authoritative for the new public zone *before* acquisition: DNS-01 writes
+        # the _acme-challenge TXT into this domain's zone file, which only resolves once CoreDNS
+        # serves the zone.  (mDNS domains never touch CoreDNS.)
+        reload_coredns_for_domains(new_config)
     if data.tls:
         _spawn_acquisition(new_config, domain)
     return Response(_domain_info(new_config, domain), status_code=202, media_type=MediaType.JSON)
@@ -161,10 +167,14 @@ async def remove_domain(name: str, config: Config) -> Response[DomainListRespons
     name = name.strip().lower()
     if name == config.primary_domain.name_no_port:
         return Response(ErrorResponse(error="cannot remove the primary domain"), status_code=400)
+    removed = get_record(config, name)
     if not remove_record(config, name):
         return Response(ErrorResponse(error="domain not found"), status_code=404)
     new_config = rebuild_active_domains(config)
     reload_caddy_for_domains(new_config)
+    if removed is not None and not removed.mdns:
+        # Drop the zone from CoreDNS so it stops answering for the removed public domain.
+        reload_coredns_for_domains(new_config)
     return Response(
         DomainListResponse(domains=[_domain_info(new_config, d) for d in new_config.all_domains]),
         status_code=200,

@@ -15,9 +15,10 @@ def acquire_cert_for_domain(config: Config, domain: str, cert_path: Path, key_pa
     install it at ``cert_path``/``key_path``.
 
     The provider dispatch (BYO-ACME vs the openhost-cert-api broker) and DNS-01 mechanics are
-    identical for every domain; only the domain name and output paths vary.  Caller must ensure
-    CoreDNS is running (both providers answer DNS-01 challenges through the local zone file) and
-    that ``cert_path``'s parent directory exists.
+    identical for every domain; only the domain name and output paths vary.  The DNS-01 challenge
+    TXT records go into ``domain``'s own zone file (each public domain is a separate authoritative
+    zone), so the challenge is answerable for secondary domains too.  Caller must ensure CoreDNS is
+    running and authoritative for ``domain``, and that ``cert_path``'s parent directory exists.
 
     The cert_provider value and its required settings are validated when the Config is constructed
     (Config.__attrs_post_init__), so here we only narrow the optional fields for the type checker.
@@ -31,7 +32,7 @@ def acquire_cert_for_domain(config: Config, domain: str, cert_path: Path, key_pa
                 cert_path=cert_path,
                 key_path=key_path,
                 acme_account_key_path=Path(config.acme_account_key_path),
-                coredns_zonefile_path=config.coredns_zonefile_path,
+                coredns_zonefile_path=config.coredns_zonefile_path_for(domain),
                 acme_email=config.acme_email,
                 directory_url=config.acme_directory_url,
             )
@@ -56,7 +57,7 @@ def acquire_cert_for_domain(config: Config, domain: str, cert_path: Path, key_pa
                     domain=domain,
                     cert_path=cert_path,
                     key_path=key_path,
-                    coredns_zonefile_path=config.coredns_zonefile_path,
+                    coredns_zonefile_path=config.coredns_zonefile_path_for(domain),
                     client=client,
                 )
 
