@@ -155,6 +155,10 @@ See [OAuth in Apps](./oauth.md) for an example - getting oauth tokens to externa
 
 For apps that should be available to multiple users and require more than trivial publicly routes or token-protected public routes, see [User Identity](./user_identity.md) for how to implement this with the OpenHost user identity provider.
 
+### Federation
+
+Apps can connect to the same app (or a compatible one) running on *someone else's* zone. An app declares the federation protocol it implements — identified by a spec URL — in the `[federation]` section of its manifest and serves its own connect page. The zone's `/redirect/federation/connect` page (reached via the shared my.* redirect domain, which only forwards `/redirect/...` links, verbatim) routes incoming invites to installed apps declaring the matching spec URL. See the `[federation]` section of the [manifest spec](manifest_spec.md) for details.
+
 
 ## Development / Debugging workflow
 

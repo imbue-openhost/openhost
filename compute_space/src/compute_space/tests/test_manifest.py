@@ -798,3 +798,44 @@ class TestShmMb:
         toml = MINIMAL + 'shm_mb = "big"\n'
         with pytest.raises(ValueError, match="shm_mb"):
             parse_manifest_from_string(toml)
+
+
+class TestFederation:
+    """[federation] section."""
+
+    def test_absent_section_defaults(self):
+        manifest = parse_manifest_from_string(MINIMAL)
+        assert manifest.federation_url is None
+        assert manifest.federation_connect_path == "/federation/connect"
+
+    def test_url_and_connect_path_round_trip(self):
+        toml = MINIMAL + '\n[federation]\nurl = "https://example.com/spec.md"\nconnect_path = "/fed/join"\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.federation_url == "https://example.com/spec.md"
+        assert manifest.federation_connect_path == "/fed/join"
+
+    def test_connect_path_defaults_when_omitted(self):
+        toml = MINIMAL + '\n[federation]\nurl = "https://example.com/spec.md"\n'
+        manifest = parse_manifest_from_string(toml)
+        assert manifest.federation_url == "https://example.com/spec.md"
+        assert manifest.federation_connect_path == "/federation/connect"
+
+    def test_section_without_url_rejected(self):
+        toml = MINIMAL + '\n[federation]\nconnect_path = "/fed/join"\n'
+        with pytest.raises(ValueError, match=r"\[federation\] requires a non-empty string 'url'"):
+            parse_manifest_from_string(toml)
+
+    def test_empty_url_rejected(self):
+        toml = MINIMAL + '\n[federation]\nurl = ""\n'
+        with pytest.raises(ValueError, match=r"\[federation\] requires a non-empty string 'url'"):
+            parse_manifest_from_string(toml)
+
+    def test_connect_path_without_leading_slash_rejected(self):
+        toml = MINIMAL + '\n[federation]\nurl = "https://example.com/spec.md"\nconnect_path = "fed/join"\n'
+        with pytest.raises(ValueError, match="connect_path"):
+            parse_manifest_from_string(toml)
+
+    def test_non_string_connect_path_rejected(self):
+        toml = MINIMAL + '\n[federation]\nurl = "https://example.com/spec.md"\nconnect_path = 3\n'
+        with pytest.raises(ValueError, match="connect_path"):
+            parse_manifest_from_string(toml)

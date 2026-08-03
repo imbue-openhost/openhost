@@ -1,0 +1,26 @@
+{% extends "layout.html" %}
+{% block title_suffix %} — Federation Invite{% endblock %}
+{% block content %}
+<h2>Federation invite</h2>
+
+<p>
+  {% if source_host %}<strong>{{ source_host }}</strong> has invited you{% else %}You have been invited{% endif %}
+  to connect using the protocol
+  {# Only linkify http(s) specs — the spec comes from the invite URL and could be any scheme. #}
+  {% if spec.startswith("http://") or spec.startswith("https://") %}<a href="{{ spec }}">{{ spec }}</a>{% else %}<code>{{ spec }}</code>{% endif %}.
+</p>
+
+{% if matching_apps %}
+<p>Choose an app to connect with. Nothing is changed until you confirm inside the app.</p>
+<ul>
+  {% for app in matching_apps %}
+  <li style="margin: 0.5em 0;"><a class="btn btn-primary" href="{{ app.connect_url }}">Connect with {{ app.name }}</a></li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>No installed app serves this protocol.</p>
+{% if catalog_url %}
+<p><a class="btn btn-primary" href="{{ catalog_url }}">Find one in the catalog</a></p>
+{% endif %}
+{% endif %}
+{% endblock %}
