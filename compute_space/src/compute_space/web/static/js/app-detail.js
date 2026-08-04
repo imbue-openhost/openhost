@@ -108,16 +108,19 @@ function appAction(url, data, opts) {
   })
     .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
     .then(function(res) {
-      // An update whose manifest declares new service permissions is refused
-      // until the owner explicitly approves them (mirrors install-time
-      // approval). Prompt, and on confirmation re-issue the request with
-      // approve_new_permissions so the grants are written before the reload.
-      if (res.ok && res.data && res.data.permissions_required) {
+      // An update whose pulled manifest differs from the running one is refused
+      // until the owner reviews the changes (mirrors install-time approval).
+      // Stash the grouped diff and hand off to the full-page review, which
+      // re-issues the reload with approve_new_permissions once approved.
+      if (res.ok && res.data && res.data.review_required) {
         if (clear) clear();
-        if (confirmNewPermissions(res.data.permissions_required)) {
-          var approved = Object.assign({}, data || {}, {approve_new_permissions: true});
-          appAction(url, approved, opts);
-        }
+        try {
+          sessionStorage.setItem('openhost.updateReview.' + config.appId, JSON.stringify({
+            settings_changed: res.data.settings_changed || [],
+            permissions_required: res.data.permissions_required || [],
+          }));
+        } catch (e) { /* sessionStorage unavailable; review page shows a fallback */ }
+        window.location.href = config.updateReviewUrl;
         return;
       }
       if (!res.ok || (res.data && res.data.error)) {
@@ -133,20 +136,6 @@ function appAction(url, data, opts) {
       if (clear) clear('Request failed');
       alert('Request failed');
     });
-}
-
-// Show the owner exactly which new permissions an update wants and get an
-// explicit yes/no. Returns true if the owner approved.
-function confirmNewPermissions(perms) {
-  var lines = perms.map(function(p) {
-    var label = p.shortname ? (p.shortname + ' (' + p.service_url + ')') : p.service_url;
-    return '\u2022 ' + label + ': ' + JSON.stringify(p.grant);
-  });
-  return confirm(
-    'This update requests new service permissions:\n\n' +
-    lines.join('\n') +
-    '\n\nApprove these and continue updating?'
-  );
 }
 
 // ─── Toast ───

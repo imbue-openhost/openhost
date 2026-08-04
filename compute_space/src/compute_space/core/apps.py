@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable
+from typing import Any
 
 import attr
 import httpx
@@ -45,6 +46,7 @@ from compute_space.core.manifest import AppLink
 from compute_space.core.manifest import AppManifest
 from compute_space.core.manifest import PortMapping
 from compute_space.core.manifest import parse_manifest
+from compute_space.core.manifest import parse_manifest_from_string
 from compute_space.core.oauth import OAuthAuthorizationRequired
 from compute_space.core.oauth import get_oauth_token
 from compute_space.core.ports import allocate_port
@@ -205,6 +207,23 @@ def github_token_git_config(token: str | None) -> list[str]:
     return ["-c", f"url.https://{token}@github.com/.insteadOf=https://github.com/"]
 
 
+async def _remote_ref_is_commit(clone_url: str, ref: str, github_token: str | None) -> bool:
+    """Whether ``ref`` must be checked out as a commit rather than passed to
+    ``git clone --branch`` (which only accepts a branch or tag). Asks the remote
+    whether ``ref`` names a branch or tag; if it doesn't, it's a commit. A failed
+    probe defaults to the branch/tag path so clone can surface the real error."""
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["git", *github_token_git_config(github_token), "ls-remote", "--heads", "--tags", clone_url, ref],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return False
+    return not result.stdout.strip()
+
+
 async def clone_and_read_manifest(
     repo_url: str, github_token: str | None = None
 ) -> tuple[AppManifest | None, str | None, str | None]:
@@ -244,6 +263,10 @@ async def clone_and_read_manifest(
     tmp_parent = tempfile.mkdtemp(prefix="openhost-clone-")
     clone_dir = os.path.join(tmp_parent, "repo")
     try:
+        # `git clone --branch` accepts a branch or tag but NOT a bare commit
+        # hash, so a commit ref clones the default branch and is checked out
+        # below; branch/tag refs use --branch here.
+        ref_is_commit = ref is not None and await _remote_ref_is_commit(clone_url, ref, github_token)
         clone_cmd = [
             "git",
             *github_token_git_config(github_token),
@@ -251,7 +274,7 @@ async def clone_and_read_manifest(
             "--recurse-submodules",
             "--shallow-submodules",
         ]
-        if ref:
+        if ref and not ref_is_commit:
             clone_cmd.extend(["--branch", ref])
         clone_cmd.extend([clone_url, clone_dir])
         result = await asyncio.to_thread(subprocess.run, clone_cmd, capture_output=True, text=True, timeout=120)
@@ -280,6 +303,32 @@ async def clone_and_read_manifest(
                     cwd=clone_dir,
                     capture_output=True,
                     timeout=30,
+                )
+        # A commit-hash ref couldn't be passed to --branch; check it out now
+        # (the full clone already has the object) and resync submodules to it.
+        if ref_is_commit:
+            assert ref is not None
+            checkout = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "checkout", "--force", ref],
+                cwd=clone_dir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if checkout.returncode != 0:
+                rmtree_with_sudo_fallback(tmp_parent, raise_on_failure=False)
+                stderr = checkout.stderr.strip()
+                if github_token:
+                    stderr = stderr.replace(github_token, "***")
+                return None, None, f"Git checkout of {ref} failed: {stderr}"
+            if os.path.exists(os.path.join(clone_dir, ".gitmodules")):
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", *github_token_git_config(github_token), "submodule", "update", "--init", "--recursive"],
+                    cwd=clone_dir,
+                    capture_output=True,
+                    timeout=120,
                 )
         try:
             manifest = parse_manifest(clone_dir)
@@ -412,6 +461,122 @@ def manifest_ungranted_permissions_v2(
             seen.add(key)
             ungranted.append(PermissionGrant(service_url=perm.service, grant=grant_payload))
     return ungranted
+
+
+def manifest_newly_declared_permissions_v2(
+    manifest: AppManifest,
+    granted: list[PermissionRecord],
+    previous_manifest_raw: str | None,
+) -> list[PermissionGrant]:
+    """The permissions an update *newly* declares: in the new manifest, not already
+    granted, and not declared by the previously-deployed manifest.
+
+    This is the update gate's delta. Gating on it — rather than on grant state
+    (see :func:`manifest_ungranted_permissions_v2`) — means a permission the owner
+    deliberately revoked is NOT re-surfaced for approval on an unrelated update:
+    it was declared by the previous manifest too, so it isn't part of the delta.
+    Only grants the app *author* actually added are gated.
+
+    Scope is permissions only; other manifest changes (ports, resources, image,
+    …) always apply on update regardless of this diff.
+
+    ``previous_manifest_raw`` is the currently-deployed manifest text (``apps.manifest_raw``).
+    When it is absent or unparseable, this falls back to the full grant-state diff
+    (equivalent to :func:`manifest_ungranted_permissions_v2`) — the safe default,
+    since it never silently grants something the owner hasn't seen.
+    """
+    ungranted = manifest_ungranted_permissions_v2(manifest, granted)
+    if not previous_manifest_raw:
+        return ungranted
+    try:
+        previous_manifest = parse_manifest_from_string(previous_manifest_raw)
+    except ValueError:
+        return ungranted
+    previously_declared = {
+        _permission_key(pg.service_url, pg.grant) for pg in all_manifest_permissions_v2(previous_manifest)
+    }
+    return [pg for pg in ungranted if _permission_key(pg.service_url, pg.grant) not in previously_declared]
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class SettingChange:
+    """A single manifest setting whose value changed between two deployments."""
+
+    group: str
+    label: str
+    old: str
+    new: str
+
+
+# Manifest fields surfaced in the update review, as (attr_name, group, label).
+# Excludes name (app identity, renamed separately), raw_toml, and
+# consumes_services_v2 (diffed by manifest_newly_declared_permissions_v2).
+_REVIEWED_SETTINGS: list[tuple[str, str, str]] = [
+    ("version", "App", "Version"),
+    ("description", "App", "Description"),
+    ("authors", "App", "Authors"),
+    ("hidden", "App", "Hidden"),
+    ("runtime_type", "App", "Runtime type"),
+    ("container_image", "Container", "Image"),
+    ("container_port", "Container", "Container port"),
+    ("container_command", "Container", "Command"),
+    ("capabilities", "Container", "Linux capabilities"),
+    ("devices", "Container", "Devices"),
+    ("shm_mb", "Container", "Shared memory (MB)"),
+    ("network_host", "Container", "Host networking"),
+    ("port_mappings", "Ports", "Port mappings"),
+    ("memory_mb", "Resources", "Memory (MB)"),
+    ("cpu_cores", "Resources", "CPU cores"),
+    ("gpu", "Resources", "GPU"),
+    ("health_check", "Routing", "Health check"),
+    ("public_paths", "Routing", "Public paths"),
+    ("links", "Routing", "Links"),
+    ("sqlite_dbs", "Data", "SQLite databases"),
+    ("app_data", "Data", "Permanent data"),
+    ("app_temp_data", "Data", "Temporary data"),
+    ("app_archive", "Data", "Archive data"),
+    ("access_vm_data", "Data", "Access VM data"),
+    ("access_all_app_data", "Data", "Access all app data"),
+    ("access_all_archive", "Data", "Access all archive"),
+    ("access_all_data", "Data", "Access all data"),
+    ("provides_services_v2", "Services", "Services provided"),
+]
+
+
+def _render_setting_value(value: Any) -> str:
+    """One-line human rendering of a manifest field value for the update diff."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, list):
+        return ", ".join(_render_setting_value(v) for v in value) if value else "(none)"
+    if attr.has(type(value)):
+        return json.dumps(attr.asdict(value), sort_keys=True)
+    return str(value)
+
+
+def manifest_settings_changes(manifest: AppManifest, previous_manifest_raw: str | None) -> list[SettingChange]:
+    """Grouped diff of reviewed manifest settings changed vs the previously-deployed
+    manifest. Empty when there's no parseable previous manifest; permissions excluded."""
+    if not previous_manifest_raw:
+        return []
+    try:
+        previous = parse_manifest_from_string(previous_manifest_raw)
+    except ValueError:
+        return []
+    changes: list[SettingChange] = []
+    for field, group, label in _REVIEWED_SETTINGS:
+        old_val = getattr(previous, field)
+        new_val = getattr(manifest, field)
+        if old_val != new_val:
+            changes.append(
+                SettingChange(
+                    group=group,
+                    label=label,
+                    old=_render_setting_value(old_val),
+                    new=_render_setting_value(new_val),
+                )
+            )
+    return changes
 
 
 def insert_and_deploy(

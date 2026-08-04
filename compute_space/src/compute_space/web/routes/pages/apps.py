@@ -71,7 +71,10 @@ async def app_detail(
     # so the "needs approval" set the owner sees here matches what an update
     # would refuse to apply.
     granted_records = get_all_permissions_v2(consumer_app_id=app_id)
-    granted_perms = [{"service_url": p.service_url, "grant": p.grant, "scope": p.scope} for p in granted_records]
+    granted_perms = [
+        {"service_url": p.service_url, "grant": p.grant, "scope": p.scope, "provider_app_id": p.provider_app_id}
+        for p in granted_records
+    ]
     ungranted_perms: list[dict[str, object]] = []
     manifest_raw = app_row["manifest_raw"]
     if manifest_raw:
@@ -197,7 +200,23 @@ async def add_app(db: sqlite3.Connection, repo: str = "", next: str = "") -> Tem
     )
 
 
+@get("/update_review/{app_name:str}", guards=[require_owner_auth])
+async def update_review(app_name: str, db: sqlite3.Connection) -> Template:
+    """Full-page review of the settings an update changes, mirroring the deploy
+    page. The diff itself is produced by the reload gate and handed to this page
+    by the browser (sessionStorage); the page validates the app exists."""
+    if not is_valid_app_name(app_name):
+        raise HTTPException(detail="Invalid app name", status_code=400)
+    app_row = db.execute("SELECT app_id, name FROM apps WHERE name = ?", (app_name,)).fetchone()
+    if not app_row:
+        raise HTTPException(detail="App not found", status_code=404)
+    return Template(
+        template_name="update_review.html",
+        context={"app": {"app_id": app_row["app_id"], "name": app_row["name"]}},
+    )
+
+
 pages_apps_routes = Router(
     path="/",
-    route_handlers=[dashboard, app_detail, add_app],
+    route_handlers=[dashboard, app_detail, add_app, update_review],
 )
