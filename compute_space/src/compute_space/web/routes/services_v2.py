@@ -66,6 +66,9 @@ from compute_space.web.auth.auth import require_app_auth
 from compute_space.web.auth.auth import verify_app_auth
 from compute_space.web.helpers.proxy import proxy_http_request
 from compute_space.web.helpers.proxy import proxy_websocket_request
+from compute_space.web.openapi import APP_SCHEME
+from compute_space.web.openapi import CROSS_APP_TAG
+from compute_space.web.routes.api.responses import response_spec
 
 _CALL_PATH = "/api/services/v2/call/{shortname:str}/{rest:path}"
 _HTTP_METHODS = [
@@ -86,10 +89,18 @@ def _json_ok(body: dict[str, Any]) -> Response[dict[str, Any]]:
     return Response(content=body, status_code=200, media_type=MediaType.JSON)
 
 
+@attr.s(auto_attribs=True, frozen=True)
+class ProxyError:
+    """Router-generated failure, as opposed to anything the provider returned."""
+
+    error: str
+    message: str
+
+
 def _asgi_json_error(error: str, message: str, status: int) -> ASGIResponse:
     """JSON error as an already-encoded ASGIResponse — for handlers that return ASGIResponse."""
     return ASGIResponse(
-        body=json.dumps({"error": error, "message": message}).encode(),
+        body=json.dumps(attr.asdict(ProxyError(error=error, message=message))).encode(),
         status_code=status,
         media_type=MediaType.JSON,
     )
@@ -196,14 +207,15 @@ def _add_cors_response_headers(response: ASGIResponse, request: Request[Any, Any
             response.headers.add(k, v)
 
 
-@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS])
+# only gives CORS to allow non-simple request, so not in openAPI
+@route(_CALL_PATH, http_method=[HttpMethod.OPTIONS], include_in_schema=False)
 async def service_call_cors(
     request: Request[Any, Any, Any],
     shortname: FromPath[str],
     rest: FromPath[str],
     db: NamedDependency[sqlite3.Connection],
 ) -> Response[str]:
-    """Hande CORS preflight HTTP OPTIONS request, respond with appropriate CORS headers."""
+    """Handle CORS preflight HTTP OPTIONS request, respond with appropriate CORS headers."""
     origin = request.headers.get("Origin", None)
     # block CORS preflight if Origin is not a known app - no auth headers yet but we can at least verify this,
     # to help avoid XSRF from external sites.
@@ -263,7 +275,22 @@ def _service_call_common(
         )
 
 
-@route(_CALL_PATH, http_method=_HTTP_METHODS, guards=[require_app_auth])
+@route(
+    _CALL_PATH,
+    http_method=_HTTP_METHODS,
+    guards=[require_app_auth],
+    # Passthrough: the provider's status and body are returned verbatim, so 200
+    # is a placeholder rather than a promise. See the tag's linked chapter.
+    status_code=200,
+    security=[{APP_SCHEME: []}],
+    tags=[CROSS_APP_TAG],
+    # The success body belongs to the provider, but these two failures are the
+    # router's own and always have this shape.
+    responses={
+        404: response_spec(ProxyError, "shortname not declared in the caller's manifest"),
+        503: response_spec(ProxyError, "no provider resolves for the declared service"),
+    },
+)
 async def service_call(
     shortname: FromPath[str],
     rest: FromPath[str],
@@ -346,7 +373,8 @@ async def service_call_ws(
     )
 
 
-@get("/api/services/v2/oauth_callback")
+# not in openAPI since only a landing page for callback
+@get("/api/services/v2/oauth_callback", include_in_schema=False)
 async def oauth_callback_proxy_v2(request: Request[Any, Any, Any]) -> ASGIResponse:
     """Proxy OAuth provider callbacks to the correct oauth service app.
 

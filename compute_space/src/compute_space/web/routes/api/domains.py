@@ -46,6 +46,9 @@ from compute_space.core.tls.renewal import CertStatus
 from compute_space.core.tls.renewal import get_cert_status
 from compute_space.db import get_db
 from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.routes.api.responses import ErrorResponse
+from compute_space.web.routes.api.responses import error_spec
+from compute_space.web.routes.api.responses import response_spec
 
 # A DNS label per RFC 1123 (letters/digits/hyphen, not starting/ending with hyphen), and a
 # name is one-or-more labels joined by dots (so it has at least one dot: `foo.local`, not `foo`).
@@ -74,11 +77,6 @@ class DomainInfo:
 @attr.s(auto_attribs=True, frozen=True)
 class DomainListResponse:
     domains: list[DomainInfo]
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class ErrorResponse:
-    error: str
 
 
 def _tls_cert_display(
@@ -177,7 +175,15 @@ async def list_domains(config: NamedDependency[Config], db: NamedDependency[sqli
     return DomainListResponse(domains=_domain_list(config, db))
 
 
-@post("/api/domains", status_code=202, guards=[require_owner_auth])
+@post(
+    "/api/domains",
+    status_code=202,
+    guards=[require_owner_auth],
+    responses={
+        202: response_spec(DomainListResponse, "Domain accepted; any cert acquisition runs in the background"),
+        400: error_spec("Invalid, duplicate, or TLS-flagged mDNS name"),
+    },
+)
 async def add_domain(
     data: AddDomainRequest,
     config: NamedDependency[Config],
@@ -219,7 +225,16 @@ async def add_domain(
     )
 
 
-@delete("/api/domains/{name:str}", status_code=200, guards=[require_owner_auth])
+@delete(
+    "/api/domains/{name:str}",
+    status_code=200,
+    guards=[require_owner_auth],
+    responses={
+        200: response_spec(DomainListResponse, "The remaining domains"),
+        400: error_spec("The primary domain cannot be removed"),
+        404: error_spec("No such domain"),
+    },
+)
 async def remove_domain(
     name: FromPath[str],
     config: NamedDependency[Config],

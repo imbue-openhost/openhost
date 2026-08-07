@@ -318,3 +318,158 @@ def test_docs_in_reserved_paths() -> None:
     PR keeps ``/docs`` on that list.
     """
     assert "/docs" in RESERVED_PATHS
+
+
+# -- raw HTML in chapters -------------------------------------------
+
+
+def test_raw_html_in_chapters_stays_inert(tmp_path: Path) -> None:
+    """Prose is the only thing chapters carry, so stray angle brackets render as
+    text rather than markup."""
+    repo_root = tmp_path / "repo"
+    src = repo_root / "docs" / "src"
+    _populate_fake_docs(src)
+    (src / "logs.md").write_text("# Logs\n\nPoint it at <your-zone>/api/apps.\n")
+    client, _cfg = _client(repo_root)
+    with client as c:
+        prose_body = c.get("/docs/logs").text
+    assert "&lt;your-zone&gt;" in prose_body
+
+
+def test_a_link_can_open_in_a_new_tab_but_set_nothing_else(tmp_path: Path) -> None:
+    """``{target=_blank}`` is a chapter's only way out of the manual's tab, raw HTML
+    being inert. Attributes off the allowlist stay literal text instead."""
+    repo_root = tmp_path / "repo"
+    src = repo_root / "docs" / "src"
+    _populate_fake_docs(src)
+    (src / "logs.md").write_text(
+        "# Logs\n\n[out](/docs/reference/api){target=_blank rel=noopener}\n\n[bad](/x){onclick=alert(1)}\n"
+    )
+    client, _cfg = _client(repo_root)
+    with client as c:
+        body = c.get("/docs/logs").text
+    assert '<a href="/docs/reference/api" target="_blank" rel="noopener">' in body
+    assert '<a href="/x">bad</a>' in body
+
+
+# -- OpenAPI document -----------------------------------------------
+
+
+def test_openapi_yaml_is_served_under_docs(tmp_path: Path) -> None:
+    """The spec is served from ``/docs`` only — there is no ``/schema``. The
+    literal path must also win over the ``/docs/{slug}`` catch-all, whose slug
+    regex would otherwise 404 it."""
+    repo_root = tmp_path / "repo"
+    _populate_fake_docs(repo_root / "docs" / "src")
+    spec = repo_root / "compute_space" / "openapi.yaml"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("openapi: 3.1.0\n")
+    client, _cfg = _client(repo_root)
+    with client as c:
+        resp = c.get("/docs/openapi.yaml")
+    assert resp.status_code == 200
+    assert resp.text == "openapi: 3.1.0\n"
+    assert resp.headers["content-type"].startswith("application/yaml")
+
+
+def test_missing_openapi_spec_returns_503(client_with_docs: TestClient[Litestar]) -> None:
+    """An incomplete checkout gets an actionable error, not a 404 or a blank
+    reference page."""
+    resp = client_with_docs.get("/docs/openapi.yaml")
+    assert resp.status_code == 503
+    assert "openapi spec is missing" in resp.text.lower()
+
+
+@pytest.mark.parametrize(
+    ("path", "container_id"),
+    [("/docs/reference/api", "redoc"), ("/docs/reference/services", "service-specs")],
+)
+def test_reference_pages_render_bare(client_with_docs: TestClient[Litestar], path: str, container_id: str) -> None:
+    """Redoc renders its own full-window layout, so these pages carry none of the
+    space chrome — no nav tabs, no manual sidebar — just the mount point + bundle."""
+    html = client_with_docs.get(path).text
+    assert f'<div id="{container_id}"></div>' in html
+    assert "/static/vendor/redoc.js" in html
+    assert "nav-tab" not in html
+    assert '<aside class="sidebar">' not in html
+    assert "space-header" not in html
+
+
+def test_reference_pages_are_not_chapters(client_with_docs: TestClient[Litestar]) -> None:
+    """They live outside the manual, so they are neither in the sidebar nor
+    reachable as a markdown slug."""
+    html = client_with_docs.get("/docs/routing").text
+    assert "/docs/reference/" not in html
+    assert client_with_docs.get("/docs/api_reference").status_code == 404
+
+
+# -- bundled service specs ------------------------------------------
+
+
+def _client_with_services(tmp_path: Path) -> tuple[TestClient[Litestar], Path]:
+    repo_root = tmp_path / "repo"
+    _populate_fake_docs(repo_root / "docs" / "src")
+    services = repo_root / "services"
+    for name in ("secrets", "oauth"):
+        (services / name).mkdir(parents=True)
+        (services / name / "openapi.yaml").write_text(f"openapi: 3.0.3\ninfo:\n  title: {name}\n")
+    (services / "no_spec").mkdir()
+    client, _cfg = _client(repo_root)
+    return client, services
+
+
+def test_services_index_lists_only_dirs_with_a_spec(tmp_path: Path) -> None:
+    """The chapter renders whatever this returns, so a service directory
+    without an ``openapi.yaml`` must not appear."""
+    client, _ = _client_with_services(tmp_path)
+    with client as c:
+        assert c.get("/docs/services").json() == ["oauth", "secrets"]
+
+
+def test_service_spec_is_served(tmp_path: Path) -> None:
+    client, _ = _client_with_services(tmp_path)
+    with client as c:
+        resp = c.get("/docs/services/secrets/openapi.yaml")
+    assert resp.status_code == 200
+    assert "title: secrets" in resp.text
+    assert resp.headers["content-type"].startswith("application/yaml")
+
+
+def test_services_index_empty_without_services_dir(client_with_docs: TestClient[Litestar]) -> None:
+    assert client_with_docs.get("/docs/services").json() == []
+
+
+@pytest.mark.parametrize("name", ["%2E%2E", "..%2F..%2Fetc", "secrets%2F..", ".", "no_spec", "nope"])
+def test_service_spec_rejects_traversal_and_unknown(tmp_path: Path, name: str) -> None:
+    """``{name}`` indexes the filesystem, so it gets the same containment rule
+    as the markdown slug."""
+    client, _ = _client_with_services(tmp_path)
+    with client as c:
+        assert c.get(f"/docs/services/{name}/openapi.yaml").status_code == 404
+
+
+def test_services_reference_is_linked_and_discovers_dynamically() -> None:
+    """The browser must read the index endpoint rather than hardcoding service
+    names, so adding a service needs no code edit."""
+    js = docs_routes._SERVICE_REFERENCE_JS
+    assert '"/docs/services"' in js
+    assert "/docs/reference/services" in (_repo_docs_src() / "bundled_services.md").read_text(encoding="utf-8")
+    assert "(./bundled_services.md)" in (_repo_docs_src() / "SUMMARY.md").read_text(encoding="utf-8")
+    for name in ("secrets", "oauth"):
+        assert f"/docs/services/{name}/" not in js
+
+
+# -- shipped API chapter --------------------------------------------
+
+
+def _repo_docs_src() -> Path:
+    return Path(__file__).resolve().parents[4] / "docs" / "src"
+
+
+def test_api_chapter_is_listed_and_points_at_the_served_spec() -> None:
+    """Reachable from the sidebar, linking the browser that reads the document
+    the app serves."""
+    summary = (_repo_docs_src() / "SUMMARY.md").read_text(encoding="utf-8")
+    assert "(./api.md)" in summary
+    assert "/docs/reference/api" in (_repo_docs_src() / "api.md").read_text(encoding="utf-8")
+    assert '"/docs/openapi.yaml"' in docs_routes._API_REFERENCE_JS

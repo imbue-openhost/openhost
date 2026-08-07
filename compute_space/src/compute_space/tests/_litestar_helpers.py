@@ -11,20 +11,18 @@ from typing import Any
 
 import bcrypt
 from litestar import Litestar
-from litestar.di import Provide
 from litestar.handlers.base import BaseRouteHandler
 from litestar.types import ASGIApp
 from litestar.types import Receive
 from litestar.types import Scope
 from litestar.types import Send
 
-from compute_space.config import provide_config
 from compute_space.core.auth.auth import SESSION_COOKIE_NAME
 from compute_space.core.auth.auth import create_session
 from compute_space.core.domains import primary_domain_or_none
 from compute_space.db import get_db
-from compute_space.db import provide_db
 from compute_space.web.helpers.zone import ZONE_SCOPE_KEY
+from compute_space.web.routes.manifest import APP_DEPENDENCIES
 
 
 def stash_zone_middleware(app: ASGIApp) -> ASGIApp:
@@ -34,8 +32,13 @@ def stash_zone_middleware(app: ASGIApp) -> ASGIApp:
 
     async def middleware(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in ("http", "websocket"):
-            with closing(get_db()) as db:
-                scope[ZONE_SCOPE_KEY] = primary_domain_or_none(db)
+            try:
+                db = get_db()
+            except RuntimeError:
+                db = None  # app under test never called init_db(); no zone to stash
+            if db is not None:
+                with closing(db):
+                    scope[ZONE_SCOPE_KEY] = primary_domain_or_none(db)
         await app(scope, receive, send)
 
     return middleware
@@ -83,10 +86,7 @@ def make_test_app(*route_handlers: Any) -> Litestar:
     """
     return Litestar(
         route_handlers=list(route_handlers),
-        dependencies={
-            "config": Provide(provide_config, sync_to_thread=False),
-            "db": Provide(provide_db),
-        },
+        dependencies=dict(APP_DEPENDENCIES),
         middleware=[stash_zone_middleware],
         openapi_config=None,
     )

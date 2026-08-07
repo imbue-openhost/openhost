@@ -51,7 +51,9 @@ async def login_get(
     return Template(template_name="login.html", context={"next": next_param})
 
 
-@post("/login", status_code=200)
+# Also unauthenticated and state-changing (it mints a session), so guard it against
+# cross-site POSTs the same way /logout is.
+@post("/login", status_code=200, guards=[require_same_origin])
 async def login_post(
     request: Request[Any, Any, Any],
     db: NamedDependency[sqlite3.Connection],
@@ -90,4 +92,5 @@ async def logout(
     return response
 
 
-pages_login_routes = Router(path="/", route_handlers=[login_get, login_post, logout])
+# excluded due to user-facing html page rather than api
+pages_login_routes = Router(path="/", route_handlers=[login_get, login_post, logout], include_in_schema=False)

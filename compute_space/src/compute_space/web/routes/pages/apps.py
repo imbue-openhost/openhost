@@ -206,7 +206,9 @@ async def add_app(
     )
 
 
+# excluded due to user-facing html page rather than api
 pages_apps_routes = Router(
     path="/",
     route_handlers=[dashboard, app_detail, add_app],
+    include_in_schema=False,
 )

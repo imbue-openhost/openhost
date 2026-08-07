@@ -36,6 +36,10 @@ from compute_space.core.storage import set_guard_paused
 from compute_space.core.storage import storage_status
 from compute_space.core.updates import is_shutdown_pending
 from compute_space.web.auth.auth import require_owner_auth
+from compute_space.web.routes.api.responses import ErrorResponse
+from compute_space.web.routes.api.responses import OkResponse
+from compute_space.web.routes.api.responses import error_spec
+from compute_space.web.routes.api.responses import response_spec
 
 DEFAULT_TOKEN_EXPIRY_HOURS: float = 8.0
 
@@ -67,16 +71,6 @@ class CreatedToken:
     token: str
     name: str
     expires_at: str | None
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class ErrorResponse:
-    error: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class OkResponse:
-    ok: bool
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -152,7 +146,15 @@ async def api_tokens_list(db: NamedDependency[sqlite3.Connection]) -> list[ApiTo
     return tokens
 
 
-@post("/api/tokens", status_code=200, guards=[require_owner_auth])
+@post(
+    "/api/tokens",
+    status_code=200,
+    guards=[require_owner_auth],
+    responses={
+        200: response_spec(CreatedToken, "The new token; shown once and not recoverable"),
+        400: error_spec("Expiry must be positive"),
+    },
+)
 async def api_tokens_create(
     data: CreateTokenRequest, db: NamedDependency[sqlite3.Connection]
 ) -> Response[CreatedToken] | Response[ErrorResponse]:
@@ -222,7 +224,15 @@ def compute_space_logs() -> Response[str]:
 # ─── Health & Security ─────────────────────────────────────────────────────
 
 
-@get("/health", sync_to_thread=False)
+@get(
+    "/health",
+    sync_to_thread=False,
+    security=[{}],
+    responses={
+        200: response_spec(HealthOk, "Serving normally"),
+        503: response_spec(HealthRestarting, "A restart is pending; not serving"),
+    },
+)
 def health() -> Response[HealthRestarting] | HealthOk:
     if is_shutdown_pending():
         return Response(content=HealthRestarting(status="restarting"), status_code=503)
@@ -284,7 +294,16 @@ def toggle_ssh() -> SshStatusResponse:
 # ─── Router restart ────────────────────────────────────────────────────────
 
 
-@post("/api/drop-docker-cache", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
+@post(
+    "/api/drop-docker-cache",
+    status_code=200,
+    guards=[require_owner_auth],
+    sync_to_thread=False,
+    responses={
+        200: response_spec(DropCacheOk, "Cache dropped; output is the reclaim summary"),
+        500: error_spec("The prune command failed"),
+    },
+)
 def drop_docker_cache() -> Response[DropCacheOk] | Response[ErrorResponse]:
     """Drop the container build cache to free disk space."""
     try:

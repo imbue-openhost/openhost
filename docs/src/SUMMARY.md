@@ -10,6 +10,11 @@
 - [Persistent Data & Archive](./data.md)
 - [Logs](./logs.md)
 
+# Reference
+
+- [Openhost API](./api.md)
+- [Bundled Service Specs](./bundled_services.md)
+
 # Guides
 
 - [Creating an App](./creating_an_app.md)

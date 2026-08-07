@@ -11,7 +11,6 @@ from litestar import MediaType
 from litestar import Request
 from litestar import Response
 from litestar import route
-from litestar.di import Provide
 from litestar.exceptions import HTTPException
 from litestar.exceptions import NotAuthorizedException
 from litestar.exceptions.responses import create_exception_response
@@ -21,7 +20,6 @@ from litestar.template.config import TemplateConfig
 from litestar.types import ASGIApp
 
 from compute_space.config import Config
-from compute_space.config import provide_config
 from compute_space.core import archive_backend
 from compute_space.core.auth.auth import read_owner_username
 from compute_space.core.auth.identity import load_identity_keys
@@ -36,25 +34,11 @@ from compute_space.core.startup import retry_pending_default_apps
 from compute_space.core.storage import start_storage_guard
 from compute_space.core.terminal import cleanup_all as cleanup_terminal
 from compute_space.db import get_db
-from compute_space.db import provide_db
 from compute_space.web.auth.auth import login_required_redirect
 from compute_space.web.helpers.zone import ZONE_SCOPE_KEY
 from compute_space.web.middleware.subdomain_proxy import SubdomainProxyMiddleware
-from compute_space.web.routes.api.apps import api_apps_routes
-from compute_space.web.routes.api.archive_backend import api_archive_backend_routes
-from compute_space.web.routes.api.domains import api_domains_routes
-from compute_space.web.routes.api.identity import identity_routes
-from compute_space.web.routes.api.permissions_v2 import api_permissions_v2_routes
-from compute_space.web.routes.api.services_v2 import api_services_v2_routes
-from compute_space.web.routes.api.settings import api_settings_routes
-from compute_space.web.routes.api.system import system_routes
-from compute_space.web.routes.docs import docs_routes
-from compute_space.web.routes.pages.apps import pages_apps_routes
-from compute_space.web.routes.pages.login import pages_login_routes
-from compute_space.web.routes.pages.permissions_v2 import pages_permissions_v2_routes
-from compute_space.web.routes.pages.settings import pages_settings_routes
-from compute_space.web.routes.pages.system import pages_system_routes
-from compute_space.web.routes.services_v2 import services_v2_routes
+from compute_space.web.routes.manifest import ALL_ROUTERS
+from compute_space.web.routes.manifest import APP_DEPENDENCIES
 
 
 def _make_static_url(static_dir: Path) -> Any:
@@ -149,7 +133,13 @@ def _full_app_bootstrap(config: Config) -> None:
     seed_first_boot(config)
 
 
-@route("/setup", http_method=[HttpMethod.GET, HttpMethod.POST], status_code=403, sync_to_thread=False)
+@route(
+    "/setup",
+    http_method=[HttpMethod.GET, HttpMethod.POST],
+    status_code=403,
+    sync_to_thread=False,
+    include_in_schema=False,
+)
 def setup_already_done() -> Response[str]:
     return Response(
         content="This instance has already been set up.",
@@ -225,40 +215,21 @@ def create_app(config: Config) -> ASGIApp:
         if isinstance(engine, JinjaTemplateEngine):
             engine.engine.globals.update(_template_globals(config, static_dir))
 
-    static_router = create_static_files_router(path="/static", directories=[static_dir])
+    static_router = create_static_files_router(path="/static", directories=[static_dir], include_in_schema=False)
 
     atexit.register(cleanup_terminal)
 
     litestar_app = Litestar(
-        route_handlers=[
-            static_router,
-            api_apps_routes,
-            api_archive_backend_routes,
-            api_domains_routes,
-            api_permissions_v2_routes,
-            api_services_v2_routes,
-            api_settings_routes,
-            system_routes,
-            identity_routes,
-            docs_routes,
-            pages_apps_routes,
-            pages_login_routes,
-            pages_permissions_v2_routes,
-            pages_settings_routes,
-            pages_system_routes,
-            services_v2_routes,
-            setup_already_done,
-        ],
+        route_handlers=[static_router, *ALL_ROUTERS, setup_already_done],
         template_config=template_config,
         before_request=_reject_app_subdomain_requests,
-        dependencies={
-            "config": Provide(provide_config, sync_to_thread=False),
-            "db": Provide(provide_db),
-        },
+        dependencies=dict(APP_DEPENDENCIES),
         exception_handlers={
             NotAuthorizedException: _login_required_redirect,
             Exception: _log_unhandled_exception,
         },
         on_startup=[_install_template_globals],
+        # No Litestar-served /schema routes; the API reference lives under /docs.
+        openapi_config=None,
     )
     return SubdomainProxyMiddleware(litestar_app)

@@ -11,6 +11,7 @@ from litestar.params import FromQuery
 
 from compute_space.web.auth.auth import require_owner_auth
 from compute_space.web.auth.auth import require_owner_or_app_auth
+from compute_space.web.routes.api.responses import OkResponse
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -43,11 +44,6 @@ class DefaultEntry:
     service_url: str
     app_id: str
     app_name: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class OkResponse:
-    ok: bool
 
 
 @attr.s(auto_attribs=True, frozen=True)

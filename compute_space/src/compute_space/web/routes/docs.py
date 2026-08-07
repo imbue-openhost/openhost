@@ -74,6 +74,7 @@ from litestar.params import FromPath
 from markdown_it import MarkdownIt
 from markupsafe import escape as html_escape
 from mdit_py_plugins.anchors import anchors_plugin
+from mdit_py_plugins.attrs import attrs_plugin
 from mdit_py_plugins.tasklists import tasklists_plugin
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -98,6 +99,17 @@ def _docs_src_dir() -> Path:
     inject a fixture directory by overriding the config.
     """
     return get_config().openhost_repo_path / "docs" / "src"
+
+
+def _services_dir() -> Path:
+    """Where the bundled service specs live, one ``<name>/openapi.yaml`` each."""
+    return get_config().openhost_repo_path / "services"
+
+
+def _openapi_spec_path() -> Path:
+    """The committed OpenAPI document, generated from the route handlers by
+    ``pixi run -e dev generate-openapi`` and kept in sync by a test."""
+    return get_config().openhost_repo_path / "compute_space" / "openapi.yaml"
 
 
 _DEFAULT_INDEX = "introduction"
@@ -136,25 +148,16 @@ def _space_display_name() -> str | None:
 
 # ─── Markdown engine ────────────────────────────────────────────────
 
+# Attributes a chapter may set on a link.  Anything else and markdown-it leaves the
+# whole ``{...}`` as visible literal text, so a typo shows up rather than passing through.
+_MD_LINK_ATTRS = ("target", "rel")
+
 
 def _build_md() -> MarkdownIt:
-    """Construct the shared markdown renderer.
+    """Construct a shared markdown renderer: ``gfm-like`` plus heading anchors,
+    tasklists, and Pygments-highlighted fences. Stateless and thread-safe.
 
-    Configured with:
-      * ``commonmark`` baseline + GFM-style tables/strikethrough/
-        autolinks (via the ``gfm-like`` preset).
-      * ``anchors_plugin`` to auto-link ``<h2>``/``<h3>`` headings
-        for deep links from the sidebar / external linkers.
-      * ``tasklists_plugin`` so ``- [x]`` markdown checklists
-        render as proper checkboxes.
-      * ``html=False`` so embedded raw HTML in the markdown
-        sources is treated as plain text rather than executed
-        (defence-in-depth; nothing in our docs uses raw HTML).
-      * A custom code-fence renderer that runs the contents
-        through Pygments for syntax highlighting.
-
-    The renderer is stateless and thread-safe — a single shared
-    instance per process suffices.
+    Raw HTML stays inert, so stray angle brackets in the prose render as text.
     """
     # ``linkify=False``: bare URLs in the prose are NOT auto-linked.
     # The alternative requires the optional ``linkify-it-py`` dep,
@@ -164,6 +167,9 @@ def _build_md() -> MarkdownIt:
     md = MarkdownIt("gfm-like", {"html": False, "linkify": False, "typographer": True})
     md.use(anchors_plugin, max_level=4, permalink=False)
     md.use(tasklists_plugin, enabled=True)
+    # ``[text](url){target=_blank}`` — the only way to leave the manual's tab, since
+    # raw HTML is inert.  Allowlisted so markdown can't set arbitrary attributes.
+    md.use(attrs_plugin, allowed=_MD_LINK_ATTRS)
     md.add_render_rule("fence", _render_fence_with_pygments)
     return md
 
@@ -209,10 +215,10 @@ def _render_fence_with_pygments(
     return rendered
 
 
-# Pygments CSS — embedded in the response so we don't need a
-# separate route for it.  Uses the same colour palette
-# (light) as the dashboard's .log-output panel.
-PYGMENTS_CSS = HtmlFormatter(style="default").get_style_defs(".codehilite")
+# Pygments CSS — embedded in the response so we don't need a separate route for it.
+# A dark style, because fenced code renders on the dashboard's dark .log-output panel;
+# a light one puts near-white tokens on near-white background.
+PYGMENTS_CSS = HtmlFormatter(style="native").get_style_defs(".codehilite")
 
 
 _MD = _build_md()
@@ -546,14 +552,16 @@ _TEMPLATE = """<!DOCTYPE html>
       font-size: 0.85em;
       line-height: 1.45;
     }
-    main.content pre code, main.content pre .codehilite {
+    main.content pre code {
       background: transparent;
       color: inherit;
       padding: 0;
       border-radius: 0;
       font-size: 1em;
     }
-    main.content .codehilite pre { background: transparent; padding: 0; }
+    /* Pygments wraps a highlighted fence in <div class="codehilite"> around the <pre>
+       and paints that wrapper; the <pre> stays the panel, so the wrapper draws nothing. */
+    main.content .codehilite { background: transparent; }
     main.content ul, main.content ol { padding-left: 1.5em; }
     main.content hr { border: 0; border-top: 1px solid #ddd; margin: 2em 0; }
     main.content img { max-width: 100%; }
@@ -622,6 +630,78 @@ _TEMPLATE = """<!DOCTYPE html>
 """
 
 
+# The OpenAPI browsers are not manual chapters: Redoc renders its own full-window
+# three-pane layout with its own sidebar, so it gets the bare document — no space
+# header, no nav tabs, no manual sidebar.  Reached by link from the prose chapters.
+_REFERENCE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }}</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { font-family: -apple-system, system-ui, sans-serif; color: #222; background: #fff; }
+    .service-spec-title { margin: 2.5em 0 0 1.5rem; font-size: 1.3em; }
+  </style>
+</head>
+<body>
+  <div id="{{ container_id }}"></div>
+  <script src="/static/vendor/redoc.js"></script>
+  <script>{{ init_js | safe }}</script>
+</body>
+</html>
+"""
+
+# Each browser's init script.  Both degrade to a message pointing at the raw
+# document if the pinned Redoc bundle is missing (see web/vendor_assets.py).
+_API_REFERENCE_JS = """
+  (() => {
+    const host = document.getElementById("redoc");
+    if (typeof Redoc === "undefined") {
+      host.textContent = "Could not load the spec browser. The raw document is at /docs/openapi.yaml.";
+      return;
+    }
+    Redoc.init(
+      "/docs/openapi.yaml",
+      {hideDownloadButton: true, expandResponses: "200,201", nativeScrollbars: true},
+      host
+    );
+  })();
+"""
+
+_SERVICE_REFERENCE_JS = """
+  (async () => {
+    const host = document.getElementById("service-specs");
+    if (typeof Redoc === "undefined") {
+      host.textContent = "Could not load the spec browser. The raw documents are at /docs/services/<name>/openapi.yaml.";
+      return;
+    }
+    let names;
+    try {
+      names = await (await fetch("/docs/services")).json();
+    } catch (e) {
+      host.textContent = "Could not list the bundled services.";
+      return;
+    }
+    if (!names.length) {
+      host.textContent = "No bundled service specs found in this checkout.";
+      return;
+    }
+    for (const name of names) {
+      const title = document.createElement("h2");
+      title.className = "service-spec-title";
+      title.textContent = name;
+      host.appendChild(title);
+      const pane = document.createElement("div");
+      host.appendChild(pane);
+      Redoc.init(`/docs/services/${name}/openapi.yaml`, {hideDownloadButton: true, nativeScrollbars: true}, pane);
+    }
+  })();
+"""
+
+
 # Build the docs template through a Jinja Environment whose loader points at
 # the shared templates directory, so ``{% include "_nav_header.html" %}`` pulls
 # in the same nav partial the rest of the compute space uses (rather than
@@ -631,6 +711,7 @@ _TEMPLATE = """<!DOCTYPE html>
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _JINJA_ENV = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
 _COMPILED_TEMPLATE = _JINJA_ENV.from_string(_TEMPLATE)
+_COMPILED_REFERENCE_TEMPLATE = _JINJA_ENV.from_string(_REFERENCE_TEMPLATE)
 
 
 def _flatten_links(sections: tuple[_SidebarSection, ...]) -> list[_SidebarLink]:
@@ -706,6 +787,68 @@ def docs_index() -> Response[str]:
     return _render_doc(_DEFAULT_INDEX)
 
 
+@get("/docs/openapi.yaml", sync_to_thread=False)
+def docs_openapi_yaml() -> Response[str]:
+    """The OpenAPI document the ``api_reference.md`` chapter renders, and the only URL
+    it is served from. Read off the checkout like the markdown is, so it
+    matches the commit this instance is running."""
+    path = _openapi_spec_path()
+    if not path.is_file():
+        return Response(
+            content=(
+                f"The OpenAPI spec is missing on this installation. Expected: {path}. "
+                "This usually means the OpenHost code checkout is incomplete; "
+                "reinstalling the openhost service should fix it."
+            ),
+            status_code=503,
+            media_type=MediaType.TEXT,
+        )
+    return Response(content=path.read_text(encoding="utf-8"), media_type="application/yaml")
+
+
+@get("/docs/services", sync_to_thread=False)
+def docs_services_index() -> list[str]:
+    """Names of the bundled services that ship an OpenAPI spec. The
+    ``service_reference.md`` chapter reads this to decide what to render, so
+    adding ``services/<name>/openapi.yaml`` needs no doc edit."""
+    services = _services_dir()
+    if not services.is_dir():
+        return []
+    return sorted(p.parent.name for p in services.glob("*/openapi.yaml") if _SLUG_RE.match(p.parent.name))
+
+
+@get("/docs/services/{name:str}/openapi.yaml", sync_to_thread=False)
+def docs_service_spec(name: FromPath[str]) -> Response[str]:
+    """Serve ``services/<name>/openapi.yaml`` off the checkout.
+
+    Same containment rule as the markdown route: the resolved path has to sit
+    under ``services/`` or it's a 404."""
+    if not _SLUG_RE.match(name):
+        raise NotFoundException()
+    services = _services_dir()
+    candidate = (services / name / "openapi.yaml").resolve()
+    if not candidate.is_file() or services.resolve() not in candidate.parents:
+        raise NotFoundException()
+    return Response(content=candidate.read_text(encoding="utf-8"), media_type="application/yaml")
+
+
+def _reference_page(page_title: str, container_id: str, init_js: str) -> Response[str]:
+    html = _COMPILED_REFERENCE_TEMPLATE.render(page_title=page_title, container_id=container_id, init_js=init_js)
+    return Response(content=html, media_type=MediaType.HTML)
+
+
+@get("/docs/reference/api", sync_to_thread=False)
+def docs_api_reference() -> Response[str]:
+    """The OpenAPI browser for the instance's own HTTP API, linked from ``api.md``."""
+    return _reference_page("HTTP API Reference", "redoc", _API_REFERENCE_JS)
+
+
+@get("/docs/reference/services", sync_to_thread=False)
+def docs_service_reference() -> Response[str]:
+    """The OpenAPI browser for every bundled service spec, linked from ``bundled_services.md``."""
+    return _reference_page("Bundled Service Reference", "service-specs", _SERVICE_REFERENCE_JS)
+
+
 @get("/docs/{slug:str}", sync_to_thread=False)
 def docs_slug(slug: FromPath[str]) -> Response[str]:
     """Serve ``docs/src/<slug>.md`` rendered to HTML.
@@ -750,4 +893,16 @@ def _render_doc(slug: str) -> Response[str]:
     return Response(content=html, media_type=MediaType.HTML)
 
 
-docs_routes = Router(path="/", route_handlers=[docs_index, docs_slug])
+docs_routes = Router(
+    path="/",
+    route_handlers=[
+        docs_index,
+        docs_openapi_yaml,
+        docs_services_index,
+        docs_service_spec,
+        docs_api_reference,
+        docs_service_reference,
+        docs_slug,
+    ],
+    include_in_schema=False,
+)
