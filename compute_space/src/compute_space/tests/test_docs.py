@@ -237,8 +237,9 @@ def test_unknown_slug_404(client_with_docs: TestClient[Litestar]) -> None:
         "subdir/foo",
         ".gitignore",
         " ",
-        "introduction.md",  # we accept slugs WITHOUT .md, with-extension should 404
         "introduction.md.bak",
+        "../secrets.md",  # the .md suffix is stripped before the slug regex, so this still 404s
+        ".md",
     ],
 )
 def test_path_traversal_blocked(client_with_docs: TestClient[Litestar], evil_slug: str) -> None:
@@ -304,6 +305,182 @@ def test_render_cache_invalidates_on_mtime_change(tmp_path: Path) -> None:
         body2 = resp2.text
         assert "A New Heading" in body2
         assert "Welcome to OpenHost" not in body2
+
+
+# -- whole-manual markdown export -----------------------------------
+
+
+def test_all_markdown_contains_every_summary_page(client_with_docs: TestClient[Litestar]) -> None:
+    """``GET /docs/all.md`` returns every page of the manual as plain markdown."""
+    resp = client_with_docs.get("/docs/all.md")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    body = resp.text
+    assert "OpenHost is a self-hosted application platform." in body
+    assert "Each app declares" in body
+    assert "Routing prose here." in body
+    assert "Guide content." in body
+
+
+def test_all_markdown_follows_summary_order(client_with_docs: TestClient[Litestar]) -> None:
+    """Pages are concatenated in SUMMARY.md reading order, not alphabetically or by mtime."""
+    body = client_with_docs.get("/docs/all.md").text
+    positions = [
+        body.index("# Welcome to OpenHost"),
+        body.index("# Manifest"),
+        body.index("# Routing"),
+        body.index("# Creating an App"),
+    ]
+    assert positions == sorted(positions)
+
+
+def test_all_markdown_is_raw_markdown_not_html(client_with_docs: TestClient[Litestar]) -> None:
+    """The export must be markdown source — an agent asked for markdown, not rendered HTML."""
+    body = client_with_docs.get("/docs/all.md").text
+    assert "```toml" in body
+    assert "<h1" not in body
+    assert "codehilite" not in body
+
+
+def test_all_markdown_tags_each_page_with_its_source_path(client_with_docs: TestClient[Litestar]) -> None:
+    """Each page is preceded by an HTML comment naming its source file, so an agent
+    reading the export knows which file to edit."""
+    body = client_with_docs.get("/docs/all.md").text
+    assert "<!-- docs/src/introduction.md -->" in body
+    assert "<!-- docs/src/creating_an_app.md -->" in body
+
+
+def test_all_markdown_omits_pages_missing_from_summary(tmp_path: Path) -> None:
+    """A markdown file that SUMMARY.md doesn't list is an unpublished draft: it must not
+    leak into the export just because it sits in the source directory."""
+    repo_root = tmp_path / "repo"
+    src = repo_root / "docs" / "src"
+    _populate_fake_docs(src)
+    (src / "unlisted_draft.md").write_text("# Draft\n\nNot ready for readers.\n")
+    client, _cfg = _client(repo_root)
+    with client as c:
+        body = c.get("/docs/all.md").text
+    assert "Routing prose here." in body
+    assert "Not ready for readers." not in body
+
+
+def test_all_markdown_survives_summary_entry_with_no_file(tmp_path: Path) -> None:
+    """A SUMMARY.md entry pointing at a file that doesn't exist is a docs bug; it must not
+    take the whole export down with it."""
+    repo_root = tmp_path / "repo"
+    src = repo_root / "docs" / "src"
+    _populate_fake_docs(src)
+    (src / "SUMMARY.md").write_text(
+        "# Summary\n\n[Introduction](./introduction.md)\n\n# Concepts\n\n- [Ghost](./ghost.md)\n- [Routing](./routing.md)\n"
+    )
+    client, _cfg = _client(repo_root)
+    with client as c:
+        resp = c.get("/docs/all.md")
+    assert resp.status_code == 200
+    assert "Routing prose here." in resp.text
+
+
+def test_all_markdown_is_not_shadowed_by_the_slug_route(client_with_docs: TestClient[Litestar]) -> None:
+    """``/docs/all.md`` must hit the literal export route, not ``/docs/{slug}`` (which rejects
+    dots and would 404).  ``/docs/all`` stays a normal 404 — there is no ``all.md`` source file."""
+    assert client_with_docs.get("/docs/all.md").status_code == 200
+    assert client_with_docs.get("/docs/all", follow_redirects=True).status_code == 404
+
+
+def test_all_markdown_missing_docs_dir_returns_503(client_without_docs: TestClient[Litestar]) -> None:
+    """The export reports the broken-checkout condition the same way the page routes do."""
+    resp = client_without_docs.get("/docs/all.md")
+    assert resp.status_code == 503
+    assert "docs source directory is missing" in resp.text.lower()
+
+
+# -- per-page markdown ----------------------------------------------
+
+
+def test_page_markdown_returns_the_source(client_with_docs: TestClient[Litestar]) -> None:
+    """``GET /docs/routing.md`` returns that one page's markdown source, not rendered HTML."""
+    resp = client_with_docs.get("/docs/routing.md")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert resp.text == "# Routing\n\nRouting prose here.\n"
+
+
+def test_page_markdown_leaves_the_rendered_page_alone(client_with_docs: TestClient[Litestar]) -> None:
+    """The extension-less URL still renders HTML — adding ``.md`` is what switches to source."""
+    assert "<h1" in client_with_docs.get("/docs/routing").text
+    assert "<h1" not in client_with_docs.get("/docs/routing.md").text
+
+
+def test_page_markdown_unknown_page_404(client_with_docs: TestClient[Litestar]) -> None:
+    """A ``.md`` URL for a page that doesn't exist 404s like its rendered counterpart."""
+    assert client_with_docs.get("/docs/this_does_not_exist.md").status_code == 404
+
+
+def test_page_markdown_missing_docs_dir_returns_503(client_without_docs: TestClient[Litestar]) -> None:
+    """The raw route reports a broken checkout the same way every other docs route does."""
+    resp = client_without_docs.get("/docs/introduction.md")
+    assert resp.status_code == 503
+    assert "docs source directory is missing" in resp.text.lower()
+
+
+# -- sidebar copy controls ------------------------------------------
+
+
+def test_page_carries_two_copy_controls(client_with_docs: TestClient[Litestar]) -> None:
+    """Exactly two: the manual beside the sidebar title, and this page beside its own heading.
+    Each is a real link to the markdown it copies, so both survive JS being unavailable."""
+    body = client_with_docs.get("/docs/manifest_spec").text
+    hrefs = re.findall(r'<a class="copy-md" href="([^"]+)"', body)
+    assert hrefs == ["/docs/all.md", "/docs/manifest_spec.md"]
+
+
+def test_page_copy_control_sits_inside_the_page_heading(client_with_docs: TestClient[Litestar]) -> None:
+    """The control belongs next to the page's own <h1>, not floating above the prose."""
+    body = client_with_docs.get("/docs/manifest_spec").text
+    heading = re.search(r"<h1[^>]*>(.*?)</h1>", body[body.index('<main class="content"') :], re.S)
+    assert heading is not None
+    assert "Manifest" in heading.group(1)
+    assert 'class="copy-md" href="/docs/manifest_spec.md"' in heading.group(1)
+
+
+def test_page_without_an_h1_still_gets_a_copy_control(tmp_path: Path) -> None:
+    """``routing.md`` in the real manual opens at ``##``, so it renders no <h1> to hang the
+    control off.  Such a page must still be copyable rather than silently losing the control."""
+    repo_root = tmp_path / "repo"
+    src = repo_root / "docs" / "src"
+    _populate_fake_docs(src)
+    (src / "routing.md").write_text("## DNS\n\nNo top-level heading on this page.\n")
+    client, _cfg = _client(repo_root)
+    with client as c:
+        body = c.get("/docs/routing").text
+    assert 'class="copy-md" href="/docs/routing.md"' in body
+    assert '<div class="page-actions">' in body
+
+
+def test_copy_controls_are_labelled(client_with_docs: TestClient[Litestar]) -> None:
+    """Hover bubble names the action; the aria-label names the specific target for screen
+    readers.  The bubble is a real element (so a word in it can be emphasised) rather than the
+    slow, inconsistent native ``title`` tooltip, and is hidden from screen readers because the
+    aria-label already says the same thing."""
+    body = client_with_docs.get("/docs/routing").text
+    assert '<span class="tip" aria-hidden="true">Copy <b>entire</b> manual</span>' in body
+    assert '<span class="tip" aria-hidden="true">Copy page as Markdown</span>' in body
+    assert 'aria-label="Copy the entire manual as Markdown"' in body
+    assert 'aria-label="Copy Routing as Markdown"' in body
+
+
+def test_copy_control_escapes_the_page_title(tmp_path: Path) -> None:
+    """The control is assembled as a string rather than by the template engine, so it does its
+    own escaping: a heading containing quotes or markup must not break out of the aria-label."""
+    repo_root = tmp_path / "repo"
+    src = repo_root / "docs" / "src"
+    _populate_fake_docs(src)
+    (src / "routing.md").write_text('# The "big" <b>spec</b>\n\nProse.\n')
+    client, _cfg = _client(repo_root)
+    with client as c:
+        body = c.get("/docs/routing").text
+    assert 'aria-label="Copy The &#34;big&#34; &lt;b&gt;spec&lt;/b&gt; as Markdown"' in body
+    assert 'aria-label="Copy The "big"' not in body
 
 
 # -- RESERVED_PATHS regression --------------------------------------
