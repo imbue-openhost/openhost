@@ -27,6 +27,7 @@ from compute_space.core.auth.security_audit import list_listening_ports
 from compute_space.core.containers import drop_docker_build_cache
 from compute_space.core.diagnostics import PlatformDiagnostics
 from compute_space.core.diagnostics import collect_platform_diagnostics
+from compute_space.core.domains import primary_domain
 from compute_space.core.git_ops import get_branch_name
 from compute_space.core.git_ops import get_head_sha
 from compute_space.core.git_ops import is_dirty
@@ -116,6 +117,22 @@ class SshStatusResponse:
 class DropCacheOk:
     ok: bool  # always True
     output: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CustomEmailDomainResponse:
+    """Owner-facing view of the custom mail domain and the single NS record to add.
+
+    ``configured`` is False when no custom mail domain is set on this instance, in
+    which case the record fields are None.
+    """
+
+    configured: bool
+    domain: str | None
+    record_name: str | None
+    record_type: str | None
+    record_value: str | None
+    display_line: str | None
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -341,6 +358,34 @@ async def api_diagnostics(
     return Response(content=diagnostics, status_code=200, media_type=MediaType.JSON, headers=headers)
 
 
+@get("/api/email/custom-domain", guards=[require_owner_auth], sync_to_thread=False)
+def custom_email_domain(db: sqlite3.Connection, config: Config) -> CustomEmailDomainResponse:
+    """Return the owner's custom mail domain and the single NS record to delegate it.
+
+    The owner sets this once at their registrar; the instance's nameserver host
+    (ns.<zone>) already resolves to the instance IP, so this one record is all
+    that is required for the custom domain to work.
+    """
+    record = config.custom_domain_delegation_record(primary_domain(db).name_no_port)
+    if record is None:
+        return CustomEmailDomainResponse(
+            configured=False,
+            domain=None,
+            record_name=None,
+            record_type=None,
+            record_value=None,
+            display_line=None,
+        )
+    return CustomEmailDomainResponse(
+        configured=True,
+        domain=config.email_custom_domain_normalized,
+        record_name=record.name,
+        record_type=record.record_type,
+        record_value=record.value,
+        display_line=record.as_display_line(),
+    )
+
+
 @post("/restart_router", status_code=200, guards=[require_owner_auth], sync_to_thread=False)
 def restart_router() -> OkResponse:
     """Restart the router systemd service to pick up code changes."""
@@ -373,6 +418,7 @@ system_routes = Router(
         drop_docker_cache,
         api_version,
         api_diagnostics,
+        custom_email_domain,
         restart_router,
     ],
 )

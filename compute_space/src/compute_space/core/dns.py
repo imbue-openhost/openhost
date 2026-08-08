@@ -9,7 +9,7 @@ restart — see ``reload_coredns_for_domains``.
 
 For DNS-01 ACME challenges, the router calls append_txt_records() on a domain's own
 zone file to add TXT records, waits for CoreDNS to pick them up, then calls
-clear_txt() after the cert is issued.
+clear_acme_challenge_records() after the cert is issued.
 """
 
 from __future__ import annotations
@@ -116,21 +116,37 @@ class DnsZone:
 
 
 def public_dns_zones(config: Config, db: sqlite3.Connection) -> tuple[DnsZone, ...]:
-    """The zones CoreDNS is authoritative for: every non-mDNS domain the instance answers on.
+    """The zones CoreDNS is authoritative for: every non-mDNS domain the instance answers on,
+    plus the delegated custom mail domain (if configured).
 
     mDNS ``.local`` domains are served by the wildcard mDNS responder, never CoreDNS/ACME, so
     they are excluded.  The primary keeps the legacy ``zonefile`` path; additional public domains
-    get a per-domain file under ``zones/`` (see ``Config.coredns_zonefile_path_for``)."""
+    get a per-domain file under ``zones/`` (see ``Config.coredns_zonefile_path_for``).
+
+    The custom mail domain is a *mail-only* zone: the owner delegates it here with one NS record
+    so the instance can serve its SPF/DKIM/DMARC/MX (published by email provisioning).  It is NOT a
+    web-routing domain (no Caddy site, no TLS cert), so it lives outside the ``domains`` table and
+    is appended here as a DNS-only zone.  Without this, email provisioning would write the custom
+    domain's records into a zone file CoreDNS never serves."""
     primary = primary_domain_or_none(db)
     primary_no_port = primary.name_no_port if primary else None
-    return tuple(
+    zones = [
         DnsZone(
             domain=d.name_no_port,
             zonefile_path=config.coredns_zonefile_path_for(d.name_no_port, d.name_no_port == primary_no_port),
         )
         for d in effective_domains(db)
         if not d.mdns
-    )
+    ]
+    custom_mail = config.email_custom_domain_normalized
+    if custom_mail is not None and not any(z.domain == custom_mail for z in zones):
+        zones.append(
+            DnsZone(
+                domain=custom_mail,
+                zonefile_path=config.coredns_zonefile_path_for(custom_mail, is_primary=False),
+            )
+        )
+    return tuple(zones)
 
 
 def _write_coredns_config(
@@ -329,12 +345,115 @@ def append_txt_records(zone_file_path: Path, records: list[TxtRecord]) -> None:
     logger.info(f"Appended {len(records)} TXT record(s)")
 
 
-def clear_txt(zone_file_path: Path) -> None:
-    """Remove all TXT records from the zone file and bump the SOA serial."""
+@attr.s(auto_attribs=True, frozen=True)
+class DkimCname:
+    """One DKIM CNAME record SES requires the zone to publish.
+
+    ``name`` and ``target`` are absolute (SES returns fully-qualified names), so both
+    are written as FQDNs (trailing dot) into the zone file.
+    """
+
+    name: str
+    target: str
+
+
+def render_email_records(
+    domain: str,
+    *,
+    inbound_mail_host: str,
+    inbound_mail_ip: str,
+    dkim_cnames: list[DkimCname],
+    dmarc_rua: str | None = None,
+) -> str:
+    """Render the persistent email DNS records for ``domain`` as zone-file lines.
+
+    Produces SPF (apex TXT authorizing SES — outbound always relays via SES), a DMARC
+    policy (_dmarc TXT), the MX record, and the DKIM CNAMEs SES requires. Deterministic
+    given the inputs, so they can be re-applied idempotently on every boot.
+
+    Inbound is always direct to this instance: the MX points at the instance's own mail
+    host (``inbound_mail_host``, e.g. ``mail.<domain>``) and an A record is published for
+    that host -> the instance IP, so the instance's own mail server receives mail on port
+    25. Mail is never routed through OpenHost infrastructure inbound. Only outbound goes
+    through the central SES relay. ``domain`` is accepted for symmetry/logging; records
+    are keyed by ``@``/host relative to the zone $ORIGIN.
+    """
+    if not inbound_mail_host:
+        raise ValueError("inbound_mail_host is required")
+    if not inbound_mail_ip:
+        raise ValueError("inbound_mail_ip is required for the mail host A record")
+    lines: list[str] = ["; --- openhost email records (managed) ---"]
+    lines.append('@   IN TXT  "v=spf1 include:amazonses.com ~all"')
+    dmarc = "v=DMARC1; p=quarantine"
+    if dmarc_rua:
+        dmarc += f"; rua=mailto:{dmarc_rua}"
+    lines.append(f'_dmarc   IN TXT  "{dmarc}"')
+    host = inbound_mail_host.rstrip(".")
+    lines.append(f"@   IN MX   10 {host}.")
+    lines.append(f"{host}.   IN A   {inbound_mail_ip}")
+    for c in dkim_cnames:
+        lines.append(f"{c.name.rstrip('.')}.   IN CNAME  {c.target.rstrip('.')}.")
+    lines.append("; --- end openhost email records ---")
+    return "\n".join(lines) + "\n"
+
+
+def apply_email_records(
+    zone_file_path: Path,
+    domain: str,
+    *,
+    inbound_mail_host: str,
+    inbound_mail_ip: str,
+    dkim_cnames: list[DkimCname],
+    dmarc_rua: str | None = None,
+) -> None:
+    """Append the persistent email records to ``zone_file_path`` and bump the serial.
+
+    Called once after CoreDNS starts on each boot (the zone file is regenerated from
+    template there). Appending (rather than templating) keeps the DKIM tokens — only
+    known after the SES identity is created — out of the boot-time template.
+    """
+    block = render_email_records(
+        domain,
+        inbound_mail_host=inbound_mail_host,
+        inbound_mail_ip=inbound_mail_ip,
+        dkim_cnames=dkim_cnames,
+        dmarc_rua=dmarc_rua,
+    )
     with open(zone_file_path) as f:
         content = f.read()
-    lines = [line for line in content.splitlines() if "IN TXT" not in line]
+    content = _bump_serial(content)
+    content = content.rstrip("\n") + "\n" + block
+    with open(zone_file_path, "w") as f:
+        f.write(content)
+    logger.info(f"Applied {len(dkim_cnames)} DKIM CNAME(s) + SPF/DMARC/MX to {zone_file_path}")
+
+
+# ACME DNS-01 challenge TXT records are published at this owner name (relative to the
+# zone $ORIGIN, or as the absolute FQDN). clear_acme_challenge_records scopes its removal
+# to these so it never deletes persistent email TXT records (SPF at the apex, DMARC at
+# _dmarc) that share the "IN TXT" shape.
+_ACME_CHALLENGE_LABEL = "_acme-challenge"
+
+
+def _is_acme_challenge_txt(line: str) -> bool:
+    """True iff ``line`` is an ACME-challenge TXT record (owned by _acme-challenge)."""
+    if "IN TXT" not in line:
+        return False
+    owner = line.split(None, 1)[0] if line.split() else ""
+    return owner == _ACME_CHALLENGE_LABEL or owner.startswith(_ACME_CHALLENGE_LABEL + ".")
+
+
+def clear_acme_challenge_records(zone_file_path: Path) -> None:
+    """Remove ACME-challenge TXT records from the zone file and bump the SOA serial.
+
+    Only ``_acme-challenge`` TXT records are removed; persistent email records (SPF at
+    the apex, DMARC at ``_dmarc``, DKIM CNAMEs) are left intact so a cert renewal never
+    disturbs mail deliverability.
+    """
+    with open(zone_file_path) as f:
+        content = f.read()
+    lines = [line for line in content.splitlines() if not _is_acme_challenge_txt(line)]
     content = _bump_serial("\n".join(lines) + "\n")
     with open(zone_file_path, "w") as f:
         f.write(content)
-    logger.info(f"Cleared TXT records from {zone_file_path}")
+    logger.info(f"Cleared ACME-challenge TXT records from {zone_file_path}")
